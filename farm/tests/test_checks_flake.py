@@ -285,13 +285,13 @@ def test_fixture_xml_gives_the_expected_rows(ws, tmp_path, monkeypatch):
     assert len(test_runs) == 1 and test_runs[0]["check_run"]
     assert test_runs[0]["tests"] == [
         {"suite": None, "file": "server/test/item-stream.test.mjs", "test": "the board stream carries no step output at all",
-         "status": "fail", "duration_ms": 12, "command": command, "attempt": 1},
+         "status": "fail", "duration_ms": 12, "failure_message": None, "command": command, "attempt": 1},
         {"suite": "stream > deltas", "file": "server/test/item-stream.test.mjs", "test": "a delta names the changed item",
-         "status": "pass", "duration_ms": 4, "command": command, "attempt": 1},
+         "status": "pass", "duration_ms": 4, "failure_message": None, "command": command, "attempt": 1},
         {"suite": "stream > deltas", "file": "server/test/item-stream.test.mjs", "test": "a todo case",
-         "status": "skip", "duration_ms": 0, "command": command, "attempt": 1},
+         "status": "skip", "duration_ms": 0, "failure_message": None, "command": command, "attempt": 1},
         {"suite": "src/components/AdminPage.test.jsx", "file": None, "test": "AdminPage > renders",
-         "status": "fail", "duration_ms": 250, "command": command, "attempt": 1},
+         "status": "fail", "duration_ms": 250, "failure_message": "boom", "command": command, "attempt": 1},
     ]
 
 

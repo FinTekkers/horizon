@@ -483,6 +483,28 @@ test('the pause banner coexists with the Resume control and the activity feed, r
   expect(container.querySelector('.activity-row__text').textContent).toContain('agent step failed')
 })
 
+// HZ-605: a failed pre-merge's activity line (server/src/premerge.js
+// describeFailure) lists the failing tests above the log tail. Failure text is
+// the test runner's: it renders as plain text, never HTML or markdown.
+test('a failed pre-merge activity row shows its failing-tests list above the tail as plain text', () => {
+  const markup = '<b>bold</b> **star** [x](http://e.x)'
+  const text = [
+    'pre-merge checks failed on the test-merge of ab12cd3 + PR head 9f8e7d6 — sh -c ./gradlew test — the gate stays open:',
+    'failing tests (1):',
+    `LedgerTest › posts_once — ${markup}`,
+    '586 tests completed, 1 failed',
+  ].join('\n')
+  const item = { ...baseItem, events: [{ created_at: '2026-01-01 00:00:00', who: 'Horizon', text }] }
+  const { container } = renderTracker(item)
+  const row = container.querySelector('.activity-row__text')
+  expect(row.textContent).toContain(`LedgerTest › posts_once — ${markup}`)
+  expect(row.textContent.indexOf('failing tests (1):')).toBeLessThan(row.textContent.indexOf('586 tests completed'))
+  expect(row.querySelector('b')).toBeNull()
+  expect(row.querySelector('a')).toBeNull()
+  // Only the "who" is bold; nothing in the failure text became markup.
+  expect(row.querySelectorAll('strong')).toHaveLength(1)
+})
+
 test('a paused item whose newest event matches no known shape still renders a non-empty banner, not blank', () => {
   const item = { ...baseItem, paused: true, events: [{ created_at: '2026-01-01 00:00:00', text: 'some unrelated event text' }] }
   const { container } = renderTracker(item)

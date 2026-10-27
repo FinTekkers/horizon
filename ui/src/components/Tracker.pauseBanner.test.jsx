@@ -164,3 +164,38 @@ test('a check failure with no runner summary shows its headline, never the comma
   expect(banner.querySelector('.pause-banner__full-error')).toBeNull()
   expect(banner.textContent).not.toContain(leftOut)
 })
+
+// HZ-605 metric 3: a failed build-step check's message lists its failing tests
+// between the command line and the digest (farm/checks.py). Show details
+// shows them first, as plain text; the headline is unchanged.
+test('Show details lists the failing tests above the digest, as plain text, with the headline unchanged (HZ-605)', () => {
+  const headline = 'repo checks failed: gradle: 2 failed, 584 passed: "search_sameDayPrice_valuedWithoutWarning", "posts_once"'
+  const markup = '<b>bold</b> **star** [x](http://e.x)'
+  const message = [
+    headline,
+    '(sh -c ./gradlew test)',
+    'failing tests (2):',
+    'PositionAPIGRPCImplPriceLookbackTest › search_sameDayPrice_valuedWithoutWarning — MARKET_VALUE set on the bond',
+    `LedgerTest › posts_once — ${markup}`,
+    'PositionAPIGRPCImplPriceLookbackTest > search_sameDayPrice_valuedWithoutWarning FAILED',
+    '586 tests completed, 2 failed',
+  ].join('\n')
+  const { container, getByRole } = renderPaused([
+    { text: `agent step failed: ${headline} — item paused; resume to retry`, detail: message },
+  ])
+  const banner = container.querySelector('.pause-banner')
+  expect(banner.querySelector('.pause-banner__cause').textContent).toBe(headline)
+
+  fireEvent.click(getByRole('button', { name: 'Show details' }))
+
+  const pre = banner.querySelector('.pause-banner__full-error')
+  const text = pre.textContent
+  expect(text).toBe(message)
+  expect(text.indexOf('failing tests (2):')).toBeLessThan(text.indexOf('586 tests completed, 2 failed'))
+  expect(text).toContain('PositionAPIGRPCImplPriceLookbackTest › search_sameDayPrice_valuedWithoutWarning — MARKET_VALUE set on the bond')
+  // Guardrail: failure text is never HTML or markdown.
+  expect(text).toContain(`LedgerTest › posts_once — ${markup}`)
+  expect(pre.querySelector('b')).toBeNull()
+  expect(pre.querySelector('a')).toBeNull()
+  expect(pre.querySelector('strong')).toBeNull()
+})

@@ -634,6 +634,15 @@ FLAKE_TEST_MAX_CHARS = 300
 FLAKE_COMMAND_MAX_CHARS = 500
 FLAKES_MAX = 20
 TEST_NAME_MAX_CHARS = 500
+# HZ-605: a failing test's stored first failure-message line. The server cuts
+# it again to the same length (FAILURE_MESSAGE_MAX in
+# server/src/testResults.js) — change the two together.
+FAILURE_MESSAGE_MAX_CHARS = 300
+# HZ-605: the failing-tests list a failed check's message and tail start with.
+# At most ~1,650 chars, so the headline, the list and the DIGEST_MAX_CHARS
+# digest leave over 500 for the command line under step_agent.ERROR_MAX_CHARS.
+FAILING_TESTS_SHOWN = 10
+FAILING_TEST_LINE_MAX_CHARS = 160
 TEST_ROWS_MAX = 20000
 REPORT_FILE_MAX_BYTES = 32 * 1024 * 1024
 # The tree snapshot is the only recording step that can take real time; the
@@ -754,6 +763,53 @@ def _failure_kind(case: ET.Element) -> str | None:
     return FAILURE_UNKNOWN
 
 
+def _failure_message(case: ET.Element) -> str | None:
+    """HZ-605: the first non-empty line of a failing <testcase>'s
+    <failure>/<error> `message`, else of its text (some runners write no
+    message attribute). None when it did not fail or says nothing. Raw:
+    _test_rows() redacts it, then cuts it to FAILURE_MESSAGE_MAX_CHARS — in
+    that order, so a cut never splits a secret out of redact()'s reach."""
+    failure = next((child for child in case if child.tag in ("failure", "error")), None)
+    if failure is None:
+        return None
+    for source in (failure.get("message"), (failure.text or "")[:FAILURE_TEXT_MAX_CHARS]):
+        line = next((line.strip() for line in (source or "").splitlines() if line.strip()), None)
+        if line:
+            return line[:FAILURE_TEXT_MAX_CHARS]
+    return None
+
+
+def failing_tests_block(rows: list[dict], *, secrets) -> str:
+    """HZ-605: the failing tests a failed check's message and tail list above
+    its output — `failing tests (N):`, then one `<suite> › <test> — <first
+    failure-message line>` line each (the file when there is no suite; no
+    ` — …` without a message), at most FAILING_TESTS_SHOWN, then `+N more`.
+    Like _stored_summary(), _test_rows()' row for a command with no report is
+    not a test. "" when no test failed: the message is then as before.
+
+    Test names come raw from the report, so each line is redacted — before
+    it is cut, so a cut never splits a secret out of redact()'s reach."""
+    failed = [
+        row
+        for row in rows
+        if row.get("status") == "fail" and (row.get("file") is not None or row.get("suite") is not None)
+    ]
+    if not failed:
+        return ""
+    lines = [f"failing tests ({len(failed)}):"]
+    for row in failed[:FAILING_TESTS_SHOWN]:
+        entry = f"{row.get('suite') or row.get('file')} › {row.get('test')}"
+        if row.get("failure_message"):
+            entry += f" — {row['failure_message']}"
+        entry = redact(entry, secrets)
+        if len(entry) > FAILING_TEST_LINE_MAX_CHARS:
+            entry = entry[: FAILING_TEST_LINE_MAX_CHARS - 1] + "…"
+        lines.append(entry)
+    if len(failed) > FAILING_TESTS_SHOWN:
+        lines.append(f"+{len(failed) - FAILING_TESTS_SHOWN} more")
+    return "\n".join(lines)
+
+
 def _tests_word(count: int) -> str:
     return f"{count} test" if count == 1 else f"{count} tests"
 
@@ -863,6 +919,9 @@ def parse_junit(path: Path, ws: Path) -> list[dict]:
                         # HZ-589: for _rerun_verdict() only. _test_rows()
                         # strips it, so it is never stored or uploaded.
                         "failure_kind": _failure_kind(child),
+                        # HZ-605: raw from the report — _test_rows()
+                        # redacts and cuts it before it is stored or shown.
+                        "failure_message": _failure_message(child),
                     }
                 )
 
@@ -969,14 +1028,26 @@ def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], lo
 _UNSTORED_KEYS = ("failure_kind", "classname")
 
 
-def _test_rows(junit: list[dict], shown: str, returncode: int, duration_s: float, attempt: int) -> list[dict]:
+def _test_rows(
+    junit: list[dict], shown: str, returncode: int, duration_s: float, attempt: int, *, secrets
+) -> list[dict]:
     """The rows one attempt stores: its JUnit rows, or one row for the
     command itself when it wrote none. A signal-killed command with no report
-    stores nothing — host pressure, not a test result."""
+    stores nothing — host pressure, not a test result.
+
+    HZ-605: `secrets` is required, so no caller can store or show a failure
+    message unredacted."""
     command = shown[:FLAKE_COMMAND_MAX_CHARS]
     if junit:
         return [
-            {**{k: v for k, v in row.items() if k not in _UNSTORED_KEYS}, "command": command, "attempt": attempt}
+            {
+                **{k: v for k, v in row.items() if k not in _UNSTORED_KEYS},
+                "failure_message": (
+                    redact(row["failure_message"], secrets)[:FAILURE_MESSAGE_MAX_CHARS] if row.get("failure_message") else None
+                ),
+                "command": command,
+                "attempt": attempt,
+            }
             for row in junit
         ]
     if returncode < 0:
@@ -989,6 +1060,7 @@ def _test_rows(junit: list[dict], shown: str, returncode: int, duration_s: float
             "test": command[:TEST_NAME_MAX_CHARS],
             "status": status,
             "duration_ms": round(duration_s * 1000),
+            "failure_message": None,
             "command": command,
             "attempt": attempt,
         }
@@ -1332,11 +1404,14 @@ def _branch_failure(
         headline = failure_headline(rows, redacted, shown, label) or fallback_headline(label, redacted, exit_code, shown)
     headline = _cap_words(redact(headline, secrets), HEADLINE_MAX_CHARS)
     digest = failure_digest(redacted, DIGEST_MAX_CHARS - len(headline) - 1)
+    # HZ-605: the failing tests, above the digest and the tail.
+    block = failing_tests_block(rows, secrets=secrets)
+    listed = f"{block}\n" if block else ""
     return CheckFailure(
-        f"{HEADLINE_PREFIX}{headline}\n({RUN_LABEL_BRANCH} {slot} slot: {shown})\n{digest}".rstrip(),
+        f"{HEADLINE_PREFIX}{headline}\n({RUN_LABEL_BRANCH} {slot} slot: {shown})\n{listed}{digest}".rstrip(),
         digest=digest,
         command=shown,
-        tail=output_tail(redacted) or headline,
+        tail=listed + (output_tail(redacted) or headline),
         reason=reason,
         headline=headline,
     )
@@ -1368,7 +1443,7 @@ def _run_branch_command(
     def did_not_finish(outcome: str, reason: str, duration: float, output: str = "") -> tuple[str, CheckFailure]:
         # Fail closed: a command that did not finish is one failed row and a
         # failure — never a pass, never skipped.
-        keep(_test_rows([], shown, 1, duration, attempt=1))
+        keep(_test_rows([], shown, 1, duration, attempt=1, secrets=secrets))
         branch_run["commands"].append(_command_entry(shown, 1, None))
         failure = _branch_failure(
             label, slot, shown, rows=[], output=output, exit_code=None, secrets=secrets, reason=reason,
@@ -1391,7 +1466,9 @@ def _run_branch_command(
         return did_not_finish(f"failed (could not run: {detail})", "failed", time.monotonic() - started, detail)
     duration = time.monotonic() - started
     # Never a silent 0: a signal-killed command with no report is one failed row.
-    rows = _test_rows(junit, shown, proc.returncode, duration, attempt=1) or _test_rows([], shown, 1, duration, attempt=1)
+    rows = _test_rows(junit, shown, proc.returncode, duration, attempt=1, secrets=secrets) or _test_rows(
+        [], shown, 1, duration, attempt=1, secrets=secrets
+    )
     keep(rows)
     branch_run["commands"].append(_command_entry(shown, 1, proc.returncode))
     verdict = "passed" if proc.returncode == 0 else f"failed (exit {proc.returncode})"
@@ -1425,9 +1502,9 @@ def _run_branch_command(
             log(f"checks: the branch rerun of {shown} did not finish ({type(exc).__name__}) — the first failure stands")
         else:
             rerun_duration = time.monotonic() - rerun_started
-            rerun_rows = _test_rows(rerun_junit, shown, rerun.returncode, rerun_duration, attempt=2) or _test_rows(
-                [], shown, 1, rerun_duration, attempt=2
-            )
+            rerun_rows = _test_rows(
+                rerun_junit, shown, rerun.returncode, rerun_duration, attempt=2, secrets=secrets
+            ) or _test_rows([], shown, 1, rerun_duration, attempt=2, secrets=secrets)
             keep(rerun_rows)
             branch_run["commands"].append(_command_entry(shown, 2, rerun.returncode))
             rerun_output = ((rerun.stdout or "") + "\n" + (rerun.stderr or "")).strip()
@@ -1924,7 +2001,7 @@ def run_checks(
                     record["install"]["duration_s"] = round(duration, 1)
                 safe_shown = redact(shown, secrets)
                 check_run["commands"].append(_command_entry(safe_shown, 1, proc.returncode))
-                first_rows = _test_rows(junit, safe_shown, proc.returncode, duration, attempt=1)
+                first_rows = _test_rows(junit, safe_shown, proc.returncode, duration, attempt=1, secrets=secrets)
                 keep_rows(first_rows)
                 if proc.returncode != 0:
                     output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
@@ -1979,7 +2056,9 @@ def run_checks(
                                 "returncode": rerun.returncode,
                             }
                             check_run["commands"].append(_command_entry(safe_shown, 2, rerun.returncode))
-                            rerun_rows = _test_rows(rerun_junit, safe_shown, rerun.returncode, rerun_duration, attempt=2)
+                            rerun_rows = _test_rows(
+                                rerun_junit, safe_shown, rerun.returncode, rerun_duration, attempt=2, secrets=secrets
+                            )
                             keep_rows(rerun_rows)
                             final_junit = rerun_junit
                             rerun_output = ((rerun.stdout or "") + "\n" + (rerun.stderr or "")).strip()
@@ -2012,18 +2091,23 @@ def run_checks(
                     # headline is redacted again on its own. HZ-373: named by
                     # the slot, and never missing — see fallback_headline().
                     slot = label[0] if label else _command_label(shown)
-                    headline = failure_headline(
-                        rerun_rows if rerun_rows is not None else first_rows, redacted, shown, slot
-                    ) or fallback_headline(slot, redacted, shown_exit, shown)
+                    shown_rows = rerun_rows if rerun_rows is not None else first_rows
+                    headline = failure_headline(shown_rows, redacted, shown, slot) or fallback_headline(
+                        slot, redacted, shown_exit, shown
+                    )
                     headline = _cap_words(redact(headline, secrets), HEADLINE_MAX_CHARS)
                     # The digest's budget leaves room for the headline line.
                     digest = failure_digest(redacted, DIGEST_MAX_CHARS - len(headline) - 1)
-                    message = f"{HEADLINE_PREFIX}{headline}\n({line_label}{shown})\n{digest}"
+                    # HZ-605: the failing tests, above the digest and the
+                    # tail, from the same attempt as the headline.
+                    block = failing_tests_block(shown_rows, secrets=secrets)
+                    listed = f"{block}\n" if block else ""
+                    message = f"{HEADLINE_PREFIX}{headline}\n({line_label}{shown})\n{listed}{digest}"
                     raise CheckFailure(
                         message,
                         digest=digest,
                         command=shown,
-                        tail=output_tail(redacted),
+                        tail=listed + output_tail(redacted),
                         headline=headline,
                         failed_tests=[row for row in final_junit if row.get("status") == "fail"],
                         argv=cmd,

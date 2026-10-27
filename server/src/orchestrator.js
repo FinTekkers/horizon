@@ -3120,7 +3120,8 @@ function warnStaleStepChoice(id, stepIndex, item, project) {
 // what the next attempt and a human read to learn what broke. 300 chars kept
 // only the head of it — usually passing tests. This matches the /fail route's
 // `error` maxLength in app.js, so whatever the route accepts is kept whole.
-const FAILED_OUTPUT_MAX_CHARS = 2000
+// HZ-605: 4000, room for the failing-tests list above the digest.
+export const FAILED_OUTPUT_MAX_CHARS = 4000
 
 // reason is one of AUTO_RETRY_REASONS's tags (assigned by the call site that
 // detected the failure) or null/unrecognized — only a tagged reason, under

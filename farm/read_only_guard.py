@@ -37,7 +37,7 @@ from .agent_runner import AgentError
 HEADLINE_PREFIX = "read-only step changed the worktree"
 # step_agent.ERROR_MAX_CHARS, the /fail route's `error` maxLength: the whole
 # message, file list included, must fit or main() cuts it mid-line.
-MESSAGE_MAX_CHARS = 2000
+MESSAGE_MAX_CHARS = 4000
 _WHY_MAX_CHARS = 300
 GIT_TIMEOUT_S = 120
 

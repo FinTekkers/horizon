@@ -3754,7 +3754,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           type: 'object',
           required: ['error'],
           properties: {
-            error: { type: 'string', maxLength: 2000 },
+            error: { type: 'string', maxLength: 4000 },
             reason: { type: 'string', maxLength: 100 },
             flakes: FLAKES_BODY,
             job_view: FINAL_JOB_VIEW_BODY,
