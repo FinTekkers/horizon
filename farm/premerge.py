@@ -314,7 +314,8 @@ def premerge_check(
                 return {**out, "reason": "slot_wait_expired", "waited_s": round(exc.waited_s), "detail": str(exc)}
             except CheckFailure as exc:
                 if isinstance(exc.__cause__, check_slots.MemoryWaitExpired):
-                    return {**out, "reason": "memory_wait_expired", "waited_s": round(exc.__cause__.waited_s), "detail": str(exc)}
+                    waited_s = round(exc.__cause__.waited_s)
+                    return {**out, "reason": "memory_wait_expired", "waited_s": waited_s, "detail": str(exc)}
                 if exc.reason == "timed_out":
                     return {**out, "reason": "timed_out", "failing_check": exc.command, "detail": str(exc)}
                 if exc.reason == "none_ran":
