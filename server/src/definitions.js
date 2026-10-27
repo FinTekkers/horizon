@@ -174,7 +174,8 @@ export function readFarmFile(relpath) {
 }
 
 // Mirror of farm/config.py slugify (ASCII names — parity holds for those).
-function slugify(name) {
+// HZ-538: substeps.js reads farm/projects/<slug>/ through it too.
+export function slugify(name) {
   return [...name.toLowerCase()].map((c) => (/[a-z0-9]/.test(c) ? c : '-')).join('').replace(/^-+|-+$/g, '')
 }
 

@@ -107,6 +107,15 @@ export function registerProjectOverlayLoader(loader) {
   projectOverlayLoader = loader
 }
 
+// HZ-538: substeps.js's snapshotSubsteps, registered by the orchestrator the
+// same way and for the same reason (substeps.js reads definitions.js). Until
+// then no item gets a snapshot.
+let substepsSnapshotter = () => null
+
+export function registerSubstepsSnapshotter(snapshotter) {
+  substepsSnapshotter = snapshotter
+}
+
 // ---- HZ-216: long gate actions (pre-merge checks + merge, conflict resolution) ----
 //
 // One persisted gate_action row per (item, kind) — see db.js. It is both the
@@ -2677,8 +2686,14 @@ export function upsertFromGithub(ghIssue, repoFullName) {
     // not change an item's kind.
     const kind = kindFromLabels(ghIssue.labels)
     const id = `${repoRow.prefix}-${number}`
+    // HZ-538: the sub-steps that apply, snapshotted here on insert only — like
+    // the kind, a later sync never re-reads them. Snapshot data only.
+    const project = repoRow.project_id == null ? null : selectProjectDefinitions.get(repoRow.project_id)
+    const substepsJson = closedOnGithub
+      ? null
+      : substepsSnapshotter({ project, kind, labels: ghIssue.labels, repo: repoFullName, desc })
     db.prepare(
-      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane, autopilot_off) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane, autopilot_off, substeps_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
       title,
@@ -2693,6 +2708,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       kind,
       laneFromLabels(ghIssue.labels, kind),
       autopilotOff,
+      substepsJson,
     )
     addEvent(id, { who: 'GitHub', text: `opened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
     changed = true
