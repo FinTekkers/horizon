@@ -13,7 +13,8 @@ import {
   isItemKind,
 } from '../../../domain/js/lifecycle.js'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
-import { FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
+import { FILTERS, DEFAULT_ACTIVE_FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
+import { activeChips, chipPatch } from '../domain/filterChips'
 import { KIND_OPTIONS, SORT_LABELS, narrowItems, planPool, sortByWait, waitText } from '../domain/narrowing'
 import { PRIORITIES } from '../../../domain/js/priorities.js'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
@@ -364,6 +365,18 @@ export default function Board({
     boardFilters.setActiveFilters([])
     if (plan == null) boardNarrowing.clearBoardView()
   }
+  // HZ-601: what is narrowing the board, one removable chip per filter.
+  const chips = activeChips(view, activeFilterKeys)
+  const removeChip = (key) => {
+    const patch = chipPatch(key)
+    if (patch?.hide) boardFilters.setActiveFilters([...activeFilterKeys, patch.hide])
+    else if (patch?.view) boardNarrowing.setBoardView(patch.view)
+  }
+  // Back to the defaults: every hide filter on, nothing narrowed.
+  const clearAll = () => {
+    boardFilters.setActiveFilters(DEFAULT_ACTIVE_FILTERS)
+    boardNarrowing.clearBoardView()
+  }
   const planKindLabel = (kind) => itemKindInfo(isItemKind(kind) ? kind : 'plan').label
   const chip = (on, label, onClick) => (
     <button
@@ -412,6 +425,30 @@ export default function Board({
           + New work item
         </button>
       </div>
+
+      {chips.length > 0 && (
+        <div className="board__filterbar" role="group" aria-label="Active filters">
+          <span className="board__filterbar-count">Filters · {chips.length}</span>
+          {chips.map((c) => (
+            <span key={c.key} className="board__chip">
+              <span className="board__chip-label" title={c.label}>
+                {c.label}
+              </span>
+              <button
+                type="button"
+                className="board__chip-remove"
+                aria-label={`Remove ${c.label} filter`}
+                onClick={() => removeChip(c.key)}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          <button type="button" className="board__clear-all" onClick={clearAll}>
+            Clear all
+          </button>
+        </div>
+      )}
 
       <div className="board__narrow">
         <div className="board__narrow-group">

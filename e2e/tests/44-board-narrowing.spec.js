@@ -64,7 +64,7 @@ test('Waiting on me, a Priority and a Kind narrow and sort the board, and every 
   await page.reload()
   await expect(page.getByText('E2E fixture — agent running')).toBeVisible({ timeout: 10_000 })
 
-  await page.getByRole('button', { name: 'Waiting on me' }).click()
+  await page.getByRole('button', { name: 'Waiting on me', exact: true }).click()
   await chip(page, 'Priority', PRIORITY.LOW).click()
   await chip(page, 'Kind', 'Trivial').click()
   await expect(page.getByText('E2E fixture — agent running')).toHaveCount(0)
@@ -78,7 +78,7 @@ test('Waiting on me, a Priority and a Kind narrow and sort the board, and every 
 
   await page.reload()
   await expect(waitOf(page, 'WN-PAUSED')).toHaveText('waiting 1h', { timeout: 10_000 })
-  for (const button of [page.getByRole('button', { name: 'Waiting on me' }), chip(page, 'Priority', PRIORITY.LOW), chip(page, 'Kind', 'Trivial')]) {
+  for (const button of [page.getByRole('button', { name: 'Waiting on me', exact: true }), chip(page, 'Priority', PRIORITY.LOW), chip(page, 'Kind', 'Trivial')]) {
     await expect(button).toHaveAttribute('aria-pressed', 'true')
   }
   await expect(page.getByRole('button', { name: 'Most recent' })).toBeVisible()
@@ -86,6 +86,21 @@ test('Waiting on me, a Priority and a Kind narrow and sort the board, and every 
   await expect(waitOf(page, 'WN-GATE')).toHaveText('waiting 5h')
   await expect(waitOf(page, 'WN-RULE')).toHaveText('waiting 3h')
   await expect(page.getByText('E2E fixture — agent running')).toHaveCount(0)
+
+  // HZ-601: each choice is one removable chip, and Filters · N counts them.
+  // Removing a chip clears only its own filter.
+  const bar = page.getByRole('group', { name: 'Active filters' })
+  await expect(bar.locator('.board__chip-label')).toHaveText(['Waiting on me', `Priority: ${PRIORITY.LOW}`, 'Kind: Trivial'])
+  await expect(bar.locator('.board__filterbar-count')).toHaveText('Filters · 3')
+  await bar.getByRole('button', { name: `Remove Priority: ${PRIORITY.LOW} filter` }).click()
+  await expect(bar.locator('.board__chip-label')).toHaveText(['Waiting on me', 'Kind: Trivial'])
+  await expect(bar.locator('.board__filterbar-count')).toHaveText('Filters · 2')
+  await expect(chip(page, 'Priority', PRIORITY.LOW)).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.getByText('E2E fixture — agent running')).toHaveCount(0)
+  await bar.getByRole('button', { name: 'Remove Waiting on me filter' }).click()
+  await bar.getByRole('button', { name: 'Remove Kind: Trivial filter' }).click()
+  await expect(page.locator('.board__chip')).toHaveCount(0)
+  await expect(page.getByText('E2E fixture — agent running')).toBeVisible()
 
   // Leave the shared board as other specs expect it.
   await page.evaluate((key) => localStorage.removeItem(key), STORAGE_KEY)
