@@ -173,9 +173,13 @@ export function setGatePinDirect(db, email, plaintext) {
 // as if a pre-merge run had already ended — timed_out, interrupted, failed —
 // so a spec starts at the failure without waiting out a real deadline. The
 // epoch is this visit to the gate, computed as store.js's gateEpoch does —
-// a finished row from another visit is never shown.
-export function insertGateAction(db, { itemId, kind = 'premerge', state, reason = null, failingCheck = null }) {
+// a finished row from another visit is never shown. HZ-585: state 'running'
+// (with a `detail`) is a run still in flight: no finish time, and a lease an
+// hour out so no sweep ends it mid-spec.
+export function insertGateAction(db, { itemId, kind = 'premerge', state, reason = null, failingCheck = null, detail = null }) {
   const now = new Date().toISOString()
+  const running = state === 'running'
+  const deadline = running ? new Date(Date.now() + 60 * 60 * 1000).toISOString() : now
   const { epoch } = db
     .prepare(
       `SELECT (SELECT COALESCE(MAX(id), 0) FROM gate_decision WHERE item_id = ?) || ':' ||
@@ -184,6 +188,6 @@ export function insertGateAction(db, { itemId, kind = 'premerge', state, reason 
     .get(itemId, itemId)
   db.prepare(
     `INSERT INTO gate_action (item_id, kind, state, run_token, epoch, detail, reason, failing_check, started_at, deadline_at, finished_at)
-     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
-  ).run(itemId, kind, state, crypto.randomBytes(8).toString('hex'), epoch, reason, failingCheck, now, now, now)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(itemId, kind, state, crypto.randomBytes(8).toString('hex'), epoch, detail, reason, failingCheck, now, deadline, running ? null : now)
 }

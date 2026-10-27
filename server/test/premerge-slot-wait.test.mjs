@@ -49,7 +49,8 @@ test('an onSlot that throws never fails the run', async () => {
 })
 
 // HZ-598: the listener is always there, since the slot events also re-arm
-// the cap; without onSlot it only does that.
+// the cap; without onSlot it only does that. HZ-585: only the grant re-arms
+// it (once), and a queued run stays under the queue cap until then.
 test('without onSlot the stderr listener still takes slot events and never throws', async () => {
   const restarts = []
   const result = await withSpawn(
@@ -58,12 +59,13 @@ test('without onSlot the stderr listener still takes slot events and never throw
       opts.onStderrLine('noise')
       opts.onStderrLine('HORIZON_EVENT {"check_slot": "queued"}')
       opts.onStderrLine('HORIZON_EVENT {"check_slot": "granted", "mode": "held"}')
+      opts.onStderrLine('HORIZON_EVENT {"check_slot": "held", "mode": "held"}')
       return green(args)
     },
     () => premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60000 }),
   )
   assert.equal(result.ok, true)
-  assert.deepEqual(restarts, [60000 + premerge.slotWaitMaxMs(), 60000])
+  assert.deepEqual(restarts, [60000])
 })
 
 test('parseSlotEvent accepts only whole, known HORIZON_EVENT lines', () => {
@@ -140,7 +142,10 @@ test('a memory event reaches onSlot with its figure, and maps to Waiting for mem
   )
   assert.equal(heard[0][1].available_kb, 1468006)
   assert.equal(premerge.slotDetail(...heard[0]), 'Waiting for memory (9% free, 1.4 GB)')
-  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued' }), 'Waiting for a check slot')
+  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued' }), 'queued for a check slot')
+  // HZ-585: with the count of runs that started waiting first.
+  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued', ahead: 2 }), 'queued for a check slot (2 ahead)')
+  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued', ahead: 0 }), 'queued for a check slot (0 ahead)')
   assert.equal(premerge.slotDetail('granted', { check_slot: 'granted', mode: 'held' }), 'Running checks')
   assert.equal(premerge.slotDetail('memory', { check_slot: 'memory' }), 'Waiting for memory')
   assert.equal(premerge.parseSlotEvent('HORIZON_EVENT {"check_slot": "memory"}'), 'memory')

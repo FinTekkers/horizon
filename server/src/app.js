@@ -29,6 +29,7 @@ import {
   SESSION_TTL_DAYS,
   TEST_HOOKS_ENABLED,
   PREMERGE_CHECK_TIMEOUT_MS,
+  PREMERGE_QUEUE_TIMEOUT_MS,
   PREMERGE_SKIP_ENABLED,
   PREMERGE_SKIP_MAX_AGE_MS,
 } from './config.js'
@@ -1414,6 +1415,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         headSha: head.sha,
         baseSha,
         timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
+        // HZ-585: the wait for a check slot has its own cap; the checks'
+        // PREMERGE_CHECK_TIMEOUT_MS starts once the slot is held.
+        queueTimeoutMs: PREMERGE_QUEUE_TIMEOUT_MS,
         // HZ-245: the repo's Admin-configured check commands, read now and
         // passed as argv, never env (see premerge.js). HZ-304: null means none
         // — the run fails by name unless checksWaiver excuses this item.
@@ -1425,7 +1429,14 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         // says so, rather than looking stuck. The token guard in
         // setGateActionDetail drops an event that lands after the row finished.
         // HZ-571: and a run the memory gate holds names the free memory.
+        // HZ-585: 'held' starts the checks' clock, so the gate's lease restarts
+        // with it; the detail is left alone ('granted' already said so, and a
+        // run that never queued keeps "running checks on ...").
         onSlot: (name, event) => {
+          if (name === 'held') {
+            store.renewGateActionLease(id, 'premerge', token, PREMERGE_CHECK_TIMEOUT_MS)
+            return
+          }
           store.setGateActionDetail(id, 'premerge', token, premerge.slotDetail(name, event))
         },
       })
@@ -1453,7 +1464,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           ? { state: 'blocked', reason: error, failingCheck: result.failing_check || null }
           : result.reason === 'timed_out'
             ? { state: 'timed_out', reason: `pre-merge checks did not finish: ${result.detail || 'timed out'}` }
-            : { state: 'failed', reason: error }
+            : // HZ-585: the checks never started — no slot, or no memory, in time.
+              result.reason === 'slot_wait_expired' || result.reason === 'memory_wait_expired'
+              ? { state: 'timed_out', reason: `pre-merge checks did not start: ${result.detail || result.reason}` }
+              : { state: 'failed', reason: error }
       return blocked(premerge.describeFailure(result), error, outcome)
     }
     // The checks proved base_sha + head_sha. If the base moved meanwhile, the
@@ -1555,9 +1569,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // the block lifts. Its release calls back in here, so this check is
       // also the backstop that nothing merges while blocked.
       if (deployDrain.isDeployBlocked()) return heldAccept.hold(item, stepIndex, notes, actor)
+      // HZ-585: the lease first covers the wait for a check slot; the run's
+      // 'held' event restarts it at PREMERGE_CHECK_TIMEOUT_MS (onSlot above).
       const claim = store.claimGateAction(id, 'premerge', {
         detail: `reading PR #${item.pr}`,
-        timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
+        timeoutMs: PREMERGE_QUEUE_TIMEOUT_MS,
       })
       if (!claim) {
         const running = store.getGateAction(id, 'premerge')

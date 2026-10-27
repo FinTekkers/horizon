@@ -242,6 +242,46 @@ test('Running now plus agent-lane check-slot waiters equals the agents-busy coun
   assert.equal(body.running.length + holding, body.capacity.agents.busy)
 })
 
+test('a pre-merge run waiting for a check slot is listed once, as Pre-merge checks (HZ-585)', async () => {
+  // farm/premerge.py's waiter has no step run: its marker carries no run_id.
+  // One whose run_id does match an active run is that run's row, not a second.
+  const ACCEPT = 13
+  const snapshot = await farmHealth.collectOnce({
+    ...deps,
+    farmFetch: async () => ({
+      status: 'running',
+      agents: { busy: 0, limit: 4 },
+      express: { busy: 0, limit: 1 },
+      pm_agents: { busy: 0, limit: 1 },
+      checks: {
+        busy: 2,
+        limit: 2,
+        waiting: [
+          { pid: 1, run_id: null, item_id: 'HZ-550', caller: 'premerge', waiting_on: 'slot', waited_s: 90 },
+          { pid: 2, run_id: '31', item_id: 'HZ-571', caller: 'premerge', waiting_on: 'slot', waited_s: 20 },
+        ],
+        holders: [],
+      },
+    }),
+    activeRuns: () => [{ id: 31, item_id: 'HZ-571', step_index: ACCEPT, started_at: sqlTime(NOW - 30000), state: 'running' }],
+  })
+  const body = farmHealth.toPublic(snapshot)
+  assert.deepEqual(
+    body.waiting.map((w) => w.itemId).sort(),
+    ['HZ-550', 'HZ-571'],
+  )
+  const row = body.waiting.find((w) => w.itemId === 'HZ-550')
+  assert.deepEqual(row, {
+    itemId: 'HZ-550',
+    step: 'Pre-merge checks',
+    slot: 'check',
+    startedAt: new Date(NOW - 90000).toISOString(),
+    holdsAgentSlot: false,
+  })
+  assert.equal(body.capacity.checks.waiting, 2)
+  assert.equal(body.waitingCount, 2)
+})
+
 test('the collector only runs systemctl is-active and only GETs /farm/status', async () => {
   await farmHealth.refreshFarmHealth(deps)
   assert.ok(calls.exec.length > 0)

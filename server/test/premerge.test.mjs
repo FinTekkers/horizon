@@ -41,7 +41,7 @@ test('argv carries the repo, item and two shas — no filesystem path — and ru
     const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 20 * 60 * 1000 })
     assert.equal(result.ok, true)
     const [{ args, opts }] = calls
-    assert.deepEqual(args, ['-m', 'farm.premerge', 'FinTekkers/horizon', 'HZ-183', HEAD, '--base', BASE, '--timeout-s', '1200', '--json'])
+    assert.deepEqual(args, ['-m', 'farm.premerge', 'FinTekkers/horizon', 'HZ-183', HEAD, '--base', BASE, '--timeout-s', '1200', '--queue-timeout-s', '1200', '--json'])
     assert.ok(!args.some((a) => a.includes('/') && a !== 'FinTekkers/horizon'), 'Node must not pick the workspace')
     assert.equal(opts.cwd, REPO_ROOT)
     assert.equal(opts.timeoutMs, 20 * 60 * 1000)
@@ -264,26 +264,14 @@ function slotRun(steps) {
   return fakePython([...lines, `echo "{\\"ok\\": true, \\"head_sha\\": \\"$5\\", \\"base_sha\\": \\"$7\\"}"`].join('\n'))
 }
 
-async function timedPreMerge(bin, timeoutMs) {
+async function timedPreMerge(bin, timeoutMs, queueTimeoutMs = timeoutMs) {
   return withReaper(async () => ({ code: 0 }), () =>
     withPython(bin, async () => {
       const started = Date.now()
-      const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs })
+      const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs, queueTimeoutMs })
       return { result, elapsed: Date.now() - started }
     }),
   )
-}
-
-async function withSlotWaitMax(value, fn) {
-  const prev = process.env.FARM_CHECK_SLOT_WAIT_MAX_S
-  if (value === undefined) delete process.env.FARM_CHECK_SLOT_WAIT_MAX_S
-  else process.env.FARM_CHECK_SLOT_WAIT_MAX_S = value
-  try {
-    return await fn()
-  } finally {
-    if (prev === undefined) delete process.env.FARM_CHECK_SLOT_WAIT_MAX_S
-    else process.env.FARM_CHECK_SLOT_WAIT_MAX_S = prev
-  }
 }
 
 // Metric 1, scaled: 15 min queued then 15 min running under a 20 min cap.
@@ -307,25 +295,25 @@ for (const [name, steps] of [
   })
 }
 
-test('a run stuck in the queue is killed at the cap plus the slot wait ceiling, counted from its first wait', async () => {
-  // memory, then queued a second later: only the first event arms the backstop.
+// HZ-585: the queue is bounded by its own cap, counted from launch, since a
+// pre-merge's slot wait never fails open.
+test('a run stuck in the queue is killed at the queue cap, counted from launch', async () => {
   const bin = slotRun([['event', 'memory'], ['sleep', 1], ['event', 'queued'], ['sleep', 30]])
-  const { result, elapsed } = await withSlotWaitMax('1', () => timedPreMerge(bin, 500))
+  const { result, elapsed } = await timedPreMerge(bin, 500, 1500)
   assert.equal(result.reason, 'timed_out')
+  assert.match(result.detail, /^no check slot within/)
   assert.ok(elapsed >= 1400 && elapsed < 2400, `killed after ${elapsed} ms`)
 })
 
-test('the slot wait ceiling reaches the run, and a missing, unbounded or bad one is the farm default', async () => {
-  await withRunner(green(), (calls) =>
-    withSlotWaitMax('45', async () => {
-      await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
-      assert.equal(calls[0].opts.env.FARM_CHECK_SLOT_WAIT_MAX_S, '45')
-      assert.equal(premerge.slotWaitMaxMs(), 45_000)
-    }),
-  )
-  for (const value of [undefined, '0', '-5', 'soon', '']) {
-    await withSlotWaitMax(value, () => assert.equal(premerge.slotWaitMaxMs(), 1_200_000, String(value)))
-  }
+test('the queue cap reaches the run as --queue-timeout-s, and defaults to the checks cap', async () => {
+  await withRunner(green(), async (calls) => {
+    await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000, queueTimeoutMs: 3_600_000 })
+    await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+    const queueArg = (call) => call.args[call.args.indexOf('--queue-timeout-s') + 1]
+    assert.equal(queueArg(calls[0]), '3600')
+    assert.equal(calls[0].opts.timeoutMs, 3_600_000)
+    assert.equal(queueArg(calls[1]), '60')
+  })
 })
 
 // /proc: every live process whose starting environment carries the tag.

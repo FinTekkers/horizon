@@ -256,7 +256,8 @@ export async function collectOnce(deps = defaultDeps) {
   }
   const running = []
   const waiting = []
-  for (const run of deps.activeRuns() || []) {
+  const activeRuns = deps.activeRuns() || []
+  for (const run of activeRuns) {
     const row = {
       itemId: run.item_id,
       step: STEPS[run.step_index]?.label || null,
@@ -282,6 +283,22 @@ export async function collectOnce(deps = defaultDeps) {
     } else {
       running.push(row)
     }
+  }
+  // HZ-585: a pre-merge run at Accept has no step run of its own, so its
+  // check-slot wait matches no row above; list it here. One whose run_id did
+  // match a row above is already listed.
+  const activeIds = new Set(activeRuns.map((run) => String(run.id)))
+  for (const w of checkWaiters) {
+    if (!w || w.caller !== 'premerge' || (w.run_id != null && activeIds.has(String(w.run_id)))) continue
+    const waited = finite(w.waited_s)
+    waiting.push({
+      itemId: typeof w.item_id === 'string' ? w.item_id : null,
+      step: 'Pre-merge checks',
+      slot: 'check',
+      lane: null,
+      holdsAgentSlot: false,
+      startedAt: waited != null ? new Date(now - waited * 1000).toISOString() : null,
+    })
   }
   const waitingCount = waiting.length
   const agentsWaiting = waiting.filter((w) => w.slot === 'agent').length

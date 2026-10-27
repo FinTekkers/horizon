@@ -44,12 +44,7 @@ function pythonBin() {
 // token, session secrets, and HORIZON_DB — a test that forgot to set its own
 // DB path would otherwise write to production's. An allowlist, so a secret
 // added to server.env later is excluded by default.
-// HZ-598: FARM_CHECK_SLOT_WAIT_MAX_S too, so the farm's slot wait and the
-// server's backstop for it (slotWaitMaxMs) read the one value.
-const CHILD_ENV_ALLOWED = [
-  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'FARM_HOME', 'PLAYWRIGHT_BROWSERS_PATH',
-  'FARM_CHECK_SLOT_WAIT_MAX_S',
-]
+const CHILD_ENV_ALLOWED = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'FARM_HOME', 'PLAYWRIGHT_BROWSERS_PATH']
 
 // HZ-569: the run's tag (farm/run_reaper.py RUN_ENV). Every process the
 // check run starts inherits it, including the ones that leave its process
@@ -131,20 +126,9 @@ function tailLines(text) {
 // match EVENT_PREFIX in farm/premerge.py (stderr_event).
 const EVENT_PREFIX = 'HORIZON_EVENT '
 // HZ-571: 'memory' is the memory gate holding the run before it may start.
-const SLOT_EVENTS = ['queued', 'granted', 'memory']
-
-// HZ-598: farm/check_slots.py DEFAULT_WAIT_CEILING_S.
-const DEFAULT_SLOT_WAIT_MAX_S = 1200
-
-// How long the farm may wait for a slot before it runs without one
-// (FARM_CHECK_SLOT_WAIT_MAX_S, passed to the child by childEnv). The farm
-// reads <= 0 as "wait forever"; the server still bounds a pre-merge's wait,
-// so that, and anything unparseable, is the farm's default here.
-export function slotWaitMaxMs() {
-  const raw = Object.hasOwn(process.env, 'FARM_CHECK_SLOT_WAIT_MAX_S') ? process.env.FARM_CHECK_SLOT_WAIT_MAX_S : ''
-  const s = /^\s*[+-]?\d+\s*$/.test(raw) ? Number.parseInt(raw, 10) : NaN
-  return (s > 0 ? s : DEFAULT_SLOT_WAIT_MAX_S) * 1000
-}
+// HZ-585: 'held' is the slot held and the checks' clock started — sent on
+// every run that gets that far, queued or not.
+const SLOT_EVENTS = ['queued', 'granted', 'memory', 'held']
 
 // { name, event } for a check_slots event line, else null: name is one of
 // SLOT_EVENTS and event the whole parsed object (the memory figure rides on it).
@@ -169,7 +153,8 @@ const KB_PER_GB = 1024 * 1024
 
 // The pre-merge gate's detail for a slot event (HZ-227, HZ-571). The memory
 // figure matches farm/check_slots.py MemReading.describe(): a floored percent,
-// so a run held below 15% never reads "15% free".
+// so a run held below 15% never reads "15% free". HZ-585: a queued event's
+// `ahead` is how many runs started waiting for a slot before this one.
 export function slotDetail(name, event = {}) {
   if (name === 'memory') {
     const pct = event?.available_pct
@@ -179,7 +164,11 @@ export function slotDetail(name, event = {}) {
     }
     return 'Waiting for memory'
   }
-  return name === 'queued' ? 'Waiting for a check slot' : 'Running checks'
+  if (name === 'queued') {
+    const ahead = event?.ahead
+    return Number.isInteger(ahead) && ahead >= 0 ? `queued for a check slot (${ahead} ahead)` : 'queued for a check slot'
+  }
+  return 'Running checks'
 }
 
 // HZ-250: the process group of each running check, by item id, so a
@@ -312,12 +301,8 @@ export const runner = {
 // Fire-and-forget: it is never awaited and anything it throws is ignored.
 //
 // timeoutMs (HZ-598) bounds the checks' run time, not the queue: the cap is
-// armed at launch and re-armed at timeoutMs when 'granted' arrives, so a run
-// that waited for a slot or for memory still gets its whole budget. While it
-// waits, the first 'queued' or 'memory' re-arms the cap at timeoutMs +
-// slotWaitMaxMs() — past the farm's own wait ceiling, so it only fires on a
-// run that hangs in the queue. A run that never waits emits no event and
-// keeps the cap from launch.
+// re-armed at timeoutMs when the slot is held, so a run that waited for a
+// slot or for memory still gets its whole budget.
 //
 // checkCommands (HZ-245) is the repo's Admin-configured
 // {install,test,lint,e2e,screenshots}, or null for none. It goes to the CLI
@@ -329,9 +314,14 @@ export const runner = {
 //
 // testEnvFile (HZ-494) is the host path of the repo's test-login env file, or
 // null. Only the path goes on argv; farm/login_env.py reads the file.
+//
+// HZ-585: two clocks. queueTimeoutMs bounds the run until its 'held' event
+// (the git work and the wait for a check slot, which never fails open);
+// timeoutMs then starts fresh. A run whose 'held' line never arrives keeps
+// the queue cap, and still ends.
 export async function runPreMergeChecks(
   item,
-  { headSha, baseSha, timeoutMs, onSlot, checkCommands = null, checksWaiver = null, testEnvFile = null },
+  { headSha, baseSha, timeoutMs, queueTimeoutMs = timeoutMs, onSlot, checkCommands = null, checksWaiver = null, testEnvFile = null },
 ) {
   const shas = { head_sha: headSha, base_sha: baseSha }
   if (!SHA_RE.test(headSha || '') || !SHA_RE.test(baseSha || '')) {
@@ -341,27 +331,28 @@ export async function runPreMergeChecks(
     '-m', 'farm.premerge', item.repo, item.id, headSha,
     '--base', baseSha,
     '--timeout-s', String(Math.floor(timeoutMs / 1000)),
+    '--queue-timeout-s', String(Math.floor(queueTimeoutMs / 1000)),
     '--json',
   ]
   if (checkCommands) args.push('--check-commands', JSON.stringify(checkCommands))
   if (checksWaiver) args.push('--checks-waiver', checksWaiver)
   if (testEnvFile) args.push('--test-env-file', testEnvFile)
   const runId = newRunId(item.id)
-  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId }
+  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs: queueTimeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId }
   let timer = null
-  let queueSeen = false
+  let held = false
+  let waiting = false
   spawnOpts.onTimer = (handle) => (timer = handle)
   spawnOpts.onStderrLine = (line) => {
     const slot = slotEventOf(line)
     if (!slot) return
-    if (slot.name === 'granted') {
-      queueSeen = true
+    // 'granted' then 'held' arrive together after a queue; only the first
+    // restarts the cap, so the checks get timeoutMs from the slot grant.
+    if ((slot.name === 'held' || slot.name === 'granted') && !held) {
+      held = true
       timer?.restart(timeoutMs)
-    } else if (!queueSeen) {
-      // Only the first: the farm's wait ceiling counts from the start of the
-      // wait, not from each switch between memory and slot.
-      queueSeen = true
-      timer?.restart(timeoutMs + slotWaitMaxMs())
+    } else if (!held) {
+      waiting = true
     }
     if (!onSlot) return
     try {
@@ -375,7 +366,11 @@ export async function runPreMergeChecks(
     return { ok: false, reason: 'interrupted', detail: DEPLOY_INTERRUPTED_DETAIL, ...shas }
   }
   if (out.timedOut) {
-    return { ok: false, reason: 'timed_out', detail: `no result within ${Math.round(timeoutMs / 60000)} min of running checks`, ...shas }
+    const detail =
+      waiting && !held
+        ? `no check slot within ${Math.round(queueTimeoutMs / 60000)} min`
+        : `no result within ${Math.round(timeoutMs / 60000)} min of running checks`
+    return { ok: false, reason: 'timed_out', detail, ...shas }
   }
   if (out.error) {
     return { ok: false, reason: 'crash', detail: `could not start the check run: ${out.error.message}`, ...shas }
@@ -474,6 +469,10 @@ export function describeFailure(result) {
       return `${result.detail || 'no check commands configured'} — nothing proves the merge of ${on} is safe. Set the repo's check commands in Admin, or mark it 'no checks'`
     case 'no_hub':
       return 'the farm has no checkout of this repo to test-merge in — start the farm so the repo hub exists, then click Accept again'
+    case 'slot_wait_expired':
+      return `pre-merge checks did not start on ${on}: no check slot within ${Math.round((result.waited_s || 0) / 60)} min — the farm is busy; click Accept again later`
+    case 'memory_wait_expired':
+      return `pre-merge checks did not start on ${on}: ${result.detail || 'the host stayed short of memory'} — click Accept again once memory recovers`
     case 'busy':
       return 'pre-merge checks are already running for this item'
     case 'interrupted':

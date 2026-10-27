@@ -1721,7 +1721,8 @@ def _check_slot_or_fail(*, log, **kwargs):
     except check_slots.MemoryWaitExpired as exc:
         message = f"checks did not start: {exc}"
         log(f"checks: {message}")
-        raise CheckFailure(message, reason="timed_out", headline=message) from None
+        # `from exc` (HZ-585): pre-merge tells this wait apart by the cause.
+        raise CheckFailure(message, reason="timed_out", headline=message) from exc
 
 
 def run_checks(
@@ -1746,7 +1747,7 @@ def run_checks(
     summary_notes: list | None = None,
     capture_screenshots: bool = False,
     always_rerun: bool = False,
-    deadline_after_slot: bool = False,
+    slot_policy: check_slots.SlotPolicy | None = None,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1771,12 +1772,6 @@ def run_checks(
     command gets whatever is left, and a spent budget is a "timed_out"
     CheckFailure rather than a silent overrun.
 
-    deadline_after_slot (HZ-598) moves that deadline later by the slot's
-    waited_s, so the time spent queueing for a slot (or for memory) does not
-    eat the run's budget. waited_s is 0 on an unthrottled run that never
-    waited, and the real wait — milliseconds when nothing was announced — on
-    a held one. False keeps the deadline as given.
-
     child_env (HZ-183) is laid over the check commands' environment only —
     the pre-merge run uses it to give the PR's suites a throwaway FARM_HOME
     while this process (its slot, its metrics record) stays on the real one.
@@ -1790,6 +1785,13 @@ def run_checks(
 
     cancel (HZ-256) is passed to check_slots.check_slot(): setting it ends a
     slot wait with check_slots.WaitCancelled. None keeps today's behaviour.
+
+    slot_policy (HZ-585) is a check_slots.SlotPolicy, passed to check_slot()
+    for how the wait behaves. Its on_held(hold) is called once the slot is
+    held (any mode), and its budget_s, when set, caps `deadline` at budget_s
+    from that moment, so queueing never eats the run's budget. A policy that
+    does not fail open lets check_slots.SlotWaitExpired out of here. Only the
+    pre-merge run passes one; None keeps today's behaviour.
 
     repo (HZ-249) is the owner/name whose dependency cache the install
     command may restore from and save to (farm/dep_cache.py). None — or
@@ -1889,11 +1891,21 @@ def run_checks(
     with contextlib.ExitStack() as scope:
         hold = scope.enter_context(
             _check_slot_or_fail(
-                log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
+                log=log,
+                run_id=run_id,
+                item_id=item_id,
+                caller=caller,
+                on_event=on_slot_event,
+                cancel=cancel,
+                policy=slot_policy,
             )
         )
-        if deadline_after_slot and deadline is not None:
-            deadline += hold.waited_s
+        if slot_policy is not None:
+            if slot_policy.budget_s is not None:
+                granted_deadline = time.monotonic() + slot_policy.budget_s
+                deadline = granted_deadline if deadline is None else min(deadline, granted_deadline)
+            if slot_policy.on_held is not None:
+                slot_policy.on_held(hold)
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=hold, repo=repo)
         record[SCREENSHOTS_SLOT] = screenshots

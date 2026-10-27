@@ -398,10 +398,10 @@ to a throwaway directory made for that run, never the farm's.
   activity names the failing check and the last 40 lines of its output.
 - `PREMERGE_CHECK_TIMEOUT_MS` (server env, default 20 minutes) bounds the
   run's time after it gets a check slot (HZ-598): time queued for a slot or
-  for memory does not count. A queued run is still bounded: past
-  `FARM_CHECK_SLOT_WAIT_MAX_S` (read from the server env and passed to the
-  run, default 1200 s) it runs without a slot, and the server kills a run
-  still queued at the timeout plus that wait. The server and the farm must
+  for memory does not count. A queued run is still bounded (HZ-585): by
+  `PREMERGE_QUEUE_TIMEOUT_MS` (server env, default 60 minutes, counted from
+  the click). It never runs without a slot: past that wait it ends
+  `slot_wait_expired` with nothing run. The server and the farm must
   share `FARM_HOME` (both default to `~/.horizon-farm` for the `ubuntu` user).
 
 Measure it on an idle host with
