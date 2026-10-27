@@ -248,7 +248,7 @@ export function listRunningAgentSteps() {
 export function activeJobRun(itemId) {
   return (
     db
-      .prepare("SELECT id, item_id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'active' ORDER BY id DESC LIMIT 1")
+      .prepare("SELECT id, item_id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'active' ORDER BY id DESC LIMIT 1")
       .get(itemId, EXECUTE_STEP_INDEX) ?? null
   )
 }
@@ -258,7 +258,7 @@ export function activeJobRun(itemId) {
 export function latestJobRun(itemId) {
   return (
     db
-      .prepare('SELECT id, item_id, step_index, attempt, status FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1')
+      .prepare('SELECT id, item_id, step_index, attempt, status FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL ORDER BY id DESC LIMIT 1')
       .get(itemId, EXECUTE_STEP_INDEX) ?? null
   )
 }
@@ -272,7 +272,7 @@ export function runningJobsIn(repo) {
     .prepare(
       `SELECT r.id, r.item_id, COALESCE(r.agent_started_at, r.started_at) AS started_at
          FROM step_run r JOIN work_item w ON w.id = r.item_id
-        WHERE w.repo = ? AND r.step_index = ? AND r.status = 'active' ORDER BY r.id`,
+        WHERE w.repo = ? AND r.step_index = ? AND r.substep_id IS NULL AND r.status = 'active' ORDER BY r.id`,
     )
     .all(repo, EXECUTE_STEP_INDEX)
     .map((row) => {
@@ -679,7 +679,7 @@ export function setRepoMarks(projectId, repoFullName, marks) {
 export function implementStartedBefore(itemId, iso) {
   if (!iso) return false
   const row = db
-    .prepare('SELECT MIN(started_at) AS first FROM step_run WHERE item_id = ? AND step_index = ?')
+    .prepare('SELECT MIN(started_at) AS first FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL')
     .get(itemId, IMPLEMENT_STEP_INDEX)
   return row?.first != null && row.first < iso
 }
@@ -938,19 +938,19 @@ const selectEvents = db.prepare(
   'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
 )
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
 // show "attempt N of Y" without claiming a version exists that isn't
 // actually reachable via listStepAttempts/the artifact route (HZ-46).
 const selectAttemptCounts = db.prepare(
-  "SELECT step_index, COUNT(*) AS n FROM step_run WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL GROUP BY step_index",
+  "SELECT step_index, COUNT(*) AS n FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL GROUP BY step_index",
 )
 
 const selectJobView = db.prepare(
   `SELECT r.job_view FROM step_run r JOIN work_item w ON w.id = r.item_id
-    WHERE r.item_id = ? AND r.step_index = ? AND w.cursor >= r.step_index ORDER BY r.id DESC LIMIT 1`,
+    WHERE r.item_id = ? AND r.step_index = ? AND r.substep_id IS NULL AND w.cursor >= r.step_index ORDER BY r.id DESC LIMIT 1`,
 )
 
 function stepOutputs(itemId) {
@@ -1032,7 +1032,7 @@ export function linkInputs(itemId) {
 export function latestArtifact(itemId, stepIndex) {
   const row = db
     .prepare(
-      "SELECT output, artifact FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
+      "SELECT output, artifact FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1",
     )
     .get(itemId, stepIndex)
   return row ? (row.artifact || row.output || null) : null
@@ -1120,7 +1120,7 @@ export function approvedPlanCheck(itemId) {
 // guarantee — feedback.target records an agent name, not a step_index, so
 // two steps run by the same agent could in rare cases cross-attribute.
 const selectDoneAttempts = db.prepare(
-  "SELECT attempt, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY attempt ASC",
+  "SELECT attempt, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY attempt ASC",
 )
 const selectDrivingFeedback = db.prepare(
   'SELECT message FROM feedback WHERE item_id = ? AND target = ? AND created_at > ? AND created_at <= ? ORDER BY created_at DESC LIMIT 1',
@@ -1148,9 +1148,9 @@ const selectActiveRun = db.prepare(
 // auto-retry count. HZ-346: nor is a run a rule blocked — the block does not
 // use up an attempt. A pure read: nothing is written.
 const selectLastStepRun = db.prepare(
-  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL ORDER BY id DESC LIMIT 1',
 )
-const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
+const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL')
 
 export function nextStepAttempt(id, stepIndex) {
   const last = selectLastStepRun.get(id, stepIndex)
@@ -1619,7 +1619,7 @@ const selectDurationSamples = db.prepare(
     ...DURATION_STEP_INDEXES.map(
       () =>
         `SELECT * FROM (SELECT CAST(step_index AS TEXT) AS k, ${durationSec('ended_at', 'started_at')} AS sec
-          FROM step_run WHERE step_index = ? AND status = 'done'
+          FROM step_run WHERE step_index = ? AND substep_id IS NULL AND status = 'done'
             AND julianday(ended_at) >= julianday(started_at)
           ORDER BY id DESC LIMIT ${DURATION_SAMPLE_LIMIT})`,
     ),
@@ -1923,7 +1923,7 @@ export function reviewRejected(row) {
 
 const selectForwardedRun = db.prepare('SELECT attempt, artifact, output FROM step_run WHERE id = ? AND item_id = ?')
 const selectNewerReview = db.prepare(
-  "SELECT 1 FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND id > ? LIMIT 1",
+  "SELECT 1 FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND id > ? LIMIT 1",
 )
 
 // HZ-185: the failing review a forward to Accept the code carried, keyed by

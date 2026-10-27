@@ -66,10 +66,10 @@ const selectCandidates = db.prepare(`
        SELECT 1 FROM caretaker_eval c
         WHERE c.item_id = w.id AND c.gate_index = w.cursor
           AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s
-                WHERE s.item_id = w.id AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0))
+                WHERE s.item_id = w.id AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0))
 `)
 const selectSourceRun = db.prepare(
-  "SELECT id, output, artifact, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
+  "SELECT id, output, artifact, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1",
 )
 const insertEval = db.prepare(`
   INSERT OR IGNORE INTO caretaker_eval (item_id, gate_index, arrival_run_id, mode, item_off, decision, rule_id, reason, comment)

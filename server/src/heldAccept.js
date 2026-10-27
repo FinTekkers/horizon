@@ -32,7 +32,7 @@ import { STEPS } from '../../domain/js/lifecycle.js'
 // copy here so neither module imports the other).
 const selectArrival = db.prepare(`
   SELECT COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
-           AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0) AS arrival_run_id
+           AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0) AS arrival_run_id
     FROM work_item w WHERE w.id = ?`)
 const insertHold = db.prepare(
   'INSERT OR IGNORE INTO held_accept (item_id, step_index, arrival_run_id, pr, actor, notes) VALUES (?, ?, ?, ?, ?, ?)',

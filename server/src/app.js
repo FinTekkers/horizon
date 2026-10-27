@@ -819,7 +819,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const { id, stepIndex } = request.params
       const run = db
         .prepare(
-          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
+          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
         )
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
@@ -859,7 +859,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const { id, stepIndex, attempt } = request.params
       const run = db
         .prepare(
-          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
+          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
         )
         .get(id, stepIndex, attempt)
       if (!run) return reply.code(404).send({ error: 'no artifact for that attempt' })
@@ -917,7 +917,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const { id, stepIndex } = request.params
       const run = db
         .prepare(
-          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
+          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
         )
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no output for that step' })
