@@ -237,7 +237,13 @@ test('guardrail: the spawn path is <repoRoot>/infra/host/<script>, run without a
 test('guardrail: runner.spawn runs the resolved script with the tag and the target env', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'horizon-deploy-target-db-scripts-'))
   const out = join(dir, 'out.txt')
-  writeFileSync(join(dir, 'deploy-horizon.sh'), `#!/bin/sh\necho "$1 $HORIZON_SERVICE_NAME $HORIZON_EXTRA_SERVICES" > '${out}'\n`, { mode: 0o755 })
+  // Written aside then renamed, so `out` never exists half-written: the shell
+  // creates a redirect's file before echo fills it.
+  writeFileSync(
+    join(dir, 'deploy-horizon.sh'),
+    `#!/bin/sh\necho "$1 $HORIZON_SERVICE_NAME $HORIZON_EXTRA_SERVICES" > '${out}.tmp' && mv '${out}.tmp' '${out}'\n`,
+    { mode: 0o755 },
+  )
   const target = deploy.resolveTarget('FinTekkers/horizon')
   withScriptsDir(dir, () => deploy.runner.spawn(target, 'v9.9.9'))
   for (let i = 0; i < 100 && !existsSync(out); i++) await new Promise((r) => setTimeout(r, 50))
