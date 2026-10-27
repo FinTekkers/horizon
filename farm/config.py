@@ -146,6 +146,10 @@ RECONCILE_GRACE_S = int(os.environ.get("FARM_RECONCILE_GRACE_S", "90"))
 # HZ-569: how often farmd sweeps capture workers, browsers and e2e servers
 # whose run's owner is gone (farm/run_reaper.py sweep()).
 RUN_SWEEP_INTERVAL_S = float(os.environ.get("FARM_RUN_SWEEP_INTERVAL_S", "5"))
+# HZ-604: how often farmd reaps closed and abandoned items' worktrees and
+# sweeps stale /tmp scratch folders (farmd._cleanup_loop; one tick at boot).
+# 0 is the off switch: no loop starts, not even the boot tick.
+CLEANUP_INTERVAL_S = float(os.environ.get("FARM_CLEANUP_INTERVAL_S", "3600"))
 
 # HZ-537: the knowledge library's cache — extracted PDF text and section
 # indexes, one directory per doc slug. Outside every repo, so no document text

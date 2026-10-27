@@ -173,6 +173,25 @@ def _reap(repo_full: str, hub: Path, ws: Path) -> None:
         _remove_scratch(hub, ws)
 
 
+def reap_if_idle(repo_full: str, item_id: str) -> str:
+    """HZ-604: removes a closed or abandoned item's pre-merge worktree unless
+    a run is using it. Returns "reaped", "absent", "active_run", "item_lock"
+    or "premerge_lock" (a pre-merge run holds _item_lock). The removal goes
+    through _reap(), so assert_scratch_path() still guards it."""
+    ws = premerge_path(repo_full, item_id)
+    if not ws.exists():
+        return "absent"
+    busy = workspaces._item_busy(repo_full, item_id)
+    if busy:
+        return busy
+    hub = workspaces.hub_path(repo_full)
+    with _item_lock(repo_full, item_id) as held:
+        if not held:
+            return "premerge_lock"
+        _reap(repo_full, hub, ws)
+    return "reaped"
+
+
 def stderr_event(event: dict) -> None:
     """Fire-and-forget: one EVENT_PREFIX line on stderr, never raises."""
     try:

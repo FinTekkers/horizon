@@ -168,6 +168,7 @@ export const FARMD_ENV_KEYS = [
   'FARM_HOME',
   'FARM_CLAUDE_BIN',
   'FARM_RECONCILE_INTERVAL_S',
+  'FARM_CLEANUP_INTERVAL_S',
   'FARMD_TEST_TTL_S',
 ]
 
@@ -219,6 +220,8 @@ export function buildFarmdEnv({
     // The boot-time reconcile pass is what these tests want; the background
     // loop firing mid-test is not.
     FARM_RECONCILE_INTERVAL_S: String(reconcileIntervalS),
+    // HZ-604: the clean-up tick sweeps the real /tmp; a test farmd must not.
+    FARM_CLEANUP_INTERVAL_S: '0',
     FARMD_TEST_TTL_S: String(ttlS),
   }
 }
