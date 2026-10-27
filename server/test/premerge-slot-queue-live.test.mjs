@@ -105,19 +105,19 @@ test('the newest queued Accept counts down 2 ahead, 1 ahead, 0 ahead, then Runni
   const mergesBefore = merges
   try {
     const p1 = approve(older1, shimTwo)
-    await showsDetail(older1, 'queued for a check slot (0 ahead)')
+    await showsDetail(older1, 'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead')
     const p2 = approve(older2, shimTwo)
-    await showsDetail(older2, 'queued for a check slot (1 ahead)')
+    await showsDetail(older2, 'waiting for a capacity slot to run pre-merge checks (main + PR), 1 ahead')
     const p3 = approve(newest, shimOne)
-    await showsDetail(newest, 'queued for a check slot (2 ahead)')
+    await showsDetail(newest, 'waiting for a capacity slot to run pre-merge checks (main + PR), 2 ahead')
     assert.equal(merges, mergesBefore)
 
     await slot1.release()
-    await showsDetail(newest, 'queued for a check slot (1 ahead)')
+    await showsDetail(newest, 'waiting for a capacity slot to run pre-merge checks (main + PR), 1 ahead')
     const first = await waitFor(() => [older1, older2].find(ran), { what: 'an older run to get slot 1' })
     const second = first === older1 ? older2 : older1
     rmSync(holdFile(first))
-    await showsDetail(newest, 'queued for a check slot (0 ahead)')
+    await showsDetail(newest, 'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead')
     await waitFor(() => ran(second), { what: 'the other older run to get slot 1' })
     assert.equal(ran(newest), false)
     rmSync(holdFile(second))
@@ -131,11 +131,11 @@ test('the newest queued Accept counts down 2 ahead, 1 ahead, 0 ahead, then Runni
   }
   const details = detailWrites(newest)
     .map((w) => w.detail)
-    .filter((d) => d.startsWith('queued for a check slot') || d === 'Running checks')
+    .filter((d) => d.startsWith('waiting for a capacity slot') || d === 'Running checks')
   assert.deepEqual(details, [
-    'queued for a check slot (2 ahead)',
-    'queued for a check slot (1 ahead)',
-    'queued for a check slot (0 ahead)',
+    'waiting for a capacity slot to run pre-merge checks (main + PR), 2 ahead',
+    'waiting for a capacity slot to run pre-merge checks (main + PR), 1 ahead',
+    'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead',
     'Running checks',
   ])
 })
@@ -148,9 +148,9 @@ test('a run stopped while queued leaves the queue, never runs its checks, and th
   let nextPending
   try {
     const stoppedPending = approve(stopped)
-    await showsDetail(stopped, 'queued for a check slot (0 ahead)')
+    await showsDetail(stopped, 'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead')
     nextPending = approve(next)
-    await showsDetail(next, 'queued for a check slot (1 ahead)')
+    await showsDetail(next, 'waiting for a capacity slot to run pre-merge checks (main + PR), 1 ahead')
 
     assert.equal(await premerge.interruptRun(stopped), true)
     const res = await stoppedPending
@@ -159,7 +159,7 @@ test('a run stopped while queued leaves the queue, never runs its checks, and th
       () => !slotPython(farmHome, 'print(json.dumps([w["item_id"] for w in check_slots.waiting_runs()]))').includes(stopped),
       { what: "the stopped run's marker to leave waiting_runs()" },
     )
-    await showsDetail(next, 'queued for a check slot (0 ahead)')
+    await showsDetail(next, 'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead')
   } finally {
     await holder.release()
   }

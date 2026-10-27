@@ -77,7 +77,7 @@ test('parseSlotEvent accepts only whole, known HORIZON_EVENT lines', () => {
     'HORIZON_EVENT {"other": "queued"}',
     'HORIZON_EVENT null',
     'noise HORIZON_EVENT {"check_slot": "queued"}',
-    'check_slots: all 1 check slots busy — waiting for one',
+    'check_slots: all 1 capacity slots busy — waiting for a capacity slot to run pre-merge checks (main + PR)',
     '',
   ]) {
     assert.equal(premerge.parseSlotEvent(line), null, line)
@@ -142,10 +142,10 @@ test('a memory event reaches onSlot with its figure, and maps to Waiting for mem
   )
   assert.equal(heard[0][1].available_kb, 1468006)
   assert.equal(premerge.slotDetail(...heard[0]), 'Waiting for memory (9% free, 1.4 GB)')
-  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued' }), 'queued for a check slot')
+  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued' }), 'waiting for a capacity slot to run pre-merge checks (main + PR)')
   // HZ-585: with the count of runs that started waiting first.
-  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued', ahead: 2 }), 'queued for a check slot (2 ahead)')
-  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued', ahead: 0 }), 'queued for a check slot (0 ahead)')
+  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued', ahead: 2 }), 'waiting for a capacity slot to run pre-merge checks (main + PR), 2 ahead')
+  assert.equal(premerge.slotDetail('queued', { check_slot: 'queued', ahead: 0 }), 'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead')
   assert.equal(premerge.slotDetail('granted', { check_slot: 'granted', mode: 'held' }), 'Running checks')
   assert.equal(premerge.slotDetail('memory', { check_slot: 'memory' }), 'Waiting for memory')
   assert.equal(premerge.parseSlotEvent('HORIZON_EVENT {"check_slot": "memory"}'), 'memory')

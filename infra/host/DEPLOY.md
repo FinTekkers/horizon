@@ -274,7 +274,7 @@ unset on this host, so the code default of 4 is in force.
 | `/etc/horizon/farm.env` | `FARM_MAX_EPHEMERAL` | `6` | how many agent steps run at once. The code default in `farm/farmd.py` stays **4** on purpose: raising the default would silently re-raise the cap on every other host |
 | `/etc/horizon/farm.env` | `FARM_EXPRESS_SLOTS` | (unset ⇒ 1) | HZ-477: extra agent slots that only short steps (planning and reviews, `"short": true` in `domain/steps.json`) may use, next to the `FARM_MAX_EPHEMERAL` general ones. `0` turns the express slot off; the queue still starts the furthest-along step first |
 | `/etc/horizon/farm.env` | `FARM_MAX_CONCURRENT_CHECKS` | `2` | how many check suites run at once. **Set this before raising the line above** |
-| `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 1200) | how long a run waits for a check slot before proceeding **without** one. Sized above the worst legitimate queue (2 waves × the measured p95 suite) and below the step watchdog — do not lower it to "fail faster", that disables the cap under load |
+| `/etc/horizon/farm.env` | `FARM_CHECK_SLOT_WAIT_MAX_S` | (unset ⇒ 1200) | how long a run waits for a capacity slot before proceeding **without** one. Sized above the worst legitimate queue (2 waves × the measured p95 suite) and below the step watchdog — do not lower it to "fail faster", that disables the cap under load |
 | `/etc/horizon/farm.env` | `FARM_CHECK_METRICS_PHASE` | measurement only | tags records during a measurement window; remove it afterwards |
 | `/etc/horizon/farm.env` | `FARM_MIN_MEM_AVAILABLE_PCT` | (unset ⇒ 15) | HZ-571: a check, pre-merge or capture run does not **start** while `MemAvailable` is below this percentage of `MemTotal`; it waits and starts once memory recovers. Running work is never touched. `0` turns the gate off (the rollback switch). See the note below |
 
@@ -305,13 +305,14 @@ gets an allowlisted environment without `farm.env`, so they use the default
 it on the host.
 
 **Pre-merge runs queue for a slot (HZ-585).** Accept's pre-merge run takes a
-check slot like every other check run, and its 20-minute
+capacity slot like every other check run, and its 20-minute
 `PREMERGE_CHECK_TIMEOUT_MS` (in `server.env`) now counts from when it holds
 the slot, not from the click. The wait before that is bounded by
 `PREMERGE_QUEUE_TIMEOUT_MS` (`server.env`, unset ⇒ 3600000 = 60 min). While
-it waits the item reads "queued for a check slot (n ahead)" and Farm health
+it waits the item reads "waiting for a capacity slot to run pre-merge checks
+(main + PR), n ahead" and Farm health
 lists it as waiting. Unlike other runs it never proceeds without a slot: past
-the queue cap it ends `timed_out` ("no check slot within 60 min") and nothing
+the queue cap it ends `timed_out` ("no capacity slot within 60 min") and nothing
 merges. **Keep `PREMERGE_QUEUE_TIMEOUT_MS` at or under 60 min**: a waiting
 marker older than `MARKER_MAX_AGE_S` (60 min, `farm/check_slots.py`) is
 pruned, and the run drops out of Farm health and of other runs' "n ahead". A

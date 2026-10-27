@@ -213,7 +213,7 @@ def render(report: dict[str, dict], skipped: int, source: Path, markdown: bool) 
             )
         if s["unthrottled_runs"]:
             lines.append(
-                f"  ⚠ {phase}: {s['unthrottled_runs']} run(s) gave up waiting and ran with NO check slot "
+                f"  ⚠ {phase}: {s['unthrottled_runs']} run(s) gave up waiting and ran with NO capacity slot "
                 f"(FARM_CHECK_SLOT_WAIT_MAX_S). The cap was exceeded in practice — report this as over-capacity; "
                 "raising the ceiling would only hide it"
             )

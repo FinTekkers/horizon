@@ -40,7 +40,7 @@ reaped when it ends — and, when the server's cap SIGKILLs it first, by the
 server's `python -m farm.run_reaper --run <id>` or farmd's sweep.
 
 HZ-585: two clocks. --queue-timeout-s bounds the git work and the wait for a
-check slot (and the memory gate in front of it); --timeout-s is the checks'
+capacity slot (and the memory gate in front of it); --timeout-s is the checks'
 own budget, and starts only once the slot is held. The wait never fails
 open: past its ceiling the run ends "slot_wait_expired" and nothing ran. The
 server re-arms its own kill timer on the "held" event this run sends.
@@ -215,7 +215,7 @@ def stderr_event(event: dict) -> None:
 
 
 def slot_policy(timeout_s: float, wait_ceiling_s: float, on_slot_event=None) -> check_slots.SlotPolicy:
-    """HZ-585: how a pre-merge run waits for its check slot. It never fails
+    """HZ-585: how a pre-merge run waits for its capacity slot. It never fails
     open, its queued events carry `ahead`, its checks get timeout_s less
     RESERVE_S from the moment the slot is held, and that moment is sent to
     the server as {"check_slot": "held"}."""
@@ -365,7 +365,7 @@ def main(argv=None) -> int:
         "--queue-timeout-s",
         type=float,
         default=DEFAULT_QUEUE_TIMEOUT_S,
-        help="HZ-585: bounds the git work and the wait for a check slot",
+        help="HZ-585: bounds the git work and the wait for a capacity slot",
     )
     parser.add_argument("--json", action="store_true", help="accepted for clarity; output is always JSON")
     parser.add_argument(

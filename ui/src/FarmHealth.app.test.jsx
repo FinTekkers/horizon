@@ -136,9 +136,10 @@ test('the deep link /farm-health opens the page, and its item rows link to the i
   await waitFor(() => expect(api.getFarmHealth.mock.calls.length).toBeGreaterThanOrEqual(2))
 })
 
-// ---- HZ-574: the Check slots card, from the mock API's reading ----
+// ---- HZ-574: the Capacity slots card, from the mock API's reading ----
 
-const HOLDING = 'holding an agent slot · waiting for a check slot'
+// HZ-592: the wait names its purpose, from the row's `reason`.
+const HOLDING = 'holding an agent slot · waiting for a capacity slot to run checks'
 
 async function openWithMockReading() {
   // Only Date is faked: elapsed times read exactly, and polling stays real.
@@ -148,12 +149,12 @@ async function openWithMockReading() {
   reading = await mockFarmHealth()
   window.history.pushState({}, '', '/farm-health')
   render(<App />)
-  return screen.findByRole('region', { name: 'Check slots' })
+  return screen.findByRole('region', { name: 'Capacity slots' })
 }
 
 const cellsOf = (row) => within(row).getAllByRole('cell').map((c) => c.textContent)
 
-test('the Check slots card lists each holder by slot, item, check and time held, then the waiter', async () => {
+test('the Capacity slots card lists each holder by slot, item, check and time held, then the waiter', async () => {
   const card = await openWithMockReading()
   const [holderTable, waiterTable] = within(card).getAllByRole('table')
   const holderRows = within(holderTable).getAllByRole('row').slice(1)
@@ -163,7 +164,7 @@ test('the Check slots card lists each holder by slot, item, check and time held,
   ])
   expect(within(holderRows[0]).getByRole('link', { name: 'HZ-101' }).getAttribute('href')).toMatch(/\/hz-101$/)
 
-  const heading = within(card).getByRole('heading', { level: 3, name: 'Waiting for a check slot' })
+  const heading = within(card).getByRole('heading', { level: 3, name: 'Waiting for a capacity slot' })
   expect(holderTable.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(heading.compareDocumentPosition(waiterTable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   expect(within(waiterTable).getAllByRole('row').map(cellsOf)).toEqual([
@@ -171,7 +172,7 @@ test('the Check slots card lists each holder by slot, item, check and time held,
   ])
 })
 
-test('a run waiting for a check slot reads as holding an agent slot, and the agent counts agree', async () => {
+test('a run waiting for a capacity slot reads as holding an agent slot, and the agent counts agree', async () => {
   await openWithMockReading()
   const running = screen.getByRole('region', { name: 'Running now' })
   const [runningTable, waitingTable] = within(running).getAllByRole('table')
@@ -187,18 +188,38 @@ test('a run waiting for a check slot reads as holding an agent slot, and the age
   expect(runningNow + holding).toBe(busy)
 })
 
-test('the Check slots card says when no slot is in use, and when the farm cannot be reached', async () => {
+test('the Capacity slots card says when no slot is in use, and when the farm cannot be reached', async () => {
   user = ADMIN
   reading = snapshot('green', 'All services up, slots free and box figures normal')
   window.history.pushState({}, '', '/farm-health')
   render(<App />)
-  const card = await screen.findByRole('region', { name: 'Check slots' })
-  expect(within(card).getByText('No check slot in use')).toBeTruthy()
+  const card = await screen.findByRole('region', { name: 'Capacity slots' })
+  expect(within(card).getByText('No capacity slot in use')).toBeTruthy()
   expect(within(card).getByText('Nothing waiting')).toBeTruthy()
   cleanup()
 
   reading = snapshot('red', 'Farm is not running')
   render(<App />)
-  const red = await screen.findByRole('region', { name: 'Check slots' })
-  expect(within(red).getByText('Farm not reachable — no check slot readings')).toBeTruthy()
+  const red = await screen.findByRole('region', { name: 'Capacity slots' })
+  expect(within(red).getByText('Farm not reachable — no capacity slot readings')).toBeTruthy()
+})
+
+// HZ-592: a waiter from farm code that sends no `reason` still names the slot
+// it needs, never a bare "waiting for a slot".
+test('a capacity-slot waiter with no reason reads as needing a capacity slot', async () => {
+  user = ADMIN
+  reading = snapshot('amber', '1 step is waiting for a slot')
+  const now = new Date().toISOString()
+  reading.waiting = [
+    { itemId: 'HZ-7', step: 'Pre-merge checks', slot: 'check', startedAt: now, holdsAgentSlot: false, reason: null },
+    { itemId: 'HZ-8', step: 'Specialist agent implements', slot: 'check', startedAt: now, holdsAgentSlot: true, reason: null },
+  ]
+  window.history.pushState({}, '', '/farm-health')
+  render(<App />)
+  const card = await screen.findByRole('region', { name: 'Capacity slots' })
+  const waiterTable = within(card).getAllByRole('table').at(-1)
+  expect(within(waiterTable).getAllByRole('row').map((row) => within(row).getAllByRole('cell')[2].textContent)).toEqual([
+    'needs a capacity slot',
+    'holding an agent slot · needs a capacity slot',
+  ])
 })

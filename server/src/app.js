@@ -1415,7 +1415,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
         headSha: head.sha,
         baseSha,
         timeoutMs: PREMERGE_CHECK_TIMEOUT_MS,
-        // HZ-585: the wait for a check slot has its own cap; the checks'
+        // HZ-585: the wait for a capacity slot has its own cap; the checks'
         // PREMERGE_CHECK_TIMEOUT_MS starts once the slot is held.
         queueTimeoutMs: PREMERGE_QUEUE_TIMEOUT_MS,
         // HZ-245: the repo's Admin-configured check commands, read now and
@@ -1569,7 +1569,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       // the block lifts. Its release calls back in here, so this check is
       // also the backstop that nothing merges while blocked.
       if (deployDrain.isDeployBlocked()) return heldAccept.hold(item, stepIndex, notes, actor)
-      // HZ-585: the lease first covers the wait for a check slot; the run's
+      // HZ-585: the lease first covers the wait for a capacity slot; the run's
       // 'held' event restarts it at PREMERGE_CHECK_TIMEOUT_MS (onSlot above).
       const claim = store.claimGateAction(id, 'premerge', {
         detail: `reading PR #${item.pr}`,

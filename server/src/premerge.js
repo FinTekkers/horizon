@@ -155,6 +155,10 @@ const KB_PER_GB = 1024 * 1024
 // figure matches farm/check_slots.py MemReading.describe(): a floored percent,
 // so a run held below 15% never reads "15% free". HZ-585: a queued event's
 // `ahead` is how many runs started waiting for a slot before this one.
+// HZ-592: the wait names its purpose, as farm/check_slots.py WAIT_PURPOSES
+// does for caller "premerge".
+export const PREMERGE_SLOT_WAIT = 'waiting for a capacity slot to run pre-merge checks (main + PR)'
+
 export function slotDetail(name, event = {}) {
   if (name === 'memory') {
     const pct = event?.available_pct
@@ -166,7 +170,7 @@ export function slotDetail(name, event = {}) {
   }
   if (name === 'queued') {
     const ahead = event?.ahead
-    return Number.isInteger(ahead) && ahead >= 0 ? `queued for a check slot (${ahead} ahead)` : 'queued for a check slot'
+    return Number.isInteger(ahead) && ahead >= 0 ? `${PREMERGE_SLOT_WAIT}, ${ahead} ahead` : PREMERGE_SLOT_WAIT
   }
   return 'Running checks'
 }
@@ -294,7 +298,7 @@ export const runner = {
 // Returns the CLI's parsed result with a guaranteed boolean `ok`, plus
 // `reason` on every ok:false. Never throws.
 //
-// onSlot (HZ-227) hears 'queued' when the run waits for a check slot and
+// onSlot (HZ-227) hears 'queued' when the run waits for a capacity slot and
 // 'granted' when it gets one; a run that never waits calls it not at all.
 // HZ-571: it also hears 'memory' while the memory gate holds the run, and its
 // second argument is the whole event (slotDetail turns it into text).
@@ -316,7 +320,7 @@ export const runner = {
 // null. Only the path goes on argv; farm/login_env.py reads the file.
 //
 // HZ-585: two clocks. queueTimeoutMs bounds the run until its 'held' event
-// (the git work and the wait for a check slot, which never fails open);
+// (the git work and the wait for a capacity slot, which never fails open);
 // timeoutMs then starts fresh. A run whose 'held' line never arrives keeps
 // the queue cap, and still ends.
 export async function runPreMergeChecks(
@@ -368,7 +372,7 @@ export async function runPreMergeChecks(
   if (out.timedOut) {
     const detail =
       waiting && !held
-        ? `no check slot within ${Math.round(queueTimeoutMs / 60000)} min`
+        ? `no capacity slot within ${Math.round(queueTimeoutMs / 60000)} min`
         : `no result within ${Math.round(timeoutMs / 60000)} min of running checks`
     return { ok: false, reason: 'timed_out', detail, ...shas }
   }
@@ -470,7 +474,7 @@ export function describeFailure(result) {
     case 'no_hub':
       return 'the farm has no checkout of this repo to test-merge in — start the farm so the repo hub exists, then click Accept again'
     case 'slot_wait_expired':
-      return `pre-merge checks did not start on ${on}: no check slot within ${Math.round((result.waited_s || 0) / 60)} min — the farm is busy; click Accept again later`
+      return `pre-merge checks did not start on ${on}: no capacity slot within ${Math.round((result.waited_s || 0) / 60)} min — the farm is busy; click Accept again later`
     case 'memory_wait_expired':
       return `pre-merge checks did not start on ${on}: ${result.detail || 'the host stayed short of memory'} — click Accept again once memory recovers`
     case 'busy':

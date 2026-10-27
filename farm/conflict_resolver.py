@@ -356,7 +356,7 @@ def _resolve(repo_full, item_id, branch, base_branch, log, configured, checks_wa
     diffstat = git(ws, "diff", "--stat", f"{pre_merge_sha}..HEAD", check=False).stdout.strip()
 
     try:
-        # HZ-144: post-merge checks take a check slot like any other, and are
+        # HZ-144: post-merge checks take a capacity slot like any other, and are
         # labelled `conflict_resolver` so the measurement can separate them
         # from agent runs. Deliberately NOT exempt: this runs the same repo
         # suite on the same 2 vCPUs as an agent's checks, so exempting it

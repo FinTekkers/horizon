@@ -553,7 +553,7 @@ export async function getFarmHealth() {
     reason: '1 step is waiting for a slot',
     collectedAt: ago(0),
     farm: { status: 'running', since: ago(3600) },
-    // HZ-574: HZ-103 waits for a check slot while holding its agent slot, so
+    // HZ-574: HZ-103 waits for a capacity slot while holding its agent slot, so
     // Running now (2) plus that waiter (1) is the 3 agents busy.
     capacity: { agents: slot(3, 4, 0), express: slot(0, 1), pm: slot(0, 1), checks: slot(2, 2, 1) },
     waitingCount: 1,
@@ -562,7 +562,14 @@ export async function getFarmHealth() {
       { itemId: 'HZ-102', step: 'QA reviews the test plan', slot: 'agent', startedAt: ago(329), holdsAgentSlot: false },
     ],
     waiting: [
-      { itemId: 'HZ-103', step: 'Specialist agent implements', slot: 'check', startedAt: ago(130), holdsAgentSlot: true },
+      {
+        itemId: 'HZ-103',
+        step: 'Specialist agent implements',
+        slot: 'check',
+        startedAt: ago(130),
+        holdsAgentSlot: true,
+        reason: 'waiting for a capacity slot to run checks',
+      },
     ],
     checkHolders: [
       { slot: 0, itemId: 'HZ-101', runId: '901', caller: 'implement', label: 'test slot, line 2', startedAt: ago(250) },

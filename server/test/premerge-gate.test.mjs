@@ -396,7 +396,7 @@ test('HZ-216: a check run that times out finishes the row as timed_out with its 
 // HZ-585 guardrail 1: a run that never got a slot, or never had the memory to
 // start, gave no answer — it times out and nothing merges.
 for (const [reason, detail] of [
-  ['slot_wait_expired', 'no check slot after 3540s (limit 2)'],
+  ['slot_wait_expired', 'no capacity slot after 3540s (limit 2)'],
   ['memory_wait_expired', 'checks did not start: waited 3540s for memory (9% free, 1.4 GB, needs 15%)'],
 ]) {
   test(`HZ-585: ${reason} ends the row timed_out, says the checks did not start, and merges nothing`, async () => {

@@ -248,11 +248,11 @@ export async function collectOnce(deps = defaultDeps) {
   }
 
   // Running and waiting rows: Horizon's active runs with the farm's cached
-  // queued/running state, plus runs farmd lists as waiting for a check slot.
+  // queued/running state, plus runs farmd lists as waiting for a capacity slot.
   const checkWaiters = Array.isArray(checksRaw.waiting) ? checksRaw.waiting : []
   const checkWaitByRun = new Map()
   for (const w of checkWaiters) {
-    if (w && w.run_id != null) checkWaitByRun.set(String(w.run_id), { waited: finite(w.waited_s), caller: w.caller })
+    if (w && w.run_id != null) checkWaitByRun.set(String(w.run_id), { waited: finite(w.waited_s), caller: w.caller, reason: w.reason })
   }
   const running = []
   const waiting = []
@@ -266,9 +266,9 @@ export async function collectOnce(deps = defaultDeps) {
     }
     const runId = String(run.id)
     if (checkWaitByRun.has(runId)) {
-      const { waited, caller } = checkWaitByRun.get(runId)
+      const { waited, caller, reason } = checkWaitByRun.get(runId)
       // HZ-574: an agent step's own checks run inside its agent session, so
-      // while it waits for a check slot it still holds its agent slot. A
+      // while it waits for a capacity slot it still holds its agent slot. A
       // pre-merge or conflict-resolver check runs elsewhere and holds none.
       const holdsAgentSlot = row.slot === 'agent' && (caller == null || caller === 'step_agent')
       waiting.push({
@@ -276,6 +276,8 @@ export async function collectOnce(deps = defaultDeps) {
         slot: 'check',
         lane: row.slot,
         holdsAgentSlot,
+        // HZ-592: what the wait is for, from farmd's WAIT_PURPOSES.
+        reason,
         startedAt: waited != null ? new Date(now - waited * 1000).toISOString() : row.startedAt,
       })
     } else if (run.state === 'queued') {
@@ -297,6 +299,7 @@ export async function collectOnce(deps = defaultDeps) {
       slot: 'check',
       lane: null,
       holdsAgentSlot: false,
+      reason: w.reason,
       startedAt: waited != null ? new Date(now - waited * 1000).toISOString() : null,
     })
   }
@@ -354,6 +357,7 @@ const pubRow = (r) => ({
   slot: str(r?.slot, 20),
   startedAt: str(r?.startedAt, 40),
   holdsAgentSlot: r?.holdsAgentSlot === true,
+  reason: str(r?.reason),
 })
 const pubHolder = (h) => ({
   slot: Number.isInteger(h?.slot) ? h.slot : null,
