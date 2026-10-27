@@ -163,6 +163,10 @@ test('the background reconcile loop is pushed out past the life of any test', ()
   assert.equal(envUnderTest().FARM_RECONCILE_INTERVAL_S, '3600')
 })
 
+test('the clean-up loop is off, so a test farmd never sweeps the real /tmp', () => {
+  assert.equal(envUnderTest().FARM_CLEANUP_INTERVAL_S, '0')
+})
+
 test('the decoy marker can never reach a real daemon', () => {
   // check-no-leaked-farmd.mjs ignores any process carrying this, so a daemon
   // able to inherit it could hide a genuine leak from the gate.

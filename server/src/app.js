@@ -3618,6 +3618,33 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // HZ-604: farmd's hourly clean-up names the item ids it holds worktrees
+  // for and reaps only those listed back here as closed or abandoned. The id
+  // shape is farm/premerge.py's _ITEM_RE.
+  fastify.post(
+    '/api/farm/items/finished',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['ids'],
+          properties: {
+            ids: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 1000,
+              items: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9-]*$', maxLength: 64 },
+            },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      return { items: store.finishedItems(request.body.ids) }
+    },
+  )
+
   // HZ-537: farmd's knowledge job (farm/knowledge.py) lists the sources to
   // extract — only projects whose definitions switch is on have any — and
   // reports one knowledge_doc row per doc back.

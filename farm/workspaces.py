@@ -232,6 +232,20 @@ def _active_item_ids() -> set[str]:
     return ids
 
 
+def _item_busy(repo_full: str, item_id: str, active: set[str] | None = None) -> str | None:
+    """Why the item's worktrees must not be reaped now, or None when idle:
+    "active_run" while a claimed task file names it, "item_lock" while some
+    run holds its item_lock(). HZ-188: the conflict resolver runs with no task
+    file, so the active-run set can't see it — its item_lock is what keeps its
+    worktree from being reaped out from under it. `active` lets a caller
+    checking many ids read the task files once."""
+    if item_id.lower() in (_active_item_ids() if active is None else active):
+        return "active_run"
+    if item_lock_held(repo_full, item_id):
+        return "item_lock"
+    return None
+
+
 def existing_item_ids(repo_full: str) -> list[str]:
     root = _items_root(repo_full)
     if not root.exists():
@@ -249,11 +263,8 @@ def _evict_lru_if_over_pool(repo_full: str, keep_item_id: str) -> None:
     ids = existing_item_ids(repo_full)
     if len(ids) < WORKSPACE_ITEM_POOL_SIZE:
         return
-    protected = _active_item_ids() | {keep_item_id.lower()}
-    # HZ-188: the conflict resolver runs with no task file, so the active-run
-    # set can't see it — its item_lock is what keeps its worktree from being
-    # reaped out from under it.
-    candidates = [root / i for i in ids if i not in protected and not item_lock_held(repo_full, i)]
+    active = _active_item_ids()
+    candidates = [root / i for i in ids if i != keep_item_id.lower() and not _item_busy(repo_full, i, active)]
     if not candidates:
         return
     oldest = min(candidates, key=lambda p: p.stat().st_mtime)
@@ -324,6 +335,53 @@ def reap_item_worktree(repo_full: str, item_id: str) -> None:
         if item_path.exists():
             shutil.rmtree(item_path, ignore_errors=True)
         _git(hub, "worktree", "prune")
+
+
+def reap_finished_item(repo_full: str, item_id: str) -> str:
+    """HZ-604: removes a closed or abandoned item's worktree unless a run is
+    using it. Returns "reaped", "absent", "active_run" or "item_lock".
+
+    item_lock(wait_s=0) is held across the removal, so a run that starts
+    between the busy check and the delete either finds the lock taken here
+    and waits, or holds it already and this returns "item_lock"."""
+    if not workspace_path(repo_full, item_id).exists():
+        return "absent"
+    busy = _item_busy(repo_full, item_id)
+    if busy:
+        return busy
+    try:
+        with item_lock(repo_full, item_id, wait_s=0):
+            # Re-read under the lock: a dispatch may have claimed it meanwhile.
+            if item_id.lower() in _active_item_ids():
+                return "active_run"
+            reap_item_worktree(repo_full, item_id)
+    except ItemBusy:
+        return "item_lock"
+    return "reaped"
+
+
+def repos_with_worktrees() -> dict[str, set[str]]:
+    """HZ-604: every repo with a hub clone, mapped to the item ids that have
+    a worktree under its <hub>__items/ or <hub>__premerge/. The repo list comes
+    from the hub dirs themselves and each root is matched by its exact
+    `<hub>__items` / `<hub>__premerge` name, so `acme/my` never claims
+    `acme__my_repo__items`. Dot-entries (lock files) are not item ids."""
+    found: dict[str, set[str]] = {}
+    if not WORKSPACES_DIR.is_dir():
+        return found
+    for hub in sorted(WORKSPACES_DIR.iterdir()):
+        owner, sep, repo = hub.name.partition("__")
+        # GitHub owners can't contain "_", so the first "__" splits owner/repo.
+        if not sep or hub.name.startswith(".") or not (hub / ".git").exists():
+            continue
+        ids: set[str] = set()
+        for suffix in ("__items", "__premerge"):
+            root = WORKSPACES_DIR / f"{hub.name}{suffix}"
+            if root.is_dir():
+                ids.update(p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+        if ids:
+            found[f"{owner}/{repo}"] = ids
+    return found
 
 
 def prune_worktrees(repo_full: str) -> None:

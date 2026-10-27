@@ -341,6 +341,27 @@ All three levers are config; no code revert is needed.
 Stale slot files under `$FARM_HOME/locks/checks/` need no cleanup — `flock`
 state is held by the kernel, not by the files' contents.
 
+### Disk clean-up (HZ-604)
+
+farmd runs one clean-up tick at boot and then every
+`FARM_CLEANUP_INTERVAL_S` (default `3600`). Each tick:
+
+- asks the server (`POST /api/farm/items/finished`) which items it holds
+  worktrees for are closed or abandoned, and removes their
+  `<repo>__items/<item>` and `<repo>__premerge/<item>`. A worktree in a live
+  run, or whose item or pre-merge lock is held, is skipped until a later
+  tick. If the server can't be asked, nothing is reaped. Each outcome is
+  logged as `farmd: reap <repo> <item> <item|premerge> <outcome> (<state>)`;
+- removes this user's `/tmp/horizon-*` and `/tmp/tmp.*` folders older than
+  two hours (never a symlink). `python -m farm.tmp_sweep` runs it once by
+  hand and prints what it removed and kept.
+
+Off switch: `FARM_CLEANUP_INTERVAL_S=0`, restart farmd — no loop starts, not
+even the boot tick. The older hourly stopgap that swept only
+`/tmp/horizon-*` is the `# horizon-tmp-sweep` line in the `ubuntu` user's
+crontab, not in git; it is safe to leave or remove (`crontab -e`), since
+both sweeps are idempotent.
+
 ## 2f. PM steps run per task (HZ-212)
 
 There is no long-lived `farm-pm-<project>` session any more. farmd launches
