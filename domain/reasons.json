@@ -12,6 +12,7 @@
     { "id": "job_container_unavailable", "retryable": false },
     { "id": "sdk_message_too_large", "retryable": true },
     { "id": "invalid_plan_draft", "retryable": false },
-    { "id": "usage_limited", "retryable": true }
+    { "id": "usage_limited", "retryable": true },
+    { "id": "fails_on_main", "retryable": false }
   ]
 }

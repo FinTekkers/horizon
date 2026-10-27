@@ -86,7 +86,14 @@ class CheckFailure(RuntimeError):
     detected). step_agent checkpoints it into the WIP commit body (HZ-184).
 
     `headline` (HZ-366) is the redacted one-line failure_headline() that
-    starts the message — empty when none could be parsed."""
+    starts the message — empty when none could be parsed.
+
+    HZ-590, for farm/base_check.py, which re-runs the failing tests on the
+    default branch: `failed_tests` is the failing command's raw JUnit rows
+    with status "fail" (suite, file, classname, test), from its rerun when
+    one ran; `argv` is that command as run, unredacted and in-process only —
+    never part of the message, digest or result; `slot` is its Admin slot
+    (None for FARM_CHECK_CMD). Empty for every other failure."""
 
     def __init__(
         self,
@@ -97,6 +104,9 @@ class CheckFailure(RuntimeError):
         tail: str = "",
         reason: str = "failed",
         headline: str = "",
+        failed_tests: list[dict] = (),
+        argv: list[str] | None = None,
+        slot: str | None = None,
     ):
         super().__init__(message)
         self.digest = digest
@@ -104,6 +114,9 @@ class CheckFailure(RuntimeError):
         self.command = command
         self.tail = tail
         self.reason = reason
+        self.failed_tests = list(failed_tests)
+        self.argv = list(argv) if argv is not None else None
+        self.slot = slot
 
 
 def output_tail(text: str) -> str:
@@ -842,6 +855,9 @@ def parse_junit(path: Path, ws: Path) -> list[dict]:
                         "suite": suite[:TEST_NAME_MAX_CHARS] if suite else None,
                         "file": case_file[:TEST_NAME_MAX_CHARS] if case_file else None,
                         "test": (child.get("name") or "(unnamed test)")[:TEST_NAME_MAX_CHARS],
+                        # HZ-590: pytest's default xunit2 report has no file,
+                        # only the dotted classname. Stripped like failure_kind.
+                        "classname": child.get("classname") or None,
                         "status": _case_status(child),
                         "duration_ms": _duration_ms(child.get("time")),
                         # HZ-589: for _rerun_verdict() only. _test_rows()
@@ -949,6 +965,10 @@ def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], lo
         shutil.rmtree(report_dir, ignore_errors=True)
 
 
+# parse_junit() keys that are farm-side evidence only, never stored.
+_UNSTORED_KEYS = ("failure_kind", "classname")
+
+
 def _test_rows(junit: list[dict], shown: str, returncode: int, duration_s: float, attempt: int) -> list[dict]:
     """The rows one attempt stores: its JUnit rows, or one row for the
     command itself when it wrote none. A signal-killed command with no report
@@ -956,7 +976,7 @@ def _test_rows(junit: list[dict], shown: str, returncode: int, duration_s: float
     command = shown[:FLAKE_COMMAND_MAX_CHARS]
     if junit:
         return [
-            {**{k: v for k, v in row.items() if k != "failure_kind"}, "command": command, "attempt": attempt}
+            {**{k: v for k, v in row.items() if k not in _UNSTORED_KEYS}, "command": command, "attempt": attempt}
             for row in junit
         ]
     if returncode < 0:
@@ -1648,6 +1668,7 @@ def run_checks(
     test_env_file: str | None = None,
     summary_notes: list | None = None,
     capture_screenshots: bool = False,
+    always_rerun: bool = False,
     deadline_after_slot: bool = False,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
@@ -1748,6 +1769,10 @@ def run_checks(
 
     HZ-507: when any shot is not ok, its summary line is instead one line per
     such shot (screenshots_failure_lines); the counts stay in the runner log.
+
+    always_rerun=True (HZ-590: farm/base_check.py's run on the default
+    branch) reruns a failed command even when HZ-589 would skip it: a test
+    that fails there must fail twice before an item pauses on it.
     """
     screenshots, screenshots_note, screenshots_cfg = _screenshots_preflight(ws, log)
     _set_screenshots_notes(summary_notes, [screenshots_note])
@@ -1914,12 +1939,14 @@ def run_checks(
                     # then name what failed. Else the first run's do.
                     rerun_rows = None
                     rerun_now = _should_rerun(proc.returncode, index, install_at, deadline)
-                    if rerun_now:
+                    if rerun_now and not always_rerun:
                         # HZ-589: an all-assertion failure would repeat.
                         rerun_now, why = _rerun_verdict(junit, label[0] if label else _command_label(safe_shown))
                         log(why)
                         if not rerun_now:
                             record["commands"][-1]["rerun"] = {"skipped": "failed on assertions"}
+                    # HZ-590: the raw rows of the attempt whose result stands.
+                    final_junit = junit
                     if rerun_now:
                         # HZ-327: straight away, same command (narrowed where
                         # the runner allows), same workspace, same tree —
@@ -1954,6 +1981,7 @@ def run_checks(
                             check_run["commands"].append(_command_entry(safe_shown, 2, rerun.returncode))
                             rerun_rows = _test_rows(rerun_junit, safe_shown, rerun.returncode, rerun_duration, attempt=2)
                             keep_rows(rerun_rows)
+                            final_junit = rerun_junit
                             rerun_output = ((rerun.stdout or "") + "\n" + (rerun.stderr or "")).strip()
                             if rerun.returncode == 0:
                                 record["flake"] = True
@@ -1997,6 +2025,9 @@ def run_checks(
                         command=shown,
                         tail=output_tail(redacted),
                         headline=headline,
+                        failed_tests=[row for row in final_junit if row.get("status") == "fail"],
+                        argv=cmd,
+                        slot=label[0] if label else None,
                     )
                 ran += 1
             if capture_screenshots and screenshots_cfg is not None:

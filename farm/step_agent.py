@@ -53,6 +53,7 @@ from .agent_runner import (
     usage_meter,
 )
 from . import (
+    base_check,
     check_record,
     handoff,
     login_env,
@@ -65,7 +66,7 @@ from . import (
     screenshots_config,
     task_job,
 )
-from .checks import CheckFailure, redact, run_checks, scrub, secret_values
+from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
 from .handoff import HandoffContext, HandoffGuard
 from .persona_tools import apply as apply_persona_tools
@@ -2786,6 +2787,28 @@ def _fail_on_checks(ws, item, branch, conflicted, exc: CheckFailure, *, checkpoi
     )
 
 
+class FailsOnMain(CheckFailure):
+    """HZ-590: the failing tests fail on the default branch too, so the item
+    did not cause them. No fix turn runs, and main() reports
+    reasons.REASON["FAILS_ON_MAIN"], which the server pauses on."""
+
+
+def _fails_on_main(failure: CheckFailure, verdict: base_check.BaseVerdict) -> FailsOnMain:
+    """The failure, headlined with the tests that fail on main as well. Its
+    own message and digest follow, for "Show details". `argv` stays behind."""
+    headline = base_check.fails_on_main_headline(verdict.tests)
+    return FailsOnMain(
+        f"{HEADLINE_PREFIX}{headline}\n{failure}",
+        failure.digest,
+        command=failure.command,
+        tail=failure.tail,
+        reason=failure.reason,
+        headline=headline,
+        failed_tests=failure.failed_tests,
+        slot=failure.slot,
+    )
+
+
 def _no_fix_reason(exc: CheckFailure, rounds: int, turns_used, max_turns: int, deadline: float) -> str:
     """Why a red check gets no fix turn, or "" when it gets one."""
     cap = _fix_loop_cap()
@@ -2836,6 +2859,8 @@ def _check_until_green(
         if fix_base is not None and failure is not None:
             loosened = _loosened_checks(ws, fix_base)
             if loosened:
+                # Drops HZ-590's failed_tests/argv/slot: they are only read
+                # before the first fix turn, and this is after one.
                 log(f"fix loop: the fix turn loosened the checks — {'; '.join(loosened)}")
                 failure = CheckFailure(
                     str(failure),
@@ -2902,6 +2927,38 @@ def _check_until_green(
             log(f"fix loop: no fix turn — {why_not}")
             _fail_on_checks(ws, item, branch, conflicted, failure, checkpoint=checkpoint, lease=lease, unpushed=unpushed)
             raise failure
+        skipped = base_check.skip_reason(failure) if rounds == 0 else "not the first fix turn"
+        if rounds == 0 and skipped:
+            log(f"base check: skipped — {skipped}")
+        if not skipped:
+            # HZ-590: before the first fix turn, the failing tests run once on
+            # the default branch. Check time like the checks', not agent time.
+            _notify_checks(task.get("run_id"), "start")
+            began = time.monotonic()
+            try:
+                with pause.interruptible():
+                    on_base = base_check.check_on_base(
+                        item["repo"],
+                        item["id"],
+                        failure,
+                        item_ws=ws,
+                        configured=task.get("check_commands"),
+                        test_env_file=task.get("test_env_file"),
+                        deadline=deadline,
+                        log=log,
+                    )
+            except pause.PauseRequested:
+                pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
+                raise
+            finally:
+                deadline += time.monotonic() - began
+                _notify_checks(task.get("run_id"), "end")
+            log(f"base check: {on_base.verdict} — {on_base.detail}")
+            if on_base.verdict == base_check.FAILS_ON_MAIN:
+                failure = _fails_on_main(failure, on_base)
+                log(f"fix loop: no fix turn — {failure.headline}")
+                _fail_on_checks(ws, item, branch, conflicted, failure, checkpoint=checkpoint, lease=lease, unpushed=unpushed)
+                raise failure
         detail = "\n".join([failure.digest or str(failure), *(_recording()["branch_notes"] or [])])
         fix_base = checked_sha
         log(f"fix loop: fix turn {rounds + 1} of {_fix_loop_cap()} — handing the check failure back to the agent")
@@ -3701,6 +3758,9 @@ def main() -> int:
         # HZ-387: non-retryable, so the item pauses and no next step runs.
         elif isinstance(exc, ReadOnlyViolation):
             result["reason"] = reasons.REASON["READ_ONLY_VIOLATED"]
+        # HZ-590: non-retryable — main must be fixed first, so the item pauses.
+        elif isinstance(exc, FailsOnMain):
+            result["reason"] = reasons.REASON["FAILS_ON_MAIN"]
         # HZ-424: retryable — the next attempt runs with the same higher cap.
         elif isinstance(exc, AgentMessageTooLargeError):
             result["reason"] = reasons.REASON["SDK_MESSAGE_TOO_LARGE"]
