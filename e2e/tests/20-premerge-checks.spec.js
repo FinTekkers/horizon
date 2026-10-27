@@ -32,6 +32,24 @@ const git = (cwd, ...args) =>
     encoding: 'utf8',
   }).trim()
 
+// HZ-605: the PR's test also writes a JUnit report with three failures (one
+// message two lines long), which the farm reads as junit*.xml.
+const FAILING_JUNIT =
+  '<testsuites>' +
+  '<testsuite name="PositionAPIGRPCImplPriceLookbackTest"><testcase name="search_sameDayPrice_valuedWithoutWarning">' +
+  '<failure message="MARKET_VALUE set on the bond&#10;second-line-not-shown">at Test.java:42</failure></testcase></testsuite>' +
+  '<testsuite name="PremergeFixtureTest">' +
+  '<testcase name="posts_once"><failure message="expected 1 but was 2"/></testcase>' +
+  '<testcase name="credits"><failure message="credit missing"/></testcase>' +
+  '<testcase name="passes"/>' +
+  '</testsuite></testsuites>'
+const FAILING_TESTS = [
+  'failing tests (3):',
+  'PositionAPIGRPCImplPriceLookbackTest › search_sameDayPrice_valuedWithoutWarning — MARKET_VALUE set on the bond',
+  'PremergeFixtureTest › posts_once — expected 1 but was 2',
+  'PremergeFixtureTest › credits — credit missing',
+]
+
 // main: a passing test. The PR: the same test, now printing 60 lines and
 // failing on the last — so only a tail cut from the END names it.
 function buildRepoHub() {
@@ -51,7 +69,8 @@ function buildRepoHub() {
   git(seed, 'checkout', '-q', '-b', 'horizon/pmc-1')
   writeFileSync(
     join(seed, 'test.js'),
-    "for (let i = 1; i <= 60; i++) console.log(`fixture-line-${String(i).padStart(2, '0')}`)\n" +
+    `require('node:fs').writeFileSync('junit.xml', ${JSON.stringify(FAILING_JUNIT)})\n` +
+      "for (let i = 1; i <= 60; i++) console.log(`fixture-line-${String(i).padStart(2, '0')}`)\n" +
       "console.log('not ok 1 - the PR breaks test_premerge_fixture')\nprocess.exit(1)\n",
   )
   git(seed, 'commit', '-q', '-am', 'PR: break the test')
@@ -132,6 +151,21 @@ test('a red check on the test-merge keeps Accept the code open and names the fai
   await expect(activity).not.toContainText(`merged PR #${PR}`)
   expect(approves).toEqual([502])
 
+  // HZ-605: the failing tests, each with its first failure-message line, are
+  // listed above the log tail — and still there after a reload.
+  const failedRow = activity.locator('.activity-row', { hasText: 'pre-merge checks failed' })
+  const expectFailingTestsAboveTheTail = async () => {
+    for (const line of FAILING_TESTS) await expect(failedRow).toContainText(line)
+    await expect(failedRow).not.toContainText('second-line-not-shown')
+    const text = await failedRow.innerText()
+    expect(text.indexOf('failing tests (3):')).toBeGreaterThan(-1)
+    expect(text.indexOf('failing tests (3):')).toBeLessThan(text.indexOf('fixture-line-60'))
+  }
+  await expectFailingTestsAboveTheTail()
+  await page.reload()
+  await expect(activity).toContainText('pre-merge checks failed', { timeout: 10_000 })
+  await expectFailingTestsAboveTheTail()
+
   // Still the human's gate, and the failure did not send them to GitHub.
   await expect(gate.locator('.btn-gate-approve')).toBeVisible()
   expect(page.context().pages()).toHaveLength(1)
@@ -142,8 +176,6 @@ test('a red check on the test-merge keeps Accept the code open and names the fai
   expect(existsSync(premergeRoot)).toBe(true)
   expect(existsSync(join(premergeRoot, 'pmc-1'))).toBe(false)
 
-  await activity
-    .locator('.activity-row', { hasText: 'pre-merge checks failed' })
-    .evaluate((row) => row.scrollIntoView({ block: 'start' }))
+  await failedRow.evaluate((row) => row.scrollIntoView({ block: 'start' }))
   await captureScreenshot(page, 'premerge-checks-red')
 })

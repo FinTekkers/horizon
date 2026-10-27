@@ -340,3 +340,139 @@ def test_notify_checks_posts_to_farmd_and_fails_open(monkeypatch):
 
 # Captured at import, before the autouse conftest stub replaces it per test.
 _REAL_NOTIFY = step_agent._notify_checks
+
+
+# ---- HZ-590: a failure that also fails on main gets no fix turn ----
+
+SECRET_IN_ARGV = "argv-only-HZ590-4f2c"
+
+
+def _red_on_tests():
+    return CheckFailure(
+        'repo checks failed: test: 1 failed: tests/test_x.py "test_y"\n(sh -c pytest)\nFAILED tests/test_x.py::test_y',
+        "FAILED tests/test_x.py::test_y",
+        command="sh -c pytest",
+        headline='test: 1 failed: tests/test_x.py "test_y"',
+        failed_tests=[{"suite": "pytest", "file": "tests/test_x.py", "classname": "tests.test_x", "test": "test_y", "status": "fail"}],
+        argv=["sh", "-c", f"pytest --token={SECRET_IN_ARGV}"],
+        slot="test",
+    )
+
+
+@pytest.fixture
+def base_runs(monkeypatch):
+    """Stubs base_check.check_on_base: set `verdict` to what it returns;
+    `calls` holds each call's failure."""
+    state = types.SimpleNamespace(verdict=None, calls=[])
+
+    def fake(repo_full, item_id, failure, **kwargs):
+        state.calls.append(failure)
+        return state.verdict
+
+    monkeypatch.setattr(step_agent.base_check, "check_on_base", fake)
+    return state
+
+
+def _stub_agent_and_checks(monkeypatch, ws, red_rounds):
+    calls, rounds = [], []
+
+    def run_agent(prompt, **kwargs):
+        calls.append(prompt)
+        (ws / "work.txt").write_text(f"round {len(calls)}\n")
+        return {"result": '{"summary": "built it"}', "session_id": "s-1", "num_turns": 5}
+
+    def run_checks(*args, **kwargs):
+        rounds.append(len(calls))
+        if red_rounds is None or len(rounds) <= red_rounds:
+            raise _red_on_tests()
+        return "1 repo check(s) passed"
+
+    monkeypatch.setattr(step_agent, "run_agent", run_agent)
+    monkeypatch.setattr(step_agent, "run_checks", run_checks)
+    return calls, rounds
+
+
+def test_a_failure_that_fails_on_main_too_spends_no_fix_turn_and_pauses_named(
+    tmp_path, ws_origin, monkeypatch, base_runs, checks_notify
+):
+    ws, _ = ws_origin
+    base_runs.verdict = step_agent.base_check.BaseVerdict(
+        step_agent.base_check.FAILS_ON_MAIN, ["tests/test_x.py::test_y"], "all 1 failing test(s) fail on main too"
+    )
+    calls, rounds = _stub_agent_and_checks(monkeypatch, ws, red_rounds=None)
+    posted = []
+    monkeypatch.setattr(step_agent, "post_result", posted.append)
+    task = _task()
+    task_file = tmp_path / "task.json"
+    task_file.write_text(step_agent.json.dumps(task))
+    monkeypatch.setattr(step_agent.sys, "argv", ["step_agent", "--task", str(task_file)])
+
+    step_agent.main()
+
+    assert len(calls) == 1, "no fix turn ran"
+    assert len(rounds) == 1
+    assert len(base_runs.calls) == 1
+    (result,) = posted
+    assert result["ok"] is False
+    assert result["reason"] == step_agent.reasons.REASON["FAILS_ON_MAIN"]
+    headline = result["error"].split("\n")[0]
+    assert headline == (
+        f"{step_agent.HEADLINE_PREFIX}fails on main as well: `tests/test_x.py::test_y`, not caused by this item"
+    )
+    # The original failure follows the headline; the raw argv never leaves.
+    assert "FAILED tests/test_x.py::test_y" in result["error"]
+    assert SECRET_IN_ARGV not in step_agent.json.dumps(result)
+    # Today's salvage: the digest is kept for a human.
+    assert "FAILED tests/test_x.py::test_y" in step_agent._precheck_state(ws)[1]
+    # The base run sat in its own checks window, between the check's and nothing else.
+    assert checks_notify == [(1, "start"), (1, "end"), (1, "start"), (1, "end")]
+
+
+def test_fails_on_main_is_raised_without_the_argv_in_its_message(ws_origin, monkeypatch, base_runs):
+    ws, _ = ws_origin
+    base_runs.verdict = step_agent.base_check.BaseVerdict(step_agent.base_check.FAILS_ON_MAIN, ["tests/test_x.py::test_y"], "")
+    _stub_agent_and_checks(monkeypatch, ws, red_rounds=None)
+
+    with pytest.raises(step_agent.FailsOnMain, match="fails on main as well: `tests/test_x.py::test_y`") as err:
+        execute(_task())
+
+    assert SECRET_IN_ARGV not in str(err.value) and SECRET_IN_ARGV not in err.value.digest
+    assert err.value.argv is None
+
+
+@pytest.mark.parametrize(
+    "verdict,detail",
+    [
+        (step_agent.base_check.PASSES_ON_MAIN, "the failing tests pass on main"),
+        (step_agent.base_check.UNCLEAR, "the base run did not reach a test result (timed_out, test slot)"),
+        (step_agent.base_check.UNCLEAR, "the base run could not finish (RuntimeError: git worktree add failed)"),
+        (step_agent.base_check.UNCLEAR, "1 of 2 failing test(s) did not fail on main: tests.test_x::test_ok"),
+        (step_agent.base_check.UNCLEAR, "the failing tests can't be mapped to this runner's IDs on main"),
+        (step_agent.base_check.UNCLEAR, "the base run was not re-run, so a flake on main can't be ruled out"),
+    ],
+)
+def test_any_other_verdict_gives_exactly_one_fix_turn_as_today(ws_origin, monkeypatch, base_runs, verdict, detail):
+    ws, _ = ws_origin
+    base_runs.verdict = step_agent.base_check.BaseVerdict(verdict, ["tests/test_x.py::test_y"], detail)
+    calls, rounds = _stub_agent_and_checks(monkeypatch, ws, red_rounds=1)
+
+    result = execute(_task())
+
+    assert "fix loops: 1" in result["summary"]
+    assert len(calls) == 2, "exactly one fix turn"
+    assert "FAILED tests/test_x.py::test_y" in calls[1]
+    assert len(base_runs.calls) == 1
+    assert base_runs.calls[0].failed_tests[0]["test"] == "test_y"
+
+
+def test_the_base_check_runs_once_and_the_always_red_round_count_is_unchanged(ws_origin, monkeypatch, base_runs):
+    ws, _ = ws_origin
+    base_runs.verdict = step_agent.base_check.BaseVerdict(step_agent.base_check.PASSES_ON_MAIN, ["t"], "passes")
+    calls, rounds = _stub_agent_and_checks(monkeypatch, ws, red_rounds=None)
+
+    with pytest.raises(CheckFailure, match="^repo checks failed: test: 1 failed"):
+        execute(_task())
+
+    assert len(rounds) == 1 + 2
+    assert len(calls) == 1 + 2
+    assert len(base_runs.calls) == 1

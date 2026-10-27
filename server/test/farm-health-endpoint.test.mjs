@@ -318,6 +318,28 @@ test('a farmd that cannot be reached reads as not running, and the page goes red
   assert.ok(!JSON.stringify(farmHealth.toPublic(snapshot)).includes(SECRET))
 })
 
+test('a failed horizon-farm launcher unit reads up while farmd reports running', async () => {
+  const execProbe = async () => {
+    const lines = farmHealth.UNITS.map((u) => (u.unit === 'horizon-farm' ? 'failed' : 'active'))
+    return { code: 3, stdout: `${lines.join('\n')}\n`, timedOut: false }
+  }
+  const snapshot = await farmHealth.collectOnce({ ...deps, execProbe })
+  const row = snapshot.services.find((s) => s.unit === 'horizon-farm')
+  assert.equal(row.up, true)
+  assert.equal(row.state, 'running')
+  assert.notEqual(snapshot.state, 'red')
+  assert.ok(!snapshot.reason.includes('horizon-farm'), snapshot.reason)
+})
+
+test('an unreachable farmd marks the horizon-farm row down even when its unit is active', async () => {
+  const snapshot = await farmHealth.collectOnce({ ...deps, farmFetch: async () => Promise.reject(new Error('down')) })
+  const row = snapshot.services.find((s) => s.unit === 'horizon-farm')
+  assert.equal(row.up, false)
+  assert.equal(row.state, 'not_running')
+  assert.equal(snapshot.state, 'red')
+  assert.equal(snapshot.reason, 'Farm is not running')
+})
+
 test('an armed loop collects nothing until the cache is read, then collects off the request path', async () => {
   const counted = { exec: 0 }
   const loopDeps = {

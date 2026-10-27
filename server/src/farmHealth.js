@@ -233,8 +233,12 @@ export async function collectOnce(deps = defaultDeps) {
     uptimeS: finite(deps.uptime()),
   }
 
-  const services = parseIsActive(probe?.stdout)
   const farm = farmStatusOf(farmRaw)
+  // horizon-farm is a Type=oneshot launcher that starts farmd in tmux, so its
+  // systemd state says nothing about farmd: that row follows /farm/status.
+  const services = parseIsActive(probe?.stdout).map((s) =>
+    s.unit === 'horizon-farm' ? { ...s, state: farm.status, up: farm.status === 'running' } : s,
+  )
   const checksRaw = farmRaw?.checks || {}
   const capacity = {
     agents: slot(farmRaw?.agents),

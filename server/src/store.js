@@ -1270,6 +1270,27 @@ export function openDependentsOfAny(itemIds) {
   return found
 }
 
+// HZ-604: which of `ids` are finished, as {id, state: 'closed'|'abandoned'}.
+// farmd's hourly clean-up reaps only these items' worktrees. Its dirs are
+// lowercased (workspace_path), so the match ignores case. Open and unknown ids
+// are left out, so a worktree the server can't vouch for is never reaped.
+// Abandoned wins over closed.
+export function finishedItems(ids) {
+  if (ids.length === 0) return []
+  const wanted = [...new Set(ids.map((id) => id.toLowerCase()))]
+  const rows = db
+    .prepare(
+      `SELECT id, cursor, kind, abandoned_at FROM work_item WHERE lower(id) IN (${wanted.map(() => '?').join(', ')}) ORDER BY id`,
+    )
+    .all(...wanted)
+  const found = []
+  for (const row of rows) {
+    if (isAbandoned(row)) found.push({ id: row.id, state: 'abandoned' })
+    else if (isClosed(row)) found.push({ id: row.id, state: 'closed' })
+  }
+  return found
+}
+
 // HZ-591: open items in `repo` that may merge soon — at Accept the code, or
 // with a running premerge gate action — other than `excludeIds` (a deploy
 // batch's own members). The deploy queue keeps a batch's window open only

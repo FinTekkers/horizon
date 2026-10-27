@@ -2532,6 +2532,53 @@ def test_main_reports_a_failure_at_line_900_end_to_end(tmp_path, monkeypatch):
     assert len(error) <= step_agent.ERROR_MAX_CHARS
 
 
+def test_a_failed_build_step_check_lists_its_failing_tests_in_the_fail_error_within_the_cap(tmp_path, monkeypatch):
+    """HZ-605 metric 3, worst case: 12 failing tests with 300-char messages, a
+    full digest and a long command. The /fail `error` main() posts lists 10
+    of them, then `+2 more`, between the command line and the digest — and
+    all of it fits ERROR_MAX_CHARS, so nothing is cut."""
+    ws, origin = make_git_workspace(tmp_path)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    cases = "".join(
+        f'<testcase name="test_{i:02d}"><failure message="{chr(96 + i) * 300}&#10;second line"/></testcase>'
+        for i in range(1, 13)
+    )
+    report = tmp_path / "r.xml"
+    report.write_text(f'<testsuite name="PositionAPIGRPCImplPriceLookbackTest">{cases}</testsuite>')
+    monkeypatch.setenv(checks.RERUN_ENV, "0")
+    monkeypatch.setenv(
+        "FARM_CHECK_CMD",
+        f'cp {report} "$HORIZON_TEST_REPORT_DIR/r.xml"; '
+        "for i in $(seq 1 300); do echo \"not ok $i - a failing test with a fairly long title number $i\"; done; "
+        "echo '# fail 300'; exit 1 # " + "padding " * 25,
+    )
+    monkeypatch.setattr(step_agent, "run_agent", finished_run(ws))
+    task = make_task(11, "Specialist agent implements", repo="acme/demo")
+    task_file = tmp_path / "task.json"
+    task_file.write_text(json.dumps(task))
+    monkeypatch.setattr(sys, "argv", ["step_agent", "--task", str(task_file)])
+    posted = {}
+    monkeypatch.setattr(step_agent.httpx, "post", lambda url, json=None, timeout=None: posted.update(json=json))
+
+    step_agent.main()
+
+    error = posted["json"]["error"]
+    assert posted["json"]["ok"] is False
+    lines = error.split("\n")
+    assert lines[0].startswith("repo checks failed: ")
+    assert lines[1].startswith("(sh -c cp ") and len(lines[1]) > 300
+    assert lines[2] == "failing tests (12):"
+    shown = lines[3:13]
+    assert [line.split(" › ")[1].split(" — ")[0] for line in shown] == [f"test_{i:02d}" for i in range(1, 11)]
+    assert all(line.startswith("PositionAPIGRPCImplPriceLookbackTest › ") and line.endswith("…") for line in shown)
+    assert lines[13] == "+2 more"
+    assert "second line" not in error
+    # The digest follows the list, whole: the cap cut nothing.
+    assert lines[14].startswith("not ok ")
+    assert error.endswith("more lines omitted")
+    assert len(error) <= step_agent.ERROR_MAX_CHARS
+
+
 def test_a_failing_branch_check_script_fails_the_implement_step_end_to_end(tmp_path, monkeypatch):
     """HZ-406 metric 1 (SH-4): main's scripts/checks/test.sh exits 0 and the
     item's own copy exits 1. The step fails, headlined by the branch script,

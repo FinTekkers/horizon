@@ -253,6 +253,69 @@ for (const [name, run] of [
   })
 }
 
+// ---- HZ-598: the cap counts run time, from the slot grant ----
+
+// A stand-in CLI: each step is `event <name>` (a HORIZON_EVENT line on
+// stderr) or `sleep <s>`, then a green result for the shas it was given.
+function slotRun(steps) {
+  const lines = steps.map(([kind, value]) =>
+    kind === 'event' ? `echo 'HORIZON_EVENT {"check_slot": "${value}"}' >&2` : `sleep ${value}`,
+  )
+  return fakePython([...lines, `echo "{\\"ok\\": true, \\"head_sha\\": \\"$5\\", \\"base_sha\\": \\"$7\\"}"`].join('\n'))
+}
+
+async function timedPreMerge(bin, timeoutMs, queueTimeoutMs = timeoutMs) {
+  return withReaper(async () => ({ code: 0 }), () =>
+    withPython(bin, async () => {
+      const started = Date.now()
+      const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs, queueTimeoutMs })
+      return { result, elapsed: Date.now() - started }
+    }),
+  )
+}
+
+// Metric 1, scaled: 15 min queued then 15 min running under a 20 min cap.
+test('a run that queues for a slot, then runs, finishes within a cap shorter than both together', async () => {
+  const bin = slotRun([['event', 'queued'], ['sleep', 1.5], ['event', 'granted'], ['sleep', 1.5]])
+  const { result, elapsed } = await timedPreMerge(bin, 2000)
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.ok(elapsed >= 3000, `ran ${elapsed} ms`)
+})
+
+// Metric 2: the cap still holds from the grant, and from launch with no wait.
+for (const [name, steps] of [
+  ['gets its slot straight away', [['event', 'granted'], ['sleep', 30]]],
+  ['never waits for a slot', [['sleep', 30]]],
+]) {
+  test(`a run that ${name} still times out after the cap of running`, async () => {
+    const { result, elapsed } = await timedPreMerge(slotRun(steps), 2000)
+    assert.equal(result.ok, false)
+    assert.equal(result.reason, 'timed_out')
+    assert.ok(elapsed >= 1900 && elapsed < 5000, `killed after ${elapsed} ms`)
+  })
+}
+
+// HZ-585: the queue is bounded by its own cap, counted from launch, since a
+// pre-merge's slot wait never fails open.
+test('a run stuck in the queue is killed at the queue cap, counted from launch', async () => {
+  const bin = slotRun([['event', 'memory'], ['sleep', 1], ['event', 'queued'], ['sleep', 30]])
+  const { result, elapsed } = await timedPreMerge(bin, 500, 1500)
+  assert.equal(result.reason, 'timed_out')
+  assert.match(result.detail, /^no check slot within/)
+  assert.ok(elapsed >= 1400 && elapsed < 2400, `killed after ${elapsed} ms`)
+})
+
+test('the queue cap reaches the run as --queue-timeout-s, and defaults to the checks cap', async () => {
+  await withRunner(green(), async (calls) => {
+    await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000, queueTimeoutMs: 3_600_000 })
+    await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+    const queueArg = (call) => call.args[call.args.indexOf('--queue-timeout-s') + 1]
+    assert.equal(queueArg(calls[0]), '3600')
+    assert.equal(calls[0].opts.timeoutMs, 3_600_000)
+    assert.equal(queueArg(calls[1]), '60')
+  })
+})
+
 // /proc: every live process whose starting environment carries the tag.
 function taggedPids(runId) {
   const needle = Buffer.from(`${premerge.RUN_ENV}=${runId}\0`)

@@ -191,11 +191,10 @@ export const runner = {
   // runId (HZ-569), when given, is reaped (reapRun) after the timeout's group
   // kill, before this resolves.
   //
-  // rearmOn (HZ-585), when given, sees each complete stderr line; the first
-  // time it returns a number, the kill timer restarts with that many ms. A
-  // run that times out resolves `timedOutPhase`: 'before' the re-arm, or
-  // 'after' it.
-  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId, rearmOn }) {
+  // onTimer (HZ-598), when given, is called once at spawn with
+  // { restart(ms) }: restart drops the running cap and arms a new one, ms
+  // from now. A no-op once the run has settled or the cap has fired.
+  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId, onTimer }) {
     return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
@@ -204,42 +203,25 @@ export const runner = {
       // reaches the listener whole, and `stderr` is built as it always was.
       const decoder = new StringDecoder('utf8')
       let timedOut = false
-      let timedOutPhase = null
-      let rearmed = false
       let settled = false
       let tracked = null
-      const emitLine = (raw) => {
-        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
-        if (rearmOn && !rearmed && !timedOut) {
-          let ms = null
-          try {
-            ms = rearmOn(line)
-          } catch {
-            ms = null
-          }
-          if (Number.isFinite(ms) && ms > 0) {
-            rearmed = true
-            clearTimeout(timer)
-            timer = setTimeout(onTimeout, ms)
-          }
-        }
-        if (!onStderrLine) return
+      let timer = null
+      const emitLine = (line) => {
         try {
-          onStderrLine(line)
+          onStderrLine(line.endsWith('\r') ? line.slice(0, -1) : line)
         } catch {
           // fire-and-forget
         }
       }
-      const listening = Boolean(onStderrLine || rearmOn)
       const splitLines = (chunk) => {
-        if (!listening) return
+        if (!onStderrLine) return
         partial += decoder.write(chunk)
         const lines = partial.split('\n')
         partial = lines.pop()
         for (const line of lines) emitLine(line)
       }
       const flushLines = () => {
-        if (!listening) return
+        if (!onStderrLine) return
         partial += decoder.end()
         if (partial === '') return
         const line = partial
@@ -255,7 +237,7 @@ export const runner = {
           tracked.settle()
           if (tracked.interrupted) out = { ...out, interrupted: true }
         }
-        resolve({ stdout, stderr, timedOut, ...(timedOut ? { timedOutPhase } : {}), ...out })
+        resolve({ stdout, stderr, timedOut, ...out })
       }
       const child = spawn(pythonBin(), args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       if (itemId != null && Number.isInteger(child.pid)) {
@@ -263,9 +245,8 @@ export const runner = {
         tracked.settled = new Promise((resolveSettled) => (tracked.settle = resolveSettled))
         runningChecks.set(itemId, tracked)
       }
-      const onTimeout = () => {
+      const expire = () => {
         timedOut = true
-        timedOutPhase = rearmed ? 'after' : 'before'
         try {
           process.kill(-child.pid, 'SIGKILL')
         } catch {
@@ -279,7 +260,19 @@ export const runner = {
         // Stops that descendant too. The result is already decided: timedOut.
         reapRun(runId, { env }).then(() => done({ code: null }))
       }
-      let timer = setTimeout(onTimeout, timeoutMs)
+      const arm = (ms) => {
+        if (settled || timedOut) return
+        clearTimeout(timer)
+        timer = setTimeout(expire, ms)
+      }
+      arm(timeoutMs)
+      if (onTimer) {
+        try {
+          onTimer({ restart: arm })
+        } catch {
+          // an observer, like onStderrLine
+        }
+      }
       child.stdout.on('data', (d) => (stdout += d))
       child.stderr.on('data', (d) => {
         stderr += d
@@ -307,6 +300,10 @@ export const runner = {
 // second argument is the whole event (slotDetail turns it into text).
 // Fire-and-forget: it is never awaited and anything it throws is ignored.
 //
+// timeoutMs (HZ-598) bounds the checks' run time, not the queue: the cap is
+// re-armed at timeoutMs when the slot is held, so a run that waited for a
+// slot or for memory still gets its whole budget.
+//
 // checkCommands (HZ-245) is the repo's Admin-configured
 // {install,test,lint,e2e,screenshots}, or null for none. It goes to the CLI
 // as argv, never env, so it can't reach the check processes' environment.
@@ -319,9 +316,9 @@ export const runner = {
 // null. Only the path goes on argv; farm/login_env.py reads the file.
 //
 // HZ-585: two clocks. queueTimeoutMs bounds the run until its 'held' event
-// (the git work and the wait for a check slot); timeoutMs then starts fresh,
-// so time spent queued never eats the checks' budget. A run whose 'held'
-// line never arrives keeps the queue cap, and still ends.
+// (the git work and the wait for a check slot, which never fails open);
+// timeoutMs then starts fresh. A run whose 'held' line never arrives keeps
+// the queue cap, and still ends.
 export async function runPreMergeChecks(
   item,
   { headSha, baseSha, timeoutMs, queueTimeoutMs = timeoutMs, onSlot, checkCommands = null, checksWaiver = null, testEnvFile = null },
@@ -341,23 +338,27 @@ export async function runPreMergeChecks(
   if (checksWaiver) args.push('--checks-waiver', checksWaiver)
   if (testEnvFile) args.push('--test-env-file', testEnvFile)
   const runId = newRunId(item.id)
-  const spawnOpts = {
-    cwd: path.dirname(FARM_DIR),
-    timeoutMs: queueTimeoutMs,
-    rearmOn: (line) => (parseSlotEvent(line) === 'held' ? timeoutMs : null),
-    env: childEnv(timeoutMs, runId),
-    itemId: item.id,
-    runId,
-  }
-  if (onSlot) {
-    spawnOpts.onStderrLine = (line) => {
-      const slot = slotEventOf(line)
-      if (!slot) return
-      try {
-        onSlot(slot.name, slot.event)
-      } catch {
-        // fire-and-forget
-      }
+  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs: queueTimeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId }
+  let timer = null
+  let held = false
+  let waiting = false
+  spawnOpts.onTimer = (handle) => (timer = handle)
+  spawnOpts.onStderrLine = (line) => {
+    const slot = slotEventOf(line)
+    if (!slot) return
+    // 'granted' then 'held' arrive together after a queue; only the first
+    // restarts the cap, so the checks get timeoutMs from the slot grant.
+    if ((slot.name === 'held' || slot.name === 'granted') && !held) {
+      held = true
+      timer?.restart(timeoutMs)
+    } else if (!held) {
+      waiting = true
+    }
+    if (!onSlot) return
+    try {
+      onSlot(slot.name, slot.event)
+    } catch {
+      // fire-and-forget
     }
   }
   const out = await runner.spawn(args, spawnOpts)
@@ -366,9 +367,9 @@ export async function runPreMergeChecks(
   }
   if (out.timedOut) {
     const detail =
-      out.timedOutPhase === 'before'
+      waiting && !held
         ? `no check slot within ${Math.round(queueTimeoutMs / 60000)} min`
-        : `no result within ${Math.round(timeoutMs / 60000)} min`
+        : `no result within ${Math.round(timeoutMs / 60000)} min of running checks`
     return { ok: false, reason: 'timed_out', detail, ...shas }
   }
   if (out.error) {

@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, rules, run_reaper, task_job, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -975,6 +975,85 @@ def _run_sweep_loop(stop: threading.Event | None = None) -> None:
     stop = stop or threading.Event()
     while not stop.wait(farm_config.RUN_SWEEP_INTERVAL_S):
         _sweep_runs()
+
+
+# HZ-604: the most ids POST /api/farm/items/finished takes per call (its schema).
+FINISHED_BATCH = 1000
+
+
+def _fetch_finished(ids: list[str]) -> dict[str, str]:
+    """HZ-604: POST /api/farm/items/finished — the subset of `ids` the server
+    says is closed or abandoned, as lowercased id -> state. Raises on any
+    failure (a 404 from an older server included), so the caller reaps
+    nothing rather than guessing."""
+    finished: dict[str, str] = {}
+    for start in range(0, len(ids), FINISHED_BATCH):
+        res = httpx.post(
+            f"{HORIZON_URL}/api/farm/items/finished",
+            json={"ids": ids[start : start + FINISHED_BATCH]},
+            headers={"x-farm-secret": SHARED_SECRET},
+            timeout=15,
+        )
+        res.raise_for_status()
+        items = res.json().get("items")
+        if not isinstance(items, list):
+            raise ValueError("items/finished: no items list in the reply")
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                continue
+            if item.get("state") in ("closed", "abandoned"):
+                # The server answers "HZ-604"; worktree dirs are lowercased.
+                finished[item["id"].lower()] = item["state"]
+    return finished
+
+
+def _reap_finished_items() -> None:
+    """HZ-604: removes the item and pre-merge worktrees of every item the
+    server reports closed or abandoned. An id it leaves out, or any failure
+    asking, reaps nothing; a worktree in use is skipped until a later tick.
+    Each outcome is logged with its repo and id."""
+    held = workspaces.repos_with_worktrees()
+    ids = sorted({i for repo_ids in held.values() for i in repo_ids if len(i) <= 64 and premerge._ITEM_RE.match(i)})
+    if not ids:
+        return
+    try:
+        finished = _fetch_finished(ids)
+    except Exception as exc:
+        print(f"farmd: reap skipped, finished-items lookup failed: {type(exc).__name__}: {exc}", flush=True)
+        return
+    for repo_full, repo_ids in sorted(held.items()):
+        for item_id in sorted(repo_ids & finished.keys()):
+            for worktree, reap in (("item", workspaces.reap_finished_item), ("premerge", premerge.reap_if_idle)):
+                try:
+                    outcome = reap(repo_full, item_id)
+                except Exception as exc:
+                    outcome = f"error {type(exc).__name__}: {exc}"
+                if outcome != "absent":
+                    print(f"farmd: reap {repo_full} {item_id} {worktree} {outcome} ({finished[item_id]})", flush=True)
+
+
+def _cleanup_tick() -> None:
+    """HZ-604: one clean-up pass. The /tmp sweep runs even when the reap
+    could not ask the server."""
+    try:
+        _reap_finished_items()
+    except Exception as exc:
+        print(f"farmd: reap error: {type(exc).__name__}: {exc}", flush=True)
+    try:
+        tmp_sweep.sweep(log=lambda line: print(f"farmd: {line}", flush=True))
+    except Exception as exc:
+        print(f"farmd: tmp sweep error: {type(exc).__name__}: {exc}", flush=True)
+
+
+def _cleanup_loop(stop: threading.Event | None = None) -> None:
+    """Ticks once straight away, then every CLEANUP_INTERVAL_S (read each
+    tick) until `stop` is set. CLEANUP_INTERVAL_S <= 0 is off: no tick at all."""
+    stop = stop or threading.Event()
+    if farm_config.CLEANUP_INTERVAL_S <= 0:
+        return
+    _cleanup_tick()
+    while farm_config.CLEANUP_INTERVAL_S > 0 and not stop.wait(farm_config.CLEANUP_INTERVAL_S):
+        _cleanup_tick()
 
 
 def _knowledge_sources() -> list[dict]:
@@ -2479,6 +2558,9 @@ threading.Thread(target=_reconcile_loop, daemon=True).start()
 threading.Thread(target=_test_runs_outbox_loop, daemon=True).start()
 threading.Thread(target=_run_sweep_loop, daemon=True).start()
 threading.Thread(target=_knowledge_loop, daemon=True).start()
+# HZ-604: in a thread, not inline — the boot tick may reap many worktrees.
+if farm_config.CLEANUP_INTERVAL_S > 0:
+    threading.Thread(target=_cleanup_loop, name="farmd-cleanup", daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn

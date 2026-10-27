@@ -143,3 +143,38 @@ test('the checks route needs the farm secret and a known phase', async () => {
   assert.equal((await checks(runId, 'pause')).statusCode, 400)
   orchestrator.cancel('CP-AUTH')
 })
+
+// HZ-590: the farm found the failing tests fail on main too and spent no fix
+// turn. Its non-retryable reason pauses the item — nothing is re-kicked — and
+// the event names the tests, with the whole failure behind it.
+test('a check failure that fails on main as well pauses the item and names the test', async () => {
+  const { REASON, isRetryable } = await import('../../domain/js/reasons.js')
+  assert.equal(isRetryable(REASON.FAILS_ON_MAIN), false)
+  const message = [
+    'repo checks failed: fails on main as well: `tests/test_m.py::test_y`, not caused by this item',
+    'repo checks failed: test: 1 failed, 4 passed: tests/test_m.py "test_y"',
+    '(sh -c python -m pytest -q)',
+    'FAILED tests/test_m.py::test_y - assert 1 == 2',
+  ].join('\n')
+  const runId = activeRun('CP-MAIN', { agentMsAgo: 0 })
+  const before = stepRun(runId).auto_retry_count
+
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/farm/steps/${runId}/fail`,
+    headers: { 'x-farm-secret': FARM_SHARED_SECRET },
+    payload: { error: message, reason: REASON.FAILS_ON_MAIN },
+  })
+
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(store.getItem('CP-MAIN').paused, true)
+  const runs = db.prepare('SELECT status, auto_retry_count FROM step_run WHERE item_id = ?').all('CP-MAIN')
+  assert.deepEqual(runs, [{ status: 'cancelled', auto_retry_count: before }], 'nothing was re-kicked')
+  const events = db.prepare('SELECT text, detail FROM event WHERE item_id = ? ORDER BY id').all('CP-MAIN')
+  assert.ok(!events.some((e) => /auto-retrying/.test(e.text)))
+  const paused = events.find((e) => e.text.startsWith('agent step failed'))
+  assert.match(paused.text, /fails on main as well/)
+  assert.match(paused.text, /test_y/)
+  assert.ok(paused.text.endsWith('item paused; resume to retry'), paused.text)
+  assert.equal(paused.detail, message)
+})

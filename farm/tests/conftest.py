@@ -90,6 +90,9 @@ os.environ.setdefault("FARM_RUNNER", "subprocess")
 # /proc/meminfo until the ceiling. test_memory_gate.py sets its own.
 os.environ["FARM_MIN_MEM_AVAILABLE_PCT"] = "0"
 os.environ.pop("FARM_MEMINFO_PATH", None)
+# HZ-604: farmd's clean-up loop would sweep the real /tmp and ask the server
+# about worktrees at import. Off for the suite; its tests call the tick itself.
+os.environ["FARM_CLEANUP_INTERVAL_S"] = "0"
 # HZ-416: a Task job runs in a container by default, so the job suites go
 # through fake_podman (the confinement tests find a real podman themselves).
 # FARM_* names reach a job's tmux session (tmux_mgr.agent_env); TMPDIR does
