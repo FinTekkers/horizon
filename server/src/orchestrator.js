@@ -1572,7 +1572,7 @@ function holdForTestResults(id, attempt, opts) {
   }
   if (upload.state !== 'lost') return false
   const requeued = db
-    .prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'superseded' AND instr(output, ?) > 0")
+    .prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'superseded' AND instr(output, ?) > 0")
     .get(id, REVIEW_STEP_INDEX, RESULTS_LOST_TEXT).n
   if (requeued >= LOST_RESULTS_REQUEUE_CAP) return false
   requeueLostResults(id, attempt)
@@ -1783,14 +1783,16 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // verdict and step 9's summary of it). Feeding those back biases the
   // re-review toward its own stale conclusion and, on HZ-128, pushed the
   // total 3 chars over budget so HZ-105 refused the required plan forever.
+  // HZ-539: global steps' rows only — a sub-step row shares its anchor's
+  // step_index and must not win the MAX(id) over it.
   const rows = db
     .prepare(
       `SELECT step_index, artifact, output FROM step_run
        WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
-         AND step_index < ?
+         AND step_index < ? AND substep_id IS NULL
          AND id IN (
            SELECT MAX(id) FROM step_run
-           WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
+           WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?) AND substep_id IS NULL
            GROUP BY step_index
          )
        ORDER BY id`,
@@ -2695,7 +2697,7 @@ export async function forwardRejectedReview(id, actor = 'You') {
   if (!reviewRejected(item)) return { error: 'review_not_rejected' }
   if (forwarding.has(id)) return { error: 'forward_in_progress' }
   const reviewRun = db
-    .prepare("SELECT id, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1")
+    .prepare("SELECT id, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1")
     .get(id, REVIEW_STEP_INDEX)
   if (!reviewRun) return { error: 'review_not_rejected' }
 
@@ -3465,7 +3467,7 @@ export function failQueuedDeploy(id, message) {
   const item = getItem(id)
   if (!item || item.cursor !== DEPLOY_STEP_INDEX) return
   const attempt = db
-    .prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
+    .prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL')
     .get(id, DEPLOY_STEP_INDEX).n
   const runId = db
     .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')

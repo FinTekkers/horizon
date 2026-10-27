@@ -21,7 +21,7 @@ const STORED_RESULTS_POLL_MS = 200
 
 const latestImplementRun = db.prepare(
   `SELECT id, started_at, ended_at FROM step_run
-    WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1`,
+    WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1`,
 )
 const selectRows = db.prepare(
   `SELECT run_label, command, attempt, exit_code, suite, file, test, status FROM test_result
@@ -71,7 +71,7 @@ export const STORED_RESULTS_RETRY_WINDOW_S = Number(process.env.STORED_RESULTS_R
 
 const latestUpload = db.prepare(
   `SELECT id, ended_at, test_runs_expected AS expected, test_runs_stored_at AS storedAt, test_runs_abandoned AS abandoned
-     FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1`,
+     FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1`,
 )
 
 // { state, runId } for the item's latest done implement run:

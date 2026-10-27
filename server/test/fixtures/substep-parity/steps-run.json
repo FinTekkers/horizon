@@ -1,0 +1,1786 @@
+{
+  "commit": "54114a4",
+  "steps": {
+    "0": [
+      {
+        "run_id": 1,
+        "attempt": 1,
+        "artifacts": [],
+        "item": {
+          "id": "P-0",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Define the outcome",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 0,
+          "label": "Define the outcome",
+          "agent": "PM"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "project_context": {
+          "items": [],
+          "feedback": []
+        }
+      }
+    ],
+    "1": [
+      {
+        "run_id": 3,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          }
+        ],
+        "item": {
+          "id": "P-1",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Define how we measure success",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 1,
+          "label": "Define how we measure success",
+          "agent": "PM"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "project_context": {
+          "items": [
+            {
+              "id": "P-0",
+              "title": "Parity at Define the outcome",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            }
+          ],
+          "feedback": []
+        }
+      }
+    ],
+    "2": [
+      {
+        "run_id": 6,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          }
+        ],
+        "item": {
+          "id": "P-2",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Set guardrails",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 2,
+          "label": "Set guardrails",
+          "agent": "Architect"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "project_context": {
+          "items": [
+            {
+              "id": "P-1",
+              "title": "Parity at Define how we measure success",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-0",
+              "title": "Parity at Define the outcome",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            }
+          ],
+          "feedback": []
+        }
+      }
+    ],
+    "4": [
+      {
+        "run_id": 10,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          }
+        ],
+        "item": {
+          "id": "P-4",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Plan options & trade-offs (pros / cons)",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 4,
+          "label": "Plan options & trade-offs (pros / cons)",
+          "agent": "Ensemble"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ],
+    "6": [
+      {
+        "run_id": 15,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          },
+          {
+            "label": "Plan options & trade-offs (pros / cons)",
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+          }
+        ],
+        "item": {
+          "id": "P-6",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Draft implementation plan",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 6,
+          "label": "Draft implementation plan",
+          "agent": "Eng"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ],
+    "7": [
+      {
+        "run_id": 21,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          },
+          {
+            "label": "Plan options & trade-offs (pros / cons)",
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+          },
+          {
+            "label": "Draft implementation plan",
+            "content": "## Draft implementation plan\nartifact of step 6"
+          }
+        ],
+        "item": {
+          "id": "P-7",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Architecture review",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 7,
+          "label": "Architecture review",
+          "agent": "Architect"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ],
+    "8": [
+      {
+        "run_id": 28,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          },
+          {
+            "label": "Plan options & trade-offs (pros / cons)",
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+          },
+          {
+            "label": "Draft implementation plan",
+            "content": "## Draft implementation plan\nartifact of step 6"
+          },
+          {
+            "label": "Architecture review",
+            "content": "## Architecture review\nartifact of step 7"
+          }
+        ],
+        "item": {
+          "id": "P-8",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at QA reviews the test plan",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 8,
+          "label": "QA reviews the test plan",
+          "agent": "QA"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ],
+    "9": [
+      {
+        "run_id": 36,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          },
+          {
+            "label": "Plan options & trade-offs (pros / cons)",
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+          },
+          {
+            "label": "Draft implementation plan",
+            "content": "## Draft implementation plan\nartifact of step 6"
+          },
+          {
+            "label": "Architecture review",
+            "content": "## Architecture review\nartifact of step 7"
+          },
+          {
+            "label": "QA reviews the test plan",
+            "content": "## QA reviews the test plan\nartifact of step 8"
+          },
+          {
+            "label": "Overlap check (deterministic)",
+            "content": "This item: **P-9** — not readable — its step-6 plan names no files or functions, and it has no PR\n\nOther in-flight items in `no repository` (steps 6–14):\n- none\n\nThe server appends the authoritative `## Overlap` section to your digest after you finish. Do not write one. You may refer to these decisions in `## Actions`, but never call a listed overlap `none`."
+          }
+        ],
+        "item": {
+          "id": "P-9",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Summarize reviews & recommend",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 9,
+          "label": "Summarize reviews & recommend",
+          "agent": "PM"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "project_context": {
+          "items": [
+            {
+              "id": "P-8",
+              "title": "Parity at QA reviews the test plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-7",
+              "title": "Parity at Architecture review",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-6",
+              "title": "Parity at Draft implementation plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-4",
+              "title": "Parity at Plan options & trade-offs (pros / cons)",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-2",
+              "title": "Parity at Set guardrails",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-1",
+              "title": "Parity at Define how we measure success",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-0",
+              "title": "Parity at Define the outcome",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            }
+          ],
+          "feedback": []
+        }
+      }
+    ],
+    "11": [
+      {
+        "run_id": 45,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          },
+          {
+            "label": "Plan options & trade-offs (pros / cons)",
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+          },
+          {
+            "label": "Draft implementation plan",
+            "content": "## Draft implementation plan\nartifact of step 6"
+          },
+          {
+            "label": "Architecture review",
+            "content": "## Architecture review\nartifact of step 7"
+          },
+          {
+            "label": "QA reviews the test plan",
+            "content": "## QA reviews the test plan\nartifact of step 8"
+          },
+          {
+            "label": "Summarize reviews & recommend",
+            "content": "## Summarize reviews & recommend\nartifact of step 9"
+          }
+        ],
+        "item": {
+          "id": "P-11",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Specialist agent implements",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 11,
+          "label": "Specialist agent implements",
+          "agent": "Eng"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "scope": {
+          "mode": "full"
+        }
+      }
+    ],
+    "12": [
+      {
+        "run_id": 55,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          },
+          {
+            "label": "Plan options & trade-offs (pros / cons)",
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+          },
+          {
+            "label": "Draft implementation plan",
+            "content": "## Draft implementation plan\nartifact of step 6"
+          },
+          {
+            "label": "Architecture review",
+            "content": "## Architecture review\nartifact of step 7"
+          },
+          {
+            "label": "QA reviews the test plan",
+            "content": "## QA reviews the test plan\nartifact of step 8"
+          },
+          {
+            "label": "Summarize reviews & recommend",
+            "content": "## Summarize reviews & recommend\nartifact of step 9"
+          },
+          {
+            "label": "Specialist agent implements",
+            "content": "## Specialist agent implements\nartifact of step 11"
+          },
+          {
+            "label": "Stored test results (step record)",
+            "content": "## Stored test results (step record)\n\nWhat the farm stored for the implement step's run #54. This is the only evidence of which tests ran and how they ended; test-output files in the worktree (test-results/, build/test-results/, playwright-report/) are not.\n\n`main` is the repo's configured check commands. `branch` is this item's own changed scripts/checks/, run after main's. Both decide pass or fail: a failure in either fails the check.\n\n### main\nNo per-test results were stored for this run.\n\n### branch\nNo branch run was recorded: this item changed no configured `scripts/checks/` script."
+          }
+        ],
+        "item": {
+          "id": "P-12",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Automated review (code + QA)",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 12,
+          "label": "Automated review (code + QA)",
+          "agent": "Review"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "scope": {
+          "mode": "full"
+        }
+      }
+    ],
+    "14": [
+      {
+        "run_id": 66,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 0"
+          },
+          {
+            "label": "Define how we measure success",
+            "content": "## Define how we measure success\nartifact of step 1"
+          },
+          {
+            "label": "Set guardrails",
+            "content": "## Set guardrails\nartifact of step 2"
+          },
+          {
+            "label": "Plan options & trade-offs (pros / cons)",
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+          },
+          {
+            "label": "Draft implementation plan",
+            "content": "## Draft implementation plan\nartifact of step 6"
+          },
+          {
+            "label": "Architecture review",
+            "content": "## Architecture review\nartifact of step 7"
+          },
+          {
+            "label": "QA reviews the test plan",
+            "content": "## QA reviews the test plan\nartifact of step 8"
+          },
+          {
+            "label": "Summarize reviews & recommend",
+            "content": "## Summarize reviews & recommend\nartifact of step 9"
+          },
+          {
+            "label": "Specialist agent implements",
+            "content": "## Specialist agent implements\nartifact of step 11"
+          },
+          {
+            "label": "Automated review (code + QA)",
+            "content": "## Automated review (code + QA)\nartifact of step 12"
+          }
+        ],
+        "item": {
+          "id": "P-14",
+          "kind": "change",
+          "lane": null,
+          "title": "Parity at Deploy the changes",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 14,
+          "label": "Deploy the changes",
+          "agent": "DevOps"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ],
+    "16": [
+      {
+        "run_id": 67,
+        "attempt": 1,
+        "artifacts": [],
+        "item": {
+          "id": "P-16",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at Define the outcome",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 16,
+          "label": "Define the outcome",
+          "agent": "PM"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "project_context": {
+          "items": [
+            {
+              "id": "P-14",
+              "title": "Parity at Deploy the changes",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-12",
+              "title": "Parity at Automated review (code + QA)",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-11",
+              "title": "Parity at Specialist agent implements",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-9",
+              "title": "Parity at Summarize reviews & recommend",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-8",
+              "title": "Parity at QA reviews the test plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-7",
+              "title": "Parity at Architecture review",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-6",
+              "title": "Parity at Draft implementation plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-4",
+              "title": "Parity at Plan options & trade-offs (pros / cons)",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-2",
+              "title": "Parity at Set guardrails",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-1",
+              "title": "Parity at Define how we measure success",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            }
+          ],
+          "feedback": []
+        }
+      }
+    ],
+    "17": [
+      {
+        "run_id": 69,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 16"
+          }
+        ],
+        "item": {
+          "id": "P-17",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at How we'll verify",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 17,
+          "label": "How we'll verify",
+          "agent": "PM"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "project_context": {
+          "items": [
+            {
+              "id": "P-16",
+              "title": "Parity at Define the outcome",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-14",
+              "title": "Parity at Deploy the changes",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-12",
+              "title": "Parity at Automated review (code + QA)",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-11",
+              "title": "Parity at Specialist agent implements",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-9",
+              "title": "Parity at Summarize reviews & recommend",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-8",
+              "title": "Parity at QA reviews the test plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-7",
+              "title": "Parity at Architecture review",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-6",
+              "title": "Parity at Draft implementation plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-4",
+              "title": "Parity at Plan options & trade-offs (pros / cons)",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-2",
+              "title": "Parity at Set guardrails",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            }
+          ],
+          "feedback": []
+        }
+      }
+    ],
+    "18": [
+      {
+        "run_id": 72,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 16"
+          },
+          {
+            "label": "How we'll verify",
+            "content": "## How we'll verify\nartifact of step 17"
+          }
+        ],
+        "item": {
+          "id": "P-18",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at Guardrails",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 18,
+          "label": "Guardrails",
+          "agent": "Architect"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "project_context": {
+          "items": [
+            {
+              "id": "P-17",
+              "title": "Parity at How we'll verify",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-16",
+              "title": "Parity at Define the outcome",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-14",
+              "title": "Parity at Deploy the changes",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-12",
+              "title": "Parity at Automated review (code + QA)",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-11",
+              "title": "Parity at Specialist agent implements",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-9",
+              "title": "Parity at Summarize reviews & recommend",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-8",
+              "title": "Parity at QA reviews the test plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-7",
+              "title": "Parity at Architecture review",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-6",
+              "title": "Parity at Draft implementation plan",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            },
+            {
+              "id": "P-4",
+              "title": "Parity at Plan options & trade-offs (pros / cons)",
+              "desc": "Reprice the book.",
+              "updated_at": "<time>"
+            }
+          ],
+          "feedback": []
+        }
+      }
+    ],
+    "20": [
+      {
+        "run_id": 76,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 16"
+          },
+          {
+            "label": "How we'll verify",
+            "content": "## How we'll verify\nartifact of step 17"
+          },
+          {
+            "label": "Guardrails",
+            "content": "## Guardrails\nartifact of step 18"
+          }
+        ],
+        "item": {
+          "id": "P-20",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at Assess",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 20,
+          "label": "Assess",
+          "agent": "Eng"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ],
+    "21": [
+      {
+        "run_id": 81,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 16"
+          },
+          {
+            "label": "How we'll verify",
+            "content": "## How we'll verify\nartifact of step 17"
+          },
+          {
+            "label": "Guardrails",
+            "content": "## Guardrails\nartifact of step 18"
+          },
+          {
+            "label": "Assess",
+            "content": "## Assess\nartifact of step 20"
+          }
+        ],
+        "item": {
+          "id": "P-21",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at Run plan",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 21,
+          "label": "Run plan",
+          "agent": "Eng"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": [],
+        "repo_dir": null,
+        "venv_dir": null,
+        "container_image": null,
+        "cpu_limit": null,
+        "memory_limit": null,
+        "runner": "host"
+      }
+    ],
+    "22": [
+      {
+        "run_id": 87,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 16"
+          },
+          {
+            "label": "How we'll verify",
+            "content": "## How we'll verify\nartifact of step 17"
+          },
+          {
+            "label": "Guardrails",
+            "content": "## Guardrails\nartifact of step 18"
+          },
+          {
+            "label": "Assess",
+            "content": "## Assess\nartifact of step 20"
+          },
+          {
+            "label": "Run plan",
+            "content": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```"
+          }
+        ],
+        "item": {
+          "id": "P-22",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at Impact review",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 22,
+          "label": "Impact review",
+          "agent": "Architect"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ],
+    "24": [
+      {
+        "run_id": 94,
+        "attempt": 1,
+        "item": {
+          "id": "P-24",
+          "kind": "task",
+          "repo": null
+        },
+        "step": {
+          "index": 24,
+          "label": "Execute",
+          "agent": "DevOps"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "plan_artifact": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```",
+        "approved_hash": "960fde42a53e38f28e263867d87b03f87ad9c99dac0c6e1c09fbca7bf8f6e682",
+        "runner": "host",
+        "repo_dir": null,
+        "venv_dir": null,
+        "container_image": null,
+        "cpu_limit": null,
+        "memory_limit": null
+      }
+    ],
+    "25": [
+      {
+        "run_id": 102,
+        "attempt": 1,
+        "artifacts": [
+          {
+            "label": "Define the outcome",
+            "content": "## Define the outcome\nartifact of step 16"
+          },
+          {
+            "label": "How we'll verify",
+            "content": "## How we'll verify\nartifact of step 17"
+          },
+          {
+            "label": "Guardrails",
+            "content": "## Guardrails\nartifact of step 18"
+          },
+          {
+            "label": "Assess",
+            "content": "## Assess\nartifact of step 20"
+          },
+          {
+            "label": "Run plan",
+            "content": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```"
+          },
+          {
+            "label": "Impact review",
+            "content": "## Impact review\nartifact of step 22"
+          },
+          {
+            "label": "Execute",
+            "content": "## Execute\nartifact of step 24"
+          }
+        ],
+        "item": {
+          "id": "P-25",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at Verify & report",
+          "desc": "Reprice the book.",
+          "metric": "It reprices.",
+          "guardrails": "Nothing else moves.",
+          "priority": "Medium",
+          "repo": null,
+          "issue": null,
+          "personas": {
+            "eng": "python",
+            "qa": "data_integrity",
+            "architect": "distributed_systems"
+          },
+          "providerChoices": {}
+        },
+        "step": {
+          "index": 25,
+          "label": "Verify & report",
+          "agent": "QA"
+        },
+        "project": {
+          "id": 1,
+          "name": "Acme Capital"
+        },
+        "feedback": []
+      }
+    ]
+  },
+  "items": {
+    "P-0": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-1": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-2": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-4": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-6": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        },
+        {
+          "step_index": 6,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-7": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        },
+        {
+          "step_index": 6,
+          "substep_id": null
+        },
+        {
+          "step_index": 7,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-8": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        },
+        {
+          "step_index": 6,
+          "substep_id": null
+        },
+        {
+          "step_index": 7,
+          "substep_id": null
+        },
+        {
+          "step_index": 8,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-9": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        },
+        {
+          "step_index": 6,
+          "substep_id": null
+        },
+        {
+          "step_index": 7,
+          "substep_id": null
+        },
+        {
+          "step_index": 8,
+          "substep_id": null
+        },
+        {
+          "step_index": 9,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-11": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        },
+        {
+          "step_index": 6,
+          "substep_id": null
+        },
+        {
+          "step_index": 7,
+          "substep_id": null
+        },
+        {
+          "step_index": 8,
+          "substep_id": null
+        },
+        {
+          "step_index": 9,
+          "substep_id": null
+        },
+        {
+          "step_index": 11,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-12": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        },
+        {
+          "step_index": 6,
+          "substep_id": null
+        },
+        {
+          "step_index": 7,
+          "substep_id": null
+        },
+        {
+          "step_index": 8,
+          "substep_id": null
+        },
+        {
+          "step_index": 9,
+          "substep_id": null
+        },
+        {
+          "step_index": 11,
+          "substep_id": null
+        },
+        {
+          "step_index": 12,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-14": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 0,
+          "substep_id": null
+        },
+        {
+          "step_index": 1,
+          "substep_id": null
+        },
+        {
+          "step_index": 2,
+          "substep_id": null
+        },
+        {
+          "step_index": 4,
+          "substep_id": null
+        },
+        {
+          "step_index": 6,
+          "substep_id": null
+        },
+        {
+          "step_index": 7,
+          "substep_id": null
+        },
+        {
+          "step_index": 8,
+          "substep_id": null
+        },
+        {
+          "step_index": 9,
+          "substep_id": null
+        },
+        {
+          "step_index": 11,
+          "substep_id": null
+        },
+        {
+          "step_index": 12,
+          "substep_id": null
+        },
+        {
+          "step_index": 14,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-16": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-17": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-18": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        },
+        {
+          "step_index": 18,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-20": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        },
+        {
+          "step_index": 18,
+          "substep_id": null
+        },
+        {
+          "step_index": 20,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-21": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        },
+        {
+          "step_index": 18,
+          "substep_id": null
+        },
+        {
+          "step_index": 20,
+          "substep_id": null
+        },
+        {
+          "step_index": 21,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-22": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        },
+        {
+          "step_index": 18,
+          "substep_id": null
+        },
+        {
+          "step_index": 20,
+          "substep_id": null
+        },
+        {
+          "step_index": 21,
+          "substep_id": null
+        },
+        {
+          "step_index": 22,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-24": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        },
+        {
+          "step_index": 18,
+          "substep_id": null
+        },
+        {
+          "step_index": 20,
+          "substep_id": null
+        },
+        {
+          "step_index": 21,
+          "substep_id": null
+        },
+        {
+          "step_index": 22,
+          "substep_id": null
+        },
+        {
+          "step_index": 24,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-25": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        },
+        {
+          "step_index": 18,
+          "substep_id": null
+        },
+        {
+          "step_index": 20,
+          "substep_id": null
+        },
+        {
+          "step_index": 21,
+          "substep_id": null
+        },
+        {
+          "step_index": 22,
+          "substep_id": null
+        },
+        {
+          "step_index": 24,
+          "substep_id": null
+        },
+        {
+          "step_index": 25,
+          "substep_id": null
+        }
+      ]
+    }
+  }
+}

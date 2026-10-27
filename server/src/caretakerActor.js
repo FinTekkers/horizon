@@ -77,7 +77,7 @@ const actionableEvalSql = (gates) => `p.autopilot = 'on' AND p.enabled = 1 AND c
      AND c.gate_index IN (${gates.join(',')}) AND w.cursor = c.gate_index
      AND w.abandoned_at IS NULL
      AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
-           AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
+           AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0)
      AND NOT EXISTS (SELECT 1 FROM caretaker_action a WHERE a.eval_id = c.id)
      AND NOT EXISTS (SELECT 1 FROM project_event pe WHERE pe.project_id = p.id AND pe.kind = 'autopilot'
            AND pe.new_value <> 'on' AND pe.created_at >= c.created_at)`
@@ -106,7 +106,7 @@ const countCaretakerSendBacks = db.prepare(
 // failFarmRun() records a failure as cancelled + "FAILED: …". Lifetime count
 // for the step that feeds this gate (gate − 1) only. HZ-366: the ping reads
 // the newest of the same runs; both go through failedRuns().
-const FAILED_RUNS = "FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'cancelled' AND output LIKE 'FAILED:%'"
+const FAILED_RUNS = "FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'cancelled' AND output LIKE 'FAILED:%'"
 const countFailedRuns = db.prepare(`SELECT COUNT(*) AS n ${FAILED_RUNS}`)
 const selectLastFailedOutput = db.prepare(`SELECT output ${FAILED_RUNS} ORDER BY id DESC LIMIT 1`)
 const failedRuns = (c) => {
@@ -155,7 +155,7 @@ const selectHelpCandidates = db.prepare(`
      AND c.gate_index IN (${HELP_GATES.join(',')}) AND w.cursor = c.gate_index AND w.abandoned_at IS NULL
      AND w.autopilot_off = 0
      AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
-           AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0)
+           AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0)
    ORDER BY c.id`)
 
 // One 'needs_human' ping per caretaker_eval row, i.e. per gate arrival: the

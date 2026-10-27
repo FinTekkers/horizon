@@ -57,7 +57,7 @@ function openItemsInScope(item) {
 function latestGaps(item) {
   const row = db
     .prepare(
-      `SELECT artifact FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL
+      `SELECT artifact FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL
        ORDER BY id DESC LIMIT 1`,
     )
     .get(item.id, PLAN_INVENTORY_STEP_INDEX)

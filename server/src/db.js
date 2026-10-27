@@ -655,6 +655,9 @@ try {
 } catch {
   // column already exists
 }
+// HZ-539: a sub-step run keeps its anchor's step_index, so every reader of one
+// global step's runs filters `substep_id IS NULL` — else a sub-step row, with
+// the higher id, would shadow its anchor's.
 // HZ-458: the time an implement run spent in the farm's repo checks, which
 // the step clock does not count, and when its open check window began (NULL
 // while no checks run). Additive: 0 / NULL on every earlier row, whose timer
@@ -846,6 +849,14 @@ if (!db.prepare('PRAGMA table_info(gate_action)').all().some((column) => column.
 // every other decision, and on every row from before this column.
 if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'plan_hash')) {
   db.exec('ALTER TABLE gate_decision ADD COLUMN plan_hash TEXT')
+}
+
+// HZ-539: the sub-step a gate decision was made at, beside its step_index (the
+// anchor). NULL on every global decision and on every row from before this
+// column. gate_action gets none: a sub-step never gates (substeps.js), and a
+// gate action is one long action per (item, kind) at a global gate.
+if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'substep_id')) {
+  db.exec('ALTER TABLE gate_decision ADD COLUMN substep_id TEXT')
 }
 
 // HZ-245: per-repo check commands, set by a human in Admin. Additive and
