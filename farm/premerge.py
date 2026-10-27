@@ -67,7 +67,9 @@ DEPLOYED_ROOTS = (Path("/opt/horizon"),)
 RUNNING_CHECKOUT = Path(__file__).resolve().parents[1]
 # Kept back from the caller's budget for the git work and the reap, so the
 # checks hit their own deadline (and report a structured "timed_out") before
-# the server's wall-clock kill does.
+# the server's wall-clock kill does. HZ-598: the budget is run time — the
+# checks' deadline moves later by the slot wait, as the server re-arms its
+# kill when the slot is granted.
 RESERVE_S = 60
 
 # HZ-227: a stderr line starting with this carries one JSON event for the
@@ -267,6 +269,7 @@ def premerge_check(
                         flakes=recorded["flakes"],
                         test_runs=recorded["test_runs"],
                         branch_notes=recorded["branch_notes"],
+                        deadline_after_slot=True,
                     )
                 finally:
                     out.update({key: value for key, value in recorded.items() if value})

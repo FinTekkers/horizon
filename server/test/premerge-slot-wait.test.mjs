@@ -48,16 +48,22 @@ test('an onSlot that throws never fails the run', async () => {
   assert.deepEqual(heard, ['queued', 'granted'])
 })
 
-test('without onSlot the runner gets no stderr listener', async () => {
-  let opts
-  await withSpawn(
-    async (args, o) => {
-      opts = o
+// HZ-598: the listener is always there, since the slot events also re-arm
+// the cap; without onSlot it only does that.
+test('without onSlot the stderr listener still takes slot events and never throws', async () => {
+  const restarts = []
+  const result = await withSpawn(
+    async (args, opts) => {
+      opts.onTimer({ restart: (ms) => restarts.push(ms) })
+      opts.onStderrLine('noise')
+      opts.onStderrLine('HORIZON_EVENT {"check_slot": "queued"}')
+      opts.onStderrLine('HORIZON_EVENT {"check_slot": "granted", "mode": "held"}')
       return green(args)
     },
     () => premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60000 }),
   )
-  assert.equal(opts.onStderrLine, undefined)
+  assert.equal(result.ok, true)
+  assert.deepEqual(restarts, [60000 + premerge.slotWaitMaxMs(), 60000])
 })
 
 test('parseSlotEvent accepts only whole, known HORIZON_EVENT lines', () => {

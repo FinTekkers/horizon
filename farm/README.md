@@ -397,8 +397,12 @@ to a throwaway directory made for that run, never the farm's.
   no hub, a crash — leaves the gate open and the PR unmerged, and the item's
   activity names the failing check and the last 40 lines of its output.
 - `PREMERGE_CHECK_TIMEOUT_MS` (server env, default 20 minutes) bounds the
-  whole run. The server and the farm must share `FARM_HOME` (both default to
-  `~/.horizon-farm` for the `ubuntu` user).
+  run's time after it gets a check slot (HZ-598): time queued for a slot or
+  for memory does not count. A queued run is still bounded: past
+  `FARM_CHECK_SLOT_WAIT_MAX_S` (read from the server env and passed to the
+  run, default 1200 s) it runs without a slot, and the server kills a run
+  still queued at the timeout plus that wait. The server and the farm must
+  share `FARM_HOME` (both default to `~/.horizon-farm` for the `ubuntu` user).
 
 Measure it on an idle host with
 `HORIZON_PREMERGE_LIVE=1 python3 -m pytest -s farm/tests/test_premerge_live.py`.
