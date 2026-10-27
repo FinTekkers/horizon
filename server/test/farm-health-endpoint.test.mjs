@@ -36,6 +36,15 @@ db.prepare(
   "INSERT INTO deploy_batch (target, repo, status, window_closes_at, tag, live_at, failure) VALUES ('horizon', 'FinTekkers/horizon', 'done', ?, 'v2026.10.23-1', ?, ?)",
 ).run(sqlTime(NOW), sqlTime(NOW - 20 * 60 * 1000), `restart failed: token=${SECRET}`)
 
+// HZ-595: the deploy targets the collector reads, as listTargets() returns them.
+const TARGETS = [
+  { key: 'horizon', service: 'horizon-server', healthUrl: 'http://127.0.0.1:3001/api/health', healthCheckType: 'json-health', extraServices: ['horizon-farm'] },
+  { key: 'broker', service: 'fintekkers-broker', healthUrl: 'http://127.0.0.1:8085', healthCheckType: 'grpc-health' },
+  { key: 'ui-service', service: 'fintekkers-ui', healthUrl: `https://www.fintekkers.org/${SECRET}`, healthCheckType: 'ssr-asset-check' },
+  { key: 'market-data-inputs', service: '', healthUrl: 'https://github.com/FinTekkers/market-data-inputs', healthCheckType: 'deploy-log' },
+]
+const UNITS = farmHealth.buildServiceRows(TARGETS)
+
 const calls = { exec: [], farm: [] }
 const deps = {
   readFile: async (path) => {
@@ -48,7 +57,7 @@ const deps = {
   statfs: async () => ({ bsize: 4096, blocks: 1000, bfree: 400, bavail: 380 }),
   execProbe: async (cmd, args, timeoutMs) => {
     calls.exec.push({ cmd, args, timeoutMs })
-    const lines = farmHealth.UNITS.map(() => 'active')
+    const lines = UNITS.map(() => 'active')
     return { code: 0, stdout: `${lines.join('\n')}\n${SECRET}\n`, timedOut: false }
   },
   farmFetch: async (path, body, opts) => {
@@ -86,6 +95,7 @@ const deps = {
   ],
   liveDeploysSince: (since) => store.listLiveDeploysSince(since),
   serverBootedAt: () => new Date(NOW - 30 * 60 * 1000).toISOString(),
+  deployTargets: () => TARGETS,
 }
 
 const get = (cookie) => app.inject({ method: 'GET', url: '/api/admin/farm-health', headers: { cookie } })
@@ -175,7 +185,19 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
   assertShape(body, SHAPE, 'body')
   // The figures still came through, and each row is the right kind.
   assert.equal(body.farm.status, 'running')
-  assert.equal(body.services.length, 12)
+  assert.deepEqual(
+    body.services.map((s) => [s.name, s.detail]),
+    [
+      ['fintekkers-broker', 'gRPC :8085'],
+      ['horizon-server', ':3001'],
+      ['horizon-farm', null],
+      ['fintekkers-ui', null],
+      ['nginx', null],
+      ['postgresql', null],
+      ['whatsapp-bridge', null],
+      ['earlyoom', null],
+    ],
+  )
   assert.ok(body.services.every((s) => s.up))
   assert.equal(body.box.machine, null, 'an unexpected machine string is dropped, not echoed')
   assert.deepEqual(body.box.load, [2.1, 1.8, 1.5])
@@ -294,7 +316,7 @@ test('the collector only runs systemctl is-active and only GETs /farm/status', a
   for (const c of calls.exec) {
     assert.equal(c.cmd, 'systemctl')
     assert.equal(c.args[0], 'is-active')
-    assert.deepEqual(c.args.slice(1), farmHealth.UNITS.map((u) => u.unit))
+    assert.deepEqual(c.args.slice(1), UNITS.map((u) => u.unit))
     assert.ok(!c.args.includes('sudo'))
     assert.ok(c.timeoutMs > 0, 'systemctl runs under a timeout')
   }
@@ -326,7 +348,7 @@ test('a farmd that cannot be reached reads as not running, and the page goes red
 
 test('a failed horizon-farm launcher unit reads up while farmd reports running', async () => {
   const execProbe = async () => {
-    const lines = farmHealth.UNITS.map((u) => (u.unit === 'horizon-farm' ? 'failed' : 'active'))
+    const lines = UNITS.map((u) => (u.unit === 'horizon-farm' ? 'failed' : 'active'))
     return { code: 3, stdout: `${lines.join('\n')}\n`, timedOut: false }
   }
   const snapshot = await farmHealth.collectOnce({ ...deps, execProbe })
@@ -372,4 +394,17 @@ test('an armed loop collects nothing until the cache is read, then collects off 
   } finally {
     stop()
   }
+})
+
+test('a deploy_target read that fails still checks the box units (HZ-595)', async () => {
+  const snapshot = await farmHealth.collectOnce({
+    ...deps,
+    deployTargets: () => {
+      throw new Error('no such table')
+    },
+  })
+  assert.deepEqual(
+    snapshot.services.map((s) => s.unit),
+    farmHealth.BOX_UNITS.map((u) => u.unit),
+  )
 })
