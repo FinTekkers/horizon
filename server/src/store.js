@@ -162,7 +162,7 @@ export function claimGateAction(itemId, kind, { detail = null, timeoutMs, starte
 
 // HZ-585: restarts a running action's lease at timeoutMs plus
 // GATE_ACTION_MARGIN_MS from now — the pre-merge run's checks clock starts
-// when it holds a check slot, not at the claim. Only the claiming run's token
+// when it holds a capacity slot, not at the claim. Only the claiming run's token
 // matches. True when the row was updated.
 export function renewGateActionLease(itemId, kind, token, timeoutMs) {
   const deadlineAt = new Date(Date.now() + timeoutMs + GATE_ACTION_MARGIN_MS).toISOString()

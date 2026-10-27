@@ -288,7 +288,7 @@ def test_the_reporter_says_what_an_unthrottled_run_means_and_what_not_to_do(tmp_
     path.write_text(json.dumps(_record(slot_wait_timed_out=True)) + "\n")
     records, _ = check_metrics.read_records(path)
     text = reporter.render(reporter.by_phase(records), 0, path, markdown=False)
-    assert "NO check slot" in text
+    assert "NO capacity slot" in text
     assert "raising the ceiling would only hide it" in text
 
 
@@ -296,7 +296,7 @@ def test_a_clean_window_reports_no_unthrottled_warning(tmp_path):
     path = tmp_path / "m.jsonl"
     path.write_text(json.dumps(_record()) + "\n")
     records, _ = check_metrics.read_records(path)
-    assert "NO check slot" not in reporter.render(reporter.by_phase(records), 0, path, markdown=False)
+    assert "NO capacity slot" not in reporter.render(reporter.by_phase(records), 0, path, markdown=False)
 
 
 def test_check_duration_excludes_the_slot_wait(tmp_path):

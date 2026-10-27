@@ -1,7 +1,7 @@
 // HZ-227 live-test plumbing: a stand-in for `python -m farm.premerge` that
 // queues through the REAL check-slot limiter (farm/check_slots.py) with the
 // REAL stderr emitter (farm/premerge.py stderr_event), and a process that
-// holds a check slot with a real flock. Point PREMERGE_PYTHON at shimBin and
+// holds a capacity slot with a real flock. Point PREMERGE_PYTHON at shimBin and
 // FARM_HOME at the temp dir; nothing here touches the live farm.
 
 import { spawn, spawnSync } from 'node:child_process'

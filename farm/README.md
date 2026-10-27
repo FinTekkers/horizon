@@ -58,10 +58,10 @@ sessions; queued work survives on disk.
 | `FARM_MODEL_OVERRIDE` | (unset) | **emergency only** (HZ-192): a model id declared in `domain/providers.json` that replaces the model of EVERY call on the provider that declares it — PM, steps, conflict resolution and the concierge — over the owner's per-step choice too (HZ-398). A Claude id never reaches Muse, nor the reverse. An id the catalogue does not declare fails each call rather than reaching the CLI |
 | `FARM_STEP_TIMEOUT_S` | 900 | per-claude-invocation timeout |
 | `FARM_CHECK_CMD` | (auto-detect) | guardrail check command run before push (via `sh -c`) |
-| `FARM_CHECK_TIMEOUT_S` | 600 | how long the checks may **run**. Never includes time spent queueing for a check slot — see below |
+| `FARM_CHECK_TIMEOUT_S` | 600 | how long the checks may **run**. Never includes time spent queueing for a capacity slot — see below |
 | `FARM_MAX_EPHEMERAL` | 4 | how many ephemeral agent steps run at once. The code default is deliberately conservative; the value this host runs is set in `/etc/horizon/farm.env` (`infra/host/DEPLOY.md`). Never forwarded into an agent session |
 | `FARM_MAX_CONCURRENT_CHECKS` | 2 | how many check suites may run at once, independently of the agent cap. `<=0` disables the limiter entirely (the rollback lever) |
-| `FARM_CHECK_SLOT_WAIT_MAX_S` | 1200 | how long a run waits for a check slot before proceeding **without** one, loudly. `<=0` waits forever |
+| `FARM_CHECK_SLOT_WAIT_MAX_S` | 1200 | how long a run waits for a capacity slot before proceeding **without** one, loudly. `<=0` waits forever |
 | `FARM_CHECK_METRICS_PHASE` | (unlabelled) | tags check-metric records with a measurement-window name, e.g. `cap6-limit2` |
 | `FARM_DEP_CACHE` | 1 | per-repo dependency cache for the install check (HZ-249). `0` turns it off with no cache I/O at all — exactly the old install path |
 | `FARM_DEP_CACHE_MAX_ENTRIES` | 3 | cache entries kept per repo (one per lockfile/toolchain key), least recently used pruned first |
@@ -328,6 +328,28 @@ derivation lives next to `DEFAULT_WAIT_CEILING_S` in `farm/check_slots.py` and
 is enforced by two tests. The reporter has an `Unthrottled` column so a run
 that took that path shows up as a number rather than a line in a session log.
 
+**Capacity slots (HZ-592).** Logs, failure messages, the item page and Farm
+health call these slots **capacity slots**: the limit protects the box's
+capacity, not checks as such. Config, API and lock names keep their old
+"check" names, so nothing breaks: `FARM_MAX_CONCURRENT_CHECKS`,
+`FARM_CHECK_SLOT_WAIT_MAX_S`, `/farm/status`'s `checks` block, the
+`HORIZON_EVENT {"check_slot": …}` events and `$FARM_HOME/locks/checks/slot-N`.
+Every wait names what the slot is for, from its caller
+(`WAIT_PURPOSES` in `farm/check_slots.py`):
+
+| Caller | Message |
+| --- | --- |
+| `step_agent` (build-step checks) | waiting for a capacity slot to run checks |
+| `premerge` (Accept) | waiting for a capacity slot to run pre-merge checks (main + PR) |
+| `conflict_resolver` | waiting for a capacity slot to re-check after rebasing |
+| `screenshots` | waiting for a capacity slot to capture screenshots |
+| `validate` (Validate project) | waiting for a capacity slot to run checks on main |
+| `base_check` (HZ-590) | waiting for a capacity slot to re-run the failing tests on main |
+
+A new caller adds its purpose there; a test fails any `caller=` under
+`farm/` that has none. `/farm/status` gives each slot waiter its message as
+`checks.waiting[].reason`.
+
 `GET /farm/status` reports both limits (`agents`, `checks`) including who is
 currently queued for a slot, and (HZ-574, `checks.holders`) who holds each
 slot: item, run, caller, the slot label it is running (never the command
@@ -397,7 +419,7 @@ to a throwaway directory made for that run, never the farm's.
   no hub, a crash — leaves the gate open and the PR unmerged, and the item's
   activity names the failing check and the last 40 lines of its output.
 - `PREMERGE_CHECK_TIMEOUT_MS` (server env, default 20 minutes) bounds the
-  run's time after it gets a check slot (HZ-598): time queued for a slot or
+  run's time after it gets a capacity slot (HZ-598): time queued for a slot or
   for memory does not count. A queued run is still bounded (HZ-585): by
   `PREMERGE_QUEUE_TIMEOUT_MS` (server env, default 60 minutes, counted from
   the click). It never runs without a slot: past that wait it ends

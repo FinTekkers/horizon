@@ -65,6 +65,11 @@ whose pid is dead is pruned on every read, and the next taker of the same
 slot deletes whatever an earlier holder of that slot left behind. A record
 that cannot be written or deleted is logged and never fails the run.
 
+HZ-592 calls these "capacity slots" wherever a person reads them: the
+limit protects the box's capacity, not checks as such. Config, API and lock
+names keep "check" (FARM_MAX_CONCURRENT_CHECKS, /farm/status `checks`,
+locks/checks/slot-N), and every wait names its purpose from WAIT_PURPOSES.
+
 HZ-585 lets one caller wait differently: the pre-merge run at Accept passes a
 SlotPolicy. Its slot wait never fails open (SlotWaitExpired at its own
 ceiling instead), its queued events say how many runs started waiting before
@@ -87,7 +92,7 @@ from . import config
 
 # Set by farm/checks.py on the check subprocess only — never forwarded into a
 # tmux session, never written to farm.env. Its presence means "you are already
-# running inside someone's check slot"; see the nesting note above.
+# running inside someone's capacity slot"; see the nesting note above.
 IN_CHECKS_ENV = "FARM_IN_CHECKS"
 
 DEFAULT_LIMIT = 2
@@ -156,6 +161,29 @@ DEFAULT_MEMINFO_PATH = "/proc/meminfo"
 _KB_PER_GB = 1024 * 1024
 
 
+# HZ-592: what each caller waits for a slot to do. Every caller of
+# check_slot() (via run_checks()'s `caller`) names its purpose here, and a
+# test checks every `caller=` under farm/ against it — there is no generic
+# "waiting for a slot". screenshots has no wait of its own today (it runs in
+# the slot run_checks() holds) but is named for any direct caller.
+WAIT_PURPOSES = {
+    "step_agent": "run checks",
+    "premerge": "run pre-merge checks (main + PR)",
+    "conflict_resolver": "re-check after rebasing",
+    "screenshots": "capture screenshots",
+    "validate": "run checks on main",
+    "base_check": "re-run the failing tests on main",
+}
+
+
+def wait_message(caller) -> str | None:
+    """HZ-592: "waiting for a capacity slot to <purpose>" for a caller in
+    WAIT_PURPOSES, else None. Never raises: it runs in the wait path and on
+    /farm/status, which reads markers any farm build may have written."""
+    purpose = WAIT_PURPOSES.get(caller) if isinstance(caller, str) else None
+    return f"waiting for a capacity slot to {purpose}" if purpose else None
+
+
 class WaitCancelled(Exception):
     """HZ-256: check_slot()'s `cancel` event was set while it waited for a
     slot. Raised instead of yielding, so nothing runs."""
@@ -195,7 +223,7 @@ class SlotWaitExpired(Exception):
     not fail open. Raised instead of yielding, so nothing runs."""
 
     def __init__(self, waited_s: float, limit: int):
-        super().__init__(f"no check slot after {waited_s:.0f}s (limit {limit})")
+        super().__init__(f"no capacity slot after {waited_s:.0f}s (limit {limit})")
         self.waited_s = waited_s
         self.limit = limit
 
@@ -398,7 +426,8 @@ def _pid_alive(pid: int) -> bool:
 
 
 def waiting_runs() -> list[dict]:
-    """Runs currently queued for a slot, for /farm/status.
+    """Runs currently queued for a slot, for /farm/status. HZ-592: a run
+    waiting on a slot gets `reason`, its wait_message(), when its caller has one.
 
     Unlike the slots themselves, marker files get no kernel self-heal: a
     waiter killed mid-wait leaves its file behind. So liveness is re-derived
@@ -406,10 +435,14 @@ def waiting_runs() -> list[dict]:
     than reported — otherwise status would show a phantom waiter forever.
     """
     now = time.time()
-    return [
-        {**data, "waited_s": round(max(0.0, now - float(data.get("since") or 0)), 1)}
-        for _path, data in _live_markers(now)
-    ]
+    out = []
+    for _path, data in _live_markers(now):
+        row = {**data, "waited_s": round(max(0.0, now - float(data.get("since") or 0)), 1)}
+        reason = wait_message(data.get("caller")) if data.get("waiting_on") == "slot" else None
+        if reason:
+            row["reason"] = reason
+        out.append(row)
+    return out
 
 
 def _live_markers(now: float) -> list[tuple[Path, dict]]:
@@ -713,7 +746,7 @@ def check_slot(
     cancel=None,
     policy: SlotPolicy | None = None,
 ):
-    """Hold one of FARM_MAX_CONCURRENT_CHECKS check slots for the duration.
+    """Hold one of FARM_MAX_CONCURRENT_CHECKS capacity slots for the duration.
 
     Yields a SlotHold. The limiter throttles work, it never refuses it: every
     early-return path below hands back a SlotHold whose `mode` records why no
@@ -811,10 +844,10 @@ def check_slot(
                     )
                     raise MemoryWaitExpired(short, waited, memory.threshold)
                 if not policy.fail_open:
-                    log(f"check_slots: WARNING no check slot after {waited:.0f}s (limit={limit}) — not starting checks")
+                    log(f"check_slots: WARNING no capacity slot after {waited:.0f}s (limit={limit}) — not starting checks")
                     raise SlotWaitExpired(waited, limit)
                 log(
-                    f"check_slots: WARNING no check slot after {waited:.0f}s "
+                    f"check_slots: WARNING no capacity slot after {waited:.0f}s "
                     f"(FARM_CHECK_SLOT_WAIT_MAX_S={ceiling:.0f}, limit={limit}) — "
                     "running checks unthrottled rather than discarding this attempt; "
                     "a repeated warning here means the farm is over its check capacity"
@@ -831,7 +864,7 @@ def check_slot(
                 announced = True
                 marker = _write_marker(run_id, item_id, caller, waiting_on=now_on) or marker
                 if now_on == "slot":
-                    log(f"check_slots: all {limit} check slots busy — waiting for one")
+                    log(f"check_slots: all {limit} capacity slots busy — {wait_message(caller) or f'waiting for one ({caller})'}")
                     if policy.report_ahead:
                         shown_ahead = _ahead_of(marker)
                         _emit(on_event, "queued", **({} if shown_ahead is None else {"ahead": shown_ahead}))
@@ -848,14 +881,14 @@ def check_slot(
             if cancel is None:
                 time.sleep(pause)
             elif cancel.wait(pause):
-                log("check_slots: cancelled while waiting for a check slot")
-                raise WaitCancelled("cancelled while waiting for a check slot")
+                log("check_slots: cancelled while waiting for a capacity slot")
+                raise WaitCancelled("cancelled while waiting for a capacity slot")
 
         waited = time.monotonic() - started
         _clear_marker(marker)
         marker = None
         if waited >= 1:
-            log(f"check_slots: got check slot {index} after waiting {waited:.0f}s")
+            log(f"check_slots: got capacity slot {index} after waiting {waited:.0f}s")
         if announced:
             _emit(on_event, "granted", mode="held")
         # HZ-574: the holder record, written only now that the lock is ours.

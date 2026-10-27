@@ -1619,7 +1619,7 @@ def farm_status():
     # this route, so new keys can't break it. `agents.busy` counts the runs
     # lane only, the slots MAX_EPHEMERAL bounds; `express` (HZ-477) counts the
     # runs beyond them, in the FARM_EXPRESS_SLOTS only short steps may use.
-    # They exist because the check limiter is otherwise invisible — a run blocked on a check slot looks identical to
+    # They exist because the check limiter is otherwise invisible — a run blocked on a capacity slot looks identical to
     # a run that is simply slow, and "who is waiting" was the one thing the
     # file-lock design gave up versus a farmd-brokered lease.
     busy = _lane_busy(_ephemeral_sessions())

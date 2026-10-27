@@ -378,7 +378,7 @@ def test_a_run_that_waits_past_the_ceiling_proceeds_unthrottled_and_loudly(tmp_p
             assert slot.mode == "fail-open"
             assert slot.timed_out is True
             assert slot.waited_s >= 1
-        assert any("no check slot after" in line and "WARNING" in line for line in logged)
+        assert any("no capacity slot after" in line and "WARNING" in line for line in logged)
         # The warning is the whole point of fail-open: it must not be silent.
         assert any("over its check capacity" in line for line in logged)
     finally:
@@ -472,6 +472,111 @@ def test_status_reports_the_limit_busy_count_and_waiters(tmp_path, monkeypatch):
     assert status["limit"] == 2
     assert status["busy"] == 1
     assert status["waiting"] == []
+
+
+# ---- HZ-592: every wait names what the capacity slot is for ----
+
+WAIT_TABLE = {
+    "step_agent": "waiting for a capacity slot to run checks",
+    "premerge": "waiting for a capacity slot to run pre-merge checks (main + PR)",
+    "conflict_resolver": "waiting for a capacity slot to re-check after rebasing",
+    "screenshots": "waiting for a capacity slot to capture screenshots",
+}
+
+
+@pytest.mark.parametrize("caller", sorted(WAIT_TABLE))
+def test_each_callers_wait_message_names_its_purpose(caller):
+    assert check_slots.wait_message(caller) == WAIT_TABLE[caller]
+
+
+@pytest.mark.parametrize("caller", sorted(check_slots.WAIT_PURPOSES))
+def test_every_wait_message_reads_waiting_for_a_capacity_slot_to_a_purpose(caller):
+    message = check_slots.wait_message(caller)
+    assert message.startswith("waiting for a capacity slot to ")
+    assert len(message) > len("waiting for a capacity slot to ")
+
+
+@pytest.mark.parametrize("caller", ["someone_new", "", None, 7, "__class__"])
+def test_an_unknown_caller_has_no_wait_message_and_never_raises(caller):
+    """The wait path and /farm/status both call this, and status reads
+    markers any farm build may have written — so it never raises."""
+    assert check_slots.wait_message(caller) is None
+
+
+def _callers_in_farm_code() -> dict[str, str]:
+    """Every `caller` a farm module passes to run_checks() (or its
+    _run_checks wrapper) or check_slot(), plus their defaults: {caller: where}."""
+    import ast
+    import pathlib
+
+    found: dict[str, str] = {}
+    for path in sorted(pathlib.Path(REPO_ROOT, "farm").glob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+                if name not in ("run_checks", "_run_checks", "check_slot"):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == "caller" and isinstance(kw.value, ast.Constant):
+                        found[kw.value.value] = f"{path.name}:{node.lineno}"
+            elif isinstance(node, ast.FunctionDef) and node.name in ("run_checks", "check_slot"):
+                positional = node.args.args[len(node.args.args) - len(node.args.defaults) :]
+                defaults = dict(zip([a.arg for a in positional], node.args.defaults))
+                defaults.update((a.arg, d) for a, d in zip(node.args.kwonlyargs, node.args.kw_defaults))
+                default = defaults.get("caller")
+                if isinstance(default, ast.Constant):
+                    found[default.value] = f"{path.name}:{node.lineno} (default)"
+    return found
+
+
+def test_every_caller_in_farm_code_names_its_purpose():
+    """A new caller of run_checks()/check_slot() must add its purpose to
+    WAIT_PURPOSES: a generic "waiting for a slot" is not allowed."""
+    found = _callers_in_farm_code()
+    # The scan itself must see today's callers, or it proves nothing.
+    assert {"step_agent", "premerge", "conflict_resolver", "validate"} <= set(found), found
+    missing = {caller: where for caller, where in found.items() if caller not in check_slots.WAIT_PURPOSES}
+    assert missing == {}, f"add these callers to check_slots.WAIT_PURPOSES: {missing}"
+
+
+def test_the_wait_log_line_names_the_callers_purpose(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    marker = tmp_path / "acquired.txt"
+    holder = _holder(marker, 1.2, "hog")
+    try:
+        assert _wait_for_lines(marker, 1)
+        logged = []
+        with check_slots.check_slot(log=logged.append, caller="conflict_resolver", poll_s=0.05) as slot:
+            assert slot.mode == "held"
+    finally:
+        holder.wait(timeout=30)
+    assert (
+        "check_slots: all 1 capacity slots busy — waiting for a capacity slot to re-check after rebasing" in logged
+    ), logged
+    assert any(line.startswith(f"check_slots: got capacity slot {slot.slot_index} after") for line in logged), logged
+
+
+def test_farm_status_gives_each_slot_waiter_its_reason(tmp_path):
+    waiting = check_slots.slot_dir() / "waiting"
+    waiting.mkdir(parents=True)
+    now = time.time()
+    rows = {
+        "r-pm": {"caller": "premerge", "waiting_on": "slot"},
+        "r-mem": {"caller": "step_agent", "waiting_on": "memory"},
+        "r-old": {"caller": "step_agent"},  # before HZ-571: a slot wait
+        "r-new": {"caller": "someone_new", "waiting_on": "slot"},
+    }
+    for run_id, extra in rows.items():
+        (waiting / f"{os.getpid()}-{run_id}.json").write_text(
+            json.dumps({"pid": os.getpid(), "run_id": run_id, "since": now, **extra})
+        )
+    by_run = {w["run_id"]: w for w in check_slots.status()["waiting"]}
+    assert by_run["r-pm"]["reason"] == WAIT_TABLE["premerge"]
+    assert by_run["r-old"]["reason"] == WAIT_TABLE["step_agent"]
+    assert "reason" not in by_run["r-mem"], "a memory wait is not a capacity-slot wait"
+    assert "reason" not in by_run["r-new"], "an unknown caller gets no reason rather than breaking status"
 
 
 # ---- HZ-574: holder records — who holds each slot, for Farm health ----

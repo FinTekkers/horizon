@@ -110,7 +110,7 @@ test('/api/auth/me says who is an admin', async () => {
 })
 
 const SLOT = ['busy', 'limit', 'waiting']
-const ROW = ['holdsAgentSlot', 'itemId', 'slot', 'startedAt', 'step']
+const ROW = ['holdsAgentSlot', 'itemId', 'reason', 'slot', 'startedAt', 'step']
 const HOLDER = ['caller', 'itemId', 'label', 'runId', 'slot', 'startedAt']
 const SHAPE = {
   state: null,
@@ -201,7 +201,7 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
 
 test('Running now plus agent-lane check-slot waiters equals the agents-busy count (HZ-574)', async () => {
   // The 24 Oct mismatch: farmd counted 3 agents busy, but a run waiting for a
-  // check slot was listed only as waiting. Fed from real activeRuns and
+  // capacity slot was listed only as waiting. Fed from real activeRuns and
   // farmd's checks.waiting, not a hand-built snapshot.
   const IMPLEMENT = 11
   const ACCEPT = 13
@@ -242,7 +242,10 @@ test('Running now plus agent-lane check-slot waiters equals the agents-busy coun
   assert.equal(body.running.length + holding, body.capacity.agents.busy)
 })
 
-test('a pre-merge run waiting for a check slot is listed once, as Pre-merge checks (HZ-585)', async () => {
+// HZ-592: farmd's wait_message() for caller "premerge".
+const PREMERGE_WAIT = 'waiting for a capacity slot to run pre-merge checks (main + PR)'
+
+test('a pre-merge run waiting for a capacity slot is listed once, as Pre-merge checks, with what it waits for (HZ-585, HZ-592)', async () => {
   // farm/premerge.py's waiter has no step run: its marker carries no run_id.
   // One whose run_id does match an active run is that run's row, not a second.
   const ACCEPT = 13
@@ -257,8 +260,8 @@ test('a pre-merge run waiting for a check slot is listed once, as Pre-merge chec
         busy: 2,
         limit: 2,
         waiting: [
-          { pid: 1, run_id: null, item_id: 'HZ-550', caller: 'premerge', waiting_on: 'slot', waited_s: 90 },
-          { pid: 2, run_id: '31', item_id: 'HZ-571', caller: 'premerge', waiting_on: 'slot', waited_s: 20 },
+          { pid: 1, run_id: null, item_id: 'HZ-550', caller: 'premerge', waiting_on: 'slot', waited_s: 90, reason: PREMERGE_WAIT },
+          { pid: 2, run_id: '31', item_id: 'HZ-571', caller: 'premerge', waiting_on: 'slot', waited_s: 20, reason: PREMERGE_WAIT },
         ],
         holders: [],
       },
@@ -277,7 +280,10 @@ test('a pre-merge run waiting for a check slot is listed once, as Pre-merge chec
     slot: 'check',
     startedAt: new Date(NOW - 90000).toISOString(),
     holdsAgentSlot: false,
+    reason: PREMERGE_WAIT,
   })
+  // HZ-592: a waiter matched to its step run carries the reason too.
+  assert.equal(body.waiting.find((w) => w.itemId === 'HZ-571').reason, PREMERGE_WAIT)
   assert.equal(body.capacity.checks.waiting, 2)
   assert.equal(body.waitingCount, 2)
 })

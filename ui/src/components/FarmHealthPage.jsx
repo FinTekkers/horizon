@@ -12,13 +12,17 @@ export const HEALTH_LABELS = { green: 'Healthy', amber: 'Busy', red: 'Unhealthy'
 const PREFIX = import.meta.env.BASE_URL.replace(/\/$/, '')
 const GIB = 1024 ** 3
 
-const SLOT_NAMES = { agent: 'Agent', pm: 'PM lane', check: 'Check', server: 'Server' }
-const SLOT_NEEDS = { agent: 'an agent slot', pm: 'the PM lane', check: 'a check slot', server: 'the server' }
-// HZ-574: a run whose agent session waits for a check slot keeps its agent
+const SLOT_NAMES = { agent: 'Agent', pm: 'PM lane', check: 'Capacity', server: 'Server' }
+const SLOT_NEEDS = { agent: 'an agent slot', pm: 'the PM lane', check: 'a capacity slot', server: 'the server' }
+// HZ-574: a run whose agent session waits for a capacity slot keeps its agent
 // slot, so it counts toward Agent slots busy while it waits.
-const HOLDING_WAIT = 'holding an agent slot · waiting for a check slot'
-
-const waitText = (w) => (w.holdsAgentSlot ? HOLDING_WAIT : `needs ${SLOT_NEEDS[w.slot] || w.slot}`)
+const HOLDING_AGENT = 'holding an agent slot'
+// HZ-592: a capacity-slot wait names its purpose (`reason`, from farmd); a
+// row without one, from older farm code, falls back to the slot it needs.
+const waitText = (w) => {
+  const wait = w.reason || `needs ${SLOT_NEEDS[w.slot] || w.slot}`
+  return w.holdsAgentSlot ? `${HOLDING_AGENT} · ${wait}` : wait
+}
 
 function elapsed(iso, now) {
   const ms = now - Date.parse(iso)
@@ -109,7 +113,7 @@ function recentText(e) {
   return e.kind
 }
 
-// HZ-574: who holds each check slot and what it is checking, then the runs
+// HZ-574: who holds each capacity slot and what it is checking, then the runs
 // waiting for one. farmd records the slot's label only, never the command.
 function CheckSlots({ data, now, onOpenItem }) {
   const { checks } = data.capacity
@@ -122,16 +126,16 @@ function CheckSlots({ data, now, onOpenItem }) {
     <section aria-labelledby="farm-health-chk" className="farm-health__card">
       <div className="farm-health__card-head">
         <h2 id="farm-health-chk" className="farm-health__h2">
-          Check slots
+          Capacity slots
         </h2>
         <span className="farm-health__count">
           {checks.busy} of {Math.max(0, checks.limit || 0)} busy
         </span>
       </div>
       {!reachable ? (
-        <p className="farm-health__empty">Farm not reachable — no check slot readings</p>
+        <p className="farm-health__empty">Farm not reachable — no capacity slot readings</p>
       ) : holders.length + unrecorded === 0 ? (
-        <p className="farm-health__empty">No check slot in use</p>
+        <p className="farm-health__empty">No capacity slot in use</p>
       ) : (
         <table className="farm-health__table">
           <thead>
@@ -165,7 +169,7 @@ function CheckSlots({ data, now, onOpenItem }) {
           </tbody>
         </table>
       )}
-      <h3 className="farm-health__h3">Waiting for a check slot</h3>
+      <h3 className="farm-health__h3">Waiting for a capacity slot</h3>
       {waiters.length === 0 ? (
         <p className="farm-health__empty">Nothing waiting</p>
       ) : (
@@ -240,7 +244,7 @@ function Sections({ data, now, onOpenItem }) {
             note={capacity.pm.waiting > 0 ? `${capacity.pm.waiting} waiting` : 'Plan and summary steps'}
           />
           <SlotTile
-            name="Check slots"
+            name="Capacity slots"
             slot={capacity.checks}
             tone="check"
             note={capacity.checks.waiting > 0 ? `${capacity.checks.waiting} waiting` : 'None waiting'}

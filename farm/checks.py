@@ -1632,7 +1632,7 @@ def _check_env() -> dict[str, str]:
     far as run_checks() itself, which executes inside the agent session.
 
     FARM_IN_CHECKS is added rather than removed — it marks the child as
-    already being inside a check slot, which is what makes nested acquisition
+    already being inside a capacity slot, which is what makes nested acquisition
     a structural no-op instead of a deadlock (see farm/check_slots.py).
     Everything else is passed through: the inner suite needs FARM_HOME,
     FARM_CLAUDE_BIN and PATH, so this is an explicit denylist, never a

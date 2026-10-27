@@ -1,5 +1,5 @@
-// HZ-227: an Accept whose pre-merge checks queue for a check slot shows
-// 'queued for a check slot (0 ahead)' (HZ-585), then 'Running checks' once a
+// HZ-227: an Accept whose pre-merge checks queue for a capacity slot shows
+// 'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead' (HZ-585, HZ-592), then 'Running checks' once a
 // slot is granted.
 //
 // Live across the seam: the real premerge.runner.spawn streams the real
@@ -42,7 +42,7 @@ const detailWrites = recordDetailWrites(db)
 
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
-const WAITING = 'queued for a check slot (0 ahead)'
+const WAITING = 'waiting for a capacity slot to run pre-merge checks (main + PR), 0 ahead'
 const RUNNING = 'Running checks'
 
 let merges = 0
@@ -92,7 +92,7 @@ const gateActionOf = async (id) => {
   return res.json().items.find((it) => it.id === id).gateAction
 }
 
-test('every slot held: the card reads queued for a check slot, then Running checks once a slot frees, then merged', async () => {
+test('every slot held: the card reads waiting for a capacity slot, then Running checks once a slot frees, then merged', async () => {
   const id = acceptItem()
   const holder = await holdSlot(farmHome)
   writeFileSync(join(farmHome, 'hold-checks'), '')
@@ -134,7 +134,7 @@ test('every slot held: the card reads queued for a check slot, then Running chec
   assert.ok(!details.slice(runAt).includes(WAITING))
 })
 
-test('a free slot: the detail is never queued for a check slot, at any write', async () => {
+test('a free slot: the detail is never waiting for a capacity slot, at any write', async () => {
   const id = acceptItem()
   assert.equal(slotPython(farmHome, 'print(json.dumps(check_slots.busy_slots()))'), 0)
   const res = await approve(id)

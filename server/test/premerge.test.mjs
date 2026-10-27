@@ -301,7 +301,7 @@ test('a run stuck in the queue is killed at the queue cap, counted from launch',
   const bin = slotRun([['event', 'memory'], ['sleep', 1], ['event', 'queued'], ['sleep', 30]])
   const { result, elapsed } = await timedPreMerge(bin, 500, 1500)
   assert.equal(result.reason, 'timed_out')
-  assert.match(result.detail, /^no check slot within/)
+  assert.match(result.detail, /^no capacity slot within/)
   assert.ok(elapsed >= 1400 && elapsed < 2400, `killed after ${elapsed} ms`)
 })
 

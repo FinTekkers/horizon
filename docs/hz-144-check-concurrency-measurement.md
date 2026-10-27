@@ -121,7 +121,7 @@ slot. It is a **single run**, so it is a sanity check on
 the instrumentation and a rough scale for one uncontended suite — not a
 baseline, and explicitly not one of the 20.
 
-Recorded at load 3.70 (1-min, at the start of the run), one free check slot,
+Recorded at load 3.70 (1-min, at the start of the run), one free capacity slot,
 `FARM_MAX_CONCURRENT_CHECKS=2`, throwaway `FARM_HOME` so the record did not
 dilute the live file:
 
@@ -160,7 +160,7 @@ cover that window; it bounds the test run, which reported **30 passed
 margin against the 85s ceiling is roughly **50.9s of 85s — about 40% headroom**,
 not the 2.8s a naive comparison of 82.2s to 85s would suggest. The two
 durations answer different questions and should not be compared: use the
-command duration for capacity (what a check slot occupies) and the suite
+command duration for capacity (what a capacity slot occupies) and the suite
 duration for the contention ceiling.
 
 40% headroom is the useful framing for this item: it means the suite tolerates

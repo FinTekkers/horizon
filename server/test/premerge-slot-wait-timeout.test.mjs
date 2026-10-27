@@ -1,4 +1,4 @@
-// HZ-585 metric 2, live: an Accept that queued for a check slot gets its full
+// HZ-585 metric 2, live: an Accept that queued for a capacity slot gets its full
 // PREMERGE_CHECK_TIMEOUT_MS, counted from when it holds the slot. Queue time
 // counts toward none of its three clocks — farm/premerge.py's check budget,
 // premerge.js's kill timer, or the gate action's lease. The cap still binds
@@ -88,7 +88,7 @@ const approve = (id) =>
   })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const queued = (id) =>
-  waitFor(() => store.getGateAction(id, 'premerge')?.detail?.startsWith('queued for a check slot'), { what: `${id} to queue` })
+  waitFor(() => store.getGateAction(id, 'premerge')?.detail?.startsWith('waiting for a capacity slot'), { what: `${id} to queue` })
 const checkSeconds = (id, s) => writeFileSync(join(farmHome, `check-seconds-${id}`), String(s))
 
 test('the gate lease covers the queue: a sweep while queued leaves the action running, and it merges', async () => {

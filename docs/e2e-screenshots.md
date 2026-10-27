@@ -168,7 +168,7 @@ versioned with the config schema (the manifest's `runner` field names the
 schema version) and is never copied into a repo.
 
 At the implement step, after every check command passes, `run_checks()` (in
-the same check slot) runs it:
+the same capacity slot) runs it:
 
 1. Starts `serve` with bash, in its own process group.
 2. Polls `ready` until it answers. `ready` must be an `http://` URL on
