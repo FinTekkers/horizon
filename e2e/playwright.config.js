@@ -41,17 +41,8 @@ const RUN_SUFFIX = RUN_HASH.toString('hex').slice(0, 8)
 const PORT_OFFSET = RUN_HASH.readUInt16BE(0) % 1000
 
 const DB_PATH = join(tmpdir(), `horizon-e2e-${RUN_SUFFIX}.db`)
-// The fetch spec's "bad ports" above 1023: Chromium refuses to load a page on
-// one (net::ERR_UNSAFE_PORT), so a hashed port that lands on one (3659, 4045,
-// 5060, 5061 fall inside the windows) moves up to the next allowed port.
-const BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080])
-const safePort = (port) => {
-  let p = port
-  while (BAD_PORTS.has(p)) p++
-  return p
-}
-const SERVER_PORT = Number(process.env.HORIZON_E2E_SERVER_PORT) || safePort(3057 + PORT_OFFSET)
-const UI_PORT = Number(process.env.HORIZON_E2E_UI_PORT) || safePort(4351 + PORT_OFFSET)
+const SERVER_PORT = Number(process.env.HORIZON_E2E_SERVER_PORT) || 3057 + PORT_OFFSET
+const UI_PORT = Number(process.env.HORIZON_E2E_UI_PORT) || 4351 + PORT_OFFSET
 const BASE_URL = `http://localhost:${UI_PORT}`
 // Every /api/* route requires a login session (HZ-21). global-setup.js logs
 // in once via the hardcoded dev-mode credential (ADMIN_EMAIL/PASSWORD are
