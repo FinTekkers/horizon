@@ -1,15 +1,14 @@
 // HZ-365: the rule-block banner's Add dependency. Picks the upstream item that
 // delivers what the agent needs, or files a new one, and links it through
-// HZ-346's existing POST /api/items/:id/dependencies. A closed item is
-// offered too: linking one that already shipped the fix releases the block
-// and restarts implement at once (store.releaseRuleBlockIfSatisfied).
+// HZ-346's existing POST /api/items/:id/dependencies. Only open items are
+// offered (HZ-603): closed and abandoned ones would only crowd the list.
 
 import { useState } from 'react'
 import { isAbandoned, isClosed } from '../../../domain/js/lifecycle.js'
 
 export default function AddDependencyDialog({ item, items = [], initialError = null, onAdd, onFileNew, onClose }) {
   const blockerIds = new Set((item.blockedBy || []).map((b) => b.id))
-  const options = items.filter((it) => it.id !== item.id && !blockerIds.has(it.id) && !isAbandoned(it))
+  const options = items.filter((it) => it.id !== item.id && !blockerIds.has(it.id) && !isAbandoned(it) && !isClosed(it))
   const [dependsOnId, setDependsOnId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(initialError)
@@ -36,8 +35,7 @@ export default function AddDependencyDialog({ item, items = [], initialError = n
           Add dependency · {item.id}
         </div>
         <div className="composer__sub">
-          {item.id} waits for the item you pick and restarts implement once it merges or closes. Picking an item
-          that is already merged or closed restarts it now.
+          {item.id} waits for the item you pick and restarts implement once it merges or closes.
         </div>
         <div className="composer__field">
           <label htmlFor="add-dependency-item" className="composer__field-label">
@@ -53,7 +51,6 @@ export default function AddDependencyDialog({ item, items = [], initialError = n
             {options.map((it) => (
               <option key={it.id} value={it.id}>
                 {it.id} — {it.title}
-                {isClosed(it) ? ' (closed)' : ''}
               </option>
             ))}
           </select>
