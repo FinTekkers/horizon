@@ -51,6 +51,7 @@ import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
+import * as projectDefinitions from './projectDefinitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
@@ -3225,6 +3226,101 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       if (result.error) return reply.code(404).send({ error: 'Project not found' })
       broadcast()
       return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
+  // ---- HZ-542: a project's own definitions files (Admin "Project definitions") ----
+  // Keyed by the project's slug (its rules key), not its id, because that is
+  // the farm/projects/<slug>/ directory. Reads never write. A save is gate-PIN
+  // protected, checked before anything is read, and becomes one HZ-9 commit
+  // touching only farm/projects/<slug>/<file>.
+
+  const PROJECT_DEFINITION_ERROR_STATUS = {
+    unknown_project: 404,
+    unknown_file: 404,
+    definitions_too_large: 400,
+    credential_pattern: 400,
+    invalid_definitions: 400,
+    tool_not_allowed: 400,
+    anchor_not_allowed: 400,
+    git_dirty: 409,
+    push_failed: 502,
+  }
+
+  // Only the listed fields leave: never the saved value itself. `message` is
+  // sent only when the error set one; otherwise Error's own is just the code.
+  function projectDefinitionError(err, reply) {
+    if (!(err instanceof definitions.DefinitionError) || !Object.hasOwn(PROJECT_DEFINITION_ERROR_STATUS, err.code)) throw err
+    const body = { error: err.code }
+    for (const key of ['limit', 'matches', 'detail', 'tool', 'anchor', 'commit']) {
+      if (Object.hasOwn(err, key)) body[key] = err[key]
+    }
+    if (err.message !== err.code) body.message = err.message
+    return reply.code(PROJECT_DEFINITION_ERROR_STATUS[err.code]).send(body)
+  }
+
+  const projectSlugParams = {
+    type: 'object',
+    required: ['slug'],
+    properties: { slug: { type: 'string', minLength: 1, maxLength: 200 } },
+  }
+  const projectDefinitionFileParams = {
+    type: 'object',
+    required: ['slug', 'file'],
+    properties: { slug: { type: 'string', minLength: 1, maxLength: 200 }, file: { type: 'string', maxLength: 200 } },
+  }
+
+  fastify.get(
+    '/api/projects/:slug/definitions',
+    { schema: { params: projectSlugParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      const view = projectDefinitions.readProjectDefinitions(request.params.slug)
+      if (!view) return reply.code(404).send({ error: 'unknown_project' })
+      return view
+    },
+  )
+
+  fastify.get(
+    '/api/projects/:slug/definitions/:file/history',
+    { schema: { params: projectDefinitionFileParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      try {
+        return { history: projectDefinitions.projectDefinitionHistory(request.params.slug, request.params.file) }
+      } catch (err) {
+        return projectDefinitionError(err, reply)
+      }
+    },
+  )
+
+  fastify.put(
+    '/api/projects/:slug/definitions/:file',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: projectDefinitionFileParams,
+        body: {
+          type: 'object',
+          required: ['content'],
+          properties: { content: { type: 'object' } },
+        },
+        response: {
+          200: OK_OBJECT,
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+        },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { slug, file } = request.params
+      try {
+        return projectDefinitions.writeProjectDefinition(slug, file, request.body.content, actorOf(request))
+      } catch (err) {
+        return projectDefinitionError(err, reply)
+      }
     },
   )
 
