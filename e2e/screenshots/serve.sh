@@ -79,7 +79,7 @@ until curl -sf -o /dev/null "http://127.0.0.1:$SERVER_PORT/api/health"; do
   sleep 0.2
 done
 
-node "$ROOT/e2e/screenshots/seed.mjs" after "$DB" 9>&-
+node "$ROOT/e2e/screenshots/seed.mjs" after "$DB" "http://127.0.0.1:$SERVER_PORT" 9>&-
 
 (
   cd "$ROOT/ui"

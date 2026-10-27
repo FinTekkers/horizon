@@ -283,7 +283,7 @@ Its outputDir is `e2e/__screenshots__/config`: gitignored, and apart from the
 journey shots, because the runner empties outputDir before each capture.
 
 `serve` is `e2e/screenshots/serve.sh`. It builds the UI, seeds a throwaway DB
-(`e2e/screenshots/seed.mjs`, rows in `e2e/fixtures/layout-screens-seed.js`),
+(`e2e/screenshots/seed.mjs`, rows in `e2e/fixtures/*-screens-seed.js`),
 runs the server in demo mode with `HORIZON_TEST_HOOKS=1` and an empty `HOME`,
 and serves the UI with `vite preview` on fixed ports 5480 (UI, `ready`) and
 5481 (server), above both e2e port windows. A host-wide `flock` lets one
@@ -297,6 +297,29 @@ Two captures on one commit are byte-identical because of three seed rules:
   never kicks them. Rows seeded first keep the demo items out.
 - No shown item has an active step on its tracker page: the step icon pulses
   (`auraPulse`). The activity screen's item is closed for that reason.
+
+### Horizon's journey screens (HZ-613)
+
+The `journey-*` screens move the e2e journeys' `captureScreenshot()` shots
+into config. Each shows, from seeded rows plus a URL, the state a spec clicked
+its way to: rows in `e2e/fixtures/journey-screens-seed.js`, seeded by the
+same two phases. `LEGACY_JOURNEYS` in `farm/tests/test_horizon_screens.py`
+maps all 64 old names to their shots, or to the reason a path-only screen can
+not show them (a modal or menu that needs a click). Follow-up items remove
+the `captureScreenshot()` calls and `e2e/verify-screenshots.mjs`.
+
+- Each `waitFor` names its own seeded text, so a login wall or an empty page
+  never passes as the journey (`test_each_journey_screen_waits_for_its_own_state`).
+- Items no board shot needs are seeded with a 2001 last-activity date, so the
+  board's 30-day filter hides them and only counts them; their pages still
+  open by URL. The pending-approvals count includes their gates.
+- `journey-queued-work`'s run is queued in the server's run-state cache, which
+  has no table: `seed.mjs after` posts it to `/api/test/run-state` with the
+  login key serve.sh is given. Its step is active, so its icon pulses.
+- Live values are masked: the in-flight check's clock on `journey-gate-running`,
+  and this host's box, services and times on `journey-farm-health`.
+- Most screens take one variant (`desktop`, `light`); phone is added where the
+  old shot had one.
 
 **Dark shots.** With no stored theme, the UI follows `prefers-color-scheme`
 (`ui/src/theme.js`, and the pre-paint script in `ui/index.html`), so a
