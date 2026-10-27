@@ -632,6 +632,29 @@ button { font-family: var(--font-sans); }
   flex: none; width: 22px; height: 22px; padding: 0; border: none; border-radius: 50%; cursor: pointer;
   font: 800 13px var(--font-sans); background: var(--primary-bg-hover); color: var(--primary-ink);
 }
+/* HZ-601: the filter bar — what is narrowing the board, one removable chip
+   per filter, on one line. Many chips scroll inside the bar, never widening
+   the page; a long label is cut off, with the whole of it in its title. */
+.board__filterbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+  overflow-x: auto; min-width: 0; max-width: 100%; margin: -6px 0 14px; padding-bottom: 2px;
+}
+.board__filterbar-count { flex: none; font: 700 12px var(--font-sans); color: var(--muted-strong); }
+.board__chip {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: 280px; min-width: 0;
+  border: 1.5px solid var(--primary-ink); border-radius: 20px; padding: 3px 4px 3px 12px;
+  font: 700 12px var(--font-sans); background: var(--primary-bg); color: var(--primary-ink);
+}
+.board__chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board__chip-remove {
+  flex: none; width: 22px; height: 22px; padding: 0; border: none; border-radius: 50%; cursor: pointer;
+  font: 800 13px var(--font-sans); background: var(--primary-bg-hover); color: var(--primary-ink);
+}
+.board__chip-remove:focus-visible, .board__clear-all:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.board__clear-all {
+  flex: none; border: none; background: none; cursor: pointer; padding: 0;
+  font: 700 12px var(--font-sans); color: var(--primary-ink); text-decoration: underline;
+}
 .board__empty {
   margin-top: 8px; padding: 40px 20px; text-align: center;
   font: 500 14px var(--font-sans); color: var(--muted);
