@@ -106,6 +106,30 @@ test('POST /api/farm/steps/:runId/test-runs stores one row per test, repo from t
   ])
 })
 
+// HZ-605 metric 4: a failing test's first failure-message line is stored; a
+// row from an older farm (no field) stores NULL, and only a fail keeps one.
+test('a failing row stores its failure_message; a row without one, or a non-failing row, stores NULL', async () => {
+  item('TR-FM', 'acme/messages')
+  await record('TR-FM', [
+    run('cr-fm', [
+      row('fails with a message', 'fail', { failure_message: 'MARKET_VALUE set on the bond' }),
+      row('fails from an older farm', 'fail'),
+      row('passes', 'pass', { failure_message: 'ignored' }),
+      row('fails long', 'fail', { failure_message: 'x'.repeat(1000) }),
+    ]),
+  ])
+
+  const rows = db.prepare('SELECT test, failure_message FROM test_result WHERE item_id = ? ORDER BY id').all('TR-FM')
+  assert.deepEqual(rows, [
+    { test: 'fails with a message', failure_message: 'MARKET_VALUE set on the bond' },
+    { test: 'fails from an older farm', failure_message: null },
+    { test: 'passes', failure_message: null },
+    { test: 'fails long', failure_message: 'x'.repeat(300) },
+  ])
+  const column = db.prepare('PRAGMA table_info(test_result)').all().find((c) => c.name === 'failure_message')
+  assert.deepEqual({ type: column.type, notnull: column.notnull, dflt_value: column.dflt_value }, { type: 'TEXT', notnull: 0, dflt_value: null })
+})
+
 test('the test-runs route refuses a bad farm secret', async () => {
   const res = await app.inject({
     method: 'POST',

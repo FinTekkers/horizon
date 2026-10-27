@@ -862,6 +862,9 @@ if (!testResultColumns.has('run_label')) {
   )
 }
 if (!testResultColumns.has('exit_code')) db.exec('ALTER TABLE test_result ADD COLUMN exit_code INTEGER')
+// HZ-605: a failing test's first failure-message line (from JUnit's
+// <failure message>). Additive and nullable: older rows stay NULL.
+if (!testResultColumns.has('failure_message')) db.exec('ALTER TABLE test_result ADD COLUMN failure_message TEXT')
 db.exec('CREATE INDEX IF NOT EXISTS idx_test_result_run ON test_result(run_id, run_label)')
 // HZ-406: store.latestBranchRunFailed() — the item's newest branch and main rows.
 db.exec('CREATE INDEX IF NOT EXISTS idx_test_result_item_label ON test_result(item_id, run_label, id)')

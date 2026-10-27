@@ -2,10 +2,11 @@
 //
 // The farm (farm/checks.py) sends one entry per run_checks() call —
 // {check_run, commit_sha, tree_sha, tests: [{suite, file, test, status,
-// duration_ms, command, attempt}]} — from the JUnit XML its commands wrote to
-// HORIZON_TEST_REPORT_DIR, or one row per command that wrote none. This module
-// stores them (test_result), finds flakes across runs, answers the history
-// query HZ-328 picks its blocking test set from, and prunes rows after 90 days.
+// duration_ms, command, attempt, failure_message}]} — from the JUnit XML its
+// commands wrote to HORIZON_TEST_REPORT_DIR, or one row per command that
+// wrote none. This module stores them (test_result), finds flakes across
+// runs, answers the history query HZ-328 picks its blocking test set from,
+// and prunes rows after 90 days.
 //
 // HZ-349: an entry may carry label 'main' or 'branch' (the item's own changed
 // check scripts, run after main's) and commands: [{command, attempt,
@@ -35,6 +36,9 @@ export const TEST_STATUSES = ['pass', 'fail', 'skip']
 // One report is a whole suite; this bounds one request, not a normal run.
 export const TEST_ROWS_MAX = 50_000
 const NAME_MAX = 500
+// HZ-605: farm/checks.py FAILURE_MESSAGE_MAX_CHARS caps it first; this is the
+// same cap again at the trust boundary — change the two together.
+const FAILURE_MESSAGE_MAX = 300
 const SHA_RE = /^[0-9a-f]{40,64}$/
 
 function text(value, max) {
@@ -43,9 +47,9 @@ function text(value, max) {
 
 const insertRow = db.prepare(`
   INSERT INTO test_result (repo, commit_sha, tree_sha, item_id, run_id, source, check_run, command, suite, file,
-                           test, status, duration_ms, attempt, created_at_ms, run_label, exit_code)
+                           test, status, duration_ms, attempt, created_at_ms, run_label, exit_code, failure_message)
   VALUES (@repo, @commitSha, @treeSha, @itemId, @runId, @source, @checkRun, @command, @suite, @file,
-          @test, @status, @durationMs, @attempt, @createdAtMs, @runLabel, @exitCode)
+          @test, @status, @durationMs, @attempt, @createdAtMs, @runLabel, @exitCode, @failureMessage)
 `)
 
 // "command attempt" -> exit code, from an entry's commands list.
@@ -88,6 +92,7 @@ function rowsOf(run, base) {
       attempt: t.attempt === 2 ? 2 : 1,
       runLabel,
       exitCode: codes.get(`${t.attempt === 2 ? 2 : 1} ${command}`) ?? null,
+      failureMessage: t.status === 'fail' ? text(t.failure_message, FAILURE_MESSAGE_MAX) : null,
     })
   }
   return rows

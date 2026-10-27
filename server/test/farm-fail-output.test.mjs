@@ -20,6 +20,7 @@ delete process.env.GITHUB_WEBHOOK_SECRET
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
+const { FAILED_OUTPUT_MAX_CHARS } = await import('../src/orchestrator.js')
 const { FARM_SHARED_SECRET } = await import('../src/config.js')
 const store = await import('../src/store.js')
 const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
@@ -51,17 +52,30 @@ function fail(runId, error) {
   })
 }
 
-// A digest at exactly the route's limit, with the failure and counts at the end.
+// HZ-605: the route's limit is 4000 — room for the failing-tests list above
+// the digest.
+const ROUTE_LIMIT = 4000
+
+// HZ-605: a check failure's failing-tests list, as farm/checks.py writes it
+// above the digest.
+const FAILING_TESTS =
+  'failing tests (3):\n' +
+  'PositionAPIGRPCImplPriceLookbackTest › search_sameDayPrice_valuedWithoutWarning — MARKET_VALUE set on the bond\n' +
+  'PositionAPIGRPCImplPriceLookbackTest › search_olderPrice_warns — expected a warning\n' +
+  'LedgerTest › posts_once — expected 1 but was 2\n'
+
+// A digest at exactly the route's limit, with the failing-tests list first and
+// the failure and counts at the end.
 function digestOf(length) {
-  const head = 'repo checks failed (sh -c npm test):\n'
+  const head = 'repo checks failed (sh -c npm test):\n' + FAILING_TESTS
   const tail = '\nnot ok 900 - x\n# pass 899\n# fail 1'
   return head + 'ok - passing\n'.repeat(Math.ceil(length / 13)).slice(0, length - head.length - tail.length) + tail
 }
 
-test('a 2,000-char check digest is accepted and stored whole, failure line included', async () => {
+test('a 4,000-char check digest is accepted and stored whole, failing-tests list and failure line included', async () => {
   const runId = activeImplementRun('FO-1')
-  const error = digestOf(2000)
-  assert.equal(error.length, 2000)
+  const error = digestOf(ROUTE_LIMIT)
+  assert.equal(error.length, ROUTE_LIMIT)
 
   const res = await fail(runId, error)
 
@@ -71,6 +85,8 @@ test('a 2,000-char check digest is accepted and stored whole, failure line inclu
   assert.equal(row.output, `FAILED: ${error}`)
   assert.ok(row.output.indexOf('not ok 900 - x') > 300, 'the failure sits past the old 300-char cut')
   assert.match(row.output, /# fail 1$/)
+  assert.ok(row.output.includes(FAILING_TESTS), 'the failing-tests list is stored whole')
+  assert.ok(row.output.indexOf('failing tests (3):') < row.output.indexOf('ok - passing'), 'the list sits above the digest')
   assert.equal(store.getItem('FO-1').paused, true)
   // The event text keeps its old 200-char cut — HZ-94 consumers parse it.
   const event = db.prepare("SELECT text FROM event WHERE item_id = 'FO-1' AND text LIKE 'agent step failed%'").get()
@@ -80,7 +96,7 @@ test('a 2,000-char check digest is accepted and stored whole, failure line inclu
 test('an error over the route limit is rejected with a 400 and the run stays active', async () => {
   const runId = activeImplementRun('FO-2')
 
-  const res = await fail(runId, digestOf(2001))
+  const res = await fail(runId, digestOf(ROUTE_LIMIT + 1))
 
   assert.equal(res.statusCode, 400)
   const body = res.json()
@@ -88,6 +104,16 @@ test('an error over the route limit is rejected with a 400 and the run stays act
   assert.equal(body.error, 'Bad Request')
   assert.match(body.message, /error/)
   assert.equal(db.prepare('SELECT status FROM step_run WHERE id = ?').get(runId).status, 'active')
+})
+
+// HZ-605: failFarmRun keeps exactly what the route accepts — the two caps
+// move together.
+test("failFarmRun's FAILED_OUTPUT_MAX_CHARS equals the /fail route's error maxLength", () => {
+  const appJs = readFileSync(join(REPO_ROOT, 'server/src/app.js'), 'utf8')
+  const route = appJs.slice(appJs.indexOf("'/api/farm/steps/:runId/fail'"))
+  const limit = Number(route.match(/error: \{ type: 'string', maxLength: (\d+) \}/)[1])
+  assert.equal(limit, ROUTE_LIMIT)
+  assert.equal(FAILED_OUTPUT_MAX_CHARS, limit)
 })
 
 // HZ-366 metric 4: the farm's own message for HZ-365's failed e2e check (the

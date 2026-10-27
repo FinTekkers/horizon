@@ -416,7 +416,8 @@ _URL_CREDENTIALS = re.compile(r"://[^/@\s]+@")
 # (`error: maxLength` in server/src/app.js): over it, Fastify rejects the whole
 # report and the run sits active until the step watchdog times it out, losing
 # the failure (HZ-184). farm/tests/test_step_agent.py pins the two together.
-ERROR_MAX_CHARS = 2000
+# HZ-605: 4000 — a failed check's failing-tests list sits above its digest.
+ERROR_MAX_CHARS = 4000
 # The review prompt's `## Commits under review` block (HZ-420): enough to
 # read the branch's story, capped so a long branch can't crowd out the diff.
 REVIEW_COMMITS_MAX = 100
