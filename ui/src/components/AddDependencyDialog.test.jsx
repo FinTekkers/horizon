@@ -1,5 +1,5 @@
-// HZ-365: the rule-block banner's Add dependency picker. It lists items the
-// blocked one could wait on and hands the pick to onAdd; HZ-346's route does
+// HZ-365: the rule-block banner's Add dependency picker. It lists open items
+// the blocked one could wait on and hands the pick to onAdd; HZ-346's route does
 // the rest.
 
 import { expect, test, vi, afterEach } from 'vitest'
@@ -21,11 +21,11 @@ const ITEMS = [
 
 const select = () => document.querySelector('#add-dependency-item')
 
-test('lists open and closed items, never the item itself, a current blocker or an abandoned item; Add posts the pick', async () => {
+test('lists open items only, never the item itself, a current blocker, a closed or an abandoned item; Add posts the pick', async () => {
   const onAdd = vi.fn(async () => ({ ok: true }))
   const onClose = vi.fn()
   const { getByRole } = render(<AddDependencyDialog item={ITEM} items={ITEMS} onAdd={onAdd} onFileNew={vi.fn()} onClose={onClose} />)
-  expect([...select().options].map((o) => o.value)).toEqual(['', 'LM-42', 'LM-41'])
+  expect([...select().options].map((o) => o.value)).toEqual(['', 'LM-42'])
 
   fireEvent.change(select(), { target: { value: 'LM-42' } })
   fireEvent.click(getByRole('button', { name: 'Add dependency' }))
