@@ -7,6 +7,7 @@ that adds one. Each side is green alone; the merge is red, and the result
 names the failing check and the failing test.
 """
 
+import contextlib
 import json
 import os
 import shlex
@@ -204,6 +205,56 @@ def test_the_whole_run_shares_one_budget_and_reports_a_structured_timeout(ws_dir
     result = run(hub, tip, tip, timeout_s=2)
     assert time.monotonic() - started < 6
     assert result["ok"] is False and result["reason"] == "timed_out"
+
+
+# ---- HZ-598: the budget is run time, counted from the slot grant ----
+
+
+def _slot_after(wait_s, monkeypatch):
+    """Stand in for the limiter: wait `wait_s`, then hand back a hold that
+    reports it, as check_slots does after a queue."""
+
+    @contextlib.contextmanager
+    def slot(**_kw):
+        time.sleep(wait_s)
+        yield checks.check_slots.SlotHold(mode="disabled", waited_s=wait_s)
+
+    monkeypatch.setattr(checks.check_slots, "check_slot", slot)
+
+
+def test_a_slot_wait_does_not_eat_the_run_budget(ws_dir, monkeypatch):
+    """Metric 1, scaled: 2s queued then 2s running under a 3s budget passes."""
+    hub, _origin = make_repo_hub(ws_dir)
+    tip = sha(ws_dir / "seed")
+    monkeypatch.setattr(premerge, "RESERVE_S", 0)
+    monkeypatch.setenv("FARM_CHECK_CMD", "sleep 2")
+    _slot_after(2, monkeypatch)
+    result = run(hub, tip, tip, timeout_s=3)
+    assert result["ok"] is True, result
+
+
+def test_a_run_with_no_slot_wait_keeps_its_budget_from_launch(ws_dir, monkeypatch):
+    """Metric 2: waited_s 0 leaves the deadline as it was — 3s of running
+    under a 2s budget stops with a structured timed_out."""
+    hub, _origin = make_repo_hub(ws_dir)
+    tip = sha(ws_dir / "seed")
+    monkeypatch.setattr(premerge, "RESERVE_S", 0)
+    monkeypatch.setenv("FARM_CHECK_CMD", "sleep 3")
+    _slot_after(0, monkeypatch)
+    started = time.monotonic()
+    result = run(hub, tip, tip, timeout_s=2)
+    assert time.monotonic() - started < 2.9
+    assert result["ok"] is False and result["reason"] == "timed_out"
+
+
+def test_run_checks_keeps_the_given_deadline_unless_asked(tmp_path, monkeypatch):
+    """Other callers (validate, the step) pass no flag: their deadline still
+    counts the slot wait."""
+    monkeypatch.setenv("FARM_CHECK_CMD", "sleep 1")
+    _slot_after(1, monkeypatch)
+    with pytest.raises(checks.CheckFailure) as exc:
+        checks.run_checks(tmp_path, log=lambda *_: None, deadline=time.monotonic() + 1.5)
+    assert exc.value.reason == "timed_out"
 
 
 # ---- success metric: never in /opt/horizon or a deployed checkout ----

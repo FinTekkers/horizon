@@ -253,6 +253,81 @@ for (const [name, run] of [
   })
 }
 
+// ---- HZ-598: the cap counts run time, from the slot grant ----
+
+// A stand-in CLI: each step is `event <name>` (a HORIZON_EVENT line on
+// stderr) or `sleep <s>`, then a green result for the shas it was given.
+function slotRun(steps) {
+  const lines = steps.map(([kind, value]) =>
+    kind === 'event' ? `echo 'HORIZON_EVENT {"check_slot": "${value}"}' >&2` : `sleep ${value}`,
+  )
+  return fakePython([...lines, `echo "{\\"ok\\": true, \\"head_sha\\": \\"$5\\", \\"base_sha\\": \\"$7\\"}"`].join('\n'))
+}
+
+async function timedPreMerge(bin, timeoutMs) {
+  return withReaper(async () => ({ code: 0 }), () =>
+    withPython(bin, async () => {
+      const started = Date.now()
+      const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs })
+      return { result, elapsed: Date.now() - started }
+    }),
+  )
+}
+
+async function withSlotWaitMax(value, fn) {
+  const prev = process.env.FARM_CHECK_SLOT_WAIT_MAX_S
+  if (value === undefined) delete process.env.FARM_CHECK_SLOT_WAIT_MAX_S
+  else process.env.FARM_CHECK_SLOT_WAIT_MAX_S = value
+  try {
+    return await fn()
+  } finally {
+    if (prev === undefined) delete process.env.FARM_CHECK_SLOT_WAIT_MAX_S
+    else process.env.FARM_CHECK_SLOT_WAIT_MAX_S = prev
+  }
+}
+
+// Metric 1, scaled: 15 min queued then 15 min running under a 20 min cap.
+test('a run that queues for a slot, then runs, finishes within a cap shorter than both together', async () => {
+  const bin = slotRun([['event', 'queued'], ['sleep', 1.5], ['event', 'granted'], ['sleep', 1.5]])
+  const { result, elapsed } = await timedPreMerge(bin, 2000)
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.ok(elapsed >= 3000, `ran ${elapsed} ms`)
+})
+
+// Metric 2: the cap still holds from the grant, and from launch with no wait.
+for (const [name, steps] of [
+  ['gets its slot straight away', [['event', 'granted'], ['sleep', 30]]],
+  ['never waits for a slot', [['sleep', 30]]],
+]) {
+  test(`a run that ${name} still times out after the cap of running`, async () => {
+    const { result, elapsed } = await timedPreMerge(slotRun(steps), 2000)
+    assert.equal(result.ok, false)
+    assert.equal(result.reason, 'timed_out')
+    assert.ok(elapsed >= 1900 && elapsed < 5000, `killed after ${elapsed} ms`)
+  })
+}
+
+test('a run stuck in the queue is killed at the cap plus the slot wait ceiling, counted from its first wait', async () => {
+  // memory, then queued a second later: only the first event arms the backstop.
+  const bin = slotRun([['event', 'memory'], ['sleep', 1], ['event', 'queued'], ['sleep', 30]])
+  const { result, elapsed } = await withSlotWaitMax('1', () => timedPreMerge(bin, 500))
+  assert.equal(result.reason, 'timed_out')
+  assert.ok(elapsed >= 1400 && elapsed < 2400, `killed after ${elapsed} ms`)
+})
+
+test('the slot wait ceiling reaches the run, and a missing, unbounded or bad one is the farm default', async () => {
+  await withRunner(green(), (calls) =>
+    withSlotWaitMax('45', async () => {
+      await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+      assert.equal(calls[0].opts.env.FARM_CHECK_SLOT_WAIT_MAX_S, '45')
+      assert.equal(premerge.slotWaitMaxMs(), 45_000)
+    }),
+  )
+  for (const value of [undefined, '0', '-5', 'soon', '']) {
+    await withSlotWaitMax(value, () => assert.equal(premerge.slotWaitMaxMs(), 1_200_000, String(value)))
+  }
+})
+
 // /proc: every live process whose starting environment carries the tag.
 function taggedPids(runId) {
   const needle = Buffer.from(`${premerge.RUN_ENV}=${runId}\0`)

@@ -44,7 +44,12 @@ function pythonBin() {
 // token, session secrets, and HORIZON_DB — a test that forgot to set its own
 // DB path would otherwise write to production's. An allowlist, so a secret
 // added to server.env later is excluded by default.
-const CHILD_ENV_ALLOWED = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'FARM_HOME', 'PLAYWRIGHT_BROWSERS_PATH']
+// HZ-598: FARM_CHECK_SLOT_WAIT_MAX_S too, so the farm's slot wait and the
+// server's backstop for it (slotWaitMaxMs) read the one value.
+const CHILD_ENV_ALLOWED = [
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'FARM_HOME', 'PLAYWRIGHT_BROWSERS_PATH',
+  'FARM_CHECK_SLOT_WAIT_MAX_S',
+]
 
 // HZ-569: the run's tag (farm/run_reaper.py RUN_ENV). Every process the
 // check run starts inherits it, including the ones that leave its process
@@ -128,6 +133,19 @@ const EVENT_PREFIX = 'HORIZON_EVENT '
 // HZ-571: 'memory' is the memory gate holding the run before it may start.
 const SLOT_EVENTS = ['queued', 'granted', 'memory']
 
+// HZ-598: farm/check_slots.py DEFAULT_WAIT_CEILING_S.
+const DEFAULT_SLOT_WAIT_MAX_S = 1200
+
+// How long the farm may wait for a slot before it runs without one
+// (FARM_CHECK_SLOT_WAIT_MAX_S, passed to the child by childEnv). The farm
+// reads <= 0 as "wait forever"; the server still bounds a pre-merge's wait,
+// so that, and anything unparseable, is the farm's default here.
+export function slotWaitMaxMs() {
+  const raw = Object.hasOwn(process.env, 'FARM_CHECK_SLOT_WAIT_MAX_S') ? process.env.FARM_CHECK_SLOT_WAIT_MAX_S : ''
+  const s = /^\s*[+-]?\d+\s*$/.test(raw) ? Number.parseInt(raw, 10) : NaN
+  return (s > 0 ? s : DEFAULT_SLOT_WAIT_MAX_S) * 1000
+}
+
 // { name, event } for a check_slots event line, else null: name is one of
 // SLOT_EVENTS and event the whole parsed object (the memory figure rides on it).
 export function slotEventOf(line) {
@@ -183,7 +201,11 @@ export const runner = {
   //
   // runId (HZ-569), when given, is reaped (reapRun) after the timeout's group
   // kill, before this resolves.
-  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId }) {
+  //
+  // onTimer (HZ-598), when given, is called once at spawn with
+  // { restart(ms) }: restart drops the running cap and arms a new one, ms
+  // from now. A no-op once the run has settled or the cap has fired.
+  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId, onTimer }) {
     return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
@@ -194,6 +216,7 @@ export const runner = {
       let timedOut = false
       let settled = false
       let tracked = null
+      let timer = null
       const emitLine = (line) => {
         try {
           onStderrLine(line.endsWith('\r') ? line.slice(0, -1) : line)
@@ -233,7 +256,7 @@ export const runner = {
         tracked.settled = new Promise((resolveSettled) => (tracked.settle = resolveSettled))
         runningChecks.set(itemId, tracked)
       }
-      const timer = setTimeout(() => {
+      const expire = () => {
         timedOut = true
         try {
           process.kill(-child.pid, 'SIGKILL')
@@ -247,7 +270,20 @@ export const runner = {
         if (!runId) return done({ code: null })
         // Stops that descendant too. The result is already decided: timedOut.
         reapRun(runId, { env }).then(() => done({ code: null }))
-      }, timeoutMs)
+      }
+      const arm = (ms) => {
+        if (settled || timedOut) return
+        clearTimeout(timer)
+        timer = setTimeout(expire, ms)
+      }
+      arm(timeoutMs)
+      if (onTimer) {
+        try {
+          onTimer({ restart: arm })
+        } catch {
+          // an observer, like onStderrLine
+        }
+      }
       child.stdout.on('data', (d) => (stdout += d))
       child.stderr.on('data', (d) => {
         stderr += d
@@ -274,6 +310,14 @@ export const runner = {
 // HZ-571: it also hears 'memory' while the memory gate holds the run, and its
 // second argument is the whole event (slotDetail turns it into text).
 // Fire-and-forget: it is never awaited and anything it throws is ignored.
+//
+// timeoutMs (HZ-598) bounds the checks' run time, not the queue: the cap is
+// armed at launch and re-armed at timeoutMs when 'granted' arrives, so a run
+// that waited for a slot or for memory still gets its whole budget. While it
+// waits, the first 'queued' or 'memory' re-arms the cap at timeoutMs +
+// slotWaitMaxMs() — past the farm's own wait ceiling, so it only fires on a
+// run that hangs in the queue. A run that never waits emits no event and
+// keeps the cap from launch.
 //
 // checkCommands (HZ-245) is the repo's Admin-configured
 // {install,test,lint,e2e,screenshots}, or null for none. It goes to the CLI
@@ -304,15 +348,26 @@ export async function runPreMergeChecks(
   if (testEnvFile) args.push('--test-env-file', testEnvFile)
   const runId = newRunId(item.id)
   const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId }
-  if (onSlot) {
-    spawnOpts.onStderrLine = (line) => {
-      const slot = slotEventOf(line)
-      if (!slot) return
-      try {
-        onSlot(slot.name, slot.event)
-      } catch {
-        // fire-and-forget
-      }
+  let timer = null
+  let queueSeen = false
+  spawnOpts.onTimer = (handle) => (timer = handle)
+  spawnOpts.onStderrLine = (line) => {
+    const slot = slotEventOf(line)
+    if (!slot) return
+    if (slot.name === 'granted') {
+      queueSeen = true
+      timer?.restart(timeoutMs)
+    } else if (!queueSeen) {
+      // Only the first: the farm's wait ceiling counts from the start of the
+      // wait, not from each switch between memory and slot.
+      queueSeen = true
+      timer?.restart(timeoutMs + slotWaitMaxMs())
+    }
+    if (!onSlot) return
+    try {
+      onSlot(slot.name, slot.event)
+    } catch {
+      // fire-and-forget
     }
   }
   const out = await runner.spawn(args, spawnOpts)
@@ -320,7 +375,7 @@ export async function runPreMergeChecks(
     return { ok: false, reason: 'interrupted', detail: DEPLOY_INTERRUPTED_DETAIL, ...shas }
   }
   if (out.timedOut) {
-    return { ok: false, reason: 'timed_out', detail: `no result within ${Math.round(timeoutMs / 60000)} min`, ...shas }
+    return { ok: false, reason: 'timed_out', detail: `no result within ${Math.round(timeoutMs / 60000)} min of running checks`, ...shas }
   }
   if (out.error) {
     return { ok: false, reason: 'crash', detail: `could not start the check run: ${out.error.message}`, ...shas }

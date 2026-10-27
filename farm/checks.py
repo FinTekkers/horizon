@@ -1648,6 +1648,7 @@ def run_checks(
     test_env_file: str | None = None,
     summary_notes: list | None = None,
     capture_screenshots: bool = False,
+    deadline_after_slot: bool = False,
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1671,6 +1672,12 @@ def run_checks(
     could otherwise take three times the caller's budget; with a deadline each
     command gets whatever is left, and a spent budget is a "timed_out"
     CheckFailure rather than a silent overrun.
+
+    deadline_after_slot (HZ-598) moves that deadline later by the slot's
+    waited_s, so the time spent queueing for a slot (or for memory) does not
+    eat the run's budget. waited_s is 0 on an unthrottled run that never
+    waited, and the real wait — milliseconds when nothing was announced — on
+    a held one. False keeps the deadline as given.
 
     child_env (HZ-183) is laid over the check commands' environment only —
     the pre-merge run uses it to give the PR's suites a throwaway FARM_HOME
@@ -1783,6 +1790,8 @@ def run_checks(
                 log=log, run_id=run_id, item_id=item_id, caller=caller, on_event=on_slot_event, cancel=cancel
             )
         )
+        if deadline_after_slot and deadline is not None:
+            deadline += hold.waited_s
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
         record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=hold, repo=repo)
         record[SCREENSHOTS_SLOT] = screenshots
