@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import {
   STEPS,
   IMPLEMENT_STEP_INDEX,
@@ -31,6 +31,7 @@ import { deployQueueLabel } from '../domain/deployQueue'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
+import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import Markdown from './Markdown'
@@ -613,6 +614,85 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   )
 }
 
+// HZ-540: a sub-step's state, from its newest run and the item's
+// substep_cursor: 'active' while its run runs, 'current' while the item is at
+// it, 'done' once a run finished, else 'pending'.
+function substepStatus(item, sub) {
+  if (sub.run?.status === 'active') return 'active'
+  if (currentSubstep(item)?.id === sub.id) return 'current'
+  if (sub.run?.status === 'done') return 'done'
+  return 'pending'
+}
+
+function substepMeta(item, sub, status) {
+  const run = sub.run
+  if (status === 'active') {
+    const mins = elapsedMinutes(run.startedAt)
+    if (mins == null) return 'In progress…'
+    return `In progress… · ${mins < 1 ? 'just started' : `${mins} min`}`
+  }
+  if (status === 'current') return 'Current sub-step'
+  if (status === 'done') {
+    const start = Date.parse(run.startedAt)
+    const end = Date.parse(run.endedAt)
+    const mins = Number.isNaN(start) || Number.isNaN(end) ? null : Math.max(0, Math.floor((end - start) / 60_000))
+    return mins == null ? 'Completed' : `Completed · ${mins < 1 ? 'under a minute' : `${mins} min`}`
+  }
+  return item.cursor > sub.anchor ? 'Not run' : 'Queued'
+}
+
+// HZ-540: one sub-step, indented under its global step — from the item's
+// snapshot (item.substeps), never from the project's current definitions.
+function SubstepRow({ item, sub }) {
+  const status = substepStatus(item, sub)
+  const run = sub.run
+  return (
+    <div className="step step--sub" data-testid="substep-row" data-substep={sub.id}>
+      <div className="step__rail">
+        <div className={`step__icon step__icon--${status === 'current' ? 'active' : status}`}>
+          {STEP_GLYPHS[status === 'current' ? 'active' : status]}
+        </div>
+        <div className={`step__line${status === 'done' ? ' step__line--done' : ''}`} />
+      </div>
+      <div className="step__body">
+        <div
+          className={`step-card step-card--sub${status === 'active' || status === 'current' ? ' step-card--active' : ''}`}
+          aria-current={status === 'current' ? 'step' : undefined}
+        >
+          <div className="step-card__head">
+            <div className="step-card__label">{sub.label}</div>
+            {(sub.personaBadge || sub.persona) && (
+              <span className="step-card__agent" style={sub.personaBadge ? { color: sub.personaBadge.color } : undefined}>
+                <span className="step-card__agent-dot" style={{ background: sub.personaBadge?.color ?? 'var(--muted)' }} />
+                {sub.personaBadge?.label ?? sub.persona}
+              </span>
+            )}
+          </div>
+          <div className="step-card__meta" style={{ color: STEP_META_COLOR[status === 'current' ? 'active' : status] || 'var(--muted)' }}>
+            {substepMeta(item, sub, status)}
+            {run?.attempt > 1 && ` · attempt ${run.attempt}`}
+          </div>
+          {run?.id != null && status !== 'pending' && (
+            <a className="step-card__output-link" href={runLogViewUrl(run.id)} target="_blank" rel="noopener noreferrer">
+              View log ↗
+            </a>
+          )}
+          {status === 'done' && run.hasArtifact && (
+            <a
+              className="step-card__artifact-link"
+              href={artifactUrl(item.id, sub.anchor, undefined, sub.id)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View full artifact ↗
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // HZ-94: explains a paused item beyond the generic "Paused" flag — reads the
 // classified failure reason back out of the pause event the orchestrator
 // already writes (server/src/orchestrator.js's failFarmRun), never inventing
@@ -1109,26 +1189,30 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                   )}
                 </div>
                 {idxs.map((i) => (
-                  <Step
-                    key={i}
-                    item={item}
-                    stepOutputs={stepOutputs}
-                    outputsSettled={outputsSettled}
-                    index={i}
-                    deployBlock={deployBlock}
-                    viewerName={viewerName}
-                    restartSent={restartSent}
-                    linkContextFor={linkContextFor}
-                    onApprove={onApprove}
-                    onApproveWithComments={onApproveWithComments}
-                    onReject={onReject}
-                    onResolveConflicts={onResolveConflicts}
-                    resolving={resolving}
-                    gateBusy={gateBusy}
-                    onForwardToAccept={onForwardToAccept}
-                    onSetPersona={onSetPersona}
-                    onSetStepProvider={onSetStepProvider}
-                  />
+                  <Fragment key={i}>
+                    <Step
+                      item={item}
+                      stepOutputs={stepOutputs}
+                      outputsSettled={outputsSettled}
+                      index={i}
+                      deployBlock={deployBlock}
+                      viewerName={viewerName}
+                      restartSent={restartSent}
+                      linkContextFor={linkContextFor}
+                      onApprove={onApprove}
+                      onApproveWithComments={onApproveWithComments}
+                      onReject={onReject}
+                      onResolveConflicts={onResolveConflicts}
+                      resolving={resolving}
+                      gateBusy={gateBusy}
+                      onForwardToAccept={onForwardToAccept}
+                      onSetPersona={onSetPersona}
+                      onSetStepProvider={onSetStepProvider}
+                    />
+                    {substepsAt(item, i).map((sub) => (
+                      <SubstepRow key={sub.id} item={item} sub={sub} />
+                    ))}
+                  </Fragment>
                 ))}
               </div>
             )

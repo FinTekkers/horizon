@@ -46,6 +46,7 @@ const EXPECTED_JOURNEYS = [
   'task-verify-verdict-fail',
   'ran-ahead-desktop',
   'ran-ahead-phone',
+  'substep-tracker',
 ]
 
 const missing = EXPECTED_JOURNEYS.filter((name) => !existsSync(join(SCREENSHOTS_DIR, `${name}.png`)))

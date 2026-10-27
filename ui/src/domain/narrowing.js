@@ -14,11 +14,12 @@
 
 import { PRIORITIES } from '../../../domain/js/priorities.js'
 import { ITEM_KIND_INFO, LANES, laneOf, itemKindOf, isItemKind } from '../../../domain/js/lifecycle.js'
+import { currentSubstep } from '../../../domain/js/substeps.js'
 
 export const SORT_DIRS = ['oldest', 'newest']
 export const SORT_LABELS = { oldest: 'Longest wait', newest: 'Most recent' }
 
-export const DEFAULT_VIEW = Object.freeze({ waiting: false, sortDir: SORT_DIRS[0], priorities: [], kinds: [], plan: null })
+export const DEFAULT_VIEW = Object.freeze({ waiting: false, sortDir: SORT_DIRS[0], priorities: [], kinds: [], plan: null, substep: false })
 
 // An item id, e.g. VS-110: upper-case letters and digits in hyphenated
 // parts. Anything else is no Plan.
@@ -43,6 +44,11 @@ const KIND_KEYS = KIND_OPTIONS.map((o) => o.key)
 export function kindKey(item) {
   if (item.kind != null && item.kind !== '' && !isItemKind(item.kind)) return null
   return laneOf(item) ?? itemKindOf(item)
+}
+
+// HZ-540: the item is at one of its sub-steps (domain/js/substeps.js).
+export function isAtSubstep(item) {
+  return currentSubstep(item) != null
 }
 
 export function isWaitingOnMe(item) {
@@ -74,17 +80,19 @@ function validList(value, allowed) {
 export function validView(raw) {
   const waiting = pick(raw, 'waiting')
   const sortDir = pick(raw, 'sortDir')
+  const substep = pick(raw, 'substep')
   return {
     waiting: waiting === true,
     sortDir: SORT_DIRS.includes(sortDir) ? sortDir : DEFAULT_VIEW.sortDir,
     priorities: validList(pick(raw, 'priorities'), PRIORITIES),
     kinds: validList(pick(raw, 'kinds'), KIND_KEYS),
     plan: validPlanId(pick(raw, 'plan')),
+    substep: substep === true,
   }
 }
 
 export function isNarrowing(view) {
-  return view.waiting || view.priorities.length > 0 || view.kinds.length > 0 || view.plan != null
+  return view.waiting || view.priorities.length > 0 || view.kinds.length > 0 || view.plan != null || view.substep
 }
 
 // The items `planId` filed, or every item when no Plan is chosen.
@@ -96,6 +104,7 @@ export function narrowItems(items, view) {
   return items.filter(
     (item) =>
       (!view.waiting || isWaitingOnMe(item)) &&
+      (!view.substep || isAtSubstep(item)) &&
       (view.priorities.length === 0 || view.priorities.includes(item.priority)) &&
       (view.kinds.length === 0 || view.kinds.includes(kindKey(item))),
   )

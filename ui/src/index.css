@@ -725,6 +725,10 @@ button { font-family: var(--font-sans); }
 .card__status-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
 .card__phase { font: 500 12px var(--font-sans); color: var(--muted); }
 .card__persona { font: 700 11px var(--font-sans); margin-left: auto; margin-right: 8px; }
+/* HZ-540: the sub-step the card is at, and its persona. */
+.card__substep { display: flex; align-items: center; gap: 8px; margin-top: 4px; font: 600 12px var(--font-sans); color: var(--primary-ink); min-width: 0; }
+.card__substep-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.card__substep-persona { font: 700 11px var(--font-sans); margin-left: auto; white-space: nowrap; }
 /* HZ-228: time in the current state, on its own line below the already-full status row. */
 .card__elapsed {
   font: 500 12px var(--font-sans); color: var(--muted);
@@ -1058,6 +1062,10 @@ button { font-family: var(--font-sans); }
 .step-card--blocked { background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); }
 .step-card--ran-ahead { border: 1px dashed var(--border-strong); }
 .step-card--ran-ahead-failed { background: var(--danger-bg-soft); border-color: var(--danger-border-soft); }
+/* HZ-540: a sub-step row, indented under its global step. */
+.step--sub { margin-left: 28px; }
+.step--sub .step__icon { width: 22px; height: 22px; font-size: 11px; }
+.step-card--sub { padding: 10px 14px; }
 
 /* Queued (HZ-54): dispatched but not yet claimed by an agent — muted, no
    pulse. Uses theme tokens, not the hardcoded hex it originally shipped. */
