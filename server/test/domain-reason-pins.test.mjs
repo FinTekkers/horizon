@@ -37,6 +37,7 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // HZ-422 (2026-10-15) added usage_limited, RETRYABLE: a usage limit re-runs the
 // step on the next fallback model without using an attempt; a report with no
 // model takes the generic retry, still bounded by the unchanged AUTO_RETRY_CAP.
+// HZ-590 added fails_on_main, non-retryable: the retryable set is unchanged.
 const PINNED_IDS = [
   'never_picked_up',
   'timeout',
@@ -51,10 +52,11 @@ const PINNED_IDS = [
   'sdk_message_too_large',
   'invalid_plan_draft',
   'usage_limited',
+  'fails_on_main',
 ]
 const PINNED_RETRYABLE = ['never_picked_up', 'sdk_message_too_large', 'timeout', 'turn_cap', 'unreachable', 'usage_limited']
 
-test('PIN: the declared vocabulary is exactly these thirteen reasons', () => {
+test('PIN: the declared vocabulary is exactly these fourteen reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
@@ -96,6 +98,11 @@ test('PIN: job_container_unavailable is declared but NOT retryable — Podman or
 test('PIN: invalid_plan_draft is declared but NOT retryable — the Draft must be re-run or edited by a human', () => {
   assert.equal(isRetryable('invalid_plan_draft'), false)
   assert.equal(REASONS.find((r) => r.id === 'invalid_plan_draft').retryable, false)
+})
+
+test('PIN: fails_on_main is declared but NOT retryable — main must be fixed first, so a retry would fail the same way', () => {
+  assert.equal(isRetryable('fails_on_main'), false)
+  assert.equal(REASONS.find((r) => r.id === 'fails_on_main').retryable, false)
 })
 
 test('AUTO_RETRY_REASONS is DERIVED from the retryable flag, not a second list — criterion 2', () => {
