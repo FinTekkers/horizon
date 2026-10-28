@@ -1108,7 +1108,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
             )}
             {pauseError?.id === item.id && <span role="alert">{pauseError.message}</span>}
             {!closed && (
-              <button className="btn-outline" style={{ color: '#5C1F2B' }} onClick={() => onAbandon(item.id)}>
+              <button className="btn-outline" style={{ color: 'var(--danger-ink)' }} onClick={() => onAbandon(item.id)}>
                 Abandon
               </button>
             )}
@@ -1137,7 +1137,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         )}
         {abandoned && item.abandoned_reason && (
           <div className="tracker__actions">
-            <div className="tile__value" style={{ color: '#5C1F2B' }}>
+            <div className="tile__value" style={{ color: 'var(--danger-ink)' }}>
               Abandoned by {item.abandoned_by || 'a human'}: {item.abandoned_reason}
             </div>
           </div>

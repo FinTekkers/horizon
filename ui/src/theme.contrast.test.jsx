@@ -78,7 +78,7 @@ function pairs(t) {
     // ---- step-status states ----
     [t.white, t.success, AA_NORMAL, 'step__icon--done glyph'],
     [t.white, t.primary, AA_NORMAL, 'step__icon--active glyph'],
-    [t.white, t.warning, AA_NORMAL, 'step__icon--awaiting glyph'],
+    [t.onWarning, t.warning, AA_NORMAL, 'step__icon--awaiting glyph'],
     [t.white, t.danger, AA_NORMAL, 'step__icon--blocked glyph'],
     [t.primaryInk, t.activeBg, AA_NORMAL, 'active step meta text on step-card--active'],
     [t.warningInk, t.warningBgSoft, AA_NORMAL, 'awaiting step meta text on step-card--awaiting'],
@@ -113,7 +113,6 @@ const KNOWN_LIGHT_MODE_GAPS = new Set([
   'QA avatar initials on avatar bg',
   'Horizon system-event avatar initials on avatar bg',
   'Low priority label',
-  'step__icon--awaiting glyph',
   'awaiting step meta text on step-card--awaiting',
   'Paused status pill',
   'Awaiting status pill',

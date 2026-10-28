@@ -107,7 +107,7 @@ export function itemStatus(item, verbose = false, { deployBlock = null } = {}) {
   // HZ-540: a queued sub-step names the sub-step when the farm gave no reason.
   const sub = currentSubstep(item)
   if (isQueued(item)) {
-    return { label: 'Queued', color: '#8C8C8E', bg: '#EDEDEF', reason: item.activeRun.reason || sub?.label || undefined }
+    return { label: 'Queued', color: 'var(--muted-strong)', bg: 'var(--chip)', reason: item.activeRun.reason || sub?.label || undefined }
   }
   if (sub) return { label: 'At a sub-step', color: 'var(--primary-ink)', bg: 'var(--primary-bg)', reason: sub.label }
   const agent = stepAgentToken(cur)
