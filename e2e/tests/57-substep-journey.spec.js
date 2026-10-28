@@ -10,7 +10,7 @@
 // walk it on before the reload.
 
 import { existsSync, readFileSync } from 'node:fs'
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertDependency, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS, PHASES, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -82,8 +82,6 @@ test('the board and tracker show the snapshot’s sub-steps, and a send-back to 
   await expect(current.locator('[aria-current="step"]')).toBeVisible({ timeout: 15_000 })
   await expect(current).toContainText('Current sub-step')
   await expect(current).toContainText('Performance')
-  await current.scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'substep-tracker')
 
   await page.goto('/')
   const col = column(page, phase)
