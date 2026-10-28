@@ -251,11 +251,12 @@ const settle = (promise) => Promise.resolve().then(() => promise).then((v) => v,
 
 export async function collectOnce(deps = defaultDeps) {
   const now = deps.now()
-  // A deploy_target read that fails still leaves the box units to check.
   let targets = []
   try {
     targets = deps.deployTargets()
-  } catch {}
+  } catch {
+    // A deploy_target read that fails still leaves the box units to check.
+  }
   const units = buildServiceRows(targets)
   const [loadText, memText, machineText, disk, probe, farmRaw] = await Promise.all([
     settle(deps.readFile('/proc/loadavg')),
