@@ -15,3 +15,7 @@ e2e/blob-report/
 e2e/__screenshots__/
 # HZ-518: node scripts/record-item.mjs writes here by default (--out).
 recordings/
+# HZ-622: ui/scripts/ensure-build.mjs's temp build dirs and lock.
+ui/.dist-tmp-*/
+ui/.dist-old-*/
+ui/.build.lock

@@ -38,5 +38,7 @@ export default defineConfig({
   build: { sourcemap },
   server: { proxy, fs },
   preview: { proxy },
-  test: { environment: 'jsdom', ...junitReport },
+  // HZ-622: scripts/ holds node:test files (ensure-build.test.mjs) that root
+  // `npm test` runs with `node --test`; vitest would find no suite in them.
+  test: { environment: 'jsdom', exclude: ['**/node_modules/**', '**/.git/**', 'scripts/**'], ...junitReport },
 })

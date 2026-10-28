@@ -171,10 +171,14 @@ export default defineConfig({
       // Same port-clearing + exec reasoning as the server command above.
       // `exec` goes straight into the vite binary (not `npm run preview`,
       // which would just add another non-exec'd wrapper).
-      command: `fuser -k ${UI_PORT}/tcp >/dev/null 2>&1; sleep 0.3; npm run build && exec ./node_modules/.bin/vite preview --port ${UI_PORT} --strictPort`,
+      // HZ-622: ui/scripts/ensure-build.mjs builds ui/dist only when its key
+      // (ui/ and domain/ sources plus the build env) changed, so this build,
+      // spec 53's serve.sh and the screenshot slot's serve.sh share one. The
+      // timeout covers a cache miss plus waiting on another caller's lock.
+      command: `fuser -k ${UI_PORT}/tcp >/dev/null 2>&1; sleep 0.3; node scripts/ensure-build.mjs && exec ./node_modules/.bin/vite preview --port ${UI_PORT} --strictPort`,
       cwd: '../ui',
       port: UI_PORT,
-      timeout: 45_000,
+      timeout: 120_000,
       reuseExistingServer: false,
       env: {
         VITE_PROXY_TARGET: `http://localhost:${SERVER_PORT}`,

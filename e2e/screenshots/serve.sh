@@ -3,7 +3,9 @@
 # capture runner (farm/screenshot_runner.py) starts this in its own process
 # group, polls `ready` (the UI port below), captures, then SIGTERMs the group.
 #
-# 1. Builds the UI at the root path, as the e2e suite does.
+# 1. Builds the UI at the root path, as the e2e suite does, through
+#    ui/scripts/ensure-build.mjs (HZ-622): it reuses ui/dist when an earlier
+#    caller in the run already built the same tree.
 # 2. Seeds a throwaway DB (e2e/screenshots/seed.mjs): the orchestrator-proof
 #    rows before the server boots, the rest once it answers.
 # 3. Runs the server in demo mode with HORIZON_TEST_HOOKS=1, so a `login: true`
@@ -55,7 +57,7 @@ for dir in server ui e2e; do
   [ -d "$ROOT/$dir/node_modules" ] || npm --prefix "$ROOT/$dir" ci --no-audit --no-fund 9>&-
 done
 
-(cd "$ROOT/ui" && env -u HORIZON_BASE -u HORIZON_E2E_COVERAGE_DIR npm run build) 9>&-
+(cd "$ROOT/ui" && env -u HORIZON_BASE -u HORIZON_E2E_COVERAGE_DIR -u VITE_PROXY_TARGET node scripts/ensure-build.mjs) 9>&-
 
 node "$ROOT/e2e/screenshots/seed.mjs" before "$DB" 9>&-
 
