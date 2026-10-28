@@ -63,6 +63,10 @@ const CATEGORY_COPY = {
     label: 'Fails on main as well',
     detail: 'The failing tests fail on main too, so no fix turn was spent. Fix main, then resume.',
   },
+  [REASON.GOLDEN_CASES_NOT_APPROVED]: {
+    label: 'Golden cases not approved',
+    detail: 'This step needs the golden cases a human approved at the first gate. Approve the set there, or send it back to the golden-cases sub-step.',
+  },
   [REASON.INVALID_PLAN_DRAFT]: {
     label: 'Plan draft rejected',
     detail: 'The Draft items reply broke the draft contract, such as a guessed key, an unknown repo or a missing draft. Nothing was saved or filed. Resume to draft again.',

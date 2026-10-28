@@ -52,6 +52,7 @@ import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { findTargetByRepo } from './deployTargets.js'
+import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 
 const listeners = new Set()
 
@@ -1988,6 +1989,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...(approvesRunPlan(itemKindOf(row)) ? { runPlan: runPlanView(row.id), approvedPlanHash: row.approved_plan_hash ?? null } : {}),
     // HZ-540: only on an item with a sub-step snapshot.
     ...substepFields(row, overlay),
+    // HZ-541: only on an item whose first gate approves golden cases.
+    ...goldenCasesFields(row),
   }
 }
 
@@ -2197,7 +2200,7 @@ export function addEvent(id, { who, text, color, initials, detail = null, verdic
 // the approver was shown: a newer plan since then is refused, not approved.
 // HZ-446: the PIN applies to every humanOnly gate; the run plan checks only to
 // Approve the run, the one gate that approves a run plan.
-export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null, runner = null } = {}) {
+export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null, runner = null, goldenHash = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -2228,6 +2231,25 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
     approvedHash = plan.hash
     approvedRunner = plan.runner
   }
+  // HZ-541: the first gate approves the item's golden cases as one set, and
+  // only the set the approver was shown. A caller with no table to show
+  // (WhatsApp, the caretaker) sends no hash, so it is refused.
+  let golden = null
+  if (FIRST_GATE_INDEXES.includes(stepIndex) && goldenCasesRequired(it)) {
+    golden = checkGoldenApproval(it, goldenHash)
+    if (golden.error) {
+      if (goldenHash == null) {
+        addEvent(id, {
+          who: actor,
+          text: `could not approve “${STEPS[stepIndex].label}”: ${golden.message} — the gate stays open`,
+          color: '#9C333E',
+          initials: '✕',
+        })
+        notify()
+      }
+      return golden
+    }
+  }
 
   const trimmed = (notes || '').trim()
   const next = nextCursor(it)
@@ -2237,6 +2259,7 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
   db.prepare(
     'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash) VALUES (?, ?, ?, ?, ?, ?)',
   ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash)
+  if (golden?.set) approveGoldenCases(id, golden.set, actor)
   if (trimmed) {
     // Approval notes are direction for whoever runs next — queue as feedback
     // so the next dispatched agent step receives and must address them.
@@ -2307,6 +2330,9 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   }
 
   agentRunner.cancel(id, 'rejected')
+  // HZ-541: an approved golden-cases set survives every send-back but one to
+  // the sub-step that writes it, which regenerates it for a new approval.
+  if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === GOLDEN_CASES_OUTPUT) clearGoldenCases(id)
 
   let reworkIdx = it.cursor
   if (STEPS[it.cursor]?.kind === 'gate') {

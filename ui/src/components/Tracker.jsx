@@ -32,12 +32,14 @@ import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
+import { metricLines } from '../../../domain/js/goldenCases.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
 import PlanInventoryTables from './PlanInventoryTables'
+import GoldenCasesTable from './GoldenCasesTable'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import PlanItemsTable from './PlanItemsTable'
@@ -318,6 +320,10 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const verdict = verifyVerdictOf(index, status, output, outputsSettled)
   const verdictIcon = { fail: 'verdict-fail', unknown: 'verdict-unknown', loading: 'verdict-loading' }[verdict]
   const ranAhead = ranAheadOf(item, index, status, output)
+  // HZ-541: the first gate shows the item's golden cases; while they wait for
+  // approval, the table's one button is the gate's Approve.
+  const goldenCases = item.goldenCases && index === item.goldenCases.gateIndex ? item.goldenCases : null
+  const goldenPending = !!goldenCases && !goldenCases.approved && status === 'awaiting'
 
   return (
     <div className="step">
@@ -413,6 +419,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 </div>
               )}
             </div>
+          )}
+          {goldenCases && (
+            <GoldenCasesTable
+              goldenCases={goldenCases}
+              busy={gateBusy}
+              onApproveAll={goldenPending && !mergeQueued ? () => onApprove(item.id, st.label) : null}
+            />
           )}
           {/* HZ-462: a Plan's Inventory as tables; the artifact link stays below. */}
           {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && (
@@ -556,14 +569,16 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   The server's 409 stays the real protection. */}
               {!mergeQueued && (
                 <>
-                  <button
-                    className="btn-gate-approve"
-                    disabled={gateBusy}
-                    aria-busy={gateBusy || undefined}
-                    onClick={() => onApprove(item.id, st.label)}
-                  >
-                    {humanOnly ? st.label : 'Approve'}
-                  </button>
+                  {!goldenPending && (
+                    <button
+                      className="btn-gate-approve"
+                      disabled={gateBusy}
+                      aria-busy={gateBusy || undefined}
+                      onClick={() => onApprove(item.id, st.label)}
+                    >
+                      {humanOnly ? st.label : 'Approve'}
+                    </button>
+                  )}
                   <button
                     className="btn-gate-feedback"
                     disabled={gateBusy}
@@ -1145,7 +1160,18 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>
-            <Markdown className="tile__value md-body--tile" text={item.metric} linkContext={linkContextFor(null)} />
+            {/* HZ-541: numbered lines, so a golden case can link to the one naming its set. */}
+            {item.goldenCases ? (
+              <div className="tile__value">
+                {metricLines(item.metric).map((line, i) => (
+                  <div key={i} id={`metric-line-${i + 1}`} className={item.goldenCases.metricLine === i + 1 ? 'tile__metric-line--golden' : undefined}>
+                    <Markdown className="md-body--tile" text={line} linkContext={linkContextFor(null)} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Markdown className="tile__value md-body--tile" text={item.metric} linkContext={linkContextFor(null)} />
+            )}
           </div>
           <div className="tile">
             <div className="tile__label">Guardrails</div>
