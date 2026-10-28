@@ -1635,7 +1635,7 @@ button { font-family: var(--font-sans); }
   border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-alt);
   font: 700 13px var(--font-sans); color: var(--deep); cursor: pointer;
 }
-.autopilot-off-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--deep); }
+.autopilot-off-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--primary-ink); }
 .autopilot-off-toggle__error { font: 600 12px var(--font-sans); color: var(--danger-ink); }
 .autopilot-off-note {
   margin: 10px 0 0; padding: 12px 14px; border-radius: 12px; background: var(--canvas);
