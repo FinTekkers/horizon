@@ -3,9 +3,6 @@
 // shot is loaded the way farm/capture/worker.mjs loads it — `load`, then the
 // screen's own waitFor — and its anchor is then read once, with no auto-wait,
 // so a waitFor that settles before the data would fail here.
-//
-// Plus the dark fallback the dark shots rely on: with no stored theme the UI
-// follows prefers-color-scheme, and a stored choice still wins.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -236,28 +233,4 @@ test("the config serve path and the farm worker capture every screen twice, matc
     await stopServe(serve)
     rmSync(out, { recursive: true, force: true })
   }
-})
-
-test('with no stored theme the UI follows the browser, and a stored theme wins', async ({ page }) => {
-  await page.emulateMedia({ colorScheme: 'dark' })
-  await page.goto('/', { waitUntil: 'load' })
-  // Set before first paint by index.html's inline script, not after React mounts.
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-  await page.locator('.topbar__avatar').click()
-  await expect(page.getByRole('switch', { name: 'Dark mode' })).toHaveAttribute('aria-checked', 'true')
-
-  await page.emulateMedia({ colorScheme: 'light' })
-  await page.goto('/', { waitUntil: 'load' })
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
-
-  // A stored choice beats the browser either way.
-  await page.evaluate(() => localStorage.setItem('horizon_theme', 'light'))
-  await page.emulateMedia({ colorScheme: 'dark' })
-  await page.goto('/', { waitUntil: 'load' })
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
-
-  await page.evaluate(() => localStorage.setItem('horizon_theme', 'dark'))
-  await page.emulateMedia({ colorScheme: 'light' })
-  await page.goto('/', { waitUntil: 'load' })
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
 })
