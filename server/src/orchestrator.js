@@ -93,7 +93,7 @@ import {
 } from './store.js'
 import { projectPersonaOverlay } from './definitions.js'
 import { snapshotSubsteps } from './substeps.js'
-import { GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
+import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -1906,8 +1906,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
     // HZ-541: the metric steps and Eng plan prompts then ask for the set and
-    // its metric line. Absent for every item without golden cases.
-    ...(goldenCasesRequired(item) ? { golden_cases: true } : {}),
+    // its metric line. Absent on every other step, and for every item without
+    // golden cases.
+    ...(GOLDEN_PROMPT_STEP_INDEXES.includes(stepIndex) && goldenCasesRequired(item) ? { golden_cases: true } : {}),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.

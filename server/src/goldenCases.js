@@ -31,6 +31,14 @@ export const FIRST_GATE_INDEXES = Object.freeze([
 // steps only: a Task approves its set at gate 19, but guarding its Run plan
 // and Execute is a follow-up item.
 export const GUARDED_STEP_INDEXES = Object.freeze([requiredStepIndex('Draft implementation plan'), IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX])
+// The steps whose prompt asks for the set (farm/roles/golden_cases_addendum.md):
+// Change "Define how we measure success", Task "How we'll verify", and Draft
+// implementation plan. Only their /steps/run body carries golden_cases.
+export const GOLDEN_PROMPT_STEP_INDEXES = Object.freeze([
+  requiredStepIndex('Define how we measure success'),
+  kindStepIndex("How we'll verify", 'task'),
+  requiredStepIndex('Draft implementation plan'),
+])
 export const APPROVED_ARTIFACT_LABEL = 'Approved golden cases'
 export const NOT_APPROVED_TEXT =
   'golden cases are not approved — approve the set at the first gate (“Approve & prioritize this work”), or send it back to the golden-cases sub-step'

@@ -129,4 +129,5 @@ test('Design and Accept the code are never guarded, and Design dispatches with n
   orchestrator.cancel(`G-FREE-${DESIGN_STEP}`)
   assert.ok(body, `${STEPS[DESIGN_STEP].label} was dispatched`)
   assert.ok(!body.artifacts.some((a) => a.label === golden.APPROVED_ARTIFACT_LABEL))
+  assert.ok(!Object.hasOwn(body, 'golden_cases'), 'only the metric steps and Eng plan carry the flag')
 })
