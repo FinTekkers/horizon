@@ -7,7 +7,7 @@
 // Rows are seeded directly (fixtures/seed.js), so the orchestrator never
 // kicks them: the item waits at the Approve the design gate.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
 import { kindStepIndex, PLAN_INVENTORY_STEP_INDEX } from '../../domain/js/lifecycle.js'
 import { FENCE_INFO } from '../../domain/js/planInventory.js'
@@ -82,6 +82,4 @@ test('at 375px the wide Inventory table scrolls in its wrapper and the page does
   const { scrollWidth, clientWidth } = await wrap.evaluate((el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }))
   expect(scrollWidth).toBeGreaterThan(clientWidth)
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375)
-  await table.scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'plan-inventory-phone')
 })

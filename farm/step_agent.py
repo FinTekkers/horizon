@@ -622,22 +622,18 @@ def build_prompt(task: dict) -> str:
 
 
 # ---- screenshot publishing (HZ-63) ----
-# e2e/__screenshots__/*.png are gitignored, not committed — two branches that
-# both touch the same journey no longer collide on a binary file. Instead
-# they're force-pushed as an orphan commit to a per-item ref that
-# server/src/github.js reads via the same contents-API path it already used
-# for the PR-branch screenshots (naming here — "e2e-artifacts/<item-id>" —
-# must match artifactsRef() there). Best-effort: a publish failure never fails
-# the implement step, mirroring captureScreenshot's own warn-and-continue
-# philosophy in e2e/fixtures/test-base.js.
-# HZ-506: a repo with .horizon/screenshots.json publishes its configured
-# outputDir instead — the farm runner's PNGs plus its manifest.json — under the
-# same e2e/__screenshots__/ tree path, so server/src/github.js is unchanged.
-# A repo without one keeps the e2e/__screenshots__ source until HZ-511.
-# HZ-512: a configured repo ALSO publishes the e2e journey shots in
-# e2e/__screenshots__ (top level only) beside its outputDir's, so adopting a
-# config never reads a journey shot as `removed`. A name in both is the
-# config's shot.
+# Screenshots are gitignored, not committed — two branches that both touch the
+# same screen never collide on a binary file. Instead they're force-pushed as
+# an orphan commit to a per-item ref that server/src/github.js reads via the
+# contents API (naming here — "e2e-artifacts/<item-id>" — must match
+# artifactsRef() there). Best-effort: a publish failure never fails the
+# implement step.
+# HZ-506: the source is .horizon/screenshots.json's outputDir — the farm
+# runner's PNGs plus its manifest.json — published under the
+# e2e/__screenshots__/ tree path, so server/src/github.js is unchanged.
+# HZ-621: that config is the only source. The e2e specs no longer capture
+# shots, so a repo without a config publishes nothing (and logs it), and PNGs
+# outside outputDir are never published.
 # HZ-508: every publish also diffs each shot against e2e-baseline (fetched,
 # never pushed) and adds results.json plus diff/<name>.png per changed shot to
 # the SAME orphan commit, so the force-push replaces every result of the
@@ -774,20 +770,16 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     except screenshots_config.ConfigError:
         log("publish_screenshots: skipped — invalid config")
         return
-    journey_dir = ws / SHOTS_TREE
-    shots_dir = ws / cfg.output_dir if cfg is not None else journey_dir
+    if cfg is None:
+        log("publish_screenshots: skipped — no .horizon/screenshots.json")
+        return
+    shots_dir = ws / cfg.output_dir
     pngs = _pngs_in(shots_dir)
-    if cfg is not None and shots_dir.resolve() != journey_dir.resolve():
-        taken = {png.name for png in pngs}
-        pngs = sorted([*pngs, *(png for png in _pngs_in(journey_dir) if png.name not in taken)], key=lambda p: p.name)
     manifest = shots_dir / screenshot_runner.MANIFEST_NAME
     if not pngs:
         log("publish_screenshots: no screenshots to publish — skipped")
         return
-    diff_cfg = {
-        "threshold": cfg.diff_threshold if cfg is not None else screenshots_config.DEFAULT_DIFF_THRESHOLD,
-        "ratioTolerance": cfg.diff_ratio_tolerance if cfg is not None else screenshots_config.DEFAULT_DIFF_RATIO_TOLERANCE,
-    }
+    diff_cfg = {"threshold": cfg.diff_threshold, "ratioTolerance": cfg.diff_ratio_tolerance}
     # NOT ws/".git": per-item worktrees (HZ-50) have a .git FILE containing
     # "gitdir: ...", not a directory, so writing an index inside it raises
     # ENOTDIR. GIT_INDEX_FILE may live anywhere, so use a temp path that is
@@ -805,7 +797,7 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
             git(ws, "update-index", "--add", "--cacheinfo", f"100644,{sha},{tree_path}", env=env)
             return sha
 
-        files = [*pngs, manifest] if cfg is not None and manifest.is_file() else pngs
+        files = [*pngs, manifest] if manifest.is_file() else pngs
         shots = {}
         for png in files:
             sha = add(png, f"{SHOTS_TREE}/{png.name}")

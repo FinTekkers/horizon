@@ -5,7 +5,7 @@
 // (server/test/gate-pin-routes.test.mjs). Uses its own seeded project — never
 // fintekkers, whose file text 14-definitions-preview.spec.js asserts.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -72,7 +72,6 @@ test('saving project rules with the PIN lists every version, and restore adds a 
   const preview = page.locator('.defs__preview-body')
   await expect(preview).toContainText(`## Project rules\n${V1}`)
   await expect(preview).not.toContainText(V2)
-  await captureScreenshot(page, 'rules-versions')
 
   const storage = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }))
   expect(storage).not.toContain(GATE_PIN)

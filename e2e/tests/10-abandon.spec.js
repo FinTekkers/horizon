@@ -8,7 +8,7 @@
 // and server/test/gate-pin-routes.test.mjs); 10-gate-key.spec.js walks the
 // wrong / cancelled / right prompt flow once, on a gate.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -59,8 +59,6 @@ test('abandoning an item requires a reason, closes it out distinctly from comple
   // controls (only shown while an item is still live) are gone.
   await expect(page.getByRole('button', { name: 'Abandon', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Pause work' })).toHaveCount(0)
-
-  await captureScreenshot(page, 'abandon')
 
   // Abandoned items are hidden from the board by default (HZ-80) — not
   // deleted, not silently dropped: the board states the hidden count and

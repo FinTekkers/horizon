@@ -1,6 +1,6 @@
 // HZ-613: the rows behind the `journey-*` screens in .horizon/screenshots.json.
-// Each screen shows, from seeded rows and a URL, the state an e2e spec's old
-// captureScreenshot() call caught after clicking its way there. The mapping
+// Each screen shows, from seeded rows and a URL, the state the old e2e
+// screenshot helper caught after clicking its way there. The mapping
 // from every old screenshot name to its screen (or the reason it has none) is
 // LEGACY_JOURNEYS in farm/tests/test_horizon_screens.py.
 //

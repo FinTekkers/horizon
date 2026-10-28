@@ -5,7 +5,7 @@
 // they come from the database rather than client state. The wait is far in the
 // future and the second item sits at a gate, so the mock farm never kicks either.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
 import { STEPS, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -51,7 +51,6 @@ test('an item whose every model is usage-limited says it is waiting for the rese
   await page.goto(`/${WAIT_ID.toLowerCase()}`)
   await expect(page.locator('.tracker__id')).toHaveText(WAIT_ID)
   await expect(page.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
-  await captureScreenshot(page, 'usage-limit-wait')
 
   await page.reload()
   await expect(page.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })

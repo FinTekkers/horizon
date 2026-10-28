@@ -20,7 +20,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertGateAction, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -163,7 +163,6 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
 
   await expectInFlight(15_000)
   expect(navigations).toBe(0)
-  await captureScreenshot(page, 'board-gate-status-running')
 
   // The state is the server's: a fresh load of both tabs shows the same run.
   await Promise.all([page.reload(), itemPage.reload()])
@@ -184,7 +183,6 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await expect(gateStatus).toContainText('Blocked: pre-merge check')
   await expect(gateStatus).not.toContainText('not ok 1')
   await expect(gateApprove).toBeEnabled()
-  await captureScreenshot(itemPage, 'gate-in-flight-blocked')
 })
 
 // HZ-585: an Accept whose pre-merge run is queued for a capacity slot says so on

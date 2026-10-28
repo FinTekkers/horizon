@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 test('approve, approve-with-comments and send-back drive an item through consecutive gates', async ({
   request,
@@ -59,6 +59,4 @@ test('approve, approve-with-comments and send-back drive an item through consecu
   await page.locator('.composer__submit').click()
 
   await expect(page.locator('.step-card--awaiting')).toContainText('Review before execution', { timeout: 10_000 })
-
-  await captureScreenshot(page, 'gates')
 })

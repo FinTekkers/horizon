@@ -11,7 +11,7 @@
 // token and the Plan has no repo of its own, so filing takes the local path.
 // The spec sets its own gate PIN: 23-project-enabled rotates the shared one.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 import { APPROVE_FILE_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -123,7 +123,6 @@ test('edit, drop and a refused cycle survive a reload; a stale tab reloads; Appr
   await other.close()
 
   await itemsTable(page).scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'plan-items-table')
 
   // Approve & file, with the PIN: the same table turns read-only.
   await page.getByRole('button', { name: 'Approve & file', exact: true }).click()
@@ -143,7 +142,6 @@ test('edit, drop and a refused cycle survive a reload; a stale tab reloads; Appr
   for (const [i, id] of ['#1', '#2'].entries()) await expect(row(page, id).getByRole('link')).toHaveText(filed[i])
 
   await itemsTable(page).scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'plan-items-filed')
 
   // The Review & close card links every filed key.
   const close = page.getByText(/^Filed 2 items for Plan PL-E2E-TABLE/).locator('..')

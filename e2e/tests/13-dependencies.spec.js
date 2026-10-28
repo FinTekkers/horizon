@@ -13,7 +13,7 @@
 // every PR regardless of which item's change actually broke it; this is not
 // HZ-100 scope creep, it's the pre-existing stale-test gap HZ-106 left.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertDependency, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -49,8 +49,6 @@ test('one dependency edge renders as "Blocked by" on the dependent and "Blocks" 
     /DEP-1 — E2E fixture — dependency blocker/,
   )
 
-  await captureScreenshot(page, 'dependencies-board')
-
   await dependentCard.click()
   await expect(page.locator('.dep-detail__label--blocked')).toHaveText('Blocked by')
   await expect(page.locator('.dep-detail')).toContainText('E2E fixture — dependency blocker')
@@ -58,8 +56,6 @@ test('one dependency edge renders as "Blocked by" on the dependent and "Blocks" 
   // link to the blocker — a prose title alone cannot be navigated to.
   await expect(page.locator('.dep-detail__id')).toHaveText('DEP-1')
   await expect(page.locator('.dep-detail__id')).toHaveAttribute('href', /\/dep-1$/)
-
-  await captureScreenshot(page, 'dependencies-tracker')
 })
 
 // HZ-354: abandoning a blocker with "Remove these links" (checked by default)

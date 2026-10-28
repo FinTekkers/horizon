@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { itemKindInfo } from '../../domain/js/lifecycle.js'
 import { openDb } from '../fixtures/seed.js'
 
@@ -74,5 +74,4 @@ test('creating a Task shows the Task badge on its card and item page, and stores
   await expect(page.locator('.card').filter({ hasText: title }).locator('.kind-badge')).toHaveText(TASK_LABEL)
 
   expect(await storedKind(request, title)).toBe('task')
-  await captureScreenshot(page, 'create-task')
 })

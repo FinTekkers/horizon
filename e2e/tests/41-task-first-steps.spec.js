@@ -7,7 +7,7 @@
 // shows them; each step's "completed" activity row proves the step ran, and
 // the guardrails — which nobody typed — prove the Guardrails step wrote one.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { itemKindInfo, stepsFor } from '../../domain/js/lifecycle.js'
 import { openDb } from '../fixtures/seed.js'
 
@@ -82,7 +82,6 @@ test('a Task from the New item form runs its first three steps and waits at Appr
   await page.locator('.card').filter({ hasText: title }).locator('.card__title').click()
   await expect(page.locator('.tracker__meta .kind-badge')).toHaveText(TASK_LABEL)
   await expectAtTheGate(page)
-  await captureScreenshot(page, 'task-first-steps')
 
   const item = (await (await request.get('/api/items')).json()).items.find((it) => it.title === title)
   expect(item.kind).toBe('task')

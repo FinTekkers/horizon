@@ -362,10 +362,11 @@ export async function createMockPr(item) {
 }
 
 // ---- screenshots (HZ-18, HZ-63) ----
-// e2e/fixtures/test-base.js's captureScreenshot() writes fixed-name PNGs to
-// e2e/__screenshots__/ during the implement step's e2e run. They are
-// gitignored (HZ-63) — a binary file has no merge strategy, so committing
-// them made any two branches touching the same journey conflict. Instead
+// The farm's screenshot runner captures the screens in the repo's
+// .horizon/screenshots.json (HZ-506; the only source since HZ-621) into its
+// outputDir. The PNGs are gitignored (HZ-63) — a binary file has no merge
+// strategy, so committing them made any two branches touching the same
+// screen conflict. Instead
 // farm/step_agent.py's publish_screenshots() force-pushes them as an orphan
 // commit to a per-item ref ("e2e-artifacts/<item-id>"), and mergePr() below
 // promotes a merged item's ref onto "e2e-baseline". Rendered here as a

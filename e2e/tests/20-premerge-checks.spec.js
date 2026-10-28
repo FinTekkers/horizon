@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -175,7 +175,4 @@ test('a red check on the test-merge keeps Accept the code open and names the fai
   const premergeRoot = join(FARM_HOME, 'workspaces', `${REPO.replace('/', '__')}__premerge`)
   expect(existsSync(premergeRoot)).toBe(true)
   expect(existsSync(join(premergeRoot, 'pmc-1'))).toBe(false)
-
-  await failedRow.evaluate((row) => row.scrollIntoView({ block: 'start' }))
-  await captureScreenshot(page, 'premerge-checks-red')
 })

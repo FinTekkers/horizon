@@ -4,7 +4,7 @@
 // five columns. Rows are seeded directly (fixtures/seed.js) at paused agent
 // steps and a gate, so the orchestrator never moves them.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject } from '../fixtures/seed.js'
 import { STEPS, PHASES, firstStepIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
@@ -97,7 +97,6 @@ test('at 390px one column shows at full width, the tabs switch columns, and noth
   await expectNoPageOverflow(page, 'Plan column')
   await expectHeaderInsideCard(page, 'PB-PLAN')
   await card(page, 'PB-PLAN').scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'board-phone-columns')
 
   // The project and repo show whole: wrapped, never cut off.
   for (const sel of ['.proj-badge', '.card__repo']) {
@@ -122,7 +121,6 @@ test('at 390px one column shows at full width, the tabs switch columns, and noth
   await expectNoPageOverflow(page, 'Technical Plan column')
   await expectHeaderInsideCard(page, 'PB-TECH')
   await card(page, 'PB-TECH').scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'board-phone-columns-switched')
 
   // Keyboard: the arrow keys move along the tabs.
   await tab(page, 'Technical Plan').focus()
