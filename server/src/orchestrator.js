@@ -93,6 +93,7 @@ import {
 } from './store.js'
 import { projectPersonaOverlay } from './definitions.js'
 import { snapshotSubsteps } from './substeps.js'
+import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -1359,6 +1360,8 @@ export function kick(id, opts = {}) {
       pick?.fallbackFrom ? new Date(pick.fallbackResetMs).toISOString() : null,
     ).lastInsertRowid
 
+  // HZ-541: before either path, so neither the farm nor a mock runs it.
+  if (refuseWithoutGoldenCases(runId, id, stepIndex)) return
   if (toFarm) {
     // Only a fallback pins the task's choice; the head runs on today's routing.
     dispatchToFarm(id, stepIndex, runId, attempt, scope, opts.spawnedCode?.sha || null, pick?.fallbackFrom ? pick.entry : null)
@@ -1823,6 +1826,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
   if (truncationNotice) artifacts.unshift(truncationNotice)
   if (overlapInput) artifacts.push(overlapInput)
+  const goldenInput = goldenCasesInput(id, stepIndex)
+  if (goldenInput) artifacts.push(goldenInput)
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
   // HZ-463: a Plan's review steps read the current draft, the Inventory's
   // gaps and the open items in scope. Context only: completeFarmRun decides.
@@ -1900,6 +1905,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...checkCommandsField(item),
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
+    // HZ-541: the metric steps and Eng plan prompts then ask for the set and
+    // its metric line. Absent on every other step, and for every item without
+    // golden cases.
+    ...(GOLDEN_PROMPT_STEP_INDEXES.includes(stepIndex) && goldenCasesRequired(item) ? { golden_cases: true } : {}),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
@@ -3256,6 +3265,17 @@ export function refuseUnapprovedRun(runId, id, stepIndex) {
     failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
   }
   return check
+}
+
+// HZ-541: Draft implementation plan, Implement and Review need the golden
+// cases a human approved at the first gate, when the item has them. Without
+// an approved set the run fails before dispatch, pausing the item. True when
+// it refused.
+export function refuseWithoutGoldenCases(runId, id, stepIndex) {
+  if (!GUARDED_STEP_INDEXES.includes(stepIndex)) return false
+  if (!goldenCasesRequired(getItem(id)) || approvedGoldenCases(id)) return false
+  failFarmRun(runId, NOT_APPROVED_TEXT, REASON.GOLDEN_CASES_NOT_APPROVED)
+  return true
 }
 
 // ---- HZ-378: job control (Stop run / Resume) ----

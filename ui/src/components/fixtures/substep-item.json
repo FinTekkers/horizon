@@ -121,5 +121,18 @@
       "color": "#9C333E"
     },
     "run": null
+  },
+  "goldenCases": {
+    "substepId": "golden-cases",
+    "gateIndex": 3,
+    "hash": null,
+    "approved": false,
+    "approvedBy": null,
+    "approvedAt": null,
+    "metricLine": null,
+    "errors": [
+      "no golden-cases block"
+    ],
+    "cases": []
   }
 }

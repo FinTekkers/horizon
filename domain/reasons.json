@@ -13,6 +13,7 @@
     { "id": "sdk_message_too_large", "retryable": true },
     { "id": "invalid_plan_draft", "retryable": false },
     { "id": "usage_limited", "retryable": true },
-    { "id": "fails_on_main", "retryable": false }
+    { "id": "fails_on_main", "retryable": false },
+    { "id": "golden_cases_not_approved", "retryable": false }
   ]
 }

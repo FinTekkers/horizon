@@ -618,7 +618,34 @@ def build_prompt(task: dict) -> str:
     if rules_section:
         lines.append("")
         lines.append(rules_section)
+    golden = golden_cases_section(task)
+    if golden:
+        lines += ["", golden]
     return "\n".join(lines)
+
+
+# ---- golden cases (HZ-541) ----
+# The server sets `golden_cases: true` on a task only when the item's project
+# has its definitions switch on and the item's snapshot has a golden_cases
+# sub-step. Without it nothing is appended, so every other prompt is
+# byte-identical. The metric line's token is domain/js/goldenCases.js's
+# GOLDEN_CASES_MARKER: the first-gate table links each case to that line.
+GOLDEN_CASES_ROLE = "golden_cases.md"
+GOLDEN_CASES_ADDENDUM = "golden_cases_addendum.md"
+GOLDEN_CASES_OUTPUT = "golden_cases"
+# Change "Define how we measure success", Task "How we'll verify", and Eng plan.
+GOLDEN_ADDENDUM_LABELS = frozenset({"Define how we measure success", "How we'll verify", ENG_PLAN_LABEL})
+
+
+def golden_cases_section(task: dict) -> str | None:
+    """The golden-cases text a task's prompt ends with, or None. A golden_cases
+    sub-step gets the producer contract; the metric steps and Eng plan of an
+    item with golden cases get the addendum."""
+    if (task.get("substep") or {}).get("output") == GOLDEN_CASES_OUTPUT:
+        return (ROLES / GOLDEN_CASES_ROLE).read_text().rstrip("\n")
+    if task.get("golden_cases") is True and task["step"].get("label") in GOLDEN_ADDENDUM_LABELS:
+        return (ROLES / GOLDEN_CASES_ADDENDUM).read_text().rstrip("\n")
+    return None
 
 
 # ---- screenshot publishing (HZ-63) ----
@@ -2585,6 +2612,10 @@ def _execute_pm(task: dict) -> dict:
     item = task["item"]
     kind = item_kind(item)
     prompt = pm_steps.build_prompt(task)
+    # HZ-541: the metric step of an item with golden cases names the set.
+    golden = golden_cases_section(task)
+    if golden:
+        prompt = f"{prompt}\n\n{golden}"
     # HZ-192: run_agent() resolves the model from who is calling — the step's
     # own domain/steps.json agent (PM, or Architect for "Set guardrails").
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])

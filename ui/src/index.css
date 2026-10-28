@@ -908,6 +908,17 @@ button { font-family: var(--font-sans); }
 .data-table code { font: 500 12px var(--font-mono); color: var(--muted-strong); }
 .data-table a { color: var(--primary-ink); white-space: nowrap; }
 
+/* HZ-541: the first gate's golden cases, and the metric line naming the set. */
+.golden-cases { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.golden-cases__title { font: 700 13px var(--font-sans); color: var(--deep); }
+.golden-cases__section { color: var(--muted); font-size: 12px; }
+.golden-cases__source-error, .golden-cases__errors { color: var(--danger-ink); }
+.golden-cases__errors { margin: 0; padding-left: 18px; font-size: 13px; }
+.golden-cases__empty { color: var(--muted); font-size: 13px; }
+.golden-cases .btn-gate-approve { align-self: flex-start; }
+.tile__metric-line--golden { scroll-margin-top: 80px; }
+.tile__metric-line--golden:target { background: var(--warning-bg); border-radius: 6px; }
+
 .btn-outline {
   display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
   border: 1.5px solid var(--border-strong); background: var(--surface); color: var(--deep);

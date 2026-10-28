@@ -958,6 +958,21 @@ db.exec(`
   );
 `)
 
+// HZ-541: the golden cases a human approved at an item's first gate, copied
+// out of the golden_cases sub-step's step_run so a later run of the sub-step
+// can never change an approved set. One row per item: v1 approves the whole
+// set. Written and cleared only by server/src/goldenCases.js.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS golden_case_set (
+    item_id       TEXT PRIMARY KEY REFERENCES work_item(id) ON DELETE CASCADE,
+    cases_json    TEXT NOT NULL,
+    hash          TEXT NOT NULL,
+    source_run_id INTEGER,
+    approved_by   TEXT NOT NULL,
+    approved_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`)
+
 // HZ-270: project_event is the project-level audit trail (event.item_id is
 // NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one
 // row per gate arrival the caretaker judged; its UNIQUE key is the persisted

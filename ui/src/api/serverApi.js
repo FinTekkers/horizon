@@ -725,6 +725,8 @@ export async function approveGate(id, notes) {
     ...(notes ? { notes } : {}),
     ...(item.runPlan?.hash ? { planHash: item.runPlan.hash } : {}),
     ...(item.runPlan?.runner ? { runner: item.runPlan.runner } : {}),
+    // HZ-541: the golden-cases set this tab showed at the first gate.
+    ...(item.goldenCases?.hash && !item.goldenCases.approved && item.cursor === item.goldenCases.gateIndex ? { goldenHash: item.goldenCases.hash } : {}),
   }
   const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, body)
   if (!res) return { ok: false }
