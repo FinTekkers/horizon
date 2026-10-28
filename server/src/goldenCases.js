@@ -27,7 +27,9 @@ export const FIRST_GATE_INDEXES = Object.freeze([
   requiredStepIndex('Approve & prioritize this work'),
   kindStepIndex('Approve & prioritize', 'task'),
 ])
-// The steps that refuse to run without an approved set.
+// The steps that refuse to run without an approved set. v1 guards the Change
+// steps only: a Task approves its set at gate 19, but guarding its Run plan
+// and Execute is a follow-up item.
 export const GUARDED_STEP_INDEXES = Object.freeze([requiredStepIndex('Draft implementation plan'), IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX])
 export const APPROVED_ARTIFACT_LABEL = 'Approved golden cases'
 export const NOT_APPROVED_TEXT =
@@ -167,6 +169,7 @@ export function goldenCasesFields(row) {
       approved: !!approved,
       approvedBy: approved?.approvedBy ?? null,
       approvedAt: approved?.approvedAt ?? null,
+      // The line farm/roles/golden_cases_addendum.md has the metric step mark.
       metricLine: metricLineFor(row.metric),
       errors,
       cases: cases.map((c, i) => ({

@@ -72,7 +72,7 @@ async function dispatched(id) {
 }
 
 // What must not differ between an item and its no-definitions twin.
-const shape = (body) => ({ step: body.step, personas: body.item.personas, persona: body.item.persona, artifacts: body.artifacts.map((a) => a.label) })
+const shape = (body) => ({ step: body.step, personas: body.item.personas, persona: body.item.persona, artifacts: body.artifacts.map((a) => a.label), golden: Object.hasOwn(body, 'golden_cases') })
 
 // The twin: no project, no snapshot — the feature cannot apply.
 const baseline = {}

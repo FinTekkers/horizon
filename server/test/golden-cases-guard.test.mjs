@@ -97,6 +97,7 @@ test('with an approved set, Draft implementation plan dispatches with the approv
   orchestrator.cancel('G-OK')
   assert.ok(body, 'the step was dispatched')
   assert.equal(body.step.index, PLAN_STEP)
+  assert.equal(body.golden_cases, true, 'the farm is told to append the golden-cases addendum')
   const input = body.artifacts.find((a) => a.label === golden.APPROVED_ARTIFACT_LABEL)
   assert.ok(input, 'the approved set rides along')
   assert.ok(input.content.includes(JSON.stringify({ cases: CASES }, null, 2)))

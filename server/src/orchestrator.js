@@ -1905,6 +1905,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...checkCommandsField(item),
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
+    // HZ-541: the metric steps and Eng plan prompts then ask for the set and
+    // its metric line. Absent for every item without golden cases.
+    ...(goldenCasesRequired(item) ? { golden_cases: true } : {}),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
