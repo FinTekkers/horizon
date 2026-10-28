@@ -7,7 +7,7 @@
 // Its own project with no repo and no items, so no mock agent ever runs a PM
 // step against it. Sets its own PIN: earlier specs rotate it.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 
@@ -46,7 +46,6 @@ test('a project step default starts at Default; the right PIN saves Muse and it 
   await page.getByRole('button', { name: 'Save', exact: true }).click()
   await expect(select).toHaveValue('muse')
   await select.scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'project-step-provider')
 
   await page.reload()
   await expect(page.getByLabel(`${PROJECT} ${OUTCOME} Runs on`, { exact: true })).toHaveValue('muse', { timeout: 10_000 })

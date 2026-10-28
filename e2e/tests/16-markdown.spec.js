@@ -11,7 +11,7 @@
 // (playwright.config.js) and every extra test pays for a fresh browser
 // context plus a page load.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -103,8 +103,6 @@ test('a markdown description renders as formatted, readable, correctly scaled ma
   const guardrailsTile = tiles.nth(1)
   const overflow = await guardrailsTile.evaluate((el) => el.scrollWidth - el.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
-
-  await captureScreenshot(page, 'markdown')
 
   // A code chip sits on the tile's own --canvas background, so --subtle (the
   // chip colour used elsewhere on white surfaces) would be near-invisible

@@ -3,7 +3,7 @@
 // phone layouts. Read-only: global-setup.js seeds DEP-2 (at implement)
 // depending on DEP-1; 13-dependencies.spec.js reads the same edge.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertDependency } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -50,20 +50,17 @@ test('a blocked card reads Blocked and keeps its blocker link inside the card in
   }
 
   await expectLayout('light')
-  await captureScreenshot(page, 'board-blocked-light')
 
   await page.locator('.topbar__avatar').click()
   await page.getByRole('switch', { name: 'Dark mode' }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await page.locator('.usermenu__scrim').click()
   await expectLayout('dark')
-  await captureScreenshot(page, 'board-blocked-dark')
 
   await page.setViewportSize(PHONE)
   // HZ-586: a phone shows one column at a time; DEP-2's is Execute.
   await page.getByRole('tab', { name: /^Execute, / }).click()
   await expectLayout('phone')
-  await captureScreenshot(page, 'board-blocked-phone')
 
   // Leave the shared storage state as other specs expect it: light mode.
   await page.setViewportSize({ width: 1024, height: 640 })

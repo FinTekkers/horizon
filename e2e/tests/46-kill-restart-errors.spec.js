@@ -7,7 +7,7 @@
 // The 500 is a page.route stub, so the real server never sees either request.
 // Sets its own PIN anyway (earlier specs rotate it), so no prompt fires.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 import { phasesFor } from '../../domain/js/lifecycle.js'
 
@@ -90,7 +90,6 @@ for (const dialog of DIALOGS) {
     await expect(page.locator('.composer__submit')).toBeEnabled()
     await expect(page.locator('.composer__cancel')).toBeEnabled()
     await expectUnchanged(page, before)
-    if (dialog.name === 'Abandon') await captureScreenshot(page, 'kill-error')
 
     await page.reload()
     await expect(page.locator('.tracker__id')).toHaveText(ID, { timeout: 10_000 })

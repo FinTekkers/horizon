@@ -5,7 +5,7 @@
 // Each test creates its own item (same pattern as 08-full-lifecycle.spec.js)
 // so the two tests can't race each other's gate state.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 async function createItem(request, title) {
   const res = await request.post('/api/items', {
@@ -43,8 +43,6 @@ test('the confirm dialog names the item and gate before any request fires, then 
   await expect(page.locator('.composer__sub')).toContainText(id)
   await expect(page.locator('.composer__sub')).toContainText('Approve & prioritize this work')
   expect(calls).toEqual([])
-
-  await captureScreenshot(page, 'gate-approve-confirm')
 
   await page.locator('.composer__submit').click()
 

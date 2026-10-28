@@ -6,7 +6,7 @@
 //
 // Both are seeded paused at Draft implementation plan, so nothing runs them.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 import { requiredStepIndex, STEPS } from '../../domain/js/lifecycle.js'
 
@@ -66,7 +66,6 @@ test('a trivial item shows its lane and its skipped rows, before and after a rel
   await page.goto(`/${TRIVIAL.toLowerCase()}`)
   await expectTrivialLane(page)
   await stepCard(page, SKIPPED[0]).scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'trivial-lane-skipped-rows')
 
   await page.reload()
   await expectTrivialLane(page)

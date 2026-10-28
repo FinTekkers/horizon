@@ -7,7 +7,7 @@
 // leaves it); item B's review ran twice. insertItem has no field for
 // fix_findings_json, so it is set with a direct UPDATE.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
 import { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -69,14 +69,11 @@ test('a review that sent the item back shows its outcome and opens attempt 1’s
     new RegExp(`/artifacts/${REVIEW_STEP_INDEX}/1$`),
   )
 
-  // Metric 5: the sent-back item on desktop, then on phone.
-  await step.scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'ran-ahead-desktop')
+  // On a phone the sent-back step still shows its outcome and attempt link.
   await page.setViewportSize({ width: 375, height: 667 })
   await step.scrollIntoViewIfNeeded()
   await expect(step.locator('.step-card__meta')).toBeVisible()
   await expect(step.getByRole('link', { name: 'View attempt 1 ↗' })).toBeVisible()
-  await captureScreenshot(page, 'ran-ahead-phone')
 })
 
 test('with two review attempts it shows attempt 2 and opens attempt 2’s artifact', async ({ page }) => {

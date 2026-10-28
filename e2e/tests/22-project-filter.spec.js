@@ -5,7 +5,7 @@
 // HZ-317: a five-repo project gets repo chips; at phone width they wrap inside
 // a menu that stays on screen. Its repos are deleted again in afterAll.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertProjectRepo } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -81,7 +81,6 @@ test('the filter switches between projects and All projects, and only ever filte
   await choose(page, ALPHA)
   await expect(alphaCard).toBeVisible()
   await expect(betaCard).toHaveCount(0)
-  await captureScreenshot(page, 'project-filter')
 
   await choose(page, 'All projects')
   await expect(alphaCard).toBeVisible()

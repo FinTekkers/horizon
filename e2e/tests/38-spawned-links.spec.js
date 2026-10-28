@@ -5,7 +5,7 @@
 // Its own fixtures, seeded straight into the DB: a Task waiting at Run plan,
 // one open child (paused, so no mock agent moves it) and one closed child.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertDependency, insertSpawn } from '../fixtures/seed.js'
 import { kindStepIndex, endIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -61,7 +61,6 @@ async function expectTaskLists(page) {
 test('a task lists the items it spawned, and each links back to it', async ({ page }) => {
   await page.goto(`/${TASK.toLowerCase()}`)
   await expectTaskLists(page)
-  await captureScreenshot(page, 'task-spawned-links')
 
   await spawnedList(page).getByRole('link', { name: OPEN_CHILD }).click()
   await expect(page).toHaveURL(new RegExp(`/${OPEN_CHILD.toLowerCase()}$`))

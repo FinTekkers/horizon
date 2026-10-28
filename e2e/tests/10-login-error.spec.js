@@ -4,7 +4,7 @@
 // logged-in storageState (see playwright.config.js), so this file opts out
 // of it to actually see LoginPage render.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 test.use({ storageState: { cookies: [], origins: [] } })
 
@@ -17,8 +17,6 @@ test('an ?error= redirect lands on the login page with a readable message, and t
 
   // The code must not linger in the URL past the first render.
   await expect.poll(() => new URL(page.url()).search).toBe('')
-
-  await captureScreenshot(page, 'login-error')
 })
 
 // HZ-36: unauthenticated access must only ever reach the login page — even a

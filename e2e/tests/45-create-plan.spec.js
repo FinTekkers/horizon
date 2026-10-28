@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { itemKindInfo, phasesFor } from '../../domain/js/lifecycle.js'
 import { openDb } from '../fixtures/seed.js'
 
@@ -80,5 +80,4 @@ test('creating a Plan shows the Plan badge and a Plan phase on its card, and the
   const cards = page.locator('.card')
   await expect.poll(async () => (await cards.locator('.kind-badge').allTextContents()).every((t) => t === PLAN_LABEL)).toBe(true)
   await expect.poll(async () => cards.count()).toBe(await cards.locator('.kind-badge').count())
-  await captureScreenshot(page, 'create-plan')
 })

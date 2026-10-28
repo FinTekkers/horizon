@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { openDb, setGatePinDirect } from '../fixtures/seed.js'
 
@@ -119,7 +119,6 @@ test('a step that finishes while its item is open shows its output with no reloa
   })
   await expect(plan.getByRole('link', { name: 'See agent output ↗' })).toBeVisible()
   await expect(plan.getByText('no output recorded', { exact: false })).toHaveCount(0)
-  await captureScreenshot(page, 'live-feed-step-output')
 })
 
 test('a new item and a change to an existing row both reach the Board within 2 s', async ({ request, page }) => {

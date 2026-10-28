@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 // HZ-25: dark mode toggle, top-right user menu. One consolidated journey
 // (not one test per assertion) — this suite runs under a fixed 90s global
@@ -17,7 +17,6 @@ test('dark mode toggles from the user menu, applies everywhere, and survives a r
   // The board, not just the attribute, actually repainted.
   const bodyBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor)
   expect(bodyBg).toBe('rgb(21, 19, 27)')
-  await captureScreenshot(page, 'dark-mode-board')
 
   // Persists across a fresh navigation, applied before first paint by the
   // inline <head> script (not React) — no light-mode flash to catch here,

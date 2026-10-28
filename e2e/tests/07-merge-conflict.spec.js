@@ -1,11 +1,9 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 test('shows the merge-conflict banner when the PR cannot be merged', async ({ page }) => {
   await page.goto('/cfl-1')
   await expect(page.locator('.step-card__conflict')).toBeVisible()
   await expect(page.locator('.step-card__conflict')).toContainText('PR #501 has merge conflicts')
-
-  await captureScreenshot(page, 'merge-conflict')
 })
 
 // HZ-154: the whole point of the scoped path, from the human's side. A PR that
@@ -65,6 +63,4 @@ test('resolving a conflict in scope reports back at the Accept gate instead of r
   const gate = page.locator('.step-card--awaiting', { hasText: 'Accept the code' })
   await expect(gate.locator('.btn-gate-approve')).toBeVisible()
   await expect(activity).not.toContainText('needs a human or a full implement cycle')
-
-  await captureScreenshot(page, 'merge-conflict-resolved')
 })

@@ -8,7 +8,7 @@
 // Its own fixtures, seeded straight into the DB: a closed Plan that filed two
 // open items (paused, so no mock agent moves them) and one closed item.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertSpawn } from '../fixtures/seed.js'
 import { endIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -57,11 +57,9 @@ test("the pill opens the closed Plan's board, which survives a reload until the 
   await page.goto(`/${OPEN[0].toLowerCase()}`)
   const pill = page.getByRole('link', { name: `From Plan ${PLAN} · 1 of 3 done` })
   await expect(pill).toBeVisible()
-  await captureScreenshot(page, 'plan-filter-item-pill-desktop')
   await pill.click()
   await expectFilteredBoard(page)
   await expect(page.locator('.board__meta')).toHaveText(`2 items from Plan ${PLAN}`)
-  await captureScreenshot(page, 'plan-filter-board-desktop')
 
   await page.reload()
   await expectFilteredBoard(page)
@@ -81,10 +79,8 @@ test('at 390px the chip, the card chip and the pill fit with no sideways scroll'
   await expectFilteredBoard(page)
   await expect(page.getByRole('link', { name: `From Plan ${PLAN}`, exact: true }).first()).toBeVisible()
   await expectNoSideScroll(page)
-  await captureScreenshot(page, 'plan-filter-board-phone')
 
   await page.goto(`/${OPEN[0].toLowerCase()}`)
   await expect(page.getByRole('link', { name: `From Plan ${PLAN} · 1 of 3 done` })).toBeVisible()
   await expectNoSideScroll(page)
-  await captureScreenshot(page, 'plan-filter-item-pill-phone')
 })

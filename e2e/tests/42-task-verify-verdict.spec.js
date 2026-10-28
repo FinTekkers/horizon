@@ -7,7 +7,7 @@
 // one, since Activity shows only the latest 12 — carrying the same verdict.
 // It is seeded paused at Review & close, a gate, so nothing runs it.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun, insertEvent } from '../fixtures/seed.js'
 import { STEPS, VERIFY_REPORT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -77,9 +77,7 @@ test('a failed Verify & report shows a red circle-X and its summary in the step 
   await expect(activity.getByTestId('activity-verdict-fail')).toHaveCSS('background-color', FAILURE_RED)
   await expect(activity.getByText('Command 1 crashed on import.')).toBeVisible()
 
-  // The PR screenshot shows the failed step itself, not the page top.
   await step.scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'task-verify-verdict-fail')
 
   // The full Verify markdown is unchanged and still opens beside the summary.
   const link = step.getByRole('link', { name: 'View full artifact ↗' })

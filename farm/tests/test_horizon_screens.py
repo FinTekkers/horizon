@@ -7,8 +7,8 @@ Each title maps to its spec and the (screen, viewport, theme) shots that now
 show the layout it checked.
 
 HZ-613: LEGACY_JOURNEYS does the same for every screenshot name the e2e specs'
-captureScreenshot() calls take, before follow-ups remove those calls: each
-maps to the config shots that show its journey, or to the reason it has none.
+old screenshot helper took (HZ-621 removed it): each maps to the config shots
+that show its journey, or to the reason it has none.
 """
 
 import json
@@ -134,8 +134,8 @@ def _both(screen: str) -> list[tuple[str, str, str]]:
     return [(screen, "desktop", "light"), (screen, "phone", "light")]
 
 
-# Every name a spec passed to captureScreenshot(), with the shots that show
-# its journey, or the reason no path-only screen can (a full sentence).
+# Every name a spec passed to the old screenshot helper, with the shots that
+# show its journey, or the reason no path-only screen can (a full sentence).
 LEGACY_JOURNEYS = {
     "board": _desktop(BOARD),
     "stale-filter-hidden": _desktop(BOARD),
@@ -203,8 +203,8 @@ LEGACY_JOURNEYS = {
     "definitions-preview": "The effective-prompt preview opens only after a click on a definition and on Preview; journey-definitions shows the list it starts from.",
 }
 
-# e2e/verify-screenshots.mjs's EXPECTED_JOURNEYS when HZ-613 moved them, kept
-# here because a follow-up deletes that file.
+# The e2e presence check's EXPECTED_JOURNEYS when HZ-613 moved them, kept
+# here because HZ-621 deleted that check.
 EXPECTED_JOURNEYS_30 = (
     "board",
     "create-item",
@@ -245,7 +245,6 @@ STATE_WAITS = {
     "journey-farm-health": '[aria-label="Overall"][data-state="red"]',
 }
 GENERIC_WAITS = {".card", "body", "#root", ".tracker", "main", ".tracker__id", ".step-card"}
-_CAPTURE_CALL = re.compile(r"captureScreenshot\(\s*\w+\s*,\s*'([^']+)'")
 _QUOTED = re.compile(r'"([^"]+)"')
 # An item page of a seeded journey (JS-*) or layout (LS-*) item.
 _ITEM_PATH = re.compile(r"^/((?:js|ls)-[a-z0-9-]+)$")
@@ -262,10 +261,6 @@ def _is_sentence(reason: str) -> bool:
 
 def test_every_legacy_journey_has_a_shot_or_reason():
     assert len(LEGACY_JOURNEYS) == 64
-    called = {name for spec in SPECS.glob("*.spec.js") for name in _CAPTURE_CALL.findall(spec.read_text(encoding="utf-8"))}
-    # A subset, so it still holds as follow-ups remove the calls.
-    unmapped = called - LEGACY_JOURNEYS.keys()
-    assert not unmapped, f"captureScreenshot names with no LEGACY_JOURNEYS entry: {sorted(unmapped)}"
     shots = {(shot.screen, shot.viewport, shot.theme) for shot in config().shots}
     for name, target in LEGACY_JOURNEYS.items():
         if isinstance(target, str):

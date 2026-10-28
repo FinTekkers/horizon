@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 // HZ-135: read off the vocabulary rather than typed. Nothing in this file names a
 // priority, so it is not a hit for server/test/domain-priority-literals.test.mjs —
 // and a value added to domain/priorities.json has to reach the real browser or the
@@ -51,6 +51,4 @@ test('creating a work item via the modal adds it to the board', async ({ page })
   const card = page.locator('.card').filter({ hasText: title })
   await expect(card).toHaveCount(1)
   await expect(card.locator('.card__priority')).toHaveText(chosen)
-
-  await captureScreenshot(page, 'create-item')
 })

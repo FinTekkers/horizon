@@ -5,7 +5,7 @@
 // Box and service figures come from the real host, so only labels and
 // structure are asserted, never values.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 const SERVICES = [
   'horizon-server',
@@ -45,9 +45,6 @@ test('an admin opens Farm health from the account menu; it reads red, and a relo
   await expect(page).toHaveURL(/\/farm-health$/)
   await expectRedPage(page)
 
-  await page.setViewportSize({ width: 1440, height: 1560 })
-  await captureScreenshot(page, 'farm-health')
-
   await page.reload()
   await expect(page).toHaveURL(/\/farm-health$/)
   await expectRedPage(page)
@@ -68,5 +65,4 @@ test('on a phone the page keeps every section, one card a row', async ({ page })
   const checkSlots = page.getByRole('region', { name: 'Capacity slots' })
   await expect(checkSlots.getByText('Farm not reachable — no capacity slot readings')).toBeVisible()
   await expect(checkSlots.getByText('Nothing waiting')).toBeVisible()
-  await captureScreenshot(page, 'farm-health-phone')
 })

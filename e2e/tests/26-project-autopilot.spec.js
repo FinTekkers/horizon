@@ -4,7 +4,7 @@
 // Autopilot history. A wrong PIN is refused by the route
 // (server/test/gate-pin-routes.test.mjs).
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -35,7 +35,6 @@ test('Autopilot defaults to off; the right PIN saves it and it survives a reload
   await expect(select).toHaveValue('shadow')
   const history = page.getByRole('list', { name: `${PROJECT} Autopilot history` })
   await expect(history).toContainText('off → shadow')
-  await captureScreenshot(page, 'project-autopilot')
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 
   await page.reload()

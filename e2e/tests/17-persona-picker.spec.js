@@ -9,7 +9,7 @@
 // Creates its own item (same pattern as 09-gate-confirm.spec.js) so it never
 // races another spec's gate state.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 // The four persona agents, in the order Tracker.jsx renders them (the key
 // order of PERSONAS), each with the label its select carries.
@@ -68,8 +68,6 @@ test('the intake gate offers a persona select per agent, and picking a QA one po
   // The request carries the agent, not just a bare persona id.
   await expect.poll(() => bodies.length, { timeout: 10_000 }).toBe(1)
   expect(bodies[0]).toEqual({ agent: 'qa', persona: 'data_integrity' })
-
-  await captureScreenshot(page, 'persona-picker')
 
   // Persisted, not just optimistic local state.
   await page.reload()

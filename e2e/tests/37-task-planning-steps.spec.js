@@ -6,7 +6,7 @@
 // The fixture is seeded paused at Assess, so no mock agent starts it until
 // this spec resumes it.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 import { kindStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -45,8 +45,6 @@ test("a task's planning steps run and each card shows its summary and artifact l
   await expect
     .poll(async () => (await page.locator('.activity-row__text').allTextContents()).join('\n'))
     .toContain('assessed the task: found the scripts it needs; no new code needed (mock)')
-
-  await captureScreenshot(page, 'task-planning-steps')
 
   // The Assess artifact link opens the stored artifact.
   const [artifactPage] = await Promise.all([

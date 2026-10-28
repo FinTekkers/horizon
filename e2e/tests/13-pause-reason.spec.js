@@ -11,7 +11,7 @@
 // event, so they live in ui/src/components/Tracker.pauseBanner.test.jsx. This
 // spec keeps the one journey through the real server: banner, then Resume.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -56,8 +56,6 @@ test('a turn_cap pause states its category, cause and attempts used, alongside R
   // The banner adds explanation — it doesn't replace what was already there.
   await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
   await expect(page.locator('.activity-row__text').first()).toContainText('agent step failed')
-
-  await captureScreenshot(page, 'pause-reason')
 
   // Resuming clears the pause state, and the banner goes with it.
   await page.getByRole('button', { name: 'Resume work' }).click()
