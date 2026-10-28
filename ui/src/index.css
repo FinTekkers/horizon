@@ -14,6 +14,7 @@
      hex), so light mode is unaffected either way. See
      ui/src/theme.contrast.test.jsx for the audited pairs. */
 :root {
+  color-scheme: light;
   --primary: #2E6CB2;        /* Super Sonic */
   --primary-ink: #2E6CB2;
   --primary-hover: #275C98;
@@ -24,6 +25,7 @@
   --success-ink: #0E6E74;
   --warning: #DFA200;        /* Symphonic Sunset */
   --warning-ink: #9A6E00;
+  --on-warning: #38294F;     /* text on solid --warning (white is ~2:1 on this amber) */
   --danger: #9C333E;         /* Garnet */
   --danger-ink: #9C333E;
   --accent: #C9B4D9;         /* Orchid Bloom */
@@ -73,6 +75,7 @@
 }
 
 [data-theme='dark'] {
+  color-scheme: dark;
   --primary: #2E6CB2;
   --primary-ink: #6FA8E0;
   --primary-hover: #1F4A7D;
@@ -83,6 +86,7 @@
   --success-ink: #4FB8AE;
   --warning: #8A6300;
   --warning-ink: #F0C25E;
+  --on-warning: #FFFFFF;
   --danger: #9C333E;
   --danger-ink: #E8899A;
   --accent: #C9B4D9;
@@ -590,7 +594,7 @@ button { font-family: var(--font-sans); }
   display: inline-flex; align-items: center; justify-content: center;
   font: 700 11px var(--font-sans); color: #fff; background: var(--neutral-badge);
 }
-.pending-btn__badge--hot { background: var(--warning); }
+.pending-btn__badge--hot { background: var(--warning); color: var(--on-warning); }
 
 /* ===== Board ===== */
 .board { padding: 24px 28px 40px; }
@@ -1041,7 +1045,7 @@ button { font-family: var(--font-sans); }
 }
 .step__icon--done { background: var(--success); color: #fff; }
 .step__icon--active { background: var(--primary); color: #fff; animation: auraPulse 1.5s infinite; }
-.step__icon--awaiting { background: var(--warning); color: #fff; }
+.step__icon--awaiting { background: var(--warning); color: var(--on-warning); }
 .step__icon--pending { background: var(--surface); border: 2px solid var(--pending-border); color: transparent; }
 .step__icon--blocked { background: var(--danger); color: #fff; }
 /* HZ-429: a done Verify & report's verdict — after --done so it wins. */
@@ -1199,10 +1203,10 @@ button { font-family: var(--font-sans); }
 
 /* ===== Approvals drawer ===== */
 .drawer { position: fixed; inset: 0; z-index: 40; }
-.drawer__scrim { position: absolute; inset: 0; background: rgba(40, 40, 46, 0.32); animation: auraFade 0.18s ease; }
+.drawer__scrim { position: absolute; inset: 0; background: rgba(var(--scrim-rgb), 0.32); animation: auraFade 0.18s ease; }
 .drawer__panel {
   position: absolute; top: 0; right: 0; bottom: 0; width: 430px; max-width: 92vw;
-  background: var(--canvas); box-shadow: -20px 0 50px rgba(40, 40, 46, 0.2);
+  background: var(--canvas); box-shadow: -20px 0 50px rgba(var(--scrim-rgb), 0.2);
   animation: auraIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
   display: flex; flex-direction: column;
 }
@@ -1254,10 +1258,10 @@ button { font-family: var(--font-sans); }
 
 /* ===== Composer modal ===== */
 .composer { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 24px; }
-.composer__scrim { position: absolute; inset: 0; background: rgba(40, 40, 46, 0.4); animation: auraFade 0.15s ease; }
+.composer__scrim { position: absolute; inset: 0; background: rgba(var(--scrim-rgb), 0.4); animation: auraFade 0.15s ease; }
 .composer__panel {
   position: relative; width: 460px; max-width: 94vw; background: var(--surface);
-  border-radius: 20px; box-shadow: 0 30px 70px rgba(40, 40, 46, 0.3);
+  border-radius: 20px; box-shadow: 0 30px 70px rgba(var(--scrim-rgb), 0.3);
   padding: 24px 26px; animation: auraFade 0.18s ease;
 }
 .composer__title { font: 700 19px var(--font-sans); letter-spacing: -0.3px; }
@@ -1267,8 +1271,8 @@ button { font-family: var(--font-sans); }
 .composer__dependents { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); }
 .composer__check { display: flex; align-items: center; gap: 8px; font: 600 13px var(--font-sans); color: var(--deep); cursor: pointer; }
 .composer__select {
-  border: 1.5px solid #E4DEEE; border-radius: 10px; padding: 9px 12px;
-  font: 500 13px var(--font-sans); color: var(--deep); background: #FAFAFB;
+  border: 1.5px solid var(--border-strong); border-radius: 10px; padding: 9px 12px;
+  font: 500 13px var(--font-sans); color: var(--deep); background: var(--surface-alt);
 }
 .composer__input {
   width: 100%; margin-top: 16px; min-height: 104px; resize: vertical;

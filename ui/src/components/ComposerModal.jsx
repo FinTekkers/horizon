@@ -19,6 +19,8 @@ const COPY = {
     title: 'Restart phase',
     submitLabel: 'Restart phase',
     submitColor: 'var(--warning)',
+    // White is ~2:1 on light-mode amber; --on-warning swaps per theme.
+    submitInk: 'var(--on-warning)',
     placeholder: 'Why are you restarting? (optional)',
   },
   abandon: {
@@ -175,7 +177,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
           </button>
           <button
             className="composer__submit"
-            style={{ background: copy.submitColor }}
+            style={{ background: copy.submitColor, ...(copy.submitInk && { color: copy.submitInk }) }}
             disabled={composer.busy}
             aria-busy={composer.busy || undefined}
             onClick={submit}
