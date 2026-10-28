@@ -46,6 +46,7 @@ import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner,
 import * as waPollVotes from './waPollVotes.js'
 import { STEPS, endIndex, isItemKind, itemKindOf } from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
+import { SUBSTEP_ID_PATTERN, stepLabel, substepsOf } from '../../domain/js/substeps.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
@@ -99,6 +100,18 @@ function escAttr(s) {
 // The UI builds its own (itemHref in ui/src/components/DependencyBadge.jsx).
 function itemPageUrl(id) {
   return `${UI_URL}/${id.toLowerCase()}`
+}
+
+// HZ-540: the artifact routes' optional ?substep=<id>.
+const SUBSTEP_QUERY = { type: 'object', properties: { substep: { type: 'string', pattern: SUBSTEP_ID_PATTERN } } }
+
+// HZ-540: the sub-step a ?substep= names — one of the item's snapshot at this
+// step — null without one (the global step's own runs), false for an id the
+// item has no sub-step at this step for.
+function artifactSubstep(id, stepIndex, substepId) {
+  if (substepId == null) return null
+  const item = store.getItem(id)
+  return substepsOf(item).find((s) => s.id === substepId && s.anchor === stepIndex) ?? false
 }
 
 // HZ-546: the link context (domain/js/codeRefs.js) for one step run of an item.
@@ -187,10 +200,12 @@ function cssHrefFor(routePath) {
 // steps run by the same agent (e.g. both "Eng") could in rare cases show a
 // revision as driven by feedback meant for the other step. No schema change
 // to fix this — see the HZ-46 options doc's Option B trade-offs.
-function renderArtifactPage(id, stepIndex, run, routePath) {
+// HZ-540: `substep` ({ id, label } from the item's snapshot) renders one of
+// the step's sub-steps instead: its label, and its own attempts.
+function renderArtifactPage(id, stepIndex, run, routePath, substep = null) {
   const step = STEPS[stepIndex]
-  const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
-  const attempts = store.listStepAttempts(id, stepIndex)
+  const title = `${esc(id)} · ${esc(substep?.label || step?.label || `step ${stepIndex}`)}`
+  const attempts = store.listStepAttempts(id, stepIndex, substep?.id ?? null)
   const current = attempts.find((a) => a.attempt === run.attempt)
   // The feedback shown next to "attempt X of Y" is what drove *this* attempt
   // — the thing a reviewer opening this page wants to check was addressed.
@@ -201,7 +216,7 @@ function renderArtifactPage(id, stepIndex, run, routePath) {
   const otherLinks = attempts
     .filter((a) => a.attempt !== run.attempt)
     .map((a) => {
-      const url = `/api/items/${encodeURIComponent(id)}/artifacts/${stepIndex}/${a.attempt}`
+      const url = `/api/items/${encodeURIComponent(id)}/artifacts/${stepIndex}/${a.attempt}${substep ? `?substep=${encodeURIComponent(substep.id)}` : ''}`
       const feedbackLabel = a.feedback ? ` — “${esc(a.feedback)}”` : ''
       return `<a href="${url}">attempt ${a.attempt}</a>${feedbackLabel}`
     })
@@ -810,6 +825,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           required: ['id', 'stepIndex'],
           properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
         },
+        querystring: SUBSTEP_QUERY,
         response: {
           200: textResponse('text/html', 'A standalone HTML page rendering the latest attempt’s artifact.'),
           404: ERROR_OBJECT,
@@ -818,13 +834,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       const { id, stepIndex } = request.params
-      const run = db
-        .prepare(
-          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
-        )
-        .get(id, stepIndex)
+      const substep = artifactSubstep(id, stepIndex, request.query?.substep)
+      if (substep === false) return reply.code(404).send({ error: 'no artifact for that step' })
+      const run = substep
+        ? (store.substepDoneRuns(id, stepIndex, substep.id).filter((r) => r.artifact != null).at(-1) ?? null)
+        : db
+            .prepare(
+              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
+            )
+            .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
-      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ROUTE))
+      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ROUTE, substep))
     },
   )
 
@@ -850,6 +870,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             attempt: { type: 'integer', minimum: 1 },
           },
         },
+        querystring: SUBSTEP_QUERY,
         response: {
           200: textResponse('text/html', 'A standalone HTML page rendering that specific attempt’s artifact.'),
           404: ERROR_OBJECT,
@@ -858,13 +879,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       const { id, stepIndex, attempt } = request.params
-      const run = db
-        .prepare(
-          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
-        )
-        .get(id, stepIndex, attempt)
+      const substep = artifactSubstep(id, stepIndex, request.query?.substep)
+      if (substep === false) return reply.code(404).send({ error: 'no artifact for that attempt' })
+      const run = substep
+        ? (store.substepDoneRuns(id, stepIndex, substep.id).find((r) => r.attempt === attempt && r.artifact != null) ?? null)
+        : db
+            .prepare(
+              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
+            )
+            .get(id, stepIndex, attempt)
       if (!run) return reply.code(404).send({ error: 'no artifact for that attempt' })
-      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ATTEMPT_ROUTE))
+      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ATTEMPT_ROUTE, substep))
     },
   )
 
@@ -1674,8 +1699,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
 
   // The /reject body, moved out unchanged (HZ-271) so every send-back — the
   // browser, the WhatsApp poll vote and the Autopilot caretaker — runs it.
-  function performSendBack(id, { target, feedback, targetStepIndex } = {}, actor = 'You') {
-    return store.requestChanges(id, target, feedback, actor, targetStepIndex ?? null)
+  // HZ-540: targetSubstepId sends it back to that sub-step of targetStepIndex.
+  function performSendBack(id, { target, feedback, targetStepIndex, targetSubstepId } = {}, actor = 'You') {
+    return store.requestChanges(id, target, feedback, actor, targetStepIndex ?? null, targetSubstepId ?? null)
   }
 
   // HZ-271: THE one approve and the one send-back. Every route below calls
@@ -1845,8 +1871,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           // targetStepIndex stays null: store.requestChanges derives the
           // default rework target itself, Accept-gate exception included. A
           // second derivation here could only ever drift from that one.
-          sendBack: (id, feedback, actor) =>
-            gateActions.sendBack(id, { target: STEPS[store.getItem(id)?.cursor]?.label || null, feedback }, actor),
+          // HZ-540: the step named as the sub-step's when the item is at one.
+          sendBack: (id, feedback, actor) => {
+            const item = store.getItem(id)
+            return gateActions.sendBack(id, { target: (item && stepLabel(item)) || null, feedback }, actor)
+          },
         },
       )
       if (result.status === 200) {
@@ -1875,6 +1904,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             target: { type: 'string' },
             feedback: { type: 'string' },
             targetStepIndex: { type: 'integer' },
+            // HZ-540: a sub-step of targetStepIndex, from the item's snapshot.
+            targetSubstepId: { type: 'string', pattern: SUBSTEP_ID_PATTERN },
           },
         },
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1890,6 +1921,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           target: request.body?.target,
           feedback: request.body?.feedback,
           targetStepIndex: request.body?.targetStepIndex,
+          targetSubstepId: request.body?.targetSubstepId,
         },
         actorOf(request),
       )

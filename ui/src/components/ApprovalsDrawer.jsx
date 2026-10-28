@@ -1,4 +1,5 @@
 import { phasesFor, itemKindOf, curStep, phaseIdx, awaitingGate, ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+import { stepLabel } from '../../../domain/js/substeps.js'
 import { LockIcon } from './icons'
 import { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 
@@ -43,6 +44,8 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
         <div className="drawer__list">
           {pending.map((item) => {
             const cur = curStep(item)
+            // HZ-540: the sub-step's label when the item is at one.
+            const label = stepLabel(item)
             const optional = cur.gate === 'optional'
             const gateColor = optional ? 'var(--agent-human-ink)' : 'var(--warning-ink)'
             const gateBg = optional ? 'var(--agent-human-bg)' : 'var(--warning-bg)'
@@ -63,7 +66,7 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
                 </div>
                 <div className="approval__gate-label">
                   <LockIcon size={14} strokeWidth={2.4} />
-                  {cur.label}
+                  {label}
                   {off && ` · ${AUTOPILOT_OFF_GATE_NOTE}`}
                 </div>
                 {off && (
@@ -77,10 +80,10 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
                   </div>
                 )}
                 <div className="approval__actions">
-                  <button className="btn-approve" onClick={() => onApprove(item.id, cur.label)}>
+                  <button className="btn-approve" onClick={() => onApprove(item.id, label)}>
                     Approve
                   </button>
-                  <button className="btn-reject" onClick={() => onReject(item.id, cur.label)}>
+                  <button className="btn-reject" onClick={() => onReject(item.id, label)}>
                     Send back
                   </button>
                 </div>

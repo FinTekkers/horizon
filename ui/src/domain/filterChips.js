@@ -25,6 +25,7 @@ export function activeChips(view, activeFilterKeys, filters = FILTERS) {
     chips.push({ key: 'kinds', label: `Kind: ${KIND_OPTIONS.filter((k) => view.kinds.includes(k.key)).map((k) => k.label).join(', ')}` })
   }
   if (view.plan != null) chips.push({ key: 'plan', label: `Plan: ${view.plan}` })
+  if (view.substep) chips.push({ key: 'substep', label: 'At a sub-step' })
   return chips
 }
 
@@ -37,5 +38,6 @@ export function chipPatch(key) {
   if (key === 'priorities') return { view: { priorities: [] } }
   if (key === 'kinds') return { view: { kinds: [] } }
   if (key === 'plan') return { view: { plan: null } }
+  if (key === 'substep') return { view: { substep: false } }
   return null
 }

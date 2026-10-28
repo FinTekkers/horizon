@@ -279,3 +279,34 @@ test('ruleBlockSummary: a single short line is the whole summary, with nothing m
 test('ruleBlockSummary: \\r\\n breaks split like \\n', () => {
   expect(ruleBlockSummary('First line\r\n\r\nSecond line')).toEqual({ summary: 'First line', hasMore: true })
 })
+
+// HZ-540: "At a sub-step" is its own state, read from the item's snapshot and
+// substep_cursor (domain/js/substeps.js). An item at no sub-step — no
+// snapshot, a snapshot but no substep_cursor, or a cursor off the anchor —
+// reads exactly as it did before.
+const AUDIT = { id: 'impl-audit', label: 'Audit the change', anchor: 11, persona: 'performance' }
+
+test('an item at no sub-step gets the status and elapsed line it had before sub-steps', () => {
+  const plain = { ...base, cursor: 11, state_since: '2026-10-01T10:00:00Z', activeRun: { step_index: 11, state: 'running' } }
+  const before = { status: itemStatus(plain, true), label: stateLabel(plain) }
+  expect(before.status.label).toMatch(/ working$/)
+  expect(before.label).toBe(stepStateLabel(STEPS[11]))
+  for (const item of [
+    { ...plain, substeps: [AUDIT] },
+    { ...plain, substeps: [AUDIT], substep_cursor: null },
+    { ...plain, cursor: 12, activeRun: { step_index: 12, state: 'running' }, substeps: [AUDIT], substep_cursor: 'impl-audit' },
+  ]) {
+    const status = itemStatus(item, true)
+    expect(status.label).not.toBe('At a sub-step')
+    if (item.cursor === 11) expect({ status, label: stateLabel(item) }).toEqual(before)
+  }
+})
+
+test('an item at a sub-step reads At a sub-step, naming it; Awaiting and Queued still win', () => {
+  const at = { ...base, cursor: 11, state_since: '2026-10-01T10:00:00Z', substeps: [AUDIT], substep_cursor: 'impl-audit' }
+  expect(itemStatus(at)).toMatchObject({ label: 'At a sub-step', reason: 'Audit the change' })
+  expect(stateLabel(at)).toBe('Audit the change')
+  const queued = { ...at, activeRun: { step_index: 11, state: 'queued' } }
+  expect(itemStatus(queued)).toMatchObject({ label: 'Queued', reason: 'Audit the change' })
+  expect(itemStatus({ ...at, paused: true }).label).toBe('Paused')
+})

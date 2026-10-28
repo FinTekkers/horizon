@@ -15,8 +15,9 @@ import {
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { FILTERS, DEFAULT_ACTIVE_FILTERS, visibleItems, hiddenCounts, matchCounts } from '../domain/filters'
 import { activeChips, chipPatch } from '../domain/filterChips'
-import { KIND_OPTIONS, SORT_LABELS, narrowItems, planPool, sortByWait, waitText } from '../domain/narrowing'
+import { KIND_OPTIONS, SORT_LABELS, isAtSubstep, narrowItems, planPool, sortByWait, waitText } from '../domain/narrowing'
 import { PRIORITIES } from '../../../domain/js/priorities.js'
+import { currentSubstep } from '../../../domain/js/substeps.js'
 import { PRIMARY_PERSONA_AGENT, personaFor } from '../domain/personas'
 import { itemStatus, stateLabel, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
 import { gateActionOf, gateActionBusy, elapsedText } from '../domain/gateAction'
@@ -103,6 +104,9 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
   const elapsedLabel = stateLabel(item, { deployBlock })
   // HZ-230: 'usually ~20m' (or 'running long') from the snapshot's estimates.
   const hint = usualDurationHint(item, durationEstimates, now)
+  // HZ-540: the sub-step the item is at, from its snapshot. The card stays in
+  // its anchor's column.
+  const substep = currentSubstep(item)
 
   return (
     <div className={`card${awaiting ? ' card--awaiting' : ''}`} onClick={() => onOpen(item.id)}>
@@ -156,6 +160,16 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
         </span>
         <StatusPill status={itemStatus(item, false, { deployBlock })} />
       </div>
+      {substep && (
+        <div className="card__substep" data-testid="card-substep">
+          <span className="card__substep-label">{substep.label}</span>
+          {substep.personaBadge && (
+            <span className="card__substep-persona" style={{ color: substep.personaBadge.color }} title="Sub-step persona">
+              {substep.personaBadge.label}
+            </span>
+          )}
+        </div>
+      )}
       {/* HZ-443: under Waiting on me, one wait per card — from when it began
           waiting, so it replaces the state's elapsed line. */}
       {showWait && <div className="card__waiting">{waitText(item.waiting_since, now)}</div>}
@@ -378,6 +392,8 @@ export default function Board({
     boardNarrowing.clearBoardView()
   }
   const planKindLabel = (kind) => itemKindInfo(isItemKind(kind) ? kind : 'plan').label
+  // HZ-540: offered only while some item is at a sub-step, or it is on.
+  const showSubstepChip = view.substep || pool.some(isAtSubstep)
   const chip = (on, label, onClick) => (
     <button
       key={label}
@@ -463,6 +479,7 @@ export default function Board({
               {SORT_LABELS[view.sortDir]}
             </button>
           )}
+          {showSubstepChip && chip(view.substep, 'At a sub-step', () => boardNarrowing.setBoardView({ substep: !view.substep }))}
         </div>
         <div className="board__narrow-group" role="group" aria-label="Priority">
           <span className="board__narrow-label" aria-hidden="true">

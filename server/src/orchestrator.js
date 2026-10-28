@@ -3082,7 +3082,9 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     verify?.summary ?? null,
     runId,
   )
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+  // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
+  // back to (store.js requestChanges).
+  db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${text.slice(0, 300)}`,
@@ -3555,7 +3557,7 @@ async function runMockStep(id, stepIndex, runId) {
     "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, runId)
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(after), id)
+  db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(after), id)
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${summary}`,

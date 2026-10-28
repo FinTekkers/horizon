@@ -654,9 +654,11 @@ export async function fixRepoWebhook(projectId, repo, pin) {
 }
 
 // HZ-561: with an attempt, that attempt's artifact (HZ-46's per-attempt route).
-export function artifactUrl(itemId, stepIndex, attempt) {
+// HZ-540: with a substepId, that sub-step's artifact at the step.
+export function artifactUrl(itemId, stepIndex, attempt, substepId = null) {
   const base = `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
-  return attempt ? `${base}/${attempt}` : base
+  const url = attempt ? `${base}/${attempt}` : base
+  return substepId ? `${url}?substep=${encodeURIComponent(substepId)}` : url
 }
 
 // Full-page views opened via "See agent output" (HZ-14) — plain links, same
@@ -744,9 +746,11 @@ export async function approveGate(id, notes) {
 // Rejects with Error('network') when no answer came, or Error(<error code>)
 // with `status` on a non-2xx — items are untouched either way. A 2xx answer's
 // item is applied at once, and its `restart` recorded for the step card.
-export async function requestChanges(id, target, feedback, targetStepIndex) {
+// HZ-540: targetSubstepId sends it back to that sub-step of targetStepIndex.
+export async function requestChanges(id, target, feedback, targetStepIndex, targetSubstepId) {
   const body = { target: target || '', feedback: feedback || '' }
   if (targetStepIndex != null) body.targetStepIndex = targetStepIndex
+  if (targetSubstepId != null) body.targetSubstepId = targetSubstepId
   const res = await gatePost(`/items/${id}/reject`, body)
   if (!res) throw new Error('network')
   const data = await res.json().catch(() => ({}))

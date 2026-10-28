@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
 import { STEPS, IMPLEMENT_STEP_INDEX, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
+import { substepReworkTargets } from '../../domain/js/substeps.js'
 import TopBar from './components/TopBar'
 import BottomNav from './components/BottomNav'
 import { MOBILE_QUERY, useMediaQuery } from './useMediaQuery'
@@ -411,7 +412,11 @@ function AuthenticatedApp({ user, onLogout }) {
     const item = items.find((it) => it.id === itemId)
     const atGate = mode === 'reject' && item && STEPS[item.cursor]?.kind === 'gate'
     // HZ-435: with the item, a row its lane skips is never offered.
-    const stepOptions = atGate ? reworkTargets(item.cursor, undefined, item) : []
+    // HZ-540: each sub-step target right after its step.
+    const subOptions = atGate ? substepReworkTargets(item) : []
+    const stepOptions = atGate
+      ? reworkTargets(item.cursor, undefined, item).flatMap((opt) => [opt, ...subOptions.filter((s) => s.index === opt.index)])
+      : []
     const defaultTargetLabel = stepOptions.length ? STEPS[defaultReworkTarget(item.cursor, undefined, item)].label : null
     // HZ-354: the abandon dialog lists what this item blocks, as of opening.
     const dependents = mode === 'abandon' ? item?.dependents || [] : []
@@ -421,8 +426,9 @@ function AuthenticatedApp({ user, onLogout }) {
   const requestApprove = (itemId, gateLabel) => setConfirmApprove({ itemId, gateLabel })
 
   // The second argument depends on the mode: reject passes the chosen
-  // send-back step index, abandon passes { removeDependentLinks }.
-  const submitComposer = (text, modeArg) => {
+  // send-back step index, abandon passes { removeDependentLinks }. HZ-540: a
+  // reject to a sub-step passes its id third.
+  const submitComposer = (text, modeArg, substepId = null) => {
     const { mode, itemId, phase, target } = composer
     // HZ-389: a send-back (reject, or HZ-365's Amend the rule — HZ-346's
     // PIN-gated send-back to implement, with the owner's ruling as the note)
@@ -433,7 +439,9 @@ function AuthenticatedApp({ user, onLogout }) {
     if (itemId && (mode === 'reject' || mode === 'amend' || mode === 'restart' || mode === 'abandon')) {
       const sent =
         mode === 'reject'
-          ? api.requestChanges(itemId, target, text, modeArg ?? null)
+          ? substepId
+            ? api.requestChanges(itemId, target, text, modeArg ?? null, substepId)
+            : api.requestChanges(itemId, target, text, modeArg ?? null)
           : mode === 'amend'
             ? api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
             : mode === 'restart'
