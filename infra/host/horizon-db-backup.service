@@ -7,7 +7,7 @@ After=local-fs.target
 Type=oneshot
 User=ubuntu
 # Must match the DB path horizon-server uses (check /etc/horizon/server.env for
-# a HORIZON_DB override before enabling; see DEPLOY.md 2j). No secrets here.
+# a HORIZON_DB override before enabling; see DEPLOY.md 2k). No secrets here.
 Environment=HORIZON_DB=/opt/horizon/server/data/horizon.db
 Environment=HORIZON_BACKUP_DIR=/home/ubuntu/backups/horizon-db
 ExecStart=/opt/horizon/infra/host/horizon-db-backup.sh
