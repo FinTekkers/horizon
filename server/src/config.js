@@ -50,6 +50,11 @@
 //   STRIPE_PUBLISHABLE_KEY Stripe publishable key, handed to shoreward.ai's sign-up page.
 //                          Unset ⇒ POST /api/billing/checkout-session answers 503
 //   STRIPE_PRICE_ID        the $200/month Horizon Platform price. Unset ⇒ both routes answer 503
+//   STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (HZ-634). Never logged or returned.
+//                          Unset ⇒ POST /api/billing/stripe-webhook answers 503
+//   GMAIL_USER / GMAIL_APP_PASSWORD  the contact form's Gmail account, used for the owner's
+//                          "new active customer" email (HZ-634). Unset ⇒ no email is sent
+//   OWNER_NOTIFY_EMAIL     recipient of that email (default GMAIL_USER)
 
 import { ITEM_KINDS, agentStepIndexes, isServerStep } from '../../domain/js/lifecycle.js'
 
@@ -250,6 +255,20 @@ export function stripeConfig() {
     secretKey: process.env.STRIPE_SECRET_KEY || null,
     publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
     priceId: process.env.STRIPE_PRICE_ID || null,
+    // HZ-634: the webhook signing secret. Only ever handed to createHmac.
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || null,
+  }
+}
+// HZ-634: the owner's "new active customer" email goes out through the same
+// Gmail account as shoreward's contact form (GMAIL_USER / GMAIL_APP_PASSWORD,
+// as in /etc/horizon/contact.env). OWNER_NOTIFY_EMAIL is the recipient; unset,
+// the mail goes to GMAIL_USER. Read per call, like stripeConfig().
+export function ownerMailConfig() {
+  const user = process.env.GMAIL_USER || null
+  return {
+    user,
+    pass: process.env.GMAIL_APP_PASSWORD || null,
+    to: process.env.OWNER_NOTIFY_EMAIL || user,
   }
 }
 // HZ-563: admins besides ADMIN_EMAIL, e.g. the owner's Google login. Only

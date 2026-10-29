@@ -32,12 +32,15 @@ import {
   PREMERGE_QUEUE_TIMEOUT_MS,
   PREMERGE_SKIP_ENABLED,
   PREMERGE_SKIP_MAX_AGE_MS,
+  stripeConfig,
 } from './config.js'
 import { Marked, Renderer } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
 import * as billing from './billing.js'
+import * as stripeWebhook from './stripeWebhook.js'
+import * as ownerMail from './ownerMail.js'
 import { mintHumanProof } from './humanProof.js'
 import { testEnvUser } from './testEnvLogin.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
@@ -374,6 +377,9 @@ export const SESSION_EXEMPT = [
   // cookie or grants access (see billing.js).
   /^\/api\/billing\/checkout-session$/,
   /^\/api\/billing\/session-status$/,
+  // HZ-634: Stripe's webhook. Stripe has no session; the Stripe-Signature HMAC
+  // over the raw body is the boundary (stripeWebhook.js).
+  /^\/api\/billing\/stripe-webhook$/,
 ]
 
 function sessionExempt(url) {
@@ -551,7 +557,10 @@ export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DE
 // `stripe` is the same kind of seam (HZ-633): tests pass a fake Stripe client
 // so no test calls Stripe. Production passes nothing and the billing routes
 // use billing.stripeClient().
-export function buildApp({ logger = true, onRoute = null, stripe = null } = {}) {
+//
+// `mailer` likewise (HZ-634): tests pass a stub { sendMail } to record the
+// owner's email. Production passes nothing and gets ownerMail.gmailMailer().
+export function buildApp({ logger = true, onRoute = null, stripe = null, mailer = null } = {}) {
   const fastify = Fastify({ logger })
 
   if (onRoute) fastify.addHook('onRoute', onRoute)
@@ -4204,6 +4213,58 @@ export function buildApp({ logger = true, onRoute = null, stripe = null } = {}) 
       }
     }
     return reply.code(204).send()
+  })
+
+  // ---- Stripe webhook (HZ-634: account status from billing events) ----
+  // The only route that sees its body as raw bytes: the signature is over the
+  // exact bytes Stripe sent, so they are verified before anything parses them.
+  // The buffer parser is registered inside this plugin only, so Fastify's
+  // encapsulation keeps the global string parser above for every other route.
+  // Logs carry the event id, type and outcome only — never the body (it holds
+  // the customer's email), the header or the secret.
+  fastify.register(async (scope) => {
+    scope.removeContentTypeParser('application/json')
+    scope.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => done(null, body))
+
+    scope.post('/api/billing/stripe-webhook', async (request, reply) => {
+      const { webhookSecret } = stripeConfig()
+      if (!webhookSecret) return reply.code(503).send({ error: 'stripe_webhook_not_configured' })
+      const rawBody = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0)
+      if (!stripeWebhook.verifyStripeSignature(webhookSecret, rawBody, request.headers['stripe-signature'])) {
+        request.log.warn({ outcome: 'bad_signature' }, 'stripe webhook: rejected')
+        return reply.code(400).send({ error: 'bad_signature' })
+      }
+      const event = stripeWebhook.parseEvent(rawBody)
+      if (!event) {
+        request.log.warn({ outcome: 'bad_payload' }, 'stripe webhook: rejected')
+        return reply.code(400).send({ error: 'bad_payload' })
+      }
+      const logged = { stripeEventId: event.id, stripeEventType: event.type }
+      let result
+      try {
+        result = stripeWebhook.applyStripeEvent(event)
+      } catch (err) {
+        request.log.error({ ...logged, outcome: 'processing_failed', errorCode: err?.code ?? null }, 'stripe webhook: failed')
+        return reply.code(500).send({ error: 'processing_failed' })
+      }
+      let outcome = result.outcome
+      // The status change is committed whatever happens to the email; a failed
+      // or impossible send is un-claimed so a later event tries again.
+      if (result.notifyOwner) {
+        try {
+          const sent = await ownerMail.sendActivationEmail(mailer ?? ownerMail.gmailMailer(), result.notifyOwner)
+          if (!sent) {
+            stripeWebhook.releaseOwnerNotice(result.userId)
+            outcome = 'mail_not_configured'
+          }
+        } catch {
+          stripeWebhook.releaseOwnerNotice(result.userId)
+          outcome = 'mail_failed'
+        }
+      }
+      request.log.info({ ...logged, outcome }, 'stripe webhook: processed')
+      return result.duplicate ? { received: true, duplicate: true } : { received: true }
+    })
   })
 
   // e2e only (HZ-54): the e2e suite has no live farm daemon (FARM_URL is

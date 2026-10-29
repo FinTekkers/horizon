@@ -1051,6 +1051,21 @@ if (!userColumnNames().has('company')) {
     if (!userColumnNames().has('company')) db.exec('ALTER TABLE user ADD COLUMN company TEXT')
   }).immediate()
 }
+// HZ-634: the Stripe webhook (stripeWebhook.js). stripe_event holds every
+// processed event id, so each is applied once. owner_notified_at is set when
+// the owner's "new active customer" email is claimed. Additive and nullable.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS stripe_event (
+    id           TEXT PRIMARY KEY,
+    type         TEXT NOT NULL,
+    processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`)
+if (!userColumnNames().has('owner_notified_at')) {
+  db.transaction(() => {
+    if (!userColumnNames().has('owner_notified_at')) db.exec('ALTER TABLE user ADD COLUMN owner_notified_at TEXT')
+  }).immediate()
+}
 
 // HZ-544: item_off = 1 marks an evaluation recorded as 'shadow' because
 // Autopilot was off for the ITEM (its `autopilot-off` label) in an 'on'
