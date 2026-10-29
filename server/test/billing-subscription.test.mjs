@@ -6,16 +6,17 @@
 // The fake records every method called on it, by path, so a test can prove no
 // route ever cancels outright, refunds or changes the plan.
 
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { FAKE_STRIPE_ENV, setFakeStripeEnv, stripeError } from './helpers/fakeStripe.mjs'
 import { loginFixtureUser } from './helpers/session.mjs'
 
-process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-billing-subscription-')), 'test.db')
+const tmp = mkdtempSync(join(tmpdir(), 'horizon-billing-subscription-'))
+process.env.HORIZON_DB = join(tmp, 'test.db')
 process.env.HORIZON_UI_URL = 'https://shoreward.ai/horizon'
 delete process.env.HORIZON_REPO
 delete process.env.FARM_URL
@@ -25,6 +26,8 @@ const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
 const { db } = await import('../src/db.js')
+
+after(() => rmSync(tmp, { recursive: true, force: true }))
 
 // Built, not written out: no live-key literal may appear in the repo.
 const FAKE_LIVE_KEY = ['sk', 'live', 'notreal'].join('_')
