@@ -1,12 +1,13 @@
-// Stripe Embedded Checkout for shoreward.ai's sign-up page (HZ-633).
+// Stripe Embedded Checkout for shoreward.ai's sign-up page (HZ-633), and the
+// signed-in customer's billing page (HZ-636, at the end of this file).
 //
-// Two public routes in app.js use this module: POST /api/billing/checkout-session
+// Two public routes in app.js use the first half: POST /api/billing/checkout-session
 // and GET /api/billing/session-status. Neither grants access, starts a session
 // or sets a cookie — payment unlocks an account later, through the webhook
 // (HZ-634). The only place in server/src that imports `stripe`.
 //
 // The Stripe client is an argument everywhere, so tests pass a fake with the
-// three methods used here and nothing ever calls Stripe for real. Production
+// methods used here and nothing ever calls Stripe for real. Production
 // gets stripeClient(), built from STRIPE_SECRET_KEY. The SDK is pinned exactly
 // in server/package.json: stripe 23.0.1 sends API version 2026-09-30.endive,
 // which accepts ui_mode 'embedded_page' (older versions call it 'embedded').
@@ -118,4 +119,173 @@ export function stripeClient() {
     clientKey = secretKey
   }
   return client
+}
+
+// ---- the signed-in customer's own subscription (HZ-636) ----
+//
+// Four session routes in app.js use the functions below: GET /api/billing,
+// POST /api/billing/cancel, /resume and /card-session. The Stripe customer and
+// subscription are always the ones stored on the signed-in user's row
+// (billingAccount); no request field ever names them. Cancelling only ever
+// sets cancel_at_period_end, and nothing here writes account_status: the
+// webhook (stripeWebhook.js) moves it to 'cancelling' or back to 'active' once
+// Stripe reports the change.
+
+// The cancellation screen's reasons, each sent to Stripe as the
+// cancellation_details.feedback value of the same name.
+export const CANCEL_REASONS = ['too_expensive', 'missing_features', 'unused', 'switched_service', 'other']
+const REASON_TO_FEEDBACK = Object.freeze(Object.fromEntries(CANCEL_REASONS.map((reason) => [reason, reason])))
+export const CANCEL_COMMENT_MAX = 500
+
+// The only portal Horizon opens: card update, with every other action off.
+// Found again by its metadata after a restart rather than created each time.
+export const PORTAL_CONFIG_METADATA = Object.freeze({ horizon_portal: 'card_update_only' })
+export const CARD_ONLY_FEATURES = Object.freeze({
+  payment_method_update: { enabled: true },
+  customer_update: { enabled: false },
+  invoice_history: { enabled: false },
+  subscription_cancel: { enabled: false },
+  subscription_update: { enabled: false },
+})
+
+const SUBSCRIPTION_EXPAND = ['default_payment_method', 'items.data.price.product']
+const ENDED_STATUSES = new Set(['canceled', 'incomplete_expired'])
+export const INVOICE_LIMIT = 12
+
+// A refusal the routes answer with as-is: { error: code } and this status.
+export class BillingError extends Error {
+  constructor(code, status) {
+    super(code)
+    this.code = code
+    this.status = status
+  }
+}
+
+// The four subscription routes need only the secret key, not the price.
+export function subscriptionBillingReady() {
+  return Boolean(stripeConfig().secretKey)
+}
+
+// The signed-in user's Stripe ids, or null when they have no subscription.
+export function billingAccount(userId) {
+  const row = db.prepare('SELECT stripe_customer_id, stripe_subscription_id FROM user WHERE id = ?').get(userId)
+  if (!row?.stripe_customer_id || !row?.stripe_subscription_id) return null
+  return { customerId: row.stripe_customer_id, subscriptionId: row.stripe_subscription_id }
+}
+
+const isoFromUnix = (sec) => (Number.isFinite(sec) ? new Date(sec * 1000).toISOString() : null)
+const idOf = (value) => (typeof value === 'string' ? value : typeof value?.id === 'string' ? value.id : null)
+
+// Newer API versions keep current_period_end on the item; older ones on the
+// subscription itself.
+export function planView(subscription) {
+  const item = subscription.items?.data?.[0]
+  const price = item?.price
+  const product = price?.product
+  return {
+    product: typeof product?.name === 'string' ? product.name : null,
+    amount: Number.isFinite(price?.unit_amount) ? price.unit_amount : null,
+    currency: typeof price?.currency === 'string' ? price.currency : null,
+    interval: typeof price?.recurring?.interval === 'string' ? price.recurring.interval : null,
+    status: subscription.status,
+    cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
+    current_period_end: isoFromUnix(item?.current_period_end ?? subscription.current_period_end),
+  }
+}
+
+// Brand, last 4 and expiry only; null for no card.
+export function cardView(paymentMethod) {
+  const card = paymentMethod && typeof paymentMethod === 'object' ? paymentMethod.card : null
+  if (!card) return null
+  return { brand: card.brand, last4: card.last4, exp_month: card.exp_month, exp_year: card.exp_year }
+}
+
+function invoiceView(invoice) {
+  return {
+    date: isoFromUnix(invoice.created),
+    amount: invoice.total,
+    currency: invoice.currency,
+    status: invoice.status,
+    invoice_pdf: invoice.invoice_pdf ?? null,
+  }
+}
+
+// The user's subscription, refused as theirs only if Stripe agrees it belongs
+// to their customer.
+async function ownSubscription(stripe, account) {
+  const subscription = await stripe.subscriptions.retrieve(account.subscriptionId, { expand: SUBSCRIPTION_EXPAND })
+  if (idOf(subscription.customer) !== account.customerId) throw new BillingError('no_subscription', 404)
+  return subscription
+}
+
+export async function getBilling(stripe, account) {
+  const subscription = await ownSubscription(stripe, account)
+  let paymentMethod = subscription.default_payment_method
+  if (!paymentMethod || typeof paymentMethod !== 'object') {
+    const customer = await stripe.customers.retrieve(account.customerId, { expand: ['invoice_settings.default_payment_method'] })
+    paymentMethod = customer?.invoice_settings?.default_payment_method
+  }
+  const invoices = await stripe.invoices.list({ customer: account.customerId, limit: INVOICE_LIMIT })
+  return {
+    plan: planView(subscription),
+    card: cardView(paymentMethod),
+    invoices: (invoices?.data ?? []).map(invoiceView),
+  }
+}
+
+async function setCancelAtPeriodEnd(stripe, account, cancel, details) {
+  const subscription = await ownSubscription(stripe, account)
+  if (ENDED_STATUSES.has(subscription.status)) throw new BillingError('subscription_ended', 409)
+  const params = { cancel_at_period_end: cancel, expand: SUBSCRIPTION_EXPAND }
+  if (details) params.cancellation_details = details
+  return { plan: planView(await stripe.subscriptions.update(account.subscriptionId, params)) }
+}
+
+// input is the route's validated body: reason is one of CANCEL_REASONS or
+// absent, and a blank comment is dropped.
+export function cancelAtPeriodEnd(stripe, account, { reason, comment } = {}) {
+  const details = {}
+  if (typeof reason === 'string' && Object.hasOwn(REASON_TO_FEEDBACK, reason)) details.feedback = REASON_TO_FEEDBACK[reason]
+  const trimmed = typeof comment === 'string' ? comment.trim() : ''
+  if (trimmed) details.comment = trimmed
+  return setCancelAtPeriodEnd(stripe, account, true, Object.keys(details).length ? details : null)
+}
+
+export function resumeSubscription(stripe, account) {
+  return setCancelAtPeriodEnd(stripe, account, false, null)
+}
+
+const isCardOnly = (features) =>
+  Object.entries(CARD_ONLY_FEATURES).every(([name, { enabled }]) => Boolean(features?.[name]?.enabled) === enabled)
+
+// One configuration id per client: looked up by metadata, created if absent.
+const portalConfigurations = new WeakMap()
+async function portalConfiguration(stripe) {
+  if (portalConfigurations.has(stripe)) return portalConfigurations.get(stripe)
+  const listed = await stripe.billingPortal.configurations.list({ active: true, limit: 100 })
+  let config = (listed?.data ?? []).find(
+    (c) => c?.metadata?.horizon_portal === PORTAL_CONFIG_METADATA.horizon_portal && isCardOnly(c.features),
+  )
+  if (!config) {
+    config = await stripe.billingPortal.configurations.create({ features: CARD_ONLY_FEATURES, metadata: PORTAL_CONFIG_METADATA })
+  }
+  if (typeof config?.id !== 'string' || !config.id) throw new BillingError('billing_unavailable', 502)
+  portalConfigurations.set(stripe, config.id)
+  return config.id
+}
+
+// A portal session that opens straight on card update and comes back to returnUrl.
+export async function createCardSession(stripe, account, returnUrl) {
+  const configuration = await portalConfiguration(stripe)
+  const session = await stripe.billingPortal.sessions.create({
+    customer: account.customerId,
+    configuration,
+    return_url: returnUrl,
+    flow_data: {
+      type: 'payment_method_update',
+      after_completion: { type: 'redirect', redirect: { return_url: returnUrl } },
+    },
+  })
+  if (typeof session?.url !== 'string' || !session.url) throw new BillingError('billing_unavailable', 502)
+  return { url: session.url }
 }
