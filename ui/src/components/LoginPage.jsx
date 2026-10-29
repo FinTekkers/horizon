@@ -3,6 +3,8 @@ import * as api from '../api'
 import { GridIcon } from './icons'
 import { LegalLinks } from './LegalPage'
 
+const SIGNUP_URL = 'https://shoreward.ai/signup.html'
+
 // A failed /api/auth/google/* callback (HZ-37) redirects back here with
 // ?error=<code> instead of rendering raw JSON in the tab — this maps each
 // code to copy a human can act on.
@@ -13,7 +15,20 @@ const GOOGLE_ERROR_MESSAGES = {
   google_link_blocked:
     "That Google account's email isn't verified, so it can't be linked. Sign in with your password instead, or retry with a verified Google account.",
   account_link_failed: 'Something went wrong signing you in with Google. Please try again.',
-  google_login_not_allowed: "That Google account isn't authorized to sign in here. Sign in with your password instead, or contact an administrator.",
+  subscription_inactive: <SubscriptionInactive />,
+  // The pre-HZ-635 code for the same refusal, kept so an old URL still reads.
+  google_login_not_allowed: <SubscriptionInactive />,
+}
+
+// HZ-635: the one refusal for a Google sign-in that is neither invited nor paid
+// (or has lapsed), with the way to pay.
+function SubscriptionInactive() {
+  return (
+    <>
+      Your Horizon subscription isn't active. Finish payment or contact us.{' '}
+      <a href={SIGNUP_URL}>Finish payment</a>
+    </>
+  )
 }
 
 function googleErrorFromLocation() {

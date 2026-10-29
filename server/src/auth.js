@@ -11,7 +11,7 @@
 import crypto from 'node:crypto'
 import { db } from './db.js'
 import { ADMIN_EMAIL, ADMIN_EMAILS, ADMIN_PASSWORD, SESSION_TTL_DAYS } from './config.js'
-import { isAllowedEmail } from './loginAllowlist.js'
+import { isAllowedEmail, isEntitled, isGoogleGated } from './loginAllowlist.js'
 
 function hashSecret(plain) {
   const salt = crypto.randomBytes(16)
@@ -60,7 +60,8 @@ export const ACCOUNT_STATUSES = Object.freeze(['pending_payment', 'active', 'pas
 // reads the old value, updates the row and writes a user_event audit row in one
 // transaction. Returns { ok, from, to }, { ok, from, to, unchanged } for a
 // same-value write (no audit row), or { error } with 'invalid_status',
-// 'invalid_who' or 'not_found'. Sign-in does not read the status yet.
+// 'invalid_who' or 'not_found'. Google sign-in and every request read it
+// through loginAllowlist.isEntitled (HZ-635); nothing there writes it.
 export function setAccountStatus(userId, status, who) {
   if (typeof status !== 'string' || !ACCOUNT_STATUSES.includes(status)) return { error: 'invalid_status' }
   if (typeof who !== 'string' || who.trim() === '') return { error: 'invalid_who' }
@@ -169,15 +170,17 @@ export class GoogleLinkBlockedError extends Error {}
 // left alone too; this fix links one existing row per email, it never
 // re-links or merges rows.
 //
-// Gated on the login allowlist first (HZ-36): the HTTP route already checks
-// this before calling us, but this is a second, independent gate so any
-// other caller (a script, an admin tool, a future route) can't reach a
+// Gated first (HZ-36, HZ-635) by googleLoginAllowed below: the HTTP route
+// already checks it before calling us, but this is a second, independent gate
+// so any other caller (a script, an admin tool, a future route) can't reach a
 // Google identity — new, linked, or returning — without going through it
 // too. Re-checked even for a RETURNING sub, so removing an address from the
-// allowlist blocks a previously-linked account's very next login, not just
-// new ones.
+// allowlist, or a lapsed payment, blocks a previously-linked account's very
+// next login, not just new ones. Only an allowlisted email ever gets a new
+// row: a paid customer already has one from sign-up (HZ-633), and that row is
+// linked through the adopt path above. account_status is never written here.
 export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
-  if (!emailVerified || !isAllowedEmail(email)) throw new GoogleLinkBlockedError('not_allowed')
+  if (!googleLoginAllowed({ sub, email, emailVerified })) throw new GoogleLinkBlockedError('not_allowed')
   const existing = findUserByGoogleSub(sub)
   if (existing) {
     touchLastLogin(existing.id)
@@ -191,7 +194,28 @@ export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
     db.prepare("UPDATE user SET google_sub = ?, last_login_at = datetime('now') WHERE id = ?").run(sub, sameEmail.id)
     return findUserById(sameEmail.id)
   }
+  if (!isAllowedEmail(email)) throw new GoogleLinkBlockedError('not_allowed')
   return createUser({ email, name, authMethod: 'google', googleSub: sub }).user
+}
+
+// The row a Google profile would sign in to: by sub, then by email
+// (case-insensitively), the same order findOrCreateGoogleUser uses.
+function googleAccountRow({ sub, email }) {
+  return (
+    db.prepare('SELECT * FROM user WHERE google_sub = ?').get(sub) ??
+    db.prepare('SELECT * FROM user WHERE lower(email) = lower(?)').get(email) ??
+    null
+  )
+}
+
+// Whether this Google profile may sign in (HZ-635): a verified email that is
+// allowlisted, or whose existing row is paid ('active' or 'cancelling'). Reads
+// only; a refused profile never creates or touches a row.
+export function googleLoginAllowed({ sub, email, emailVerified }) {
+  if (!emailVerified) return false
+  if (isAllowedEmail(email)) return true
+  const row = googleAccountRow({ sub, email })
+  return Boolean(row) && isEntitled({ email, accountStatus: row.account_status })
 }
 
 // The hardcoded credential path: verifies against ADMIN_EMAIL/ADMIN_PASSWORD
@@ -243,7 +267,26 @@ export function getSessionUser(token) {
     db.prepare('DELETE FROM session WHERE id = ?').run(session.id)
     return null
   }
-  return findUserById(session.user_id)
+  const row = userRow(session.user_id)
+  if (!row) return null
+  if (refusedAccess(row)) {
+    // A lookup with a write: a Google user who is no longer entitled (lapsed
+    // payment, off the allowlist) loses every session on their next request,
+    // so access ends without a restart or a reconcile (HZ-635).
+    db.prepare('DELETE FROM session WHERE user_id = ?').run(row.id)
+    return null
+  }
+  return toPublicUser(row)
+}
+
+function userRow(id) {
+  return db.prepare('SELECT * FROM user WHERE id = ?').get(id) ?? null
+}
+
+// A Google-gated row (loginAllowlist.isGoogleGated) that is neither allowlisted
+// nor paid. Password-only rows and the ADMIN_EMAIL row are never refused.
+function refusedAccess(row) {
+  return isGoogleGated(row) && !isEntitled({ email: row.email, accountStatus: row.account_status })
 }
 
 export function deleteSession(token) {
@@ -312,7 +355,8 @@ export function revokeApiToken(userId, id) {
 }
 
 // Resolves a raw bearer value to { user, tokenId, tokenName }, or null when it
-// is malformed, unknown, revoked, expired, or its user no longer exists.
+// is malformed, unknown, revoked, expired, or its user no longer exists or is
+// no longer entitled.
 export function getTokenAuth(raw) {
   if (typeof raw !== 'string' || !API_TOKEN_SHAPE.test(raw)) return null
   const hash = sha256(raw)
@@ -325,8 +369,12 @@ export function getTokenAuth(raw) {
   if (row.revoked_at) return null
   const now = Date.now()
   if (new Date(row.expires_at).getTime() <= now) return null
-  const user = findUserById(row.user_id)
-  if (!user) return null
+  // A token whose Google user is no longer entitled is refused, not revoked:
+  // unlike a session it was created deliberately, so it works again once the
+  // user pays again (HZ-635).
+  const userAccount = userRow(row.user_id)
+  if (!userAccount || refusedAccess(userAccount)) return null
+  const user = toPublicUser(userAccount)
   // Throttled in SQL rather than in memory: at most one write per token a minute.
   db.prepare(
     'UPDATE api_token SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)',

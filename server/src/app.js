@@ -45,7 +45,6 @@ import { mintHumanProof } from './humanProof.js'
 import { testEnvUser } from './testEnvLogin.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
 import { googleAuth } from './googleAuth.js'
-import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
 import { STEPS, endIndex, isItemKind, itemKindOf } from '../../domain/js/lifecycle.js'
@@ -2379,19 +2378,25 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
         request.log.warn(`google oauth exchange failed: ${err.message}`)
         return reply.redirect(`${UI_URL}/?error=google_auth_failed`)
       }
-      // Allowlist gate (HZ-36): checked against the VERIFIED email claim
-      // only, and before any user lookup or write — a rejected login never
-      // creates or touches a row. One error code for every rejection reason
-      // (unverified claim or a verified-but-not-allowlisted address) so the
-      // response can't be used to enumerate which emails are allowed.
-      if (!profile.emailVerified || !isAllowedEmail(profile.email)) {
-        request.log.warn('google login rejected: not allowlisted')
-        return reply.redirect(`${UI_URL}/?error=google_login_not_allowed`)
+      // Login gate (HZ-36, HZ-635): a VERIFIED email claim that is allowlisted
+      // or belongs to a paid account, checked before any write — a rejected
+      // login never creates or touches a row. One error code for every
+      // rejection reason (unverified claim, no account, unpaid or lapsed) so
+      // the response can't be used to enumerate which emails are allowed.
+      if (!auth.googleLoginAllowed(profile)) {
+        request.log.warn('google login rejected: not allowlisted or not paid')
+        return reply.redirect(`${UI_URL}/?error=subscription_inactive`)
       }
       let user
       try {
         user = auth.findOrCreateGoogleUser(profile)
       } catch (err) {
+        // The status can change between the check above and this call; the
+        // second gate's refusal gets the same code as the first.
+        if (err instanceof auth.GoogleLinkBlockedError && err.message === 'not_allowed') {
+          request.log.warn('google login rejected: not allowlisted or not paid')
+          return reply.redirect(`${UI_URL}/?error=subscription_inactive`)
+        }
         if (err instanceof auth.GoogleLinkBlockedError) {
           // Unverified email, or already linked to a different Google
           // identity — never surfaces as a raw JSON crash (HZ-37).

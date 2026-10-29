@@ -27,3 +27,19 @@ test('an unauthenticated deep link to a specific item lands on the login page, n
   await expect(page.locator('.login__submit')).toBeVisible()
   await expect(page.locator('.tracker__id')).toHaveCount(0)
 })
+
+// HZ-635: a refused Google sign-in (not invited, not paid) lands here with the
+// payment message and a link to sign up; a reload shows the plain login form.
+test('?error=subscription_inactive shows the payment message and sign-up link, and is gone after a reload', async ({ page }) => {
+  await page.goto('/?error=subscription_inactive')
+
+  await expect(page.getByText("Your Horizon subscription isn't active. Finish payment or contact us.")).toBeVisible()
+  const link = page.getByRole('link', { name: 'Finish payment' })
+  await expect(link).toBeVisible()
+  await expect(link).toHaveAttribute('href', 'https://shoreward.ai/signup.html')
+  await expect.poll(() => new URL(page.url()).search).toBe('')
+
+  await page.reload()
+  await expect(page.locator('.login__submit')).toBeVisible()
+  await expect(page.getByText("Your Horizon subscription isn't active.")).toHaveCount(0)
+})
