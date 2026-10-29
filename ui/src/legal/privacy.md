@@ -1,6 +1,6 @@
 # Privacy Policy
 
-**Effective date:** October 1, 2026
+**Effective date:** October 29, 2026
 
 This Privacy Policy explains how Shoreward LLC ("**Shoreward**", "**we**", "**us**") collects, uses, shares and protects personal information in connection with Horizon, our AI-assisted software delivery service (the "**Service**"). It applies to the Horizon web application and its related integrations.
 
@@ -20,6 +20,7 @@ Horizon is provided to businesses. If your organization has signed an agreement 
 - **Customer Content:** anything you or your organization create or connect, including work-item titles, descriptions, success criteria, guardrails, comments, feedback and approval decisions.
 - **Messaging details:** if your organization enables WhatsApp notifications or approvals, the phone number or WhatsApp identifier of each approver, and the content of the related messages.
 - **Support communications:** the content of messages you send us.
+- **Billing details:** if your organization subscribes online, our payment processor, Stripe, collects your card details. Shoreward never sees or stores the full card number. We receive the card brand, the last 4 digits, the expiry date, the billing address and the payment history.
 
 **Information collected automatically**
 
@@ -58,7 +59,7 @@ Horizon uses third-party AI model providers to generate plans, code, reviews and
 
 We share personal information only as follows:
 
-- **Subprocessors** that help us run the Service, under written contracts that require them to protect the information and use it only to provide services to us. These include cloud hosting (Amazon Web Services), AI model providers (such as Anthropic and, where enabled, Meta), authentication (Google), messaging (WhatsApp, operated by Meta, where enabled) and web fonts (Google Fonts). A current list is available on request.
+- **Subprocessors** that help us run the Service, under written contracts that require them to protect the information and use it only to provide services to us. These include cloud hosting (Amazon Web Services), AI model providers (such as Anthropic and, where enabled, Meta), authentication (Google), payment processing (Stripe), messaging (WhatsApp, operated by Meta, where enabled) and web fonts (Google Fonts). A current list is available on request.
 - **Services your organization connects**, such as GitHub. We send data to them at your organization's direction, and their own terms and privacy policies govern how they handle it.
 - **Within your organization:** other authorized users in your organization can see work items, activity and approvals attributed to you.
 - **Legal and safety:** where required by law or legal process, or where needed to protect the rights, property or safety of Shoreward, our customers or others.

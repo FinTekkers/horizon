@@ -1,6 +1,6 @@
 # Terms of Service
 
-**Effective date:** October 1, 2026
+**Effective date:** October 29, 2026
 
 These Terms of Service (the "**Terms**") govern access to and use of Horizon, the AI-assisted software delivery service provided by Shoreward LLC ("**Shoreward**", "**we**", "**us**") (the "**Service**"). By accessing or using the Service, you agree to these Terms on behalf of the organization you represent (the "**Customer**", "**you**"). You represent that you have authority to bind the Customer. If you do not agree, do not use the Service.
 
@@ -60,11 +60,13 @@ Shoreward maintains administrative, technical and physical safeguards designed t
 
 ## 10. Fees
 
-Fees, billing terms and subscription terms are as set out in the applicable Order. Unless the Order says otherwise, fees are due within 30 days of invoice, are non-refundable, and exclude taxes, for which the Customer is responsible (other than taxes on Shoreward's income). If no Order applies, access is provided free of charge and may be changed or discontinued at any time.
+- **Order customers.** Fees, billing terms and subscription terms are as set out in the applicable Order. Unless the Order says otherwise, fees are due within 30 days of invoice, are non-refundable, and exclude taxes, for which the Customer is responsible (other than taxes on Shoreward's income).
+- **Self-serve subscriptions.** A Customer without an Order may subscribe to the Horizon Platform online for $200 per month. The fee is billed monthly in advance, by card, through our payment processor, Stripe, until the subscription is cancelled. The Customer can cancel at any time from the Billing page in the Service. Cancelling takes effect at the end of the month already paid for, and no further payments are taken. Fees are non-refundable, and there are no refunds or credits for partial months. Fees exclude taxes, which are charged in addition and for which the Customer is responsible (other than taxes on Shoreward's income).
+- **Free access.** If neither an Order nor a self-serve subscription applies, any access is provided free of charge and may be changed or discontinued at any time.
 
 ## 11. Term, suspension and termination
 
-These Terms apply from the Customer's first use of the Service until all Orders have expired or been terminated. Either party may terminate an Order for the other's material breach that remains uncured 30 days after written notice. On termination, the Customer's access ends. For 30 days afterwards, on request, Shoreward will make Customer Content available for export, and will then delete it, except where the law requires us to keep it. Sections 4, 5, 7, 8 and 12 to 16 survive termination.
+These Terms apply from the Customer's first use of the Service until all Orders and any self-serve subscription have expired, been cancelled or been terminated. Either party may terminate an Order for the other's material breach that remains uncured 30 days after written notice. On termination, the Customer's access ends. If the Customer cancels a self-serve subscription, access ends at the end of the month already paid for. For 30 days after access ends, on request, Shoreward will make Customer Content available for export, and will then delete it, except where the law requires us to keep it. Sections 4, 5, 7, 8 and 12 to 16 survive termination.
 
 ## 12. Warranties and disclaimers
 
