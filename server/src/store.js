@@ -30,6 +30,7 @@ import {
   isServerStep,
   RUN_PLAN_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  APPROVE_FILE_GATE_INDEX,
   EXECUTE_STEP_INDEX,
   gateStepIndexes,
   laneOf,
@@ -2200,7 +2201,18 @@ export function addEvent(id, { who, text, color, initials, detail = null, verdic
 // the approver was shown: a newer plan since then is refused, not approved.
 // HZ-446: the PIN applies to every humanOnly gate; the run plan checks only to
 // Approve the run, the one gate that approves a run plan.
-export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null, runner = null, goldenHash = null } = {}) {
+//
+// HZ-642: `filedAutopilot` ('default' | 'off') is the Approve & file card's
+// Autopilot choice for the items the Plan files, stored on that decision's
+// row. Off is kept only while the project's Autopilot is on — the only mode
+// the per-item override changes — and is otherwise recorded as 'default'.
+export function approveGate(
+  id,
+  stepIndex,
+  notes,
+  actor = 'You',
+  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null } = {},
+) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -2251,14 +2263,28 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
     }
   }
 
+  let filed = null
+  if (stepIndex === APPROVE_FILE_GATE_INDEX) {
+    const mode = (it.project_id == null ? null : selectProjectAutopilot.get(it.project_id)?.autopilot) ?? 'off'
+    filed = filedAutopilot === 'off' && mode === 'on' ? 'off' : 'default'
+    if (filedAutopilot === 'off' && filed !== 'off') {
+      addEvent(id, {
+        who: actor,
+        text: `asked to file these items with Autopilot off, but Autopilot is ${mode} for this project — they file with the project default`,
+        color: '#9C333E',
+        initials: '✕',
+      })
+    }
+  }
+
   const trimmed = (notes || '').trim()
   const next = nextCursor(it)
   db.prepare(
     `UPDATE work_item SET cursor = ?, rejected = 0${approvedHash ? ', approved_plan_hash = ?, approved_runner = ?' : ''}, ${touch} WHERE id = ?`,
   ).run(...(approvedHash ? [next, approvedHash, approvedRunner, id] : [next, id]))
   db.prepare(
-    'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash)
+    'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed)
   if (golden?.set) approveGoldenCases(id, golden.set, actor)
   if (trimmed) {
     // Approval notes are direction for whoever runs next — queue as feedback
@@ -2280,6 +2306,18 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
   const closed = isClosed(getItem(id))
   if (closed) wakeDependents(id)
   return { ok: true, closed }
+}
+
+// HZ-642: true when the Plan's newest Approve & file approval chose Autopilot
+// off for the items it files. A send-back writes a 'rejected' row and the
+// re-approval a new 'approved' one, so the newest approval's choice wins.
+export function filedAutopilotOff(itemId) {
+  const row = db
+    .prepare(
+      "SELECT filed_autopilot FROM gate_decision WHERE item_id = ? AND step_index = ? AND decision = 'approved' ORDER BY id DESC LIMIT 1",
+    )
+    .get(itemId, APPROVE_FILE_GATE_INDEX)
+  return row?.filed_autopilot === 'off'
 }
 
 // Rejection is not a dead end: the item rolls back to the agent step whose
@@ -2718,7 +2756,9 @@ export function applySplitScope(id, { desc, metric }, actor = 'Horizon') {
 
 // HZ-449: `lane` is the lane a Plan's draft asked for; one the kind does not
 // have is stored as no lane.
-export function createLocalItem({ title, outcome, metric, guardrails, priority, kind, lane = null }) {
+// HZ-642: `autopilotOff` is the local stand-in for an issue filed with the
+// autopilot-off label; it defaults to false, as for every other caller.
+export function createLocalItem({ title, outcome, metric, guardrails, priority, kind, lane = null, autopilotOff = false }) {
   // HZ-377: the kind defaults to `change`; anything outside the domain
   // vocabulary is refused before anything is written.
   const itemKind = kind ?? 'change'
@@ -2729,8 +2769,8 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority, 
       .get().n + 1
   const id = `LOC-${next}`
   db.prepare(
-    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }))
+    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane, autopilot_off) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }), autopilotOff ? 1 : 0)
   addEvent(id, { who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)

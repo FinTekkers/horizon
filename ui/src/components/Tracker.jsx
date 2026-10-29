@@ -43,6 +43,7 @@ import GoldenCasesTable from './GoldenCasesTable'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import PlanItemsTable from './PlanItemsTable'
+import FiledAutopilotSelect from './FiledAutopilotSelect'
 import ScreenshotPanel from './ScreenshotPanel'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon, PlanIcon } from './icons'
 
@@ -296,7 +297,7 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -501,6 +502,10 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {/* HZ-449: the Plan's one items table — editable at the gate, then
               read-only with what each draft was filed as. */}
           {index === APPROVE_FILE_GATE_INDEX && item.cursor > PLAN_DRAFT_STEP_INDEX && <PlanItemsTable item={item} />}
+          {/* HZ-642: one Autopilot choice for every item the Plan files. */}
+          {index === APPROVE_FILE_GATE_INDEX && status === 'awaiting' && (
+            <FiledAutopilotSelect item={item} value={filedAutopilot} onChange={onSetFiledAutopilot} />
+          )}
           {/* HZ-449: the Close card links every item File items filed. */}
           {index === REVIEW_CLOSE_GATE_INDEX && status !== 'pending' && (
             <Markdown
@@ -1012,7 +1017,7 @@ function FromPlanPill({ planId, planProgress, onOpenPlan }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1234,6 +1239,8 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                       onForwardToAccept={onForwardToAccept}
                       onSetPersona={onSetPersona}
                       onSetStepProvider={onSetStepProvider}
+                      filedAutopilot={filedAutopilot}
+                      onSetFiledAutopilot={onSetFiledAutopilot}
                     />
                     {substepsAt(item, i).map((sub) => (
                       <SubstepRow key={sub.id} item={item} sub={sub} />

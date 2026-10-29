@@ -267,3 +267,17 @@ test('a Task issue ensures the `task` label and carries it alongside the priorit
   assert.ok(labelCreates().some((c) => JSON.parse(c.body).name === 'task'), 'the task label was never ensured')
   assert.deepEqual(JSON.parse(issueCreate().body).labels, [priorityLabelName(DEFAULT_PRIORITY), 'task'])
 })
+
+// ---- HZ-642: createIssue's autopilot-off option ----
+
+test('createIssue with autopilotOff ensures the autopilot-off label and files the issue with it', async () => {
+  await github.createIssue(REPO, { ...ISSUE, autopilotOff: true })
+  assert.ok(labelCreates().some((c) => JSON.parse(c.body).name === 'autopilot-off'), 'the autopilot-off label was never ensured')
+  assert.deepEqual(JSON.parse(issueCreate().body).labels, [priorityLabelName(DEFAULT_PRIORITY), 'autopilot-off'])
+})
+
+test('createIssue with autopilotOff false sends exactly the default labels and ensures no autopilot-off label', async () => {
+  await github.createIssue(REPO, { ...ISSUE, autopilotOff: false })
+  assert.deepEqual(labelCreates().map((c) => JSON.parse(c.body).name), [priorityLabelName(DEFAULT_PRIORITY)])
+  assert.deepEqual(JSON.parse(issueCreate().body).labels, [priorityLabelName(DEFAULT_PRIORITY)])
+})

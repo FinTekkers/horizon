@@ -1573,7 +1573,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   // HZ-384: `human` is { proof, planHash, runner } from the browser route only. A
   // humanOnly gate refused for want of the proof comes back as a 403.
   // HZ-541: and goldenHash, so a first gate with golden cases refuses every
-  // other approver (store.approveGate).
+  // other approver (store.approveGate). HZ-642: and filedAutopilot, Approve &
+  // file's Autopilot choice for the items it files.
   async function performGateApproval(id, stepIndex, notes, actor = 'You', human = {}) {
     // Accepting the code means merging its PR — the gate does not advance if
     // the pre-merge checks or the merge fail, and the reason is logged to the
@@ -1740,6 +1741,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             runner: { type: 'string', enum: ['container', 'host'] },
             // HZ-541: the golden-cases set the first gate's table showed.
             goldenHash: { type: 'string', maxLength: 128 },
+            // HZ-642: Approve & file's Autopilot choice for the items it files.
+            filedAutopilot: { type: 'string', enum: ['default', 'off'] },
           },
         },
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
@@ -1754,7 +1757,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const planHash = request.body?.planHash || null
       const runner = request.body?.runner || null
       const goldenHash = request.body?.goldenHash || null
-      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash, runner, goldenHash })
+      const filedAutopilot = request.body?.filedAutopilot || null
+      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash, runner, goldenHash, filedAutopilot })
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },
