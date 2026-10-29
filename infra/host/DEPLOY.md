@@ -471,6 +471,60 @@ Checkout. No payment is needed. A Stripe failure answers **502**
 `billing_unavailable`, and the server log has the Stripe error's type and code
 only.
 
+## 2i. Stripe webhook and the owner's email (HZ-634)
+
+`POST /api/billing/stripe-webhook` keeps each account's status in sync with
+Stripe. It checks the `Stripe-Signature` header against the raw body, records
+each event id once, and sets `user.account_status`:
+
+| Event | Status |
+|---|---|
+| `checkout.session.completed` | `active`, and stores the Stripe customer and subscription ids |
+| `invoice.paid` | `active` |
+| `invoice.payment_failed` | `past_due` |
+| `customer.subscription.updated` | `cancelling` when `cancel_at_period_end` is set; else `active` if the subscription's status is `active`/`trialing`; otherwise unchanged |
+| `customer.subscription.deleted` | `cancelled` |
+
+The first time a checked-out customer is `active`, the owner gets one email
+with their name, email and company, to book the setup call. Sign-in does not
+read the status (HZ-635 owns that). Names only — values live on the host.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/stripe.env` | `STRIPE_WEBHOOK_SECRET` | the endpoint's signing secret from the Stripe dashboard. Unset ⇒ the route answers **503** `stripe_webhook_not_configured` and Stripe retries for up to 3 days |
+| `/etc/horizon/server.env` | `GMAIL_USER` | the contact form's Gmail account, the same value as in `/etc/horizon/contact.env` |
+| `/etc/horizon/server.env` | `GMAIL_APP_PASSWORD` | its app password, also in `contact.env`. **Rotate both copies together** |
+| `/etc/horizon/server.env` | `OWNER_NOTIFY_EMAIL` | who gets the email. Unset ⇒ `GMAIL_USER` |
+
+With no Gmail account set, or a failed send, the status still changes; the
+email is retried on the customer's next `active` event (e.g. the next monthly
+`invoice.paid`), and the log line says `mail_not_configured` or `mail_failed`.
+
+In the Stripe dashboard, add a webhook endpoint
+`https://shoreward.ai/horizon/api/billing/stripe-webhook` subscribed to the
+five events above, copy its signing secret into `stripe.env`, then
+`sudo systemctl restart horizon-server`.
+
+Each request logs one line with the event id, type and outcome only, never
+the payload. `outcome: "no_user"` means no Horizon account matched the
+checkout's `client_reference_id`, the buyer's email or the stored Stripe
+customer. That event is recorded and **not** replayed later, so look the
+customer up in the Stripe dashboard and fix the account by hand.
+`customer_conflict` means another account already holds that Stripe customer.
+
+Known risk: Stripe does not guarantee event order. A `checkout.session.completed`
+delivered after that subscription's `customer.subscription.updated` cancel sets
+`active` again until the next subscription event.
+
+### Owner check after deploy (success metric 5)
+
+1. Sign up on shoreward.ai and pay the $200 checkout with your own card.
+2. Check the account is `active` (the user's profile, or
+   `SELECT account_status FROM user WHERE email = …`) and that the email
+   arrived with name, email and company.
+3. In the Stripe dashboard, refund the payment and cancel the subscription
+   immediately. The account then turns `cancelled`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

@@ -79,10 +79,10 @@ test('/api/health is 200 with no session cookie (deploy.sh liveness probe)', asy
 
 // HZ-633: only the two exact billing paths skip the login gate. Neighbouring
 // paths and methods still need a session, and the exempt list grew by exactly
-// those two entries (HZ-634's webhook route will bump the count again).
+// those two entries. HZ-634's Stripe webhook is the one later entry.
 test('only the two exact /api/billing paths skip the login gate', async () => {
   const { SESSION_EXEMPT } = await import('../src/app.js')
-  assert.equal(SESSION_EXEMPT.length, 11)
+  assert.equal(SESSION_EXEMPT.length, 12)
   for (const [method, url] of [
     ['GET', '/api/billing/checkout-session/x'],
     ['POST', '/api/billing/checkout-session/x'],
@@ -90,6 +90,8 @@ test('only the two exact /api/billing paths skip the login gate', async () => {
     ['POST', '/api/billing/session-status/x'],
     ['GET', '/api/billing/session-statusx'],
     ['GET', '/api/billing'],
+    ['POST', '/api/billing/stripe-webhook/x'],
+    ['POST', '/api/billing/stripe-webhookx'],
   ]) {
     const res = await app.inject({ method, url })
     assert.equal(res.statusCode, 401, `${method} ${url}`)
