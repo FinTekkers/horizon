@@ -37,6 +37,7 @@ import { Marked, Renderer } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
+import * as billing from './billing.js'
 import { mintHumanProof } from './humanProof.js'
 import { testEnvUser } from './testEnvLogin.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
@@ -368,6 +369,11 @@ export const SESSION_EXEMPT = [
   // Its contents are route shapes only: no values, no examples, and the
   // credential-bearing internal routes are absent from it entirely.
   /^\/api\/openapi\.json$/,
+  // HZ-633: shoreward.ai's sign-up and welcome pages, for visitors with no
+  // account yet. Exact paths only. Neither route starts a session, sets a
+  // cookie or grants access (see billing.js).
+  /^\/api\/billing\/checkout-session$/,
+  /^\/api\/billing\/session-status$/,
 ]
 
 function sessionExempt(url) {
@@ -541,7 +547,11 @@ export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DE
 // to read each route's declared params/querystring/body and check them against
 // the published document; without it that gate could only assert the document
 // agrees with itself. Production passes nothing and the hook is never added.
-export function buildApp({ logger = true, onRoute = null } = {}) {
+//
+// `stripe` is the same kind of seam (HZ-633): tests pass a fake Stripe client
+// so no test calls Stripe. Production passes nothing and the billing routes
+// use billing.stripeClient().
+export function buildApp({ logger = true, onRoute = null, stripe = null } = {}) {
   const fastify = Fastify({ logger })
 
   if (onRoute) fastify.addHook('onRoute', onRoute)
@@ -2398,6 +2408,97 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     reply.clearCookie(SESSION_COOKIE_NAME, { path: '/' })
     return { ok: true }
   })
+
+  // ---- billing (HZ-633: Stripe Embedded Checkout for shoreward.ai) ----
+  // Both routes are in SESSION_EXEMPT and are reached same-origin from
+  // https://shoreward.ai/horizon/api/billing/…. They never call startSession()
+  // or set a cookie. The 503 check runs in preValidation, before any input is
+  // looked at. A Stripe failure is a bare 502: only the error's type and code
+  // are logged, never its message, and no key ever is.
+  const billingNotConfigured = (needPublishable) => (request, reply, done) => {
+    if (billing.billingReady({ needPublishable })) return done()
+    reply.code(503).send({ error: 'billing_not_configured' })
+  }
+  const stripeFor = () => stripe ?? billing.stripeClient()
+
+  fastify.post(
+    '/api/billing/checkout-session',
+    {
+      preValidation: billingNotConfigured(true),
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            email: { type: 'string' },
+            company: { type: 'string' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['clientSecret', 'publishableKey'],
+            properties: { clientSecret: { type: 'string' }, publishableKey: { type: 'string' } },
+          },
+          400: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const signup = billing.validateSignup(request.body)
+      if (signup.error) return reply.code(400).send({ error: signup.error, field: signup.field })
+      try {
+        return await billing.createCheckoutSession(stripeFor(), signup.value)
+      } catch (err) {
+        request.log.warn(billing.stripeErrorSummary(err), 'billing: checkout session failed')
+        return reply.code(502).send({ error: 'billing_unavailable' })
+      }
+    },
+  )
+
+  // logLevel 'warn' drops Fastify's per-request info lines for this route: the
+  // URL carries the session_id, which returns the buyer's email.
+  fastify.get(
+    '/api/billing/session-status',
+    {
+      logLevel: 'warn',
+      preValidation: billingNotConfigured(false),
+      schema: {
+        querystring: { type: 'object', properties: { session_id: { type: 'string' } } },
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'email'],
+            properties: {
+              status: { type: 'string', enum: ['open', 'complete', 'expired'] },
+              email: { type: ['string', 'null'] },
+            },
+          },
+          400: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const sessionId = request.query.session_id
+      if (typeof sessionId !== 'string' || sessionId.length > 255 || !billing.SESSION_ID_RE.test(sessionId)) {
+        return reply.code(400).send({ error: 'invalid_session_id' })
+      }
+      try {
+        return await billing.getSessionStatus(stripeFor(), sessionId)
+      } catch (err) {
+        if (err?.code === 'resource_missing') return reply.code(404).send({ error: 'not_found' })
+        request.log.warn(billing.stripeErrorSummary(err), 'billing: session status failed')
+        return reply.code(502).send({ error: 'billing_unavailable' })
+      }
+    },
+  )
 
   // The two routes below sit under /api/auth/ and so are exempt from the
   // onRequest login gate, but each checks the session itself and 401s without

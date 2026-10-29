@@ -1044,6 +1044,13 @@ if (!userBillingColumns.every((name) => userColumnNames().has(name))) {
     if (!userColumns.has('stripe_subscription_id')) db.exec('ALTER TABLE user ADD COLUMN stripe_subscription_id TEXT')
   }).immediate()
 }
+// HZ-633: the company a shoreward.ai sign-up typed in. Additive and nullable;
+// existing rows stay NULL.
+if (!userColumnNames().has('company')) {
+  db.transaction(() => {
+    if (!userColumnNames().has('company')) db.exec('ALTER TABLE user ADD COLUMN company TEXT')
+  }).immediate()
+}
 
 // HZ-544: item_off = 1 marks an evaluation recorded as 'shadow' because
 // Autopilot was off for the ITEM (its `autopilot-off` label) in an 'on'
