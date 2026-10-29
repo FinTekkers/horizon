@@ -172,6 +172,32 @@ test('approving the first gate sends the shown golden-cases hash, and only there
   expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([{ goldenHash: 'golden-hash-1' }, {}, {}])
 })
 
+// HZ-642: Approve & file's Autopilot choice goes in the approval body at that
+// gate only; any other gate's approval sends no filedAutopilot key.
+test('approving Approve & file sends filedAutopilot, and no other gate does', async () => {
+  const { APPROVE_FILE_GATE_INDEX } = await import('../../../domain/js/lifecycle.js')
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const items = [
+    { id: 'PL-1', kind: 'plan', cursor: APPROVE_FILE_GATE_INDEX, pr_url: null },
+    { id: 'PL-2', kind: 'plan', cursor: APPROVE_FILE_GATE_INDEX, pr_url: null },
+    { id: 'CH-1', cursor: 3, pr_url: null },
+  ]
+  MockEventSource.instances.at(-1).onmessage({ data: JSON.stringify({ items }) })
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, closed: false }) }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await serverApi.approveGate('PL-1', '', { filedAutopilot: 'off' })
+  await serverApi.approveGate('PL-2', '')
+  await serverApi.approveGate('CH-1', '', { filedAutopilot: 'off' })
+  expect(fetchMock.mock.calls.map(([url]) => url.replace(serverApi.API_BASE, ''))).toEqual([
+    `/items/PL-1/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
+    `/items/PL-2/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
+    '/items/CH-1/gates/3/approve',
+  ])
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([{ filedAutopilot: 'off' }, { filedAutopilot: 'default' }, {}])
+})
+
 // HZ-179: the token client hits the server's routes with the right verbs, and
 // createApiToken leaves nothing behind in browser storage.
 test('the API token client calls GET/POST/DELETE /api/tokens and stores nothing', async () => {

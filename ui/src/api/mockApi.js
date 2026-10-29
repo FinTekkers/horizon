@@ -304,7 +304,9 @@ function runAgents(id) {
 
 // ---- actions ----
 
-export async function approveGate(id, notes) {
+// HZ-642: the Approve & file Autopilot choice is accepted like serverApi's;
+// demo items carry no autopilot-off label, so it changes nothing here.
+export async function approveGate(id, notes, _options = {}) {
   const it = items.find((x) => x.id === id)
   if (!it || isClosed(it) || STEPS[it.cursor].kind !== 'gate') return { ok: false }
   const label = STEPS[it.cursor].label.toLowerCase()

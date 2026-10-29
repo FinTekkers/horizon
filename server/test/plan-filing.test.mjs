@@ -108,24 +108,24 @@ const DOC = {
 const FILING_ORDER = ['#1', '#2', '#3', '#6', '#4', '#5', '#7', '#8']
 
 let nextPlan = 90
-function draftedPlan(doc = DOC) {
+function draftedPlan(doc = DOC, { local = false } = {}) {
   const issue = nextPlan++
   const id = `AL-${issue}`
   db.prepare(
     "INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo, issue) VALUES (?, ?, 'High', ?, 'plan', ?, ?, ?)",
-  ).run(id, `Plan ${id}`, PLAN_DRAFT_STEP_INDEX, projectId, ALPHA, issue)
+  ).run(id, `Plan ${id}`, PLAN_DRAFT_STEP_INDEX, projectId, local ? null : ALPHA, local ? null : issue)
   const saved = planDraft.ingestDraft(store.getItem(id), null, doc, 'PM')
   assert.equal(saved.ok, true, JSON.stringify(saved))
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(APPROVE_FILE_GATE_INDEX, id)
   return id
 }
 
-const approve = (id, pin = PIN) =>
+const approve = (id, pin = PIN, payload = {}) =>
   app.inject({
     method: 'POST',
     url: `/api/items/${id}/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
     headers: { cookie: owner.cookie, ...(pin ? { 'x-human-key': pin } : {}) },
-    payload: {},
+    payload,
   })
 const putDraft = (id, body) =>
   app.inject({ method: 'PUT', url: `/api/items/${id}/plan-draft`, headers: { cookie: owner.cookie, 'x-human-key': PIN }, payload: body })
@@ -364,4 +364,162 @@ test('Approve & file without the PIN is refused on Autopilot and files nothing',
   assert.equal(cursorOf(id), APPROVE_FILE_GATE_INDEX)
   assert.equal(stub.creates().length, before)
   assert.equal(STEPS[APPROVE_FILE_GATE_INDEX].humanOnly, true)
+})
+
+// ---- HZ-642: one Autopilot choice for every item the Plan files ----
+
+const OFF_LABEL = 'autopilot-off'
+const hasOffLabel = (create) => (create.body.labels || []).includes(OFF_LABEL)
+const autopilotOffOf = (key) => db.prepare('SELECT autopilot_off FROM work_item WHERE id = ?').get(key).autopilot_off
+const fileApprovals = (id) =>
+  db
+    .prepare("SELECT decision, filed_autopilot FROM gate_decision WHERE item_id = ? AND step_index = ? ORDER BY id")
+    .all(id, APPROVE_FILE_GATE_INDEX)
+const spawnRows = (id) => db.prepare("SELECT COUNT(*) AS n FROM item_spawn WHERE parent_id = ? AND request_key = 'plan-file'").get(id).n
+
+// The Plan back at Approve & file through a real send-back: the filing run is
+// cancelled and the cursor put back at the gate (as the read-only test above
+// does), then /reject sends it back to Draft items, and the redrafted Plan
+// returns to the gate.
+async function sendBackToGate(id) {
+  orchestrator.cancel(id)
+  db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(APPROVE_FILE_GATE_INDEX, id)
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/reject`,
+    headers: { cookie: owner.cookie, 'x-human-key': PIN },
+    payload: { feedback: 'Not yet.', targetStepIndex: PLAN_DRAFT_STEP_INDEX },
+  })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(cursorOf(id), PLAN_DRAFT_STEP_INDEX)
+  orchestrator.cancel(id)
+  db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(APPROVE_FILE_GATE_INDEX, id)
+}
+
+test('HZ-642 metric 1: approving with "Off for these items" files every item with the autopilot-off label and autopilot_off = 1', async () => {
+  const id = draftedPlan()
+  const res = await approve(id, PIN, { filedAutopilot: 'off' })
+  assert.equal(res.statusCode, 200, res.body)
+  await until(() => cursorOf(id) === REVIEW_CLOSE, 'File items to finish')
+  assert.deepEqual(fileApprovals(id), [{ decision: 'approved', filed_autopilot: 'off' }])
+  const creates = planCreates(id)
+  assert.equal(creates.length, 8)
+  for (const create of creates) assert.ok(hasOffLabel(create), `${create.body.title} was filed without ${OFF_LABEL}`)
+  const keys = keysOf(id)
+  for (const local of FILING_ORDER) assert.equal(autopilotOffOf(keys[local]), 1, `${local} imported with Autopilot on`)
+})
+
+test('HZ-642 metric 2: approving with "Project default" files every item without the label and autopilot_off = 0', async () => {
+  const id = draftedPlan()
+  const res = await approve(id, PIN, { filedAutopilot: 'default' })
+  assert.equal(res.statusCode, 200, res.body)
+  await until(() => cursorOf(id) === REVIEW_CLOSE, 'File items to finish')
+  assert.deepEqual(fileApprovals(id), [{ decision: 'approved', filed_autopilot: 'default' }])
+  const creates = planCreates(id)
+  assert.equal(creates.length, 8)
+  for (const create of creates) assert.ok(!hasOffLabel(create), `${create.body.title} was filed with ${OFF_LABEL}`)
+  const keys = keysOf(id)
+  for (const local of FILING_ORDER) assert.equal(autopilotOffOf(keys[local]), 0)
+})
+
+test('HZ-642 metric 3: the choice is saved with each approval; after a send-back the re-approval files with its own choice', async () => {
+  const id = draftedPlan()
+  // The first filing stops at the scope check, before any draft is filed.
+  store.setScopeRepos(id, [ALPHA, USERS])
+  assert.equal((await approve(id, PIN, { filedAutopilot: 'off' })).statusCode, 200)
+  await until(() => store.getItem(id).paused, 'the first filing to stop')
+  assert.equal(spawnRows(id), 0, 'the old choice was frozen into a filing row')
+
+  await sendBackToGate(id)
+  store.setScopeRepos(id, [ALPHA, BETA, USERS])
+  assert.equal((await approve(id, PIN, { filedAutopilot: 'default' })).statusCode, 200)
+  await until(() => cursorOf(id) === REVIEW_CLOSE, 'the re-approved filing to finish')
+
+  // Both approvals keep their own choice; the newest one filed the items.
+  assert.deepEqual(fileApprovals(id), [
+    { decision: 'approved', filed_autopilot: 'off' },
+    { decision: 'rejected', filed_autopilot: null },
+    { decision: 'approved', filed_autopilot: 'default' },
+  ])
+  const creates = planCreates(id)
+  assert.equal(creates.length, 8)
+  for (const create of creates) assert.ok(!hasOffLabel(create), `${create.body.title} was filed with the old choice`)
+  const keys = keysOf(id)
+  for (const local of FILING_ORDER) assert.equal(autopilotOffOf(keys[local]), 0)
+})
+
+test('HZ-642: items filed before a send-back are never relabelled by a re-approval with the other choice', async () => {
+  const id = draftedPlan()
+  stub.hooks.afterCreate = () => {
+    if (planCreates(id).length === 5) stub.hooks.createStatus[BETA] = 502 // #1, #2, #3, #6, #4 filed; #5 fails
+  }
+  try {
+    assert.equal((await approve(id, PIN, { filedAutopilot: 'off' })).statusCode, 200)
+    await until(() => store.getItem(id).paused, 'the failed filing to pause the Plan')
+  } finally {
+    stub.hooks.afterCreate = null
+    delete stub.hooks.createStatus[BETA]
+  }
+  const early = ['#1', '#2', '#3', '#6', '#4']
+  const firstKeys = keysOf(id)
+  const earlyIssues = early.map((local) => store.getItem(firstKeys[local]))
+  for (const child of earlyIssues) assert.equal(child.autopilot_off, 1)
+  const callsBefore = stub.calls.length
+
+  await sendBackToGate(id)
+  assert.equal((await approve(id, PIN, { filedAutopilot: 'default' })).statusCode, 200)
+  await until(() => cursorOf(id) === REVIEW_CLOSE, 'the re-approved filing to finish')
+
+  const keys = keysOf(id)
+  for (const local of early) assert.equal(keys[local], firstKeys[local], `${local} was filed again`)
+  // No label add, edit or removal on an issue filed before the send-back…
+  const later = stub.calls.slice(callsBefore).filter((c) => c.method !== 'GET')
+  for (const child of earlyIssues) {
+    const issuePath = `/repos/${child.repo}/issues/${child.issue}`
+    assert.deepEqual(
+      later.filter((c) => c.path === issuePath || c.path.startsWith(`${issuePath}/`)),
+      [],
+      `${child.id}'s issue was written to`,
+    )
+    assert.equal(autopilotOffOf(child.id), 1, `${child.id} lost its Autopilot-off label`)
+  }
+  // …#5 keeps the choice its failed row froze, and the rest file with the new one.
+  assert.equal(autopilotOffOf(keys['#5']), 1)
+  for (const local of ['#7', '#8']) assert.equal(autopilotOffOf(keys[local]), 0)
+  // US-216 stays untouched.
+  assert.deepEqual(stub.calls.filter((c) => c.method !== 'GET' && c.path.startsWith(`/repos/${USERS}/issues/216`)), [])
+})
+
+for (const mode of ['off', 'shadow']) {
+  test(`HZ-642: in the ${mode} project a posted "off" is stored as "default", logged, and files no label`, async () => {
+    const id = draftedPlan()
+    db.prepare('UPDATE project SET autopilot = ? WHERE id = ?').run(mode, projectId)
+    try {
+      assert.equal((await approve(id, PIN, { filedAutopilot: 'off' })).statusCode, 200)
+    } finally {
+      db.prepare("UPDATE project SET autopilot = 'on' WHERE id = ?").run(projectId)
+    }
+    await until(() => cursorOf(id) === REVIEW_CLOSE, 'File items to finish')
+    assert.deepEqual(fileApprovals(id), [{ decision: 'approved', filed_autopilot: 'default' }])
+    const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all(id).map((e) => e.text)
+    assert.ok(
+      events.some((text) => text.includes(`Autopilot is ${mode} for this project`)),
+      `no downgrade event: ${events.join(' | ')}`,
+    )
+    assert.ok(planCreates(id).every((create) => !hasOffLabel(create)))
+  })
+}
+
+test('HZ-642: a Plan filed as local items (no GitHub repo) with "Off" files every item with autopilot_off = 1', async () => {
+  const id = draftedPlan(DOC, { local: true })
+  const before = stub.creates().length
+  assert.equal((await approve(id, PIN, { filedAutopilot: 'off' })).statusCode, 200)
+  await until(() => cursorOf(id) === REVIEW_CLOSE, 'File items to finish')
+  assert.equal(stub.creates().length, before, 'a local Plan created a GitHub issue')
+  const keys = keysOf(id)
+  assert.equal(Object.keys(keys).length, 8)
+  for (const local of FILING_ORDER) {
+    assert.match(keys[local], /^LOC-\d+$/)
+    assert.equal(autopilotOffOf(keys[local]), 1, `${local} was filed with Autopilot on`)
+  }
 })

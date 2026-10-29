@@ -851,6 +851,13 @@ if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => colum
   db.exec('ALTER TABLE gate_decision ADD COLUMN plan_hash TEXT')
 }
 
+// HZ-642: the Autopilot choice an Approve & file decision made for the items
+// the Plan files — 'default' or 'off'. NULL on every other decision, and on
+// every row from before this column, which files as 'default'.
+if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'filed_autopilot')) {
+  db.exec('ALTER TABLE gate_decision ADD COLUMN filed_autopilot TEXT')
+}
+
 // HZ-539: the sub-step a gate decision was made at, beside its step_index (the
 // anchor). NULL on every global decision and on every row from before this
 // column. gate_action gets none: a sub-step never gates (substeps.js), and a

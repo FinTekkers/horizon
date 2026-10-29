@@ -4,6 +4,8 @@
 // POSTs; the server sends what changed after every mutation (HZ-318: a full
 // `snapshot` event on connect, then `delta` events at most once a second).
 
+import { APPROVE_FILE_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
 // '/horizon/' → '/horizon/api'). BASE_URL always ends with a slash.
@@ -709,7 +711,9 @@ function post(path, body) {
   }).catch((err) => console.error(`POST ${path} failed`, err))
 }
 
-export async function approveGate(id, notes) {
+// HZ-642: `filedAutopilot` ('default' | 'off') is Approve & file's Autopilot
+// choice for the items the Plan files; it is sent at that gate only.
+export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}) {
   const item = items.find((it) => it.id === id)
   if (!item) return { ok: false }
   // Approving "Accept the code" merges the PR server-side. If GitHub refuses
@@ -727,6 +731,7 @@ export async function approveGate(id, notes) {
     ...(item.runPlan?.runner ? { runner: item.runPlan.runner } : {}),
     // HZ-541: the golden-cases set this tab showed at the first gate.
     ...(item.goldenCases?.hash && !item.goldenCases.approved && item.cursor === item.goldenCases.gateIndex ? { goldenHash: item.goldenCases.hash } : {}),
+    ...(item.cursor === APPROVE_FILE_GATE_INDEX ? { filedAutopilot } : {}),
   }
   const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, body)
   if (!res) return { ok: false }

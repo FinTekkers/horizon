@@ -206,11 +206,7 @@ export async function setPriorityLabel(item, priority) {
 export async function setAutopilotOffLabel(item, off) {
   const issuePath = `/repos/${item.repo}/issues/${item.issue}`
   if (off) {
-    const create = await gh(`/repos/${item.repo}/labels`, {
-      method: 'POST',
-      body: JSON.stringify({ name: AUTOPILOT_OFF_LABEL, color: '2B2340' }),
-    })
-    if (!create.ok && create.status !== 422) throw new Error(`GitHub returned ${create.status} creating the ${AUTOPILOT_OFF_LABEL} label`)
+    await ensureAutopilotOffLabel(item.repo)
     const add = await gh(`${issuePath}/labels`, { method: 'POST', body: JSON.stringify({ labels: [AUTOPILOT_OFF_LABEL] }) })
     if (!add.ok) throw new Error(`GitHub returned ${add.status} adding the ${AUTOPILOT_OFF_LABEL} label`)
   } else {
@@ -222,13 +218,27 @@ export async function setAutopilotOffLabel(item, off) {
   return issue.json()
 }
 
+// Creates the `autopilot-off` label on `repo`; a 422 means it already exists.
+// Throws on any other refusal.
+async function ensureAutopilotOffLabel(repo) {
+  const create = await gh(`/repos/${repo}/labels`, {
+    method: 'POST',
+    body: JSON.stringify({ name: AUTOPILOT_OFF_LABEL, color: '2B2340' }),
+  })
+  if (!create.ok && create.status !== 422) throw new Error(`GitHub returned ${create.status} creating the ${AUTOPILOT_OFF_LABEL} label`)
+}
+
 // `bodySuffix` (HZ-313) is appended after the composed sections — the split's
 // back-link and marker. The new-item route sends none.
 // `kind` (HZ-382): a non-change kind adds its label, and refuses to create the
 // issue at all if that label cannot be ensured — no orphan issue, and never a
 // Task that silently imports as a change. `lane` (HZ-449) is the same: its
-// label, or no issue.
-export async function createIssue(repo, { title, outcome, metric, guardrails, priority, kind = 'change', lane = null, bodySuffix = '' }) {
+// label, or no issue. `autopilotOff` (HZ-642) adds the `autopilot-off` label
+// the same way; it defaults to false, so every other caller is unchanged.
+export async function createIssue(
+  repo,
+  { title, outcome, metric, guardrails, priority, kind = 'change', lane = null, bodySuffix = '', autopilotOff = false },
+) {
   const token = getToken()
   let kindLabel = null
   if (kind !== 'change') {
@@ -237,6 +247,7 @@ export async function createIssue(repo, { title, outcome, metric, guardrails, pr
   }
   const laneLabel = lane ? await ensureLaneLabel(repo, token, lane) : null
   if (lane && !laneLabel) throw new Error(`Could not create the "${lane}" label on ${repo}`)
+  if (autopilotOff) await ensureAutopilotOffLabel(repo)
   const label = await ensurePriorityLabel(repo, token, priority)
   const res = await fetch(`https://api.github.com/repos/${repo}/issues`, {
     method: 'POST',
@@ -244,7 +255,7 @@ export async function createIssue(repo, { title, outcome, metric, guardrails, pr
     body: JSON.stringify({
       title,
       body: composeIssueBody({ outcome, metric, guardrails }) + (bodySuffix ? `\n\n${bodySuffix}` : ''),
-      labels: [label, kindLabel, laneLabel].filter(Boolean),
+      labels: [label, kindLabel, laneLabel, autopilotOff ? AUTOPILOT_OFF_LABEL : null].filter(Boolean),
     }),
   })
   if (!res.ok) {
