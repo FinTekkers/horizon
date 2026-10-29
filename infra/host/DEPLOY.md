@@ -545,6 +545,85 @@ off, and creates one if there is none. Don't edit that configuration in the
 dashboard: one with another feature turned on is ignored and a new one is
 made. The portal returns to `$HORIZON_UI_URL/billing`.
 
+## 2k. Nightly DB backup (HZ-650)
+
+`horizon-db-backup.timer` runs `infra/host/horizon-db-backup.sh` as `ubuntu`
+every night at 03:30 UTC. The script:
+
+1. aborts with `ERROR disk` if free space on the backup filesystem (or the
+   live DB's, when it is a different device) is below 2 × (`horizon.db` +
+   `horizon.db-wal`);
+2. takes an online copy with `sqlite3 -readonly … ".backup …"` into
+   `~/backups/horizon-db/.staging/`. The server keeps running; nothing is
+   written into `server/data/`;
+3. sets the copy to `journal_mode=DELETE` and runs `PRAGMA integrity_check`,
+   which must print exactly `ok`;
+4. compresses it with `zstd` and tests the archive;
+5. renames it into `~/backups/horizon-db/nightly/horizon-YYYYMMDDTHHMMSSZ.db.zst`;
+6. only then deletes all but the newest 7 files in `nightly/`. Manual copies
+   anywhere else in `~/backups/horizon-db/` are never touched.
+
+Any failure logs `horizon-db-backup: ERROR <stage>: <detail>` to the journal,
+exits non-zero, and leaves every existing copy in place. Success logs
+`horizon-db-backup: OK <file> <bytes>`. Deploys ship script fixes, but they do
+not install unit files, so the units are installed once by hand.
+
+### Install (caretaker, with the owner's OK)
+
+```bash
+# 1. The unit must back up the same file the server uses. If this prints a
+#    HORIZON_DB line, edit Environment=HORIZON_DB= in the .service to match.
+sudo grep HORIZON_DB /etc/horizon/server.env
+# 2. Install and enable the timer.
+sudo cp /opt/horizon/infra/host/horizon-db-backup.service /opt/horizon/infra/host/horizon-db-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now horizon-db-backup.timer
+# 3. First run by hand, before HZ-641 (automatic deletion) lands. Time it.
+time sudo systemctl start horizon-db-backup
+```
+
+If the first run takes more than about 30 minutes (the `.backup` copy restarts
+whenever the server writes between steps), file a follow-up to switch to
+`VACUUM INTO`; that needs the owner's OK.
+
+### Verify
+
+```bash
+systemctl list-timers horizon-db-backup.timer   # NEXT shows 03:30 UTC
+journalctl -u horizon-db-backup -n 20           # an "OK <file> <bytes>" line
+ls -l ~/backups/horizon-db/nightly/
+# Freshness: a failed night only shows in the journal, so check this too.
+find ~/backups/horizon-db/nightly -name 'horizon-*.db.zst' -mmin -1560 | grep -q . \
+  && echo "fresh: newest copy is under 26 h old" || echo "STALE: no copy in the last 26 h"
+```
+
+### Restore
+
+Rehearse first: decompress the newest copy to a scratch path and check it.
+This never touches the live DB.
+
+<!-- restore-rehearsal -->
+```bash
+COPY="$(ls -1 ~/backups/horizon-db/nightly/horizon-*.db.zst | tail -n 1)"
+RESTORE="${TMPDIR:-/tmp}/horizon-restore-check.db"
+zstd -d -q -f "$COPY" -o "$RESTORE"
+sqlite3 "$RESTORE" 'PRAGMA integrity_check;'   # must print: ok
+```
+
+To cut over to the restored copy (owner's call; the server is down meanwhile):
+
+1. `sudo systemctl stop horizon-server`
+2. Move the live files aside, never delete them (a missing `-wal`/`-shm` is
+   fine): `ASIDE=~/backups/horizon-db/pre-restore-$(date -u +%Y%m%dT%H%M%SZ) && mkdir -p "$ASIDE" && mv /opt/horizon/server/data/horizon.db* "$ASIDE/"`
+3. `cp "$RESTORE" /opt/horizon/server/data/horizon.db && chown ubuntu:ubuntu /opt/horizon/server/data/horizon.db`
+4. `sudo systemctl start horizon-server`, then check
+   `curl -s http://127.0.0.1:3001/api/health` returns `{"ok":true,…}`.
+
+### Off switch
+
+`sudo systemctl disable --now horizon-db-backup.timer`. Existing copies in
+`nightly/` stay. Tested by `infra/host/test/horizon-db-backup.test.sh`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must
