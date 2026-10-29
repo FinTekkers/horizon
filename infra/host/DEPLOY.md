@@ -47,6 +47,7 @@ sudo cp infra/host/horizon-server.service /etc/systemd/system/horizon-server.ser
 sudo systemctl daemon-reload
 sudo systemctl restart horizon-server
 ```
+The unit also loads `/etc/horizon/stripe.env` (optional — the leading `-` skips it if missing), which holds `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET` and `STRIPE_PORTAL_CONFIGURATION_ID` (names only; values live on the host).
 
 ## 2b. WhatsApp gate-approval env (HZ-140)
 
