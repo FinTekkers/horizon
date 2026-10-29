@@ -41,7 +41,40 @@ function generatePin() {
 
 function toPublicUser(row) {
   if (!row) return null
-  return { id: row.id, email: row.email, name: row.name, initials: row.initials, authMethod: row.auth_method }
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    initials: row.initials,
+    authMethod: row.auth_method,
+    account_status: row.account_status,
+  }
+}
+
+// ---- account status (HZ-632) ----
+// The billing state of an account. Must match the CHECK on user.account_status
+// in db.js; account-status-store.test.mjs pins the two together.
+export const ACCOUNT_STATUSES = Object.freeze(['pending_payment', 'active', 'past_due', 'cancelling', 'cancelled'])
+
+// The one writer of user.account_status. Validates before any DB access, then
+// reads the old value, updates the row and writes a user_event audit row in one
+// transaction. Returns { ok, from, to }, { ok, from, to, unchanged } for a
+// same-value write (no audit row), or { error } with 'invalid_status',
+// 'invalid_who' or 'not_found'. Sign-in does not read the status yet.
+export function setAccountStatus(userId, status, who) {
+  if (typeof status !== 'string' || !ACCOUNT_STATUSES.includes(status)) return { error: 'invalid_status' }
+  if (typeof who !== 'string' || who.trim() === '') return { error: 'invalid_who' }
+  return db.transaction(() => {
+    const row = db.prepare('SELECT account_status FROM user WHERE id = ?').get(userId)
+    if (!row) return { error: 'not_found' }
+    const from = row.account_status
+    if (from === status) return { ok: true, from, to: status, unchanged: true }
+    db.prepare('UPDATE user SET account_status = ? WHERE id = ?').run(status, userId)
+    db.prepare(
+      "INSERT INTO user_event (user_id, kind, old_value, new_value, who) VALUES (?, 'account_status', ?, ?, ?)",
+    ).run(userId, from, status, who)
+    return { ok: true, from, to: status }
+  }).immediate()
 }
 
 // Returns { user, pin } — pin is the plaintext, shown to the caller exactly

@@ -1007,6 +1007,44 @@ db.exec(`
     UNIQUE (item_id, gate_index, arrival_run_id)
   );
 `)
+
+// HZ-632: every account carries a billing state. user_event is the user-level
+// audit trail, like project_event above (event.item_id is NOT NULL). user_id has
+// no FK on purpose: reconcileGoogleUsers deletes user rows, and the audit
+// history must outlive them. account_status is written only by
+// auth.setAccountStatus after this migration. Additive and once-only: the
+// column check is repeated inside the immediate transaction, so a racing boot
+// skips it, and the backfill to 'active' runs only on the boot that adds the
+// column. Users created afterwards get the 'pending_payment' default.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_event (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    old_value  TEXT,
+    new_value  TEXT,
+    who        TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_event_user ON user_event(user_id, id DESC);
+`)
+const userColumnNames = () => new Set(db.prepare('PRAGMA table_info(user)').all().map((column) => column.name))
+const userBillingColumns = ['account_status', 'stripe_customer_id', 'stripe_subscription_id']
+if (!userBillingColumns.every((name) => userColumnNames().has(name))) {
+  db.transaction(() => {
+    const userColumns = userColumnNames()
+    if (!userColumns.has('account_status')) {
+      db.exec(`
+        ALTER TABLE user ADD COLUMN account_status TEXT NOT NULL DEFAULT 'pending_payment'
+          CHECK (account_status IN ('pending_payment','active','past_due','cancelling','cancelled'));
+        UPDATE user SET account_status = 'active';
+      `)
+    }
+    if (!userColumns.has('stripe_customer_id')) db.exec('ALTER TABLE user ADD COLUMN stripe_customer_id TEXT')
+    if (!userColumns.has('stripe_subscription_id')) db.exec('ALTER TABLE user ADD COLUMN stripe_subscription_id TEXT')
+  }).immediate()
+}
+
 // HZ-544: item_off = 1 marks an evaluation recorded as 'shadow' because
 // Autopilot was off for the ITEM (its `autopilot-off` label) in an 'on'
 // project, so it is never read as a project in shadow mode. A historical
