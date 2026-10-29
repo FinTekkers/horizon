@@ -45,6 +45,11 @@
 //   CARETAKER_HOURLY_LIMIT  most automatic gate actions per project per rolling hour (HZ-271;
 //                           default 10, whole numbers >= 1 only)
 //   HORIZON_DRY_RUN_TIMEOUT_MS  per-check bound on a deploy-target Dry run (HZ-258; default 5s)
+//   STRIPE_SECRET_KEY      Stripe live secret key (HZ-633), from /etc/horizon/stripe.env. Never
+//                          logged or returned. Unset ⇒ both /api/billing routes answer 503
+//   STRIPE_PUBLISHABLE_KEY Stripe publishable key, handed to shoreward.ai's sign-up page.
+//                          Unset ⇒ POST /api/billing/checkout-session answers 503
+//   STRIPE_PRICE_ID        the $200/month Horizon Platform price. Unset ⇒ both routes answer 503
 
 import { ITEM_KINDS, agentStepIndexes, isServerStep } from '../../domain/js/lifecycle.js'
 
@@ -236,6 +241,17 @@ export const GOOGLE_REDIRECT_URI =
 // Dev-mode fallback credential — always overridden in production via env vars.
 export const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@example.com'
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin'
+// HZ-633: the Stripe keys, from /etc/horizon/stripe.env on the host (tests set
+// fakes). Read on every call rather than at import, so a test can unset one key
+// per case. The only place in server/src that reads STRIPE_* — enforced by
+// account-status-writers.test.mjs.
+export function stripeConfig() {
+  return {
+    secretKey: process.env.STRIPE_SECRET_KEY || null,
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || null,
+    priceId: process.env.STRIPE_PRICE_ID || null,
+  }
+}
 // HZ-563: admins besides ADMIN_EMAIL, e.g. the owner's Google login. Only
 // the Farm health route checks this; lowercase, like the allowlist below.
 export const ADMIN_EMAILS = new Set(

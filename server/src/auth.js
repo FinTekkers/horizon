@@ -89,6 +89,36 @@ export function createUser({ email, name, authMethod, googleSub = null }) {
   return { user: toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id)), pin }
 }
 
+// ---- sign-ups (HZ-633) ----
+// A shoreward.ai sign-up, before payment. auth_method 'password' so the boot-
+// time reconcileGoogleUsers never deletes it, yet it cannot sign in: the
+// password path accepts only ADMIN_EMAIL, and a later Google login adopts the
+// row through findOrCreateGoogleUser. last_login_at stays NULL, and the INSERT
+// does not name account_status, so the 'pending_payment' default applies.
+export function createSignupUser({ email, name, company }) {
+  const id = crypto.randomUUID()
+  db.prepare(
+    `INSERT INTO user (id, email, name, initials, auth_method, gate_pin_hash, company)
+     VALUES (?, ?, ?, ?, 'password', ?, ?)`,
+  ).run(id, email, name, initialsFor(name), hashSecret(generatePin()), company)
+  return findUserById(id)
+}
+
+// What checkout needs about an account, case-insensitively by email like
+// findUserByEmailCI. stripe_customer_id never reaches toPublicUser.
+export function billingProfileByEmail(email) {
+  return (
+    db
+      .prepare('SELECT id, email, name, company, account_status, stripe_customer_id FROM user WHERE lower(email) = lower(?)')
+      .get(email) ?? null
+  )
+}
+
+// Attaches a Stripe customer once; an existing id is never overwritten.
+export function setStripeCustomerId(userId, customerId) {
+  return db.prepare('UPDATE user SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id IS NULL').run(customerId, userId).changes === 1
+}
+
 export function findUserByGoogleSub(sub) {
   return toPublicUser(db.prepare('SELECT * FROM user WHERE google_sub = ?').get(sub))
 }

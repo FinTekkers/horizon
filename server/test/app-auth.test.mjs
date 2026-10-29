@@ -77,6 +77,26 @@ test('/api/health is 200 with no session cookie (deploy.sh liveness probe)', asy
   assert.equal(typeof body.itemCount, 'number')
 })
 
+// HZ-633: only the two exact billing paths skip the login gate. Neighbouring
+// paths and methods still need a session, and the exempt list grew by exactly
+// those two entries (HZ-634's webhook route will bump the count again).
+test('only the two exact /api/billing paths skip the login gate', async () => {
+  const { SESSION_EXEMPT } = await import('../src/app.js')
+  assert.equal(SESSION_EXEMPT.length, 11)
+  for (const [method, url] of [
+    ['GET', '/api/billing/checkout-session/x'],
+    ['POST', '/api/billing/checkout-session/x'],
+    ['GET', '/api/billing/anything'],
+    ['POST', '/api/billing/session-status/x'],
+    ['GET', '/api/billing/session-statusx'],
+    ['GET', '/api/billing'],
+  ]) {
+    const res = await app.inject({ method, url })
+    assert.equal(res.statusCode, 401, `${method} ${url}`)
+    assert.deepEqual(res.json(), { error: 'login_required' })
+  }
+})
+
 test('/api/health is 503 with no leaked detail when the DB read fails', async () => {
   const { db } = await import('../src/db.js')
   const realPrepare = db.prepare

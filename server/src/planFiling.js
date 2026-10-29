@@ -51,6 +51,12 @@ export async function fileDrafts(item, { stopped = () => false } = {}) {
   const outside = doc.items.find((d) => !scope.has(d.repo.toLowerCase()))
   if (outside) throw new Error(`${outside.id}'s repo ${outside.repo} is not in the Plan's scope — filing stopped`)
 
+  // HZ-642: one Autopilot choice for every draft, from the newest Approve &
+  // file approval. It goes into each row's frozen payload, so a draft filed
+  // before a send-back keeps the choice it was filed with and is never
+  // relabelled: a re-approval with another choice files only the rest with
+  // it, which can leave one Plan's items with mixed labels.
+  const autopilotOff = store.filedAutopilotOff(item.id)
   const keys = {}
   for (const [id, entry] of Object.entries(filedMap(item.id))) if (entry.status === 'filed' && entry.key) keys[id] = entry.key
   const byId = new Map(doc.items.map((d) => [d.id, d]))
@@ -68,6 +74,7 @@ export async function fileDrafts(item, { stopped = () => false } = {}) {
       repo: scope.get(d.repo.toLowerCase()),
       priority: d.priority ?? item.priority,
       ...(d.lane ? { lane: d.lane } : {}),
+      ...(autopilotOff ? { autopilotOff: true } : {}),
     }
     const filed = await spawnItems(item, [spec], { requestKey: PLAN_FILE_KEY, kind: d.kind ?? 'change', waits: false })
     if (filed.error) throw new Error(`${id}: ${filed.error}`)

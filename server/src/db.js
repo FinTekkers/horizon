@@ -851,6 +851,13 @@ if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => colum
   db.exec('ALTER TABLE gate_decision ADD COLUMN plan_hash TEXT')
 }
 
+// HZ-642: the Autopilot choice an Approve & file decision made for the items
+// the Plan files — 'default' or 'off'. NULL on every other decision, and on
+// every row from before this column, which files as 'default'.
+if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'filed_autopilot')) {
+  db.exec('ALTER TABLE gate_decision ADD COLUMN filed_autopilot TEXT')
+}
+
 // HZ-539: the sub-step a gate decision was made at, beside its step_index (the
 // anchor). NULL on every global decision and on every row from before this
 // column. gate_action gets none: a sub-step never gates (substeps.js), and a
@@ -1042,6 +1049,13 @@ if (!userBillingColumns.every((name) => userColumnNames().has(name))) {
     }
     if (!userColumns.has('stripe_customer_id')) db.exec('ALTER TABLE user ADD COLUMN stripe_customer_id TEXT')
     if (!userColumns.has('stripe_subscription_id')) db.exec('ALTER TABLE user ADD COLUMN stripe_subscription_id TEXT')
+  }).immediate()
+}
+// HZ-633: the company a shoreward.ai sign-up typed in. Additive and nullable;
+// existing rows stay NULL.
+if (!userColumnNames().has('company')) {
+  db.transaction(() => {
+    if (!userColumnNames().has('company')) db.exec('ALTER TABLE user ADD COLUMN company TEXT')
   }).immediate()
 }
 

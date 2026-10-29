@@ -172,6 +172,7 @@ async function fileOne(parent, row, spec, waits) {
         priority,
         kind: row.kind,
         lane: spec.lane,
+        autopilotOff: spec.autopilotOff === true,
       })
       if (typeof childId !== 'string') throw new Error(`could not create the item (${childId?.error || 'unknown error'})`)
       finish.run('filed', null, childId, row.id)
@@ -188,6 +189,7 @@ async function fileOne(parent, row, spec, waits) {
       priority,
       kind: row.kind,
       lane: spec.lane,
+      autopilotOff: spec.autopilotOff === true,
       bodySuffix: spawnBodySuffix(parent, row.request_key, row.seq, waits),
     })
   }
