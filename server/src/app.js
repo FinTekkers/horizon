@@ -2513,6 +2513,181 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     },
   )
 
+  // ---- the customer's own subscription (HZ-636) ----
+  // Behind the login gate, so signed out is 401. The Stripe ids come from the
+  // signed-in user's row only: cancel's body allows nothing but `reason` and
+  // `comment` (propertyNames, since additionalProperties: false would strip an
+  // extra key silently), the other POST bodies must be `{}`, and the query
+  // string is never read. Viewing or changing billing needs a browser session
+  // (the screenshot login may view); a token gets 403. None of these routes writes
+  // account_status — the webhook does, once Stripe reports the change.
+  const subscriptionNotConfigured = (request, reply, done) => {
+    if (billing.subscriptionBillingReady()) return done()
+    reply.code(503).send({ error: 'billing_not_configured' })
+  }
+  const billingAccountOr404 = (request, reply) => {
+    const account = billing.billingAccount(request.user.id)
+    if (!account) reply.code(404).send({ error: 'no_subscription' })
+    return account
+  }
+  const billingFailed = (request, reply, err, what) => {
+    if (err instanceof billing.BillingError) return reply.code(err.status).send({ error: err.code })
+    request.log.warn(billing.stripeErrorSummary(err), `billing: ${what} failed`)
+    return reply.code(502).send({ error: 'billing_unavailable' })
+  }
+  const PLAN_VIEW = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      product: { type: ['string', 'null'] },
+      amount: { type: ['integer', 'null'] },
+      currency: { type: ['string', 'null'] },
+      interval: { type: ['string', 'null'] },
+      status: { type: 'string' },
+      cancel_at_period_end: { type: 'boolean' },
+      current_period_end: { type: ['string', 'null'] },
+    },
+  }
+  const PLAN_RESPONSE = { type: 'object', additionalProperties: false, required: ['plan'], properties: { plan: PLAN_VIEW } }
+  const EMPTY_BODY = { type: 'object', maxProperties: 0 }
+  const SUBSCRIPTION_ERRORS = {
+    400: ERROR_OBJECT,
+    401: ERROR_OBJECT,
+    403: ERROR_OBJECT,
+    404: ERROR_OBJECT,
+    409: ERROR_OBJECT,
+    502: ERROR_OBJECT,
+    503: ERROR_OBJECT,
+  }
+
+  fastify.get(
+    '/api/billing',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: {
+        security: SESSION_SECURITY,
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['plan', 'card', 'invoices'],
+            properties: {
+              plan: PLAN_VIEW,
+              card: {
+                type: ['object', 'null'],
+                additionalProperties: false,
+                properties: {
+                  brand: { type: ['string', 'null'] },
+                  last4: { type: ['string', 'null'] },
+                  exp_month: { type: ['integer', 'null'] },
+                  exp_year: { type: ['integer', 'null'] },
+                },
+              },
+              invoices: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    date: { type: ['string', 'null'] },
+                    amount: { type: ['integer', 'null'] },
+                    currency: { type: ['string', 'null'] },
+                    status: { type: ['string', 'null'] },
+                    invoice_pdf: { type: ['string', 'null'] },
+                  },
+                },
+              },
+            },
+          },
+          ...SUBSCRIPTION_ERRORS,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireHumanSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.getBilling(stripeFor(), account)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'billing view')
+      }
+    },
+  )
+
+  fastify.post(
+    '/api/billing/cancel',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: {
+        security: SESSION_SECURITY,
+        body: {
+          type: 'object',
+          propertyNames: { enum: ['reason', 'comment'] },
+          properties: {
+            reason: { type: 'string', enum: billing.CANCEL_REASONS },
+            comment: { type: 'string', maxLength: billing.CANCEL_COMMENT_MAX },
+          },
+        },
+        response: { 200: PLAN_RESPONSE, ...SUBSCRIPTION_ERRORS },
+      },
+    },
+    async (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.cancelAtPeriodEnd(stripeFor(), account, request.body)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'cancel')
+      }
+    },
+  )
+
+  fastify.post(
+    '/api/billing/resume',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: { security: SESSION_SECURITY, body: EMPTY_BODY, response: { 200: PLAN_RESPONSE, ...SUBSCRIPTION_ERRORS } },
+    },
+    async (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.resumeSubscription(stripeFor(), account)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'resume')
+      }
+    },
+  )
+
+  // Card update only: the portal configuration has every other action off.
+  fastify.post(
+    '/api/billing/card-session',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: {
+        security: SESSION_SECURITY,
+        body: EMPTY_BODY,
+        response: {
+          200: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' } } },
+          ...SUBSCRIPTION_ERRORS,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.createCardSession(stripeFor(), account, `${UI_URL}/billing`)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'card session')
+      }
+    },
+  )
+
   // The two routes below sit under /api/auth/ and so are exempt from the
   // onRequest login gate, but each checks the session itself and 401s without
   // one — hence `security` declared here rather than left to the hook that

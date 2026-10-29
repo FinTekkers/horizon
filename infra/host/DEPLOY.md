@@ -525,6 +525,25 @@ delivered after that subscription's `customer.subscription.updated` cancel sets
 3. In the Stripe dashboard, refund the payment and cancel the subscription
    immediately. The account then turns `cancelled`.
 
+## 2j. The customer's billing routes (HZ-636)
+
+Four signed-in routes back the billing page: `GET /api/billing` (plan, period
+end, card brand/last 4/expiry, last 12 invoices), `POST /api/billing/cancel`
+(`cancel_at_period_end: true`, with the optional reason and comment as
+`cancellation_details`), `POST /api/billing/resume` and
+`POST /api/billing/card-session`. They use the signed-in user's own Stripe ids
+only, never write `account_status` (the webhook above does that once Stripe
+reports the change), and need only `STRIPE_SECRET_KEY`: unset, they answer
+**503** `billing_not_configured`. A Stripe failure answers **502**
+`billing_unavailable` and logs the error's type and code only.
+
+`card-session` opens Stripe's customer portal on card update only. The first
+call after a restart looks for an active portal configuration with metadata
+`horizon_portal=card_update_only` and every feature but payment-method update
+off, and creates one if there is none. Don't edit that configuration in the
+dashboard: one with another feature turned on is ignored and a new one is
+made. The portal returns to `$HORIZON_UI_URL/billing`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must
