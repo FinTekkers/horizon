@@ -6,6 +6,7 @@ After=network.target
 User=ubuntu
 WorkingDirectory=/opt/horizon/server
 EnvironmentFile=/etc/horizon/server.env
+EnvironmentFile=-/etc/horizon/stripe.env
 ExecStart=/usr/bin/node src/server.js
 Restart=always
 RestartSec=3
