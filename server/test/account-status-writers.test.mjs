@@ -2,7 +2,8 @@
 //   - "Only the new store function writes account_status. No other code path
 //     updates it directly." The one writer is auth.setAccountStatus; the
 //     migration in db.js adds the column and backfills it once.
-//   - "No Stripe API calls, and no Stripe keys or config added."
+//   - "No Stripe API calls, and no Stripe keys or config added." HZ-633 added
+//     Stripe, so that check is now scoped: see the tests at the end.
 //
 // The writer scan is only as good as its matcher, so the matcher is tested on
 // its own first: it must flag a stray UPDATE and INSERT and must not flag the
@@ -13,7 +14,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { repoFiles, relative, stripComments, MIN_EXPECTED_FILES, REPO_ROOT } from './helpers/repoFiles.mjs'
+import { filesMatching, repoFiles, relative, stripComments, MIN_EXPECTED_FILES, REPO_ROOT } from './helpers/repoFiles.mjs'
 
 // SQL that writes the column: a SET clause assigning it, or an INSERT into
 // user naming it. Bounded so a stray `SET` can't reach a far-off read.
@@ -79,17 +80,37 @@ test('only setAccountStatus and the db.js migration write account_status', () =>
   assert.deepEqual(allowedHits.sort(), ['server/src/auth.js', 'server/src/db.js'])
 })
 
-test('no Stripe dependency, import or STRIPE_* env read in the server', () => {
-  const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'server/package.json'), 'utf8'))
-  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-    assert.ok(!Object.keys(pkg[field] || {}).some((name) => /stripe/i.test(name)), `server/package.json ${field} has no stripe package`)
+// HZ-633 replaced HZ-632's blanket "no Stripe" check with a scoped one: Stripe
+// may be imported only by billing.js, STRIPE_* may be read only by config.js,
+// and no live key literal may appear anywhere in the repo.
+const LIVE_KEY_LITERAL = new RegExp(['sk', 'pk', 'rk'].map((p) => `\\b${p}_live_`).concat(['\\bwhsec_']).join('|'))
+
+test('the live-key literal matcher flags each key prefix and ignores test fakes', () => {
+  for (const prefix of ['sk', 'pk', 'rk']) assert.ok(LIVE_KEY_LITERAL.test(`"${prefix}_live_${'x'.repeat(8)}"`), prefix)
+  assert.ok(LIVE_KEY_LITERAL.test(`'${'wh'}sec_abc'`))
+  assert.ok(!LIVE_KEY_LITERAL.test("'sk_test_fake_hz633_secret'"))
+  assert.ok(!LIVE_KEY_LITERAL.test("'cs_live_abc'"))
+})
+
+test('stripe is imported only by billing.js, STRIPE_* is read only by config.js, and no live key is in the repo', () => {
+  const files = repoFiles()
+  assert.ok(files.length >= MIN_EXPECTED_FILES, `walk visited ${files.length} files`)
+  const importers = []
+  const envReaders = []
+  for (const rel of files.map((file) => relative(file))) {
+    if (!rel.startsWith('server/src/') || !/\.(m?js|cjs)$/.test(rel)) continue
+    const text = stripComments(readFileSync(path.join(REPO_ROOT, rel), 'utf8'))
+    if (/from\s+['"]stripe['"]|import\(\s*['"]stripe['"]|require\(\s*['"]stripe['"]/.test(text)) importers.push(rel)
+    if (/\bSTRIPE_[A-Z_]+/.test(text)) envReaders.push(rel)
   }
-  const hits = repoFiles()
-    .map((file) => relative(file))
-    .filter((rel) => rel.startsWith('server/src/') && /\.(m?js|cjs)$/.test(rel))
-    .filter((rel) => {
-      const text = stripComments(readFileSync(path.join(REPO_ROOT, rel), 'utf8'))
-      return /from\s+['"]stripe['"]|import\(\s*['"]stripe['"]|require\(\s*['"]stripe['"]|\bSTRIPE_[A-Z_]+/.test(text)
-    })
-  assert.deepEqual(hits, [])
+  assert.deepEqual(importers, ['server/src/billing.js'])
+  assert.deepEqual(envReaders, ['server/src/config.js'])
+  assert.deepEqual(filesMatching((text) => LIVE_KEY_LITERAL.test(text), files), [])
+})
+
+test('the stripe SDK is pinned to an exact version', () => {
+  const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'server/package.json'), 'utf8'))
+  assert.match(pkg.dependencies.stripe, /^\d+\.\d+\.\d+$/, 'stripe is pinned exactly: ui_mode embedded_page depends on its API version')
+  const lock = JSON.parse(readFileSync(path.join(REPO_ROOT, 'server/package-lock.json'), 'utf8'))
+  assert.equal(lock.packages['node_modules/stripe'].version, pkg.dependencies.stripe)
 })

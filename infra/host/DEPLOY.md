@@ -433,6 +433,44 @@ server logs `rules: TAMPER scope=… key=… version=…`. Accepted risk: an age
 running as this OS user can read the server's environment, so this catches
 naive or accidental DB edits, not a determined forger.
 
+## 2h. Stripe keys for shoreward.ai sign-up (HZ-633)
+
+`POST /api/billing/checkout-session` and `GET /api/billing/session-status`
+serve Stripe Embedded Checkout on shoreward.ai's sign-up and welcome pages.
+They never sign anyone in. The keys are Stripe **live** keys, in their own
+file so they stay out of `server.env`. Names only — values live on the host,
+never in this repo, never in a log line.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/stripe.env` | `STRIPE_SECRET_KEY` | live secret key. Unset ⇒ **both** routes answer **503** `billing_not_configured` |
+| `/etc/horizon/stripe.env` | `STRIPE_PRICE_ID` | the $200/month Horizon Platform price. Unset ⇒ **both** routes answer **503** |
+| `/etc/horizon/stripe.env` | `STRIPE_PUBLISHABLE_KEY` | handed to the sign-up page, so the site holds no key. Unset ⇒ `checkout-session` answers **503**; `session-status` still works |
+| `/etc/horizon/stripe.env` | `STRIPE_WEBHOOK_SECRET` | read by the webhook route (HZ-634), not by these two |
+
+`horizon-server.service` loads the file with `EnvironmentFile=-…`: the
+service still boots while it is missing. The unit line is new, so copy the
+unit once:
+
+```
+sudo install -m 600 -o ubuntu /dev/null /etc/horizon/stripe.env   # then fill it in
+sudo cp infra/host/horizon-server.service /etc/systemd/system/horizon-server.service
+sudo systemctl daemon-reload
+sudo systemctl restart horizon-server
+```
+
+Then check that the routes are configured. A bad body must get **400**, not 503:
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' \
+  -d '{}' https://shoreward.ai/horizon/api/billing/checkout-session   # 400
+```
+
+The live check is the sign-up page itself: submitting it mounts Embedded
+Checkout. No payment is needed. A Stripe failure answers **502**
+`billing_unavailable`, and the server log has the Stripe error's type and code
+only.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

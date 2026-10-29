@@ -71,6 +71,8 @@ function oldSchemaDb() {
   full.exec('ALTER TABLE user DROP COLUMN account_status')
   full.exec('ALTER TABLE user DROP COLUMN stripe_customer_id')
   full.exec('ALTER TABLE user DROP COLUMN stripe_subscription_id')
+  // HZ-633's sign-up column, also absent from the old release.
+  full.exec('ALTER TABLE user DROP COLUMN company')
   full.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('HZ-1', 'An item', 'Medium', 3)").run()
   full.prepare("INSERT INTO event (item_id, who, text, color, initials) VALUES ('HZ-1', 'You', 'history', '#000', 'YO')").run()
   full.close()
