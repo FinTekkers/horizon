@@ -590,6 +590,15 @@ export async function getFarmHealth() {
       { slot: 0, itemId: 'HZ-101', runId: '901', caller: 'implement', label: 'test slot, line 2', startedAt: ago(250) },
       { slot: 1, itemId: 'HZ-102', runId: '902', caller: 'pre-merge', label: 'e2e slot', startedAt: ago(95) },
     ],
+    // HZ-670: defunct processes by the parent pid holding them.
+    zombies: {
+      count: 3,
+      parents: [
+        { ppid: 1234, count: 2 },
+        { ppid: 88, count: 1 },
+      ],
+      at: ago(600),
+    },
     box: {
       load: [2.1, 1.8, 1.5],
       vcpus: 4,

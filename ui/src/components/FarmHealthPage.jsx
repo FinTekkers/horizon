@@ -103,6 +103,13 @@ function Meter({ name, value, pct, tone, note }) {
   )
 }
 
+// HZ-670: farmd's hourly count of defunct processes, by the parent pid that
+// has yet to reap them. Null when farmd is down or cleanup is off.
+function zombiesText(z) {
+  if (!z) return 'Defunct processes: not measured'
+  return [`Defunct processes: ${z.count}`, ...(z.parents || []).map((p) => `PID ${p.ppid} holds ${p.count}`)].join(' · ')
+}
+
 function recentText(e) {
   if (e.kind === 'deploy') {
     const target = e.target ? e.target.charAt(0).toUpperCase() + e.target.slice(1) : 'A'
@@ -346,6 +353,7 @@ function Sections({ data, now, onOpenItem }) {
             <span>{box.swapTotalBytes > 0 ? 'Swap on' : 'Swap off'}</span>
             {boxUp && <span>Up {boxUp}</span>}
           </div>
+          <p className="farm-health__foot">{zombiesText(data.zombies)}</p>
         </section>
       </div>
 

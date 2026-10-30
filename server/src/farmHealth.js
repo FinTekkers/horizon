@@ -176,6 +176,22 @@ function checkHoldersOf(raw) {
   return out.sort((a, b) => a.slot - b.slot)
 }
 
+// HZ-670: farmd's cleanup-tick count of defunct processes by parent pid.
+// Only the named fields are read; null when farmd sent none (cleanup off, no
+// tick yet, farmd down) or any field is malformed.
+const MAX_ZOMBIE_PARENTS = 20
+function zombiesOf(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const count = finite(raw.count)
+  if (count == null || !Array.isArray(raw.parents) || typeof raw.at !== 'string') return null
+  const parents = []
+  for (const p of raw.parents.slice(0, MAX_ZOMBIE_PARENTS)) {
+    if (!p || !Number.isInteger(p.ppid) || finite(p.count) == null) return null
+    parents.push({ ppid: p.ppid, count: p.count })
+  }
+  return { count, parents, at: raw.at }
+}
+
 const isoOfSql = (sql) => {
   const ms = typeof sql === 'string' ? msOf(sql) : NaN
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null
@@ -311,6 +327,7 @@ export async function collectOnce(deps = defaultDeps) {
   capacity.pm.waiting = pmWaiting
   capacity.checks.waiting = checksWaiting
   const checkHolders = checkHoldersOf(checksRaw.holders)
+  const zombies = zombiesOf(farmRaw?.zombies)
 
   // Recent: deploys that went live, farm (re)starts and this server's own boot, last 24 h.
   const sinceMs = now - RECENT_WINDOW_MS
@@ -340,6 +357,7 @@ export async function collectOnce(deps = defaultDeps) {
     running,
     waiting,
     checkHolders,
+    zombies,
     box,
     services,
     recent,
@@ -387,6 +405,13 @@ export function toPublic(snapshot) {
     running: (s.running || []).map(pubRow),
     waiting: (s.waiting || []).map(pubRow),
     checkHolders: (s.checkHolders || []).map(pubHolder),
+    zombies: s.zombies
+      ? {
+          count: num(s.zombies.count) ?? 0,
+          parents: (s.zombies.parents || []).slice(0, MAX_ZOMBIE_PARENTS).map((p) => ({ ppid: num(p?.ppid), count: num(p?.count) })),
+          at: str(s.zombies.at, 40),
+        }
+      : null,
     box: {
       load: Array.isArray(box.load) ? box.load.slice(0, 3).map(num) : null,
       vcpus: num(box.vcpus),
