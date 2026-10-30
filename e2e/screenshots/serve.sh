@@ -4,8 +4,9 @@
 # group, polls `ready` (the UI port below), captures, then SIGTERMs the group.
 #
 # 1. Builds the UI at the root path, as the e2e suite does, through
-#    ui/scripts/ensure-build.mjs (HZ-622): it reuses ui/dist when an earlier
-#    caller in the run already built the same tree.
+#    ui/scripts/ensure-build.mjs (HZ-622): it reuses ui/dist-local when an
+#    earlier caller in the run already built the same tree. HZ-671: it never
+#    touches ui/dist, the production build nginx serves in /opt/horizon.
 # 2. Seeds a throwaway DB (e2e/screenshots/seed.mjs): the orchestrator-proof
 #    rows before the server boots, the rest once it answers.
 # 3. Runs the server in demo mode with HORIZON_TEST_HOOKS=1, so a `login: true`
@@ -90,7 +91,7 @@ node "$ROOT/e2e/screenshots/seed.mjs" after "$DB" "http://127.0.0.1:$SERVER_PORT
 (
   cd "$ROOT/ui"
   exec env VITE_PROXY_TARGET="http://127.0.0.1:$SERVER_PORT" \
-    ./node_modules/.bin/vite preview --host 127.0.0.1 --port "$UI_PORT" --strictPort
+    ./node_modules/.bin/vite preview --outDir dist-local --host 127.0.0.1 --port "$UI_PORT" --strictPort
 ) 9>&- &
 
 wait -n
