@@ -16,6 +16,13 @@
 # last-good-tag, RESTORE SKIPPED, and then DEPLOY FAILED: <install|test> as
 # the last line. last-good-tag is never moved to the failed tag.
 #
+# Output (HZ-666): each stage's stdout and stderr go to
+# $STATE_DIR/deploy-<tag>-<stage>.out (the restore's install to
+# deploy-<tag>-restore-install.out). On failure the last 200 lines of the
+# failing stage's file are appended to self-deploy.log between
+# "--- <stage> output (tag=...) ---" and "--- end <stage> output ..." markers,
+# before the restore runs. The newest 20 deploy-*.out files are kept.
+#
 #   DEPLOY_NAME       state dir name under ~/.horizon/
 #   DEPLOY_REPO_DIR   the checkout the code runs from
 #   DEPLOY_STRIP_ENV  variables unset for install.sh and test.sh (space separated)
@@ -40,6 +47,8 @@ mkdir -p "$STATE_DIR"
 LOCK_FILE="$STATE_DIR/deploy.lock"
 LOG_FILE="$STATE_DIR/self-deploy.log"
 LAST_GOOD_FILE="$STATE_DIR/last-good-tag"
+SAFE_TAG="${TAG//[^A-Za-z0-9._-]/_}"
+OUT_KEEP=20
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >>"$LOG_FILE"
@@ -108,37 +117,82 @@ read_last_good() {
   [ -n "$LAST_GOOD_REF" ] && [ -n "$LAST_GOOD_COMMIT" ]
 }
 
-# fail_and_restore STAGE — puts the last good commit back (checkout, then
-# install.sh, once), logs how that went, then logs DEPLOY FAILED: STAGE as the
-# last line and exits 1. Never writes last-good-tag.
+# out_file STAGE — the file a stage's output goes to for this tag.
+out_file() {
+  printf '%s/deploy-%s-%s.out\n' "$STATE_DIR" "$SAFE_TAG" "$1"
+}
+
+# start_out FILE STAGE — truncates FILE and writes its one header line. The
+# header holds no environment, so no DEPLOY_STRIP_ENV value can reach it.
+start_out() {
+  printf '# stage=%s tag=%s commit=%s at=%s\n' "$2" "$REF" "$COMMIT" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$1"
+}
+
+# log_output STAGE FILE — appends the last 200 lines of FILE to the log
+# between markers. Never fails, so the ERR trap cannot drop the final line.
+log_output() {
+  {
+    printf -- '--- %s output (tag=%s) ---\n' "$1" "$REF"
+    tail -n 200 "$2" 2>/dev/null || true
+    [ -z "$(tail -c1 "$2" 2>/dev/null)" ] || printf '\n'
+    printf -- '--- end %s output (tag=%s) ---\n' "$1" "$REF"
+  } >>"$LOG_FILE" || true
+}
+
+# prune_outputs — keeps the newest OUT_KEEP deploy-*.out files by mtime (tag
+# names do not sort by time). Never fails.
+prune_outputs() {
+  find "$STATE_DIR" -maxdepth 1 -type f -name 'deploy-*.out' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | tail -n +$((OUT_KEEP + 1)) | cut -d' ' -f2- \
+    | xargs -r -d '\n' rm -f -- || true
+}
+
+# fail_and_restore STAGE FILE — logs the tail of the failing stage's output
+# FILE, puts the last good commit back (checkout, then install.sh, once, with
+# its own output file), logs how that went, then logs DEPLOY FAILED: STAGE as
+# the last line and exits 1. Never writes last-good-tag.
 fail_and_restore() {
-  local failed="$1" restore_msg
+  local failed="$1" restore_msg restore_out
+  log_output "$failed" "$2"
   if ! read_last_good; then
     restore_msg="RESTORE SKIPPED: no last-good-tag (after ${REF})"
   elif ! git cat-file -e "${LAST_GOOD_COMMIT}^{commit}" 2>/dev/null \
       || ! git checkout --quiet --detach "$LAST_GOOD_COMMIT"; then
     restore_msg="RESTORE FAILED (checkout) tag=${LAST_GOOD_REF} after ${REF}"
-  elif ! run_install; then
-    restore_msg="RESTORE FAILED (install) tag=${LAST_GOOD_REF} after ${REF}"
   else
-    restore_msg="RESTORE OK tag=${LAST_GOOD_REF} after ${REF}"
+    restore_out="$(out_file restore-install)"
+    start_out "$restore_out" restore-install
+    if ! run_install >>"$restore_out" 2>&1; then
+      restore_msg="RESTORE FAILED (install) tag=${LAST_GOOD_REF} after ${REF}"
+    else
+      restore_msg="RESTORE OK tag=${LAST_GOOD_REF} after ${REF}"
+    fi
   fi
   log "$restore_msg"
   echo "$restore_msg" >&2
+  prune_outputs
   log "DEPLOY FAILED: ${failed} (tag=${REF} commit=${COMMIT})"
   exit 1
 }
 
+# Each stage's output goes to its file by a plain redirect, not a pipe, so the
+# if tests the stage's own exit code.
 STAGE="install"
 log "build: ${HORIZON_BUILD_COMMAND:-scripts/checks/install.sh}"
-if ! run_install; then
-  fail_and_restore install
+OUT="$(out_file install)"
+start_out "$OUT" install
+if ! run_install >>"$OUT" 2>&1; then
+  fail_and_restore install "$OUT"
 fi
 
 STAGE="test"
-if ! run_check test; then
-  fail_and_restore test
+OUT="$(out_file test)"
+start_out "$OUT" test
+if ! run_check test >>"$OUT" 2>&1; then
+  fail_and_restore test "$OUT"
 fi
 
 printf '%s:%s\n' "$REF" "$COMMIT" >"$LAST_GOOD_FILE"
+prune_outputs
 log "DEPLOY OK tag=${REF} commit=${COMMIT}"
