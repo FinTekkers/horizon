@@ -7,7 +7,7 @@
 // does for the PR. The list, the PIN-gated image and approve routes, the
 // stored approvals and the panel all run as in production.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 import { blobsOf, clearScreenshotSnapshot, publication, seedScreenshotSnapshot } from '../fixtures/screenshot-snapshot.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
@@ -91,8 +91,6 @@ test('the owner reviews each shot, approves one and then all, and a republish re
   await expectImagesRendered(rowOf(page, 'old'), ['Baseline'])
   await expect(rowOf(page, 'old')).toContainText('will be deleted')
   await expect(panel).toContainText('0 of 3 approved')
-  await panel.scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'screenshot-approvals')
 
   // One screen: only that row is approved, and it survives a reload.
   await rowOf(page, 'gates').getByRole('button', { name: 'Approve', exact: true }).click()

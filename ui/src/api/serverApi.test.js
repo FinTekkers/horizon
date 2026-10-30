@@ -150,6 +150,54 @@ test("approving a Task prompts for the PIN and sends the shown run plan's hash a
   expect(JSON.parse(init.body)).toEqual({ planHash: 'plan-hash-1', runner: 'host' })
 })
 
+// HZ-541: the first gate sends the hash of the golden-cases set the tab
+// showed, so a regenerated set is never approved unseen. An approved set, or
+// another gate, sends none.
+test('approving the first gate sends the shown golden-cases hash, and only there', async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const goldenCases = { hash: 'golden-hash-1', approved: false, gateIndex: 3, cases: [] }
+  const items = [
+    { id: 'GC-1', cursor: 3, pr_url: null, goldenCases },
+    { id: 'GC-2', cursor: 5, pr_url: null, goldenCases },
+    { id: 'GC-3', cursor: 3, pr_url: null, goldenCases: { ...goldenCases, approved: true } },
+  ]
+  MockEventSource.instances.at(-1).onmessage({ data: JSON.stringify({ items }) })
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, closed: false }) }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await serverApi.approveGate('GC-1', '')
+  await serverApi.approveGate('GC-2', '')
+  await serverApi.approveGate('GC-3', '')
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([{ goldenHash: 'golden-hash-1' }, {}, {}])
+})
+
+// HZ-642: Approve & file's Autopilot choice goes in the approval body at that
+// gate only; any other gate's approval sends no filedAutopilot key.
+test('approving Approve & file sends filedAutopilot, and no other gate does', async () => {
+  const { APPROVE_FILE_GATE_INDEX } = await import('../../../domain/js/lifecycle.js')
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const items = [
+    { id: 'PL-1', kind: 'plan', cursor: APPROVE_FILE_GATE_INDEX, pr_url: null },
+    { id: 'PL-2', kind: 'plan', cursor: APPROVE_FILE_GATE_INDEX, pr_url: null },
+    { id: 'CH-1', cursor: 3, pr_url: null },
+  ]
+  MockEventSource.instances.at(-1).onmessage({ data: JSON.stringify({ items }) })
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, closed: false }) }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await serverApi.approveGate('PL-1', '', { filedAutopilot: 'off' })
+  await serverApi.approveGate('PL-2', '')
+  await serverApi.approveGate('CH-1', '', { filedAutopilot: 'off' })
+  expect(fetchMock.mock.calls.map(([url]) => url.replace(serverApi.API_BASE, ''))).toEqual([
+    `/items/PL-1/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
+    `/items/PL-2/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
+    '/items/CH-1/gates/3/approve',
+  ])
+  expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([{ filedAutopilot: 'off' }, { filedAutopilot: 'default' }, {}])
+})
+
 // HZ-179: the token client hits the server's routes with the right verbs, and
 // createApiToken leaves nothing behind in browser storage.
 test('the API token client calls GET/POST/DELETE /api/tokens and stores nothing', async () => {

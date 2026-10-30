@@ -7,7 +7,7 @@
 // this spec is the real-layout proof: measured widths, reload persistence,
 // and the phone viewport.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -67,7 +67,6 @@ test('minimizing hides the rows, widens Lifecycle, and survives a reload and ano
   const minStepper = (await stepper.boundingBox()).width
   expect(expandedActivity - minActivity).toBeGreaterThan(50)
   expect(minStepper - expandedStepper).toBeGreaterThan(50)
-  await captureScreenshot(page, 'activity-minimized')
 
   // A reload reads the stored choice back.
   await page.reload()

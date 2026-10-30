@@ -34,6 +34,7 @@ widen what it may change.
 
 import json
 import re
+import sys
 from pathlib import Path
 
 ALLOWLIST_PATH = Path(__file__).parent / "tools" / "allowlist.json"
@@ -202,3 +203,28 @@ def apply(base: str, resolved_persona: str | None, overlay) -> tuple[str, str | 
     entries = [allowlist[tool_id] for tool_id in allowlist if tool_id in tool_ids]
     _ensure_installed(entries)
     return merge(base, entries)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m farm.persona_tools ids [<farm dir>]` prints the allow-list's
+    tool ids, in file order, as a JSON array. HZ-542: this is how the server
+    learns which tools a project persona may name, so this module stays the
+    one reader of the allow-list. A farm dir reads that farm's allow-list (the
+    server's tests use a temp farm). Exits 1, printing nothing to stdout, when
+    the allow-list fails to load."""
+    args = sys.argv[1:] if argv is None else argv
+    if not args or args[0] != "ids" or len(args) > 2:
+        print("usage: python -m farm.persona_tools ids [<farm dir>]", file=sys.stderr)
+        return 2
+    path = Path(args[1]) / "tools" / ALLOWLIST_PATH.name if len(args) == 2 else None
+    try:
+        allowlist = load_allowlist(path)
+    except AllowlistError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(list(allowlist)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

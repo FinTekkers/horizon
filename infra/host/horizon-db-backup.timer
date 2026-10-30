@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly Horizon database backup at 03:30 UTC (HZ-650)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+Unit=horizon-db-backup.service
+
+[Install]
+WantedBy=timers.target

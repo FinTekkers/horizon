@@ -40,7 +40,8 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { STEPS, gateStepIndexes, requiredStepIndex, isAbandoned, isClosed } from '../../domain/js/lifecycle.js'
+import { gateStepIndexes, requiredStepIndex, isAbandoned, isClosed } from '../../domain/js/lifecycle.js'
+import { stepLabel } from '../../domain/js/substeps.js'
 import { approverJids } from './waApprovers.js'
 import { sendWhatsApp, sendPoll } from './waSend.js'
 import { registerPoll, supersedeOpenPolls, attachPollMessageId, releaseInterruptedVotes } from './waPollVotes.js'
@@ -124,7 +125,8 @@ export function renderNotice(item, recommendation = null) {
   const quoted = quotableLine(recommendation)
   const lines = [
     `${item.id} — ${item.title}`,
-    `Gate: ${STEPS[gateIndex].label}`,
+    // HZ-540: the sub-step's label when the item is at one of this step's.
+    `Gate: ${stepLabel(item, gateIndex)}`,
     `Asking: ${ask}`,
     ...(quoted ? [`PM recommendation: ${quoted}`] : []),
   ]
@@ -143,7 +145,7 @@ export function renderNotice(item, recommendation = null) {
 export function renderPollQuestion(item) {
   const gateIndex = item.cursor
   if (!GATE_ASKS[gateIndex]) throw new Error(`gateNotifier: step ${gateIndex} has no ask line — is it a gate?`)
-  const question = `${item.id} — ${STEPS[gateIndex].label}`
+  const question = `${item.id} — ${stepLabel(item, gateIndex)}`
   return question.length > POLL_QUESTION_MAX ? question.slice(0, POLL_QUESTION_MAX - 1) + '…' : question
 }
 

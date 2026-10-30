@@ -41,7 +41,40 @@ function generatePin() {
 
 function toPublicUser(row) {
   if (!row) return null
-  return { id: row.id, email: row.email, name: row.name, initials: row.initials, authMethod: row.auth_method }
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    initials: row.initials,
+    authMethod: row.auth_method,
+    account_status: row.account_status,
+  }
+}
+
+// ---- account status (HZ-632) ----
+// The billing state of an account. Must match the CHECK on user.account_status
+// in db.js; account-status-store.test.mjs pins the two together.
+export const ACCOUNT_STATUSES = Object.freeze(['pending_payment', 'active', 'past_due', 'cancelling', 'cancelled'])
+
+// The one writer of user.account_status. Validates before any DB access, then
+// reads the old value, updates the row and writes a user_event audit row in one
+// transaction. Returns { ok, from, to }, { ok, from, to, unchanged } for a
+// same-value write (no audit row), or { error } with 'invalid_status',
+// 'invalid_who' or 'not_found'. Sign-in does not read the status yet.
+export function setAccountStatus(userId, status, who) {
+  if (typeof status !== 'string' || !ACCOUNT_STATUSES.includes(status)) return { error: 'invalid_status' }
+  if (typeof who !== 'string' || who.trim() === '') return { error: 'invalid_who' }
+  return db.transaction(() => {
+    const row = db.prepare('SELECT account_status FROM user WHERE id = ?').get(userId)
+    if (!row) return { error: 'not_found' }
+    const from = row.account_status
+    if (from === status) return { ok: true, from, to: status, unchanged: true }
+    db.prepare('UPDATE user SET account_status = ? WHERE id = ?').run(status, userId)
+    db.prepare(
+      "INSERT INTO user_event (user_id, kind, old_value, new_value, who) VALUES (?, 'account_status', ?, ?, ?)",
+    ).run(userId, from, status, who)
+    return { ok: true, from, to: status }
+  }).immediate()
 }
 
 // Returns { user, pin } — pin is the plaintext, shown to the caller exactly
@@ -54,6 +87,36 @@ export function createUser({ email, name, authMethod, googleSub = null }) {
      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
   ).run(id, email, name, initialsFor(name), authMethod, googleSub, hashSecret(pin))
   return { user: toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id)), pin }
+}
+
+// ---- sign-ups (HZ-633) ----
+// A shoreward.ai sign-up, before payment. auth_method 'password' so the boot-
+// time reconcileGoogleUsers never deletes it, yet it cannot sign in: the
+// password path accepts only ADMIN_EMAIL, and a later Google login adopts the
+// row through findOrCreateGoogleUser. last_login_at stays NULL, and the INSERT
+// does not name account_status, so the 'pending_payment' default applies.
+export function createSignupUser({ email, name, company }) {
+  const id = crypto.randomUUID()
+  db.prepare(
+    `INSERT INTO user (id, email, name, initials, auth_method, gate_pin_hash, company)
+     VALUES (?, ?, ?, ?, 'password', ?, ?)`,
+  ).run(id, email, name, initialsFor(name), hashSecret(generatePin()), company)
+  return findUserById(id)
+}
+
+// What checkout needs about an account, case-insensitively by email like
+// findUserByEmailCI. stripe_customer_id never reaches toPublicUser.
+export function billingProfileByEmail(email) {
+  return (
+    db
+      .prepare('SELECT id, email, name, company, account_status, stripe_customer_id FROM user WHERE lower(email) = lower(?)')
+      .get(email) ?? null
+  )
+}
+
+// Attaches a Stripe customer once; an existing id is never overwritten.
+export function setStripeCustomerId(userId, customerId) {
+  return db.prepare('UPDATE user SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id IS NULL').run(customerId, userId).changes === 1
 }
 
 export function findUserByGoogleSub(sub) {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import {
   STEPS,
   IMPLEMENT_STEP_INDEX,
@@ -31,15 +31,19 @@ import { deployQueueLabel } from '../domain/deployQueue'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
+import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
+import { metricLines } from '../../../domain/js/goldenCases.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
 import PlanInventoryTables from './PlanInventoryTables'
+import GoldenCasesTable from './GoldenCasesTable'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
 import PlanItemsTable from './PlanItemsTable'
+import FiledAutopilotSelect from './FiledAutopilotSelect'
 import ScreenshotPanel from './ScreenshotPanel'
 import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon, PlanIcon } from './icons'
 
@@ -293,7 +297,7 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -317,6 +321,10 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const verdict = verifyVerdictOf(index, status, output, outputsSettled)
   const verdictIcon = { fail: 'verdict-fail', unknown: 'verdict-unknown', loading: 'verdict-loading' }[verdict]
   const ranAhead = ranAheadOf(item, index, status, output)
+  // HZ-541: the first gate shows the item's golden cases; while they wait for
+  // approval, the table's one button is the gate's Approve.
+  const goldenCases = item.goldenCases && index === item.goldenCases.gateIndex ? item.goldenCases : null
+  const goldenPending = !!goldenCases && !goldenCases.approved && status === 'awaiting'
 
   return (
     <div className="step">
@@ -413,6 +421,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               )}
             </div>
           )}
+          {goldenCases && (
+            <GoldenCasesTable
+              goldenCases={goldenCases}
+              busy={gateBusy}
+              onApproveAll={goldenPending && !mergeQueued ? () => onApprove(item.id, st.label) : null}
+            />
+          )}
           {/* HZ-462: a Plan's Inventory as tables; the artifact link stays below. */}
           {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && (
             <PlanInventoryTables artifact={output.artifact} linkContextFor={(defaultRepo) => linkContextFor(output.sourceShas ?? null, defaultRepo)} />
@@ -487,6 +502,10 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {/* HZ-449: the Plan's one items table — editable at the gate, then
               read-only with what each draft was filed as. */}
           {index === APPROVE_FILE_GATE_INDEX && item.cursor > PLAN_DRAFT_STEP_INDEX && <PlanItemsTable item={item} />}
+          {/* HZ-642: one Autopilot choice for every item the Plan files. */}
+          {index === APPROVE_FILE_GATE_INDEX && status === 'awaiting' && (
+            <FiledAutopilotSelect item={item} value={filedAutopilot} onChange={onSetFiledAutopilot} />
+          )}
           {/* HZ-449: the Close card links every item File items filed. */}
           {index === REVIEW_CLOSE_GATE_INDEX && status !== 'pending' && (
             <Markdown
@@ -555,14 +574,16 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   The server's 409 stays the real protection. */}
               {!mergeQueued && (
                 <>
-                  <button
-                    className="btn-gate-approve"
-                    disabled={gateBusy}
-                    aria-busy={gateBusy || undefined}
-                    onClick={() => onApprove(item.id, st.label)}
-                  >
-                    {humanOnly ? st.label : 'Approve'}
-                  </button>
+                  {!goldenPending && (
+                    <button
+                      className="btn-gate-approve"
+                      disabled={gateBusy}
+                      aria-busy={gateBusy || undefined}
+                      onClick={() => onApprove(item.id, st.label)}
+                    >
+                      {humanOnly ? st.label : 'Approve'}
+                    </button>
+                  )}
                   <button
                     className="btn-gate-feedback"
                     disabled={gateBusy}
@@ -606,6 +627,85 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 Send back for rework
               </button>
             </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// HZ-540: a sub-step's state, from its newest run and the item's
+// substep_cursor: 'active' while its run runs, 'current' while the item is at
+// it, 'done' once a run finished, else 'pending'.
+function substepStatus(item, sub) {
+  if (sub.run?.status === 'active') return 'active'
+  if (currentSubstep(item)?.id === sub.id) return 'current'
+  if (sub.run?.status === 'done') return 'done'
+  return 'pending'
+}
+
+function substepMeta(item, sub, status) {
+  const run = sub.run
+  if (status === 'active') {
+    const mins = elapsedMinutes(run.startedAt)
+    if (mins == null) return 'In progress…'
+    return `In progress… · ${mins < 1 ? 'just started' : `${mins} min`}`
+  }
+  if (status === 'current') return 'Current sub-step'
+  if (status === 'done') {
+    const start = Date.parse(run.startedAt)
+    const end = Date.parse(run.endedAt)
+    const mins = Number.isNaN(start) || Number.isNaN(end) ? null : Math.max(0, Math.floor((end - start) / 60_000))
+    return mins == null ? 'Completed' : `Completed · ${mins < 1 ? 'under a minute' : `${mins} min`}`
+  }
+  return item.cursor > sub.anchor ? 'Not run' : 'Queued'
+}
+
+// HZ-540: one sub-step, indented under its global step — from the item's
+// snapshot (item.substeps), never from the project's current definitions.
+function SubstepRow({ item, sub }) {
+  const status = substepStatus(item, sub)
+  const run = sub.run
+  return (
+    <div className="step step--sub" data-testid="substep-row" data-substep={sub.id}>
+      <div className="step__rail">
+        <div className={`step__icon step__icon--${status === 'current' ? 'active' : status}`}>
+          {STEP_GLYPHS[status === 'current' ? 'active' : status]}
+        </div>
+        <div className={`step__line${status === 'done' ? ' step__line--done' : ''}`} />
+      </div>
+      <div className="step__body">
+        <div
+          className={`step-card step-card--sub${status === 'active' || status === 'current' ? ' step-card--active' : ''}`}
+          aria-current={status === 'current' ? 'step' : undefined}
+        >
+          <div className="step-card__head">
+            <div className="step-card__label">{sub.label}</div>
+            {(sub.personaBadge || sub.persona) && (
+              <span className="step-card__agent" style={sub.personaBadge ? { color: sub.personaBadge.color } : undefined}>
+                <span className="step-card__agent-dot" style={{ background: sub.personaBadge?.color ?? 'var(--muted)' }} />
+                {sub.personaBadge?.label ?? sub.persona}
+              </span>
+            )}
+          </div>
+          <div className="step-card__meta" style={{ color: STEP_META_COLOR[status === 'current' ? 'active' : status] || 'var(--muted)' }}>
+            {substepMeta(item, sub, status)}
+            {run?.attempt > 1 && ` · attempt ${run.attempt}`}
+          </div>
+          {run?.id != null && status !== 'pending' && (
+            <a className="step-card__output-link" href={runLogViewUrl(run.id)} target="_blank" rel="noopener noreferrer">
+              View log ↗
+            </a>
+          )}
+          {status === 'done' && run.hasArtifact && (
+            <a
+              className="step-card__artifact-link"
+              href={artifactUrl(item.id, sub.anchor, undefined, sub.id)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View full artifact ↗
+            </a>
           )}
         </div>
       </div>
@@ -917,7 +1017,7 @@ function FromPlanPill({ planId, planProgress, onOpenPlan }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1028,7 +1128,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
             )}
             {pauseError?.id === item.id && <span role="alert">{pauseError.message}</span>}
             {!closed && (
-              <button className="btn-outline" style={{ color: '#5C1F2B' }} onClick={() => onAbandon(item.id)}>
+              <button className="btn-outline" style={{ color: 'var(--danger-ink)' }} onClick={() => onAbandon(item.id)}>
                 Abandon
               </button>
             )}
@@ -1057,7 +1157,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         )}
         {abandoned && item.abandoned_reason && (
           <div className="tracker__actions">
-            <div className="tile__value" style={{ color: '#5C1F2B' }}>
+            <div className="tile__value" style={{ color: 'var(--danger-ink)' }}>
               Abandoned by {item.abandoned_by || 'a human'}: {item.abandoned_reason}
             </div>
           </div>
@@ -1065,7 +1165,18 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         <div className="tracker__tiles">
           <div className="tile">
             <div className="tile__label">Success metric</div>
-            <Markdown className="tile__value md-body--tile" text={item.metric} linkContext={linkContextFor(null)} />
+            {/* HZ-541: numbered lines, so a golden case can link to the one naming its set. */}
+            {item.goldenCases ? (
+              <div className="tile__value">
+                {metricLines(item.metric).map((line, i) => (
+                  <div key={i} id={`metric-line-${i + 1}`} className={item.goldenCases.metricLine === i + 1 ? 'tile__metric-line--golden' : undefined}>
+                    <Markdown className="md-body--tile" text={line} linkContext={linkContextFor(null)} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Markdown className="tile__value md-body--tile" text={item.metric} linkContext={linkContextFor(null)} />
+            )}
           </div>
           <div className="tile">
             <div className="tile__label">Guardrails</div>
@@ -1109,26 +1220,32 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                   )}
                 </div>
                 {idxs.map((i) => (
-                  <Step
-                    key={i}
-                    item={item}
-                    stepOutputs={stepOutputs}
-                    outputsSettled={outputsSettled}
-                    index={i}
-                    deployBlock={deployBlock}
-                    viewerName={viewerName}
-                    restartSent={restartSent}
-                    linkContextFor={linkContextFor}
-                    onApprove={onApprove}
-                    onApproveWithComments={onApproveWithComments}
-                    onReject={onReject}
-                    onResolveConflicts={onResolveConflicts}
-                    resolving={resolving}
-                    gateBusy={gateBusy}
-                    onForwardToAccept={onForwardToAccept}
-                    onSetPersona={onSetPersona}
-                    onSetStepProvider={onSetStepProvider}
-                  />
+                  <Fragment key={i}>
+                    <Step
+                      item={item}
+                      stepOutputs={stepOutputs}
+                      outputsSettled={outputsSettled}
+                      index={i}
+                      deployBlock={deployBlock}
+                      viewerName={viewerName}
+                      restartSent={restartSent}
+                      linkContextFor={linkContextFor}
+                      onApprove={onApprove}
+                      onApproveWithComments={onApproveWithComments}
+                      onReject={onReject}
+                      onResolveConflicts={onResolveConflicts}
+                      resolving={resolving}
+                      gateBusy={gateBusy}
+                      onForwardToAccept={onForwardToAccept}
+                      onSetPersona={onSetPersona}
+                      onSetStepProvider={onSetStepProvider}
+                      filedAutopilot={filedAutopilot}
+                      onSetFiledAutopilot={onSetFiledAutopilot}
+                    />
+                    {substepsAt(item, i).map((sub) => (
+                      <SubstepRow key={sub.id} item={item} sub={sub} />
+                    ))}
+                  </Fragment>
                 ))}
               </div>
             )

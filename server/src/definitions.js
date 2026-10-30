@@ -20,7 +20,7 @@ import { DEFAULT_PERSONAS, PERSONAS, isPersona, isPersonaAgent, legacyPersona } 
 
 // Server and farm live in one repo/checkout, so a UI edit is immediately what
 // farmd stamps into the next task. Overridable for tests only.
-const FARM_DIR = process.env.HORIZON_FARM_DIR || path.resolve(import.meta.dirname, '../../farm')
+export const FARM_DIR = process.env.HORIZON_FARM_DIR || path.resolve(import.meta.dirname, '../../farm')
 
 export const MAX_DEFINITION_BYTES = 8192
 
@@ -53,7 +53,7 @@ export function lintRules(text) {
   return CREDENTIAL_PATTERNS.filter(([, re]) => re.test(text)).map(([label]) => label)
 }
 
-class DefinitionError extends Error {
+export class DefinitionError extends Error {
   constructor(code, extra = {}) {
     super(code)
     this.code = code
@@ -124,6 +124,21 @@ export function writeDefinition(kind, name, content, actor = 'unknown') {
   if (Buffer.byteLength(content, 'utf8') > MAX_DEFINITION_BYTES) {
     throw new DefinitionError('rules_too_large', { limit: MAX_DEFINITION_BYTES })
   }
+  return commitFarmFile(path.relative(FARM_DIR, file), content, `definitions: ${kind}/${name} edited via UI by ${actor}`)
+}
+
+// The HZ-9 commit path, shared by writeDefinition and HZ-542's
+// writeProjectDefinition (projectDefinitions.js): lint, refuse staged work,
+// write, commit, push. `relpath` is relative to FARM_DIR and always comes from
+// a caller's whitelist table, never from user input. The lint runs here too,
+// so no caller can skip it, and it runs before anything touches disk.
+//
+// The staged-work check is one check for the whole checkout: a staged rules
+// edit blocks a project definitions save with git_dirty, and the reverse.
+export function commitFarmFile(relpath, content, message) {
+  const root = path.resolve(FARM_DIR)
+  const file = path.resolve(root, relpath)
+  if (!file.startsWith(root + path.sep)) throw new DefinitionError('unknown_definition')
   const matches = lintRules(content)
   if (matches.length > 0) throw new DefinitionError('credential_pattern', { matches })
 
@@ -143,7 +158,7 @@ export function writeDefinition(kind, name, content, actor = 'unknown') {
   git(
     '-c', 'user.name=Horizon',
     '-c', 'user.email=horizon@local',
-    'commit', '-m', `definitions: ${kind}/${name} edited via UI by ${actor}`,
+    'commit', '-m', message,
   )
   const commit = git('rev-parse', '--short', 'HEAD')
 
@@ -174,7 +189,8 @@ export function readFarmFile(relpath) {
 }
 
 // Mirror of farm/config.py slugify (ASCII names — parity holds for those).
-function slugify(name) {
+// HZ-538: substeps.js reads farm/projects/<slug>/ through it too.
+export function slugify(name) {
   return [...name.toLowerCase()].map((c) => (/[a-z0-9]/.test(c) ? c : '-')).join('').replace(/^-+|-+$/g, '')
 }
 

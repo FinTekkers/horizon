@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 test('board renders phase columns and seeded work items', async ({ page }) => {
   await page.goto('/')
@@ -17,8 +17,4 @@ test('board renders phase columns and seeded work items', async ({ page }) => {
 
   await page.locator('.board__filter-chip', { hasText: 'Closed' }).click()
   await expect(page.getByText('E2E fixture — already closed')).toBeVisible()
-
-  // Captured after the reveal so the journey shot still shows a populated
-  // Review column.
-  await captureScreenshot(page, 'board')
 })

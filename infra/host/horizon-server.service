@@ -6,6 +6,10 @@ After=network.target
 User=ubuntu
 WorkingDirectory=/opt/horizon/server
 EnvironmentFile=/etc/horizon/server.env
+EnvironmentFile=-/etc/horizon/stripe.env
+# HZ-633: Stripe live keys, provisioned by the owner. The leading `-` keeps the
+# service booting while the file is missing; the billing routes answer 503.
+EnvironmentFile=-/etc/horizon/stripe.env
 ExecStart=/usr/bin/node src/server.js
 Restart=always
 RestartSec=3

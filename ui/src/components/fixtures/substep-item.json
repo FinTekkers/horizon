@@ -1,0 +1,138 @@
+{
+  "id": "AC-1",
+  "title": "Reprice the book",
+  "priority": "Medium",
+  "kind": "change",
+  "lane": null,
+  "desc": "Reprice it.",
+  "metric": "",
+  "guardrails": "",
+  "issue": 1,
+  "repo": "Acme/core",
+  "project_id": 1,
+  "pr": null,
+  "pr_url": null,
+  "pr_mergeable": null,
+  "release_tag": null,
+  "release_url": null,
+  "deploy_queue": null,
+  "personas": {},
+  "personaBadges": {},
+  "providerChoices": {},
+  "projectProviderDefaults": {},
+  "autopilotOff": false,
+  "projectAutopilot": "off",
+  "autopilotWouldHave": null,
+  "cursor": 11,
+  "currentStep": {
+    "index": 11,
+    "label": "Specialist agent implements",
+    "kind": "agent",
+    "phase": "Execute",
+    "gate": false
+  },
+  "paused": false,
+  "rejected": false,
+  "last_activity_at": "2026-10-01T10:00:00Z",
+  "abandoned_at": null,
+  "abandoned_reason": null,
+  "abandoned_by": null,
+  "events": [
+    {
+      "who": "You",
+      "text": "requested changes on the code: tighten the audit — sent back to the audit the change step",
+      "detail": null,
+      "verdict": null,
+      "color": "#9C333E",
+      "initials": "YOU",
+      "created_at": "2026-10-01T10:00:00Z"
+    },
+    {
+      "who": "GitHub",
+      "text": "opened issue #1",
+      "detail": null,
+      "verdict": null,
+      "color": "#2A2A2E",
+      "initials": "GH",
+      "created_at": "2026-10-01T10:00:00Z"
+    }
+  ],
+  "activeRun": null,
+  "conflictRun": null,
+  "gateAction": null,
+  "state_since": null,
+  "reviewRejected": false,
+  "forwardedReview": null,
+  "blocked": false,
+  "blockedByAbandoned": false,
+  "blockedBy": [],
+  "dependents": [],
+  "spawnedBy": null,
+  "spawned": [],
+  "ruleBlock": null,
+  "usageWait": null,
+  "paused_at": null,
+  "waiting_since": null,
+  "substeps": [
+    {
+      "id": "golden-cases",
+      "label": "Golden test cases",
+      "kind": "opening",
+      "anchor": 1,
+      "persona": "data_integrity",
+      "personaBadge": {
+        "label": "Data integrity",
+        "initials": "DI",
+        "color": "#5E4380"
+      },
+      "run": {
+        "id": 1,
+        "status": "done",
+        "attempt": 1,
+        "startedAt": "2026-10-01T10:00:00Z",
+        "endedAt": "2026-10-01T10:07:00Z",
+        "hasArtifact": true
+      }
+    },
+    {
+      "id": "impl-audit",
+      "label": "Audit the change",
+      "kind": "audit",
+      "anchor": 11,
+      "persona": "performance",
+      "personaBadge": {
+        "label": "Performance",
+        "initials": "PF",
+        "color": "#9C333E"
+      },
+      "run": null
+    }
+  ],
+  "substep_cursor": "impl-audit",
+  "substep": {
+    "id": "impl-audit",
+    "label": "Audit the change",
+    "kind": "audit",
+    "anchor": 11,
+    "persona": "performance",
+    "personaBadge": {
+      "label": "Performance",
+      "initials": "PF",
+      "color": "#9C333E"
+    },
+    "run": null
+  },
+  "goldenCases": {
+    "substepId": "golden-cases",
+    "gateIndex": 3,
+    "hash": null,
+    "approved": false,
+    "approvedBy": null,
+    "approvedAt": null,
+    "metricLine": null,
+    "errors": [
+      "no golden-cases block"
+    ],
+    "cases": []
+  }
+}

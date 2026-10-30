@@ -3,7 +3,9 @@
 # capture runner (farm/screenshot_runner.py) starts this in its own process
 # group, polls `ready` (the UI port below), captures, then SIGTERMs the group.
 #
-# 1. Builds the UI at the root path, as the e2e suite does.
+# 1. Builds the UI at the root path, as the e2e suite does, through
+#    ui/scripts/ensure-build.mjs (HZ-622): it reuses ui/dist when an earlier
+#    caller in the run already built the same tree.
 # 2. Seeds a throwaway DB (e2e/screenshots/seed.mjs): the orchestrator-proof
 #    rows before the server boots, the rest once it answers.
 # 3. Runs the server in demo mode with HORIZON_TEST_HOOKS=1, so a `login: true`
@@ -22,6 +24,10 @@
 # fixed path, not under TMPDIR, so it is host-wide even when TMPDIR is per item.
 # No child holds the lock's fd (9>&-), so a leftover child can never keep it,
 # and on exit this script stops its own children.
+#
+# scripts/recorder/serve-walkthrough.sh (HZ-665) copies this script's demo-mode
+# server env for the walkthrough recordings. A change to that env probably
+# belongs in both scripts.
 set -euo pipefail
 
 UI_PORT=5480
@@ -55,7 +61,7 @@ for dir in server ui e2e; do
   [ -d "$ROOT/$dir/node_modules" ] || npm --prefix "$ROOT/$dir" ci --no-audit --no-fund 9>&-
 done
 
-(cd "$ROOT/ui" && env -u HORIZON_BASE -u HORIZON_E2E_COVERAGE_DIR npm run build) 9>&-
+(cd "$ROOT/ui" && env -u HORIZON_BASE -u HORIZON_E2E_COVERAGE_DIR -u VITE_PROXY_TARGET node scripts/ensure-build.mjs) 9>&-
 
 node "$ROOT/e2e/screenshots/seed.mjs" before "$DB" 9>&-
 
@@ -79,7 +85,7 @@ until curl -sf -o /dev/null "http://127.0.0.1:$SERVER_PORT/api/health"; do
   sleep 0.2
 done
 
-node "$ROOT/e2e/screenshots/seed.mjs" after "$DB" 9>&-
+node "$ROOT/e2e/screenshots/seed.mjs" after "$DB" "http://127.0.0.1:$SERVER_PORT" 9>&-
 
 (
   cd "$ROOT/ui"

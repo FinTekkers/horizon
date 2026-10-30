@@ -15,6 +15,7 @@
 
 import { STEPS, PHASES, isClosed, firstStepIndex, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
+import { substepReworkTargets } from '../../../domain/js/substeps.js'
 import { PERSONAS, isPersona } from '../domain/personas'
 import PRODUCTIVITY_FIXTURE from '../../../domain/fixtures/productivity.json'
 
@@ -303,7 +304,9 @@ function runAgents(id) {
 
 // ---- actions ----
 
-export async function approveGate(id, notes) {
+// HZ-642: the Approve & file Autopilot choice is accepted like serverApi's;
+// demo items carry no autopilot-off label, so it changes nothing here.
+export async function approveGate(id, notes, _options = {}) {
   const it = items.find((x) => x.id === id)
   if (!it || isClosed(it) || STEPS[it.cursor].kind !== 'gate') return { ok: false }
   const label = STEPS[it.cursor].label.toLowerCase()
@@ -328,11 +331,17 @@ export async function approveGate(id, notes) {
 const mockAttempts = new Map() // `${id}:${stepIndex}` -> the last attempt started
 const restartsSent = new Map()
 
-export async function requestChanges(id, target, feedback, targetStepIndex) {
+// HZ-540: targetSubstepId, as on the server — one of substepReworkTargets.
+export async function requestChanges(id, target, feedback, targetStepIndex, targetSubstepId) {
   const it = items.find((x) => x.id === id)
   if (!it) throw new Error('not_found')
   if (isClosed(it)) throw new Error('closed')
   const atGate = STEPS[it.cursor]?.kind === 'gate'
+  const substep =
+    targetSubstepId == null
+      ? null
+      : substepReworkTargets(it).find((t) => t.index === targetStepIndex && t.substepId === targetSubstepId)
+  if (targetSubstepId != null && !substep) throw new Error('invalid_target')
   if (targetStepIndex != null) {
     const validTarget =
       atGate &&
@@ -353,8 +362,14 @@ export async function requestChanges(id, target, feedback, targetStepIndex) {
       while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
     }
   }
-  const reworkLabel = STEPS[reworkIdx].label.toLowerCase()
-  update(id, (x) => ({ ...x, cursor: reworkIdx, rejected: false, paused: false }))
+  const reworkLabel = (substep ? substep.label : STEPS[reworkIdx].label).toLowerCase()
+  update(id, (x) => ({
+    ...x,
+    cursor: reworkIdx,
+    rejected: false,
+    paused: false,
+    ...(x.substeps ? { substep_cursor: substep?.substepId ?? null, substep: substep ? x.substeps.find((s) => s.id === substep.substepId) : null } : {}),
+  }))
   pushEvent(id, {
     who: 'You',
     text: `requested changes on ${target || 'this step'}${feedback ? ': ' + feedback : ''} — sent back to the ${reworkLabel} step`,

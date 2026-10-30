@@ -26,6 +26,8 @@ process.env.ALLOWED_LOGIN_EMAILS = [
   'nova@example.com',
   'returning-http@example.com',
   'single-use@example.com',
+  'pending-new@example.com',
+  'pending-returning@example.com',
 ].join(',')
 delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
@@ -73,6 +75,28 @@ test('/api/health is 200 with no session cookie (deploy.sh liveness probe)', asy
   const body = res.json()
   assert.equal(body.ok, true)
   assert.equal(typeof body.itemCount, 'number')
+})
+
+// HZ-633: only the two exact billing paths skip the login gate. Neighbouring
+// paths and methods still need a session, and the exempt list grew by exactly
+// those two entries. HZ-634's Stripe webhook is the one later entry.
+test('only the two exact /api/billing paths skip the login gate', async () => {
+  const { SESSION_EXEMPT } = await import('../src/app.js')
+  assert.equal(SESSION_EXEMPT.length, 12)
+  for (const [method, url] of [
+    ['GET', '/api/billing/checkout-session/x'],
+    ['POST', '/api/billing/checkout-session/x'],
+    ['GET', '/api/billing/anything'],
+    ['POST', '/api/billing/session-status/x'],
+    ['GET', '/api/billing/session-statusx'],
+    ['GET', '/api/billing'],
+    ['POST', '/api/billing/stripe-webhook/x'],
+    ['POST', '/api/billing/stripe-webhookx'],
+  ]) {
+    const res = await app.inject({ method, url })
+    assert.equal(res.statusCode, 401, `${method} ${url}`)
+    assert.deepEqual(res.json(), { error: 'login_required' })
+  }
 })
 
 test('/api/health is 503 with no leaked detail when the DB read fails', async () => {
@@ -652,4 +676,80 @@ test('a password account previously linked to a google_sub is blocked at the rou
     db.prepare('SELECT google_sub FROM user WHERE id = ?').get(passwordUser.id).google_sub,
     'google-formerly-allowed',
   )
+})
+
+// ---- account status (HZ-632) ----
+// /api/auth/me reports the stored account_status and nothing else about the
+// user changes. No sign-in path gates on the status yet, so a pending_payment
+// user signs in exactly as before.
+
+async function googleSignIn(profile) {
+  const res = await googleAttempt(profile)
+  assert.equal(res.statusCode, 302)
+  assert.equal(res.headers.location, config.UI_URL, 'redirects to the UI with no ?error=')
+  const cookie = cookieFrom(res)
+  assert.ok(cookie, 'expected a session cookie after Google login')
+  return cookie
+}
+
+test('/api/auth/me returns the stored account_status; every other field is unchanged', async () => {
+  const login = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: { email: 'admin@example.com', password: 'super-secret' },
+  })
+  assert.equal(login.statusCode, 200)
+  const { id } = login.json().user
+  auth.setAccountStatus(id, 'past_due', 'test')
+  try {
+    const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: cookieFrom(login) } })
+    assert.equal(me.statusCode, 200)
+    assert.deepEqual(me.json().user, {
+      id,
+      email: 'admin@example.com',
+      name: 'Admin',
+      initials: 'AD',
+      authMethod: 'password',
+      isAdmin: true,
+      account_status: 'past_due',
+    })
+  } finally {
+    auth.setAccountStatus(id, 'active', 'test')
+  }
+})
+
+test('a new allowlisted Google user starts pending_payment and still signs in', async () => {
+  const cookie = await googleSignIn({
+    sub: 'google-pending-new',
+    email: 'pending-new@example.com',
+    name: 'Pending New',
+    emailVerified: true,
+  })
+  const row = db.prepare('SELECT id, account_status FROM user WHERE google_sub = ?').get('google-pending-new')
+  assert.equal(row.account_status, 'pending_payment', 'set by the column default, not by the test')
+  const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie } })
+  assert.equal(me.statusCode, 200)
+  assert.equal(me.json().user.id, row.id)
+  assert.equal(me.json().user.account_status, 'pending_payment')
+})
+
+test('a returning Google user moved to pending_payment signs in again as the same user', async () => {
+  const profile = {
+    sub: 'google-pending-returning',
+    email: 'pending-returning@example.com',
+    name: 'Pending Returning',
+    emailVerified: true,
+  }
+  const first = await googleSignIn(profile)
+  const firstMe = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: first } })
+  const { id } = firstMe.json().user
+  auth.setAccountStatus(id, 'active', 'test')
+  assert.deepEqual(auth.setAccountStatus(id, 'pending_payment', 'test'), { ok: true, from: 'active', to: 'pending_payment' })
+
+  const second = await googleSignIn(profile)
+  assert.notEqual(second, first, 'a new session')
+  const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: second } })
+  assert.equal(me.statusCode, 200)
+  assert.equal(me.json().user.id, id)
+  assert.equal(me.json().user.account_status, 'pending_payment')
 })

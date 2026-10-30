@@ -126,7 +126,7 @@ export default function ResolveConflictsDialog({ itemId, pr, phase, result, onCo
               <button className="composer__cancel" onClick={onClose}>
                 Cancel
               </button>
-              <button className="composer__submit" onClick={onConfirm}>
+              <button className="composer__submit composer__submit--primary" onClick={onConfirm}>
                 Resolve conflicts
               </button>
             </>

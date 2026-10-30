@@ -38,6 +38,7 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // step on the next fallback model without using an attempt; a report with no
 // model takes the generic retry, still bounded by the unchanged AUTO_RETRY_CAP.
 // HZ-590 added fails_on_main, non-retryable: the retryable set is unchanged.
+// HZ-541 added golden_cases_not_approved, non-retryable: same again.
 const PINNED_IDS = [
   'never_picked_up',
   'timeout',
@@ -53,10 +54,11 @@ const PINNED_IDS = [
   'invalid_plan_draft',
   'usage_limited',
   'fails_on_main',
+  'golden_cases_not_approved',
 ]
 const PINNED_RETRYABLE = ['never_picked_up', 'sdk_message_too_large', 'timeout', 'turn_cap', 'unreachable', 'usage_limited']
 
-test('PIN: the declared vocabulary is exactly these fourteen reasons', () => {
+test('PIN: the declared vocabulary is exactly these fifteen reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
@@ -103,6 +105,11 @@ test('PIN: invalid_plan_draft is declared but NOT retryable — the Draft must b
 test('PIN: fails_on_main is declared but NOT retryable — main must be fixed first, so a retry would fail the same way', () => {
   assert.equal(isRetryable('fails_on_main'), false)
   assert.equal(REASONS.find((r) => r.id === 'fails_on_main').retryable, false)
+})
+
+test('PIN: golden_cases_not_approved is declared but NOT retryable — a human must approve the set first', () => {
+  assert.equal(isRetryable('golden_cases_not_approved'), false)
+  assert.equal(REASONS.find((r) => r.id === 'golden_cases_not_approved').retryable, false)
 })
 
 test('AUTO_RETRY_REASONS is DERIVED from the retryable flag, not a second list — criterion 2', () => {

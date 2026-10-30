@@ -70,6 +70,9 @@ const LABEL_MENTIONS_ALLOWED = {
   'farm/tests/test_analyze_pm_context_reliance.py': 'fabricated PM log fixtures',
   'farm/tests/fixtures/pm_prompts/step_0.txt': 'HZ-371 byte-for-byte snapshot of the step-0 PM prompt',
   'farm/tests/fixtures/pm_prompts/role_prompt.txt': 'HZ-371 byte-for-byte snapshot of the rendered farm/roles/pm.md',
+  'server/test/fixtures/substep-parity/steps-run.json':
+    "HZ-539 golden /steps/run bodies written on main by server/scripts/substep-parity-golden.mjs — each body's step label",
+  'farm/tests/fixtures/substep_parity_prompts.json': 'HZ-539 byte-for-byte snapshot of the prompts built from those golden bodies',
 }
 
 const STEP_OBJECT = /kind"?:\s*['"](agent|gate)['"]/g

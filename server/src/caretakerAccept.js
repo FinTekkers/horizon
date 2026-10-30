@@ -72,7 +72,7 @@ export const ACCEPT_STOP_TEXT = {
 const selectCandidates = db.prepare(`
   SELECT w.id AS item_id, w.project_id, w.repo, w.pr, w.pr_mergeable, w.forwarded_review_run_id, p.name AS project_name,
          COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
-               AND s.step_index = w.cursor - 1 AND s.status = 'done'), 0) AS arrival_run_id
+               AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0) AS arrival_run_id
     FROM work_item w JOIN project p ON p.id = w.project_id
    WHERE p.autopilot = 'on' AND p.enabled = 1 AND w.cursor = ${ACCEPT_GATE_INDEX}
      AND w.abandoned_at IS NULL AND w.pr IS NOT NULL AND w.repo IS NOT NULL AND w.autopilot_off = 0
@@ -82,7 +82,7 @@ const selectCandidates = db.prepare(`
 const selectEscalated = db.prepare(`
   SELECT g.item_id, g.epoch, w.project_id, w.forwarded_review_run_id,
          COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
-               AND s.step_index = ${ACCEPT_GATE_INDEX - 1} AND s.status = 'done'), 0) AS arrival_run_id
+               AND s.step_index = ${ACCEPT_GATE_INDEX - 1} AND s.substep_id IS NULL AND s.status = 'done'), 0) AS arrival_run_id
     FROM gate_action g JOIN work_item w ON w.id = g.item_id JOIN project p ON p.id = w.project_id
    WHERE g.kind = 'resolve' AND g.state = 'escalated' AND p.autopilot = 'on' AND p.enabled = 1
      AND w.abandoned_at IS NULL AND w.cursor <> ${ACCEPT_GATE_INDEX} AND w.autopilot_off = 0`)

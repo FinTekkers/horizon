@@ -5,7 +5,7 @@
 // default-hide-on-load behavior against a real server response, not a
 // hand-built item object.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -33,10 +33,6 @@ test('a 30+ day inactive item is hidden by default, with a visible count and a o
   // The hidden count is stated in the header, not tucked behind a menu.
   await expect(page.locator('.board__hidden-note')).toContainText('stale')
 
-  await captureScreenshot(page, 'stale-filter-hidden')
-
   await page.locator('.board__show-all').click()
   await expect(page.getByText('E2E fixture — stale for 45 days')).toBeVisible()
-
-  await captureScreenshot(page, 'stale-filter-revealed')
 })

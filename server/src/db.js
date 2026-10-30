@@ -470,6 +470,11 @@ db.exec(`
 // sort. Read only while paused = 1, so a resume leaves it alone.
 // scope_repos_json (HZ-447): a Plan's repo scope, a JSON array of owner/name.
 // NULL = every repo in the item's project, so existing rows need no backfill.
+// substeps_json (HZ-538): the project's sub-step definitions that applied at
+// intake (substeps.js snapshotSubsteps), a JSON array, written once by the
+// GitHub sync's insert. substep_cursor: reserved for HZ-539's dispatch. Both
+// nullable with no default: existing rows read NULL, and nothing reads either
+// yet, so cursor and every step_index stay exactly as they are.
 //
 // HZ-446: the kind constraint, built from ITEM_KINDS like PRIORITY_CHECK is
 // from PRIORITIES. Interpolating is safe because every kind is checked against
@@ -478,7 +483,7 @@ for (const kind of ITEM_KINDS) {
   if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
 }
 const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0', 'substeps_json TEXT', 'substep_cursor INTEGER']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -643,6 +648,16 @@ try {
 } catch {
   // column already exists
 }
+try {
+  // HZ-538: the sub-step a run is for, beside its unchanged step_index —
+  // reserved for HZ-539's dispatch. NULL on every run today.
+  db.exec('ALTER TABLE step_run ADD COLUMN substep_id TEXT')
+} catch {
+  // column already exists
+}
+// HZ-539: a sub-step run keeps its anchor's step_index, so every reader of one
+// global step's runs filters `substep_id IS NULL` — else a sub-step row, with
+// the higher id, would shadow its anchor's.
 // HZ-458: the time an implement run spent in the farm's repo checks, which
 // the step clock does not count, and when its open check window began (NULL
 // while no checks run). Additive: 0 / NULL on every earlier row, whose timer
@@ -836,6 +851,21 @@ if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => colum
   db.exec('ALTER TABLE gate_decision ADD COLUMN plan_hash TEXT')
 }
 
+// HZ-642: the Autopilot choice an Approve & file decision made for the items
+// the Plan files — 'default' or 'off'. NULL on every other decision, and on
+// every row from before this column, which files as 'default'.
+if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'filed_autopilot')) {
+  db.exec('ALTER TABLE gate_decision ADD COLUMN filed_autopilot TEXT')
+}
+
+// HZ-539: the sub-step a gate decision was made at, beside its step_index (the
+// anchor). NULL on every global decision and on every row from before this
+// column. gate_action gets none: a sub-step never gates (substeps.js), and a
+// gate action is one long action per (item, kind) at a global gate.
+if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'substep_id')) {
+  db.exec('ALTER TABLE gate_decision ADD COLUMN substep_id TEXT')
+}
+
 // HZ-245: per-repo check commands, set by a human in Admin. Additive and
 // nullable: NULL in every slot is "not configured", so the farm auto-detects
 // exactly as before. Deliberately no seed — not for FinTekkers/horizon, not
@@ -935,6 +965,21 @@ db.exec(`
   );
 `)
 
+// HZ-541: the golden cases a human approved at an item's first gate, copied
+// out of the golden_cases sub-step's step_run so a later run of the sub-step
+// can never change an approved set. One row per item: v1 approves the whole
+// set. Written and cleared only by server/src/goldenCases.js.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS golden_case_set (
+    item_id       TEXT PRIMARY KEY REFERENCES work_item(id) ON DELETE CASCADE,
+    cases_json    TEXT NOT NULL,
+    hash          TEXT NOT NULL,
+    source_run_id INTEGER,
+    approved_by   TEXT NOT NULL,
+    approved_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`)
+
 // HZ-270: project_event is the project-level audit trail (event.item_id is
 // NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one
 // row per gate arrival the caretaker judged; its UNIQUE key is the persisted
@@ -969,6 +1014,66 @@ db.exec(`
     UNIQUE (item_id, gate_index, arrival_run_id)
   );
 `)
+
+// HZ-632: every account carries a billing state. user_event is the user-level
+// audit trail, like project_event above (event.item_id is NOT NULL). user_id has
+// no FK on purpose: reconcileGoogleUsers deletes user rows, and the audit
+// history must outlive them. account_status is written only by
+// auth.setAccountStatus after this migration. Additive and once-only: the
+// column check is repeated inside the immediate transaction, so a racing boot
+// skips it, and the backfill to 'active' runs only on the boot that adds the
+// column. Users created afterwards get the 'pending_payment' default.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_event (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    old_value  TEXT,
+    new_value  TEXT,
+    who        TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_user_event_user ON user_event(user_id, id DESC);
+`)
+const userColumnNames = () => new Set(db.prepare('PRAGMA table_info(user)').all().map((column) => column.name))
+const userBillingColumns = ['account_status', 'stripe_customer_id', 'stripe_subscription_id']
+if (!userBillingColumns.every((name) => userColumnNames().has(name))) {
+  db.transaction(() => {
+    const userColumns = userColumnNames()
+    if (!userColumns.has('account_status')) {
+      db.exec(`
+        ALTER TABLE user ADD COLUMN account_status TEXT NOT NULL DEFAULT 'pending_payment'
+          CHECK (account_status IN ('pending_payment','active','past_due','cancelling','cancelled'));
+        UPDATE user SET account_status = 'active';
+      `)
+    }
+    if (!userColumns.has('stripe_customer_id')) db.exec('ALTER TABLE user ADD COLUMN stripe_customer_id TEXT')
+    if (!userColumns.has('stripe_subscription_id')) db.exec('ALTER TABLE user ADD COLUMN stripe_subscription_id TEXT')
+  }).immediate()
+}
+// HZ-633: the company a shoreward.ai sign-up typed in. Additive and nullable;
+// existing rows stay NULL.
+if (!userColumnNames().has('company')) {
+  db.transaction(() => {
+    if (!userColumnNames().has('company')) db.exec('ALTER TABLE user ADD COLUMN company TEXT')
+  }).immediate()
+}
+// HZ-634: the Stripe webhook (stripeWebhook.js). stripe_event holds every
+// processed event id, so each is applied once. owner_notified_at is set when
+// the owner's "new active customer" email is claimed. Additive and nullable.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS stripe_event (
+    id           TEXT PRIMARY KEY,
+    type         TEXT NOT NULL,
+    processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`)
+if (!userColumnNames().has('owner_notified_at')) {
+  db.transaction(() => {
+    if (!userColumnNames().has('owner_notified_at')) db.exec('ALTER TABLE user ADD COLUMN owner_notified_at TEXT')
+  }).immediate()
+}
+
 // HZ-544: item_off = 1 marks an evaluation recorded as 'shadow' because
 // Autopilot was off for the ITEM (its `autopilot-off` label) in an 'on'
 // project, so it is never read as a project in shadow mode. A historical

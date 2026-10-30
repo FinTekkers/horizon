@@ -1,0 +1,22 @@
+{
+  "actions": [
+    { "action": "caption", "text": "Chapter 2: Creating work", "ms": 3000 },
+    { "action": "waitFor", "selector": "button:has-text(\"+ New work item\")" },
+    { "action": "pause", "ms": 1500 },
+    { "action": "click", "selector": "button:has-text(\"+ New work item\")" },
+    { "action": "waitFor", "selector": "[placeholder^=\"One line naming\"]" },
+    { "action": "pause", "ms": 800 },
+    { "action": "type", "selector": "[placeholder^=\"One line naming\"]", "text": "Risk-limit breach dashboard", "delayMs": 60 },
+    { "action": "pause", "ms": 400 },
+    { "action": "type", "selector": "[placeholder^=\"e.g. Risk managers\"]", "text": "Risk managers see live limit use across every desk", "delayMs": 40 },
+    { "action": "pause", "ms": 400 },
+    { "action": "type", "selector": "[placeholder^=\"e.g. Limit breaches\"]", "text": "Breaches acknowledged in under 2 minutes", "delayMs": 40 },
+    { "action": "pause", "ms": 1200 },
+    { "action": "click", "selector": "button:has-text(\"Create work item\")" },
+    { "action": "waitFor", "selector": ".card__title:has-text(\"Risk-limit breach dashboard\")" },
+    { "action": "pause", "ms": 1500 },
+    { "action": "click", "selector": ".card:has-text(\"Risk-limit breach dashboard\")" },
+    { "action": "waitFor", "selector": ".tracker__header-main:has-text(\"Risk-limit breach dashboard\")" },
+    { "action": "pause", "ms": 3000 }
+  ]
+}

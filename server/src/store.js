@@ -30,18 +30,21 @@ import {
   isServerStep,
   RUN_PLAN_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  APPROVE_FILE_GATE_INDEX,
   EXECUTE_STEP_INDEX,
   gateStepIndexes,
   laneOf,
   laneSkips,
   nextCursor,
+  kindStepIndex,
 } from '../../domain/js/lifecycle.js'
+import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
 import { effectiveRunner, extractRunPlan } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
-import { isPersona, personaDisplay, personaLabel, personasFromRow } from './personas.js'
+import { PERSONAS, isPersona, personaDisplay, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
@@ -50,6 +53,7 @@ import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { findTargetByRepo } from './deployTargets.js'
+import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 
 const listeners = new Set()
 
@@ -105,6 +109,15 @@ let projectOverlayLoader = () => null
 
 export function registerProjectOverlayLoader(loader) {
   projectOverlayLoader = loader
+}
+
+// HZ-538: substeps.js's snapshotSubsteps, registered by the orchestrator the
+// same way and for the same reason (substeps.js reads definitions.js). Until
+// then no item gets a snapshot.
+let substepsSnapshotter = () => null
+
+export function registerSubstepsSnapshotter(snapshotter) {
+  substepsSnapshotter = snapshotter
 }
 
 // ---- HZ-216: long gate actions (pre-merge checks + merge, conflict resolution) ----
@@ -239,7 +252,7 @@ export function listRunningAgentSteps() {
 export function activeJobRun(itemId) {
   return (
     db
-      .prepare("SELECT id, item_id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'active' ORDER BY id DESC LIMIT 1")
+      .prepare("SELECT id, item_id, step_index, attempt, started_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'active' ORDER BY id DESC LIMIT 1")
       .get(itemId, EXECUTE_STEP_INDEX) ?? null
   )
 }
@@ -249,7 +262,7 @@ export function activeJobRun(itemId) {
 export function latestJobRun(itemId) {
   return (
     db
-      .prepare('SELECT id, item_id, step_index, attempt, status FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1')
+      .prepare('SELECT id, item_id, step_index, attempt, status FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL ORDER BY id DESC LIMIT 1')
       .get(itemId, EXECUTE_STEP_INDEX) ?? null
   )
 }
@@ -263,7 +276,7 @@ export function runningJobsIn(repo) {
     .prepare(
       `SELECT r.id, r.item_id, COALESCE(r.agent_started_at, r.started_at) AS started_at
          FROM step_run r JOIN work_item w ON w.id = r.item_id
-        WHERE w.repo = ? AND r.step_index = ? AND r.status = 'active' ORDER BY r.id`,
+        WHERE w.repo = ? AND r.step_index = ? AND r.substep_id IS NULL AND r.status = 'active' ORDER BY r.id`,
     )
     .all(repo, EXECUTE_STEP_INDEX)
     .map((row) => {
@@ -670,7 +683,7 @@ export function setRepoMarks(projectId, repoFullName, marks) {
 export function implementStartedBefore(itemId, iso) {
   if (!iso) return false
   const row = db
-    .prepare('SELECT MIN(started_at) AS first FROM step_run WHERE item_id = ? AND step_index = ?')
+    .prepare('SELECT MIN(started_at) AS first FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL')
     .get(itemId, IMPLEMENT_STEP_INDEX)
   return row?.first != null && row.first < iso
 }
@@ -929,19 +942,19 @@ const selectEvents = db.prepare(
   'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
 )
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas FROM step_run WHERE item_id = ? AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
 // show "attempt N of Y" without claiming a version exists that isn't
 // actually reachable via listStepAttempts/the artifact route (HZ-46).
 const selectAttemptCounts = db.prepare(
-  "SELECT step_index, COUNT(*) AS n FROM step_run WHERE item_id = ? AND status = 'done' AND artifact IS NOT NULL GROUP BY step_index",
+  "SELECT step_index, COUNT(*) AS n FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL GROUP BY step_index",
 )
 
 const selectJobView = db.prepare(
   `SELECT r.job_view FROM step_run r JOIN work_item w ON w.id = r.item_id
-    WHERE r.item_id = ? AND r.step_index = ? AND w.cursor >= r.step_index ORDER BY r.id DESC LIMIT 1`,
+    WHERE r.item_id = ? AND r.step_index = ? AND r.substep_id IS NULL AND w.cursor >= r.step_index ORDER BY r.id DESC LIMIT 1`,
 )
 
 function stepOutputs(itemId) {
@@ -1020,13 +1033,39 @@ export function linkInputs(itemId) {
 // notification through the same latest-attempt-wins rule stepOutputs() applies
 // above, rather than opening a second raw query onto step_run. `artifact`
 // falls back to `output` because some steps mark done with only a summary.
-export function latestArtifact(itemId, stepIndex) {
-  const row = db
-    .prepare(
-      "SELECT output, artifact FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1",
-    )
-    .get(itemId, stepIndex)
+// HZ-540: `substepId` reads that sub-step's runs instead; without it, the
+// global step's own runs only, as before.
+export function latestArtifact(itemId, stepIndex, substepId = null) {
+  const row =
+    substepId == null
+      ? db
+          .prepare(
+            "SELECT output, artifact FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1",
+          )
+          .get(itemId, stepIndex)
+      : latestSubstepRun(itemId, stepIndex, substepId)
   return row ? (row.artifact || row.output || null) : null
+}
+
+// HZ-540: a sub-step's runs, by its id — unique within an item's snapshot
+// (substeps.js), so the id alone picks them. A run keeps its anchor's
+// step_index, checked here so a sub-step is never read under another step.
+const selectSubstepDoneRuns = db.prepare(
+  "SELECT id, step_index, attempt, output, artifact, started_at, ended_at, source_shas FROM step_run WHERE item_id = ? AND substep_id = ? AND status = 'done' ORDER BY id",
+)
+
+export function substepDoneRuns(itemId, stepIndex, substepId) {
+  return selectSubstepDoneRuns.all(itemId, substepId).filter((row) => row.step_index === stepIndex)
+}
+
+function latestSubstepRun(itemId, stepIndex, substepId) {
+  return substepDoneRuns(itemId, stepIndex, substepId).at(-1) ?? null
+}
+
+// HZ-540: the same, with the step named by (item kind, label) — a global step
+// and its sub-step share the label and kind, so `substepId` tells them apart.
+export function latestArtifactByLabel(itemId, kind, label, substepId = null) {
+  return latestArtifact(itemId, kindStepIndex(label, kind), substepId)
 }
 
 // ---- the approved run plan (HZ-384) ----
@@ -1111,15 +1150,21 @@ export function approvedPlanCheck(itemId) {
 // guarantee — feedback.target records an agent name, not a step_index, so
 // two steps run by the same agent could in rare cases cross-attribute.
 const selectDoneAttempts = db.prepare(
-  "SELECT attempt, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY attempt ASC",
+  "SELECT attempt, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY attempt ASC",
 )
 const selectDrivingFeedback = db.prepare(
   'SELECT message FROM feedback WHERE item_id = ? AND target = ? AND created_at > ? AND created_at <= ? ORDER BY created_at DESC LIMIT 1',
 )
 
-export function listStepAttempts(itemId, stepIndex) {
+// HZ-540: `substepId` lists that sub-step's attempts at the step instead.
+export function listStepAttempts(itemId, stepIndex, substepId = null) {
   const agent = STEPS[stepIndex]?.agent || ''
-  const rows = selectDoneAttempts.all(itemId, stepIndex)
+  const rows =
+    substepId == null
+      ? selectDoneAttempts.all(itemId, stepIndex)
+      : substepDoneRuns(itemId, stepIndex, substepId)
+          .filter((row) => row.artifact != null)
+          .sort((a, b) => a.attempt - b.attempt)
   return rows.map((row, i) => {
     const since = i > 0 ? rows[i - 1].ended_at : '0000-01-01 00:00:00'
     const feedback = agent ? (selectDrivingFeedback.get(itemId, agent, since, row.started_at)?.message ?? null) : null
@@ -1139,9 +1184,9 @@ const selectActiveRun = db.prepare(
 // auto-retry count. HZ-346: nor is a run a rule blocked — the block does not
 // use up an attempt. A pure read: nothing is written.
 const selectLastStepRun = db.prepare(
-  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC LIMIT 1',
+  'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL ORDER BY id DESC LIMIT 1',
 )
-const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
+const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL')
 
 export function nextStepAttempt(id, stepIndex) {
   const last = selectLastStepRun.get(id, stepIndex)
@@ -1610,7 +1655,7 @@ const selectDurationSamples = db.prepare(
     ...DURATION_STEP_INDEXES.map(
       () =>
         `SELECT * FROM (SELECT CAST(step_index AS TEXT) AS k, ${durationSec('ended_at', 'started_at')} AS sec
-          FROM step_run WHERE step_index = ? AND status = 'done'
+          FROM step_run WHERE step_index = ? AND substep_id IS NULL AND status = 'done'
             AND julianday(ended_at) >= julianday(started_at)
           ORDER BY id DESC LIMIT ${DURATION_SAMPLE_LIMIT})`,
     ),
@@ -1835,6 +1880,49 @@ function usageWaitView(row) {
   return { until, text: usageWaitText(until) }
 }
 
+// HZ-540: the newest run of each of an item's sub-steps, by sub-step id.
+const selectSubstepRuns = db.prepare(
+  'SELECT id, substep_id, status, attempt, started_at, ended_at, artifact IS NOT NULL AS has_artifact FROM step_run WHERE item_id = ? AND substep_id IS NOT NULL ORDER BY id',
+)
+
+// HZ-540: { substeps, substep_cursor, substep } for an item with a sub-step
+// snapshot, else {} — so an item without one serves exactly the keys it did
+// before. Each sub-step carries its persona's badge and its newest run.
+function substepFields(row, overlay) {
+  const snapshot = substepsOf(row)
+  if (!snapshot.length) return {}
+  const runs = new Map()
+  for (const run of selectSubstepRuns.all(row.id)) {
+    runs.set(run.substep_id, {
+      id: run.id,
+      status: run.status,
+      attempt: run.attempt,
+      startedAt: toIsoUtc(run.started_at),
+      endedAt: toIsoUtc(run.ended_at),
+      hasArtifact: !!run.has_artifact,
+    })
+  }
+  const substeps = snapshot.map((s) => {
+    const persona = typeof s.persona === 'string' ? s.persona : null
+    const agent = persona ? Object.keys(PERSONAS).find((a) => isPersona(a, persona, overlay)) : undefined
+    return {
+      id: s.id,
+      label: s.label,
+      kind: s.kind ?? null,
+      anchor: s.anchor,
+      persona,
+      personaBadge: agent ? personaDisplay(agent, persona, overlay) : null,
+      run: runs.get(s.id) ?? null,
+    }
+  })
+  const current = currentSubstep(row)
+  return {
+    substeps,
+    substep_cursor: row.substep_cursor == null ? null : String(row.substep_cursor),
+    substep: current ? substeps.find((s) => s.id === current.id) : null,
+  }
+}
+
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const overlay = projectOverlayFor(row.project_id)
@@ -1900,6 +1988,10 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     waiting_since: waitingSince(row, ruleBlock),
     // HZ-384: the plan the Approve the run gate shows, and the one approved.
     ...(approvesRunPlan(itemKindOf(row)) ? { runPlan: runPlanView(row.id), approvedPlanHash: row.approved_plan_hash ?? null } : {}),
+    // HZ-540: only on an item with a sub-step snapshot.
+    ...substepFields(row, overlay),
+    // HZ-541: only on an item whose first gate approves golden cases.
+    ...goldenCasesFields(row),
   }
 }
 
@@ -1914,7 +2006,7 @@ export function reviewRejected(row) {
 
 const selectForwardedRun = db.prepare('SELECT attempt, artifact, output FROM step_run WHERE id = ? AND item_id = ?')
 const selectNewerReview = db.prepare(
-  "SELECT 1 FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND id > ? LIMIT 1",
+  "SELECT 1 FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND id > ? LIMIT 1",
 )
 
 // HZ-185: the failing review a forward to Accept the code carried, keyed by
@@ -2109,7 +2201,18 @@ export function addEvent(id, { who, text, color, initials, detail = null, verdic
 // the approver was shown: a newer plan since then is refused, not approved.
 // HZ-446: the PIN applies to every humanOnly gate; the run plan checks only to
 // Approve the run, the one gate that approves a run plan.
-export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null, planHash = null, runner = null } = {}) {
+//
+// HZ-642: `filedAutopilot` ('default' | 'off') is the Approve & file card's
+// Autopilot choice for the items the Plan files, stored on that decision's
+// row. Off is kept only while the project's Autopilot is on — the only mode
+// the per-item override changes — and is otherwise recorded as 'default'.
+export function approveGate(
+  id,
+  stepIndex,
+  notes,
+  actor = 'You',
+  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null } = {},
+) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -2140,6 +2243,39 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
     approvedHash = plan.hash
     approvedRunner = plan.runner
   }
+  // HZ-541: the first gate approves the item's golden cases as one set, and
+  // only the set the approver was shown. A caller with no table to show
+  // (WhatsApp, the caretaker) sends no hash, so it is refused.
+  let golden = null
+  if (FIRST_GATE_INDEXES.includes(stepIndex) && goldenCasesRequired(it)) {
+    golden = checkGoldenApproval(it, goldenHash)
+    if (golden.error) {
+      if (goldenHash == null) {
+        addEvent(id, {
+          who: actor,
+          text: `could not approve “${STEPS[stepIndex].label}”: ${golden.message} — the gate stays open`,
+          color: '#9C333E',
+          initials: '✕',
+        })
+        notify()
+      }
+      return golden
+    }
+  }
+
+  let filed = null
+  if (stepIndex === APPROVE_FILE_GATE_INDEX) {
+    const mode = (it.project_id == null ? null : selectProjectAutopilot.get(it.project_id)?.autopilot) ?? 'off'
+    filed = filedAutopilot === 'off' && mode === 'on' ? 'off' : 'default'
+    if (filedAutopilot === 'off' && filed !== 'off') {
+      addEvent(id, {
+        who: actor,
+        text: `asked to file these items with Autopilot off, but Autopilot is ${mode} for this project — they file with the project default`,
+        color: '#9C333E',
+        initials: '✕',
+      })
+    }
+  }
 
   const trimmed = (notes || '').trim()
   const next = nextCursor(it)
@@ -2147,8 +2283,9 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
     `UPDATE work_item SET cursor = ?, rejected = 0${approvedHash ? ', approved_plan_hash = ?, approved_runner = ?' : ''}, ${touch} WHERE id = ?`,
   ).run(...(approvedHash ? [next, approvedHash, approvedRunner, id] : [next, id]))
   db.prepare(
-    'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash)
+    'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed)
+  if (golden?.set) approveGoldenCases(id, golden.set, actor)
   if (trimmed) {
     // Approval notes are direction for whoever runs next — queue as feedback
     // so the next dispatched agent step receives and must address them.
@@ -2171,6 +2308,18 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
   return { ok: true, closed }
 }
 
+// HZ-642: true when the Plan's newest Approve & file approval chose Autopilot
+// off for the items it files. A send-back writes a 'rejected' row and the
+// re-approval a new 'approved' one, so the newest approval's choice wins.
+export function filedAutopilotOff(itemId) {
+  const row = db
+    .prepare(
+      "SELECT filed_autopilot FROM gate_decision WHERE item_id = ? AND step_index = ? AND decision = 'approved' ORDER BY id DESC LIMIT 1",
+    )
+    .get(itemId, APPROVE_FILE_GATE_INDEX)
+  return row?.filed_autopilot === 'off'
+}
+
 // Rejection is not a dead end: the item rolls back to the agent step whose
 // work was judged, the feedback is queued for that agent, and the orchestrator
 // re-runs it (attempt N+1) before returning to the gate.
@@ -2183,7 +2332,12 @@ export function approveGate(id, stepIndex, notes, actor = 'You', { proof = null,
 // every gate between it and here is crossed again on the way forward, so no
 // checkpoint is skipped. Omitting it reproduces today's exact behavior,
 // including the Accept-gate exception.
-export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null) {
+//
+// HZ-540: targetSubstepId, with targetStepIndex as its anchor, sends the item
+// back to one of its sub-steps — one substepReworkTargets offers, checked the
+// same way. The cursor goes to the anchor and substep_cursor names the
+// sub-step. Every other send-back leaves the item at no sub-step.
+export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null, targetSubstepId = null) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -2193,6 +2347,14 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // A send-back never crosses into another kind's rows: the walk and any
   // explicit target both stop at this item's own first step (HZ-377).
   const first = firstStepIndex(itemKindOf(it))
+  let substep = null
+  if (targetSubstepId != null) {
+    substep =
+      targetStepIndex == null
+        ? null
+        : (substepReworkTargets(it).find((t) => t.index === targetStepIndex && t.substepId === targetSubstepId) ?? null)
+    if (!substep) return { error: 'invalid_target' }
+  }
   if (targetStepIndex != null) {
     const atGate = STEPS[it.cursor]?.kind === 'gate'
     const validTarget =
@@ -2206,6 +2368,9 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   }
 
   agentRunner.cancel(id, 'rejected')
+  // HZ-541: an approved golden-cases set survives every send-back but one to
+  // the sub-step that writes it, which regenerates it for a new approval.
+  if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === GOLDEN_CASES_OUTPUT) clearGoldenCases(id)
 
   let reworkIdx = it.cursor
   if (STEPS[it.cursor]?.kind === 'gate') {
@@ -2252,11 +2417,11 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // retires any approved run plan — the run must be approved again, against
   // whatever plan it comes back with (always NULL on a change item).
   db.prepare(
-    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL, approved_plan_hash = NULL, approved_runner = NULL${resetReview}, ${touch} WHERE id = ?`,
-  ).run(reworkIdx, id)
+    `UPDATE work_item SET cursor = ?, substep_cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL, approved_plan_hash = NULL, approved_runner = NULL${resetReview}, ${touch} WHERE id = ?`,
+  ).run(reworkIdx, substep ? substep.substepId : null, id)
   addEvent(id, {
     who: actor,
-    text: `requested changes on ${target || 'this step'}${feedbackText ? ': ' + feedbackText : ''} — sent back to the ${STEPS[reworkIdx].label.toLowerCase()} step`,
+    text: `requested changes on ${target || 'this step'}${feedbackText ? ': ' + feedbackText : ''} — sent back to the ${(substep ? substep.label : STEPS[reworkIdx].label).toLowerCase()} step`,
     color: '#9C333E',
     initials: 'YOU',
   })
@@ -2591,7 +2756,9 @@ export function applySplitScope(id, { desc, metric }, actor = 'Horizon') {
 
 // HZ-449: `lane` is the lane a Plan's draft asked for; one the kind does not
 // have is stored as no lane.
-export function createLocalItem({ title, outcome, metric, guardrails, priority, kind, lane = null }) {
+// HZ-642: `autopilotOff` is the local stand-in for an issue filed with the
+// autopilot-off label; it defaults to false, as for every other caller.
+export function createLocalItem({ title, outcome, metric, guardrails, priority, kind, lane = null, autopilotOff = false }) {
   // HZ-377: the kind defaults to `change`; anything outside the domain
   // vocabulary is refused before anything is written.
   const itemKind = kind ?? 'change'
@@ -2602,8 +2769,8 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority, 
       .get().n + 1
   const id = `LOC-${next}`
   db.prepare(
-    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }))
+    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane, autopilot_off) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }), autopilotOff ? 1 : 0)
   addEvent(id, { who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)
@@ -2677,8 +2844,14 @@ export function upsertFromGithub(ghIssue, repoFullName) {
     // not change an item's kind.
     const kind = kindFromLabels(ghIssue.labels)
     const id = `${repoRow.prefix}-${number}`
+    // HZ-538: the sub-steps that apply, snapshotted here on insert only — like
+    // the kind, a later sync never re-reads them. Snapshot data only.
+    const project = repoRow.project_id == null ? null : selectProjectDefinitions.get(repoRow.project_id)
+    const substepsJson = closedOnGithub
+      ? null
+      : substepsSnapshotter({ project, kind, labels: ghIssue.labels, repo: repoFullName, desc })
     db.prepare(
-      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane, autopilot_off) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane, autopilot_off, substeps_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
       title,
@@ -2693,6 +2866,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       kind,
       laneFromLabels(ghIssue.labels, kind),
       autopilotOff,
+      substepsJson,
     )
     addEvent(id, { who: 'GitHub', text: `opened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
     changed = true

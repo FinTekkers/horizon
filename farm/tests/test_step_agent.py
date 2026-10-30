@@ -354,7 +354,7 @@ def test_publish_screenshots_works_inside_a_git_WORKTREE_not_just_a_clone(tmp_pa
     git(ws, "worktree", "add", "--detach", str(worktree))
     assert (worktree / ".git").is_file(), "a worktree's .git must be a file for this test to mean anything"
 
-    write_fake_screenshot(worktree, "board")
+    write_config_shot(worktree, "board")
     publish_screenshots(worktree, {"id": "T-9", "repo": "acme/demo"})
 
     refs = origin_refs(origin)
@@ -478,6 +478,17 @@ def write_fake_screenshot(ws, name):
     (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
 
 
+CONFIG_SHOTS = "e2e/__screenshots__/config"
+
+
+def write_config_shot(ws, name):
+    # HZ-621: the config's outputDir is the only screenshot source.
+    write_screenshots_config(ws, CONFIG_SHOTS)
+    shots = ws / CONFIG_SHOTS
+    shots.mkdir(parents=True, exist_ok=True)
+    (shots / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n" + name.encode())
+
+
 def origin_refs(origin):
     return subprocess.run(
         ["git", "--git-dir", str(origin), "for-each-ref", "--format=%(refname)"], capture_output=True, text=True, check=True
@@ -486,8 +497,8 @@ def origin_refs(origin):
 
 def test_publish_screenshots_pushes_an_orphan_commit_to_a_per_item_ref(tmp_path):
     ws, origin = make_git_workspace(tmp_path)
-    write_fake_screenshot(ws, "board")
-    write_fake_screenshot(ws, "gates")
+    write_config_shot(ws, "board")
+    write_config_shot(ws, "gates")
 
     publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
 
@@ -512,11 +523,12 @@ def test_publish_screenshots_pushes_an_orphan_commit_to_a_per_item_ref(tmp_path)
 
 
 def test_publish_screenshots_does_not_touch_the_working_tree_or_index(tmp_path):
-    ws, _origin = make_git_workspace(tmp_path)
-    write_fake_screenshot(ws, "board")
+    ws, origin = make_git_workspace(tmp_path)
+    write_config_shot(ws, "board")
 
     publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
 
+    assert "refs/heads/e2e-artifacts/t-1" in origin_refs(origin)
     status = subprocess.run(["git", "-C", str(ws), "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
     # The screenshot file itself is untracked (it's gitignored elsewhere), but
     # nothing was staged into the branch's own index/HEAD.
@@ -528,15 +540,20 @@ def test_publish_screenshots_does_not_touch_the_working_tree_or_index(tmp_path):
 
 def test_publish_screenshots_is_a_noop_with_no_screenshots(tmp_path):
     ws, origin = make_git_workspace(tmp_path)
-    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
+    write_screenshots_config(ws, CONFIG_SHOTS)
+    lines = []
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"}, log=lines.append)
+    assert lines == ["publish_screenshots: no screenshots to publish — skipped"]
     assert "e2e-artifacts" not in origin_refs(origin)
 
 
 def test_publish_screenshots_never_raises_on_push_failure(tmp_path):
     ws, _origin = make_git_workspace(tmp_path)
-    write_fake_screenshot(ws, "board")
+    write_config_shot(ws, "board")
     subprocess.run(["git", "-C", str(ws), "remote", "set-url", "origin", "/no/such/path"], check=True)
-    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})  # must not raise
+    lines = []
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"}, log=lines.append)  # must not raise
+    assert any(line.startswith("publish_screenshots: skipped after a failure — ") for line in lines), lines
 
 
 def write_screenshots_config(ws, output_dir="shots"):
@@ -554,8 +571,8 @@ def artifact_files(origin, ref="e2e-artifacts/t-1"):
 
 def test_publish_uses_configured_output_dir(tmp_path):
     # HZ-506: a configured repo publishes its outputDir — PNGs and the
-    # manifest. HZ-512: plus the e2e journey shots in e2e/__screenshots__,
-    # until the config screens cover them.
+    # manifest. HZ-621: and nothing else, not even a PNG left at the top of
+    # e2e/__screenshots__.
     ws, origin = make_git_workspace(tmp_path)
     write_screenshots_config(ws)
     shots = ws / "shots"
@@ -567,22 +584,24 @@ def test_publish_uses_configured_output_dir(tmp_path):
 
     publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
 
-    assert artifact_files(origin) == [
+    files = artifact_files(origin)
+    assert files == [
         "e2e/__screenshots__/home--desktop--light.png",
-        "e2e/__screenshots__/journey.png",
         "e2e/__screenshots__/manifest.json",
         "e2e/__screenshots__/results.json",
     ]
+    assert "e2e/__screenshots__/journey.png" not in files
 
 
-def test_publish_without_config_keeps_e2e_screenshots(tmp_path):
-    # HZ-506 guardrail: no config, today's source — until HZ-511's cutover.
+def test_publish_without_config_publishes_nothing_and_logs_it(tmp_path):
+    # HZ-621: screenshots come only from .horizon/screenshots.json. A repo
+    # without one publishes nothing, even with PNGs left in e2e/__screenshots__.
     ws, origin = make_git_workspace(tmp_path)
     write_fake_screenshot(ws, "board")
-    (ws / "shots").mkdir()
-    (ws / "shots" / "other.png").write_bytes(b"\x89PNG\r\n\x1a\nother")
-    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"})
-    assert artifact_files(origin) == ["e2e/__screenshots__/board.png", "e2e/__screenshots__/results.json"]
+    lines = []
+    publish_screenshots(ws, {"id": "T-1", "repo": "acme/demo"}, log=lines.append)  # must not raise
+    assert lines == ["publish_screenshots: skipped — no .horizon/screenshots.json"]
+    assert "e2e-artifacts" not in origin_refs(origin)
 
 
 def test_publish_with_an_invalid_config_skips_and_never_raises(tmp_path):
@@ -602,6 +621,7 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
     # seed that onto main so the branch under test inherits it, same as a
     # real target repo would.
     (ws / ".gitignore").write_text("e2e/__screenshots__/\n")
+    write_screenshots_config(ws, CONFIG_SHOTS)
     subprocess.run(["git", "-C", str(ws), "add", "-A"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(ws), "commit", "-m", "add gitignore"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(ws), "push", "origin", "main"], check=True, capture_output=True)
@@ -612,7 +632,7 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
     # real Playwright run would produce it after the branch is already checked out.
     def fake_run_agent(prompt, **kwargs):
         (ws / "note.txt").write_text("real code change\n")
-        write_fake_screenshot(ws, "board")
+        write_config_shot(ws, "board")
         return {"result": '{"summary": "did the step"}'}
 
     monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)

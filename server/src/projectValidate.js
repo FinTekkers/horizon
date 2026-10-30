@@ -32,6 +32,7 @@ import { resolveRules } from './definitions.js'
 import * as github from './github.js'
 import * as premerge from './premerge.js'
 import { servedRulesFor } from './rulesStore.js'
+import { loadSubsteps } from './substeps.js'
 import { getToken } from './settings.js'
 import * as store from './store.js'
 import * as webhooks from './webhooks.js'
@@ -64,6 +65,7 @@ export const deps = {
   checkCommands: (repo) => store.getRepoCheckCommands(repo),
   repoConfig: (repo) => store.getRepoConfig(repo),
   resolveRules: (projectName, repo) => resolveRules(projectName, repo, servedRulesFor(projectName, repo)),
+  loadSubsteps: (projectName) => loadSubsteps(projectName),
   findTargetByRepo: (repo) => findTargetByRepo(repo),
   listTargets: () => listTargets(),
   targetState: (target) => listTargetStatuses().find((s) => s.key === target.key) ?? null,
@@ -206,8 +208,12 @@ async function checkCommands(ctx, timeoutMs) {
   })
 }
 
+// HZ-538: a project's steps.json that fails to load fails `rules` too, with
+// its errors (each naming the sub-step id) as the detail.
 async function checkRules(ctx) {
+  const { errors } = deps.loadSubsteps(ctx.project?.name)
   return perRepo(ctx, async (repo) => {
+    if (errors.length) return fail(`steps.json: ${errors.join('; ')}`)
     const parts = await deps.resolveRules(ctx.project.name, repo)
     const text = Array.isArray(parts) ? parts.join('\n') : String(parts ?? '')
     if (!text.trim()) return fail(`no rules resolve for ${repo}`)

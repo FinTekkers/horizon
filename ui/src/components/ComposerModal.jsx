@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { phasesFor, itemKindOf } from '../../../domain/js/lifecycle.js'
+import { decodeTarget, encodeTarget } from '../../../domain/js/substeps.js'
 
 const COPY = {
   approve: {
@@ -18,6 +19,8 @@ const COPY = {
     title: 'Restart phase',
     submitLabel: 'Restart phase',
     submitColor: 'var(--warning)',
+    // White is ~2:1 on light-mode amber; --on-warning swaps per theme.
+    submitInk: 'var(--on-warning)',
     placeholder: 'Why are you restarting? (optional)',
   },
   abandon: {
@@ -86,7 +89,10 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
       return
     }
     if (composer.mode === 'reject') {
-      onSubmit(text, stepOptions.length && targetStepIndex !== '' ? Number(targetStepIndex) : null)
+      // HZ-540: a sub-step option adds its id as a third argument.
+      const chosen = stepOptions.length ? decodeTarget(targetStepIndex) : null
+      if (chosen?.substepId) onSubmit(text, chosen.index, chosen.substepId)
+      else onSubmit(text, chosen ? chosen.index : null)
     } else if (composer.mode === 'abandon') {
       onSubmit(text, { removeDependentLinks: dependents.length > 0 && removeDependentLinks })
     } else {
@@ -131,9 +137,10 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
               onChange={(e) => setTargetStepIndex(e.target.value)}
             >
               <option value="">Default — {composer.defaultTargetLabel}</option>
+              {/* HZ-540: a sub-step option sits under its step, indented. */}
               {stepOptions.map((opt) => (
-                <option key={opt.index} value={opt.index}>
-                  {opt.label}
+                <option key={encodeTarget(opt)} value={encodeTarget(opt)}>
+                  {opt.substepId ? `\u00a0\u00a0↳ ${opt.label}` : opt.label}
                 </option>
               ))}
             </select>
@@ -170,7 +177,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
           </button>
           <button
             className="composer__submit"
-            style={{ background: copy.submitColor }}
+            style={{ background: copy.submitColor, ...(copy.submitInk && { color: copy.submitInk }) }}
             disabled={composer.busy}
             aria-busy={composer.busy || undefined}
             onClick={submit}

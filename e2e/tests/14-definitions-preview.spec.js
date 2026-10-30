@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 // HZ-114: resolveRules/renderRulesSection changed from a pre-joined string
 // to a list of parts (so an oversized part can be dropped whole instead of
@@ -34,6 +34,4 @@ test('the effective-prompt preview renders real project rules through the live U
   await expect(preview).toBeVisible({ timeout: 10_000 })
   await expect(preview).toContainText('## Project rules')
   await expect(preview).toContainText('Cross-repo facts every agent on this project needs')
-
-  await captureScreenshot(page, 'definitions-preview')
 })

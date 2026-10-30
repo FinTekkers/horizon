@@ -2,7 +2,7 @@
 // the gate PIN; the right one flips the project and the board picks its items
 // up. A wrong PIN is refused by the route (server/test/gate-pin-routes.test.mjs).
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -38,7 +38,6 @@ test('flipping a project on with the gate PIN enables it and the board picks its
   await pin.fill(GATE_PIN)
   await page.getByRole('button', { name: 'Enable', exact: true }).click()
   await expect(toggle).toHaveAttribute('aria-checked', 'true')
-  await captureScreenshot(page, 'project-enabled')
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 
   await page.getByRole('button', { name: 'Back to board' }).click()

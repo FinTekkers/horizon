@@ -44,7 +44,7 @@ const REQUIRED = ['repo', 'title', 'description', 'metric']
 const selectRows = db.prepare('SELECT * FROM item_split WHERE source_item_id = ? ORDER BY id')
 const selectRow = db.prepare('SELECT * FROM item_split WHERE id = ?')
 const selectLatestPlanRun = db.prepare(
-  "SELECT MAX(id) AS id FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done'",
+  "SELECT MAX(id) AS id FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done'",
 )
 
 // Rows a 'filing' call in THIS process holds. A 'filing' row not in here was

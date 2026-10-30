@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { TEST_ENV_LOGIN_HEADER } from '../walkthrough.mjs'
 
 // HZ-530: a stand-in for a throwaway Horizon, run as its own process so the
 // walkthrough guard has a real /proc/<pid>/environ to read. It serves the
@@ -11,14 +12,23 @@ import { fileURLToPath } from 'node:url'
 const SELF = fileURLToPath(import.meta.url)
 
 if (process.argv[1] === SELF) {
+  // HZ-665: STUB_ROOT=login serves a page that asks /api/auth/me and, like
+  // Horizon's UI, draws Sign in (late) on a 401 or the .app shell on a 200.
+  // /api/auth/me answers 200 only when the request carries STUB_EXPECT_KEY in
+  // the login header, and each logged request says whether it did (never
+  // the value).
+  const root = process.env.STUB_ROOT === 'login' ? 'login' : 'walkthrough'
   const pages = {
-    '/': readFileSync(new URL('./fixtures/walkthrough.html', import.meta.url), 'utf8'),
+    '/': readFileSync(new URL(`./fixtures/${root}.html`, import.meta.url), 'utf8'),
     '/egress': readFileSync(new URL('./fixtures/egress.html', import.meta.url), 'utf8'),
   }
+  const expectKey = process.env.STUB_EXPECT_KEY || ''
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://stub')
-    process.stdout.write(`${JSON.stringify({ method: req.method, path: url.pathname })}\n`)
-    if (req.method === 'GET' && Object.hasOwn(pages, url.pathname)) res.writeHead(200, { 'content-type': 'text/html' }).end(pages[url.pathname])
+    const keyed = expectKey !== '' && req.headers[TEST_ENV_LOGIN_HEADER] === expectKey
+    process.stdout.write(`${JSON.stringify({ method: req.method, path: url.pathname, ...(expectKey && { key: keyed }) })}\n`)
+    if (req.method === 'GET' && url.pathname === '/api/auth/me') res.writeHead(keyed ? 200 : 401, { 'content-type': 'application/json' }).end(keyed ? '{"user":{"name":"admin"}}' : '{"error":"login required"}')
+    else if (req.method === 'GET' && Object.hasOwn(pages, url.pathname)) res.writeHead(200, { 'content-type': 'text/html' }).end(pages[url.pathname])
     else res.writeHead(404).end()
   })
   server.listen(Number(process.env.STUB_PORT || 0), process.env.STUB_HOST || '127.0.0.1', () => {

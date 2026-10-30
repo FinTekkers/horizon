@@ -4,7 +4,7 @@
 // set per test. Kept to a few consolidated journeys: the whole suite shares
 // one global time budget (see playwright.config.js).
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent, insertProject } from '../fixtures/seed.js'
 import { DARK, LIGHT } from '../../ui/src/theme-tokens.js'
 
@@ -140,7 +140,6 @@ test('the phone top bar is one slim row with 44px targets, and the nav is keyboa
   await page.setViewportSize(PHONE)
   await page.goto('/')
   await expect(nav(page)).toBeVisible()
-  await captureScreenshot(page, 'mobile-layout')
 
   const bar = await page.locator('.topbar').boundingBox()
   expect(bar.height).toBeLessThanOrEqual(64)

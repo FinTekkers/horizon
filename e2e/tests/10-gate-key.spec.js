@@ -6,7 +6,7 @@
 // for "Regenerate my PIN" in Admin so the plaintext never touches this
 // browser's localStorage before the window.prompt() flow below runs.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -41,8 +41,6 @@ test('the correct gate PIN approves the gate via the window.prompt() flow', asyn
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
     timeout: 10_000,
   })
-
-  await captureScreenshot(page, 'gate-key')
 })
 
 test('a wrong then cancelled gate key blocks the gate action', async ({ page }) => {

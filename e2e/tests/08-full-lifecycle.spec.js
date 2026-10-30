@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 // Derived, not hardcoded — see global-setup.js's E2E-4 fixture for the same pattern.
 import { endIndex } from '../../domain/js/lifecycle.js'
@@ -32,7 +32,6 @@ test('one item travels the full lifecycle from creation to closed', async ({ req
       // The mock agents ran the three steps before the first gate unattended —
       // MOCK_STEP_LATENCY_MS keeps each one fast — and the pipeline stopped there.
       await expect(page.locator('.step__icon--done')).toHaveCount(3)
-      await captureScreenshot(page, 'mock-agents')
     }
     await page.locator('.btn-gate-approve').click()
     // Each approve now pauses on the explicit confirm dialog (HZ-38) before
@@ -52,8 +51,6 @@ test('one item travels the full lifecycle from creation to closed', async ({ req
   await page.locator('.board__filter-chip', { hasText: 'Closed' }).click()
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
   await expect(card.locator('.status-pill')).toContainText('Closed')
-
-  await captureScreenshot(page, 'full-lifecycle')
 })
 
 test('approving the closing gate with comments also returns to the board', async ({ page }) => {

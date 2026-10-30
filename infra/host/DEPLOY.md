@@ -47,6 +47,7 @@ sudo cp infra/host/horizon-server.service /etc/systemd/system/horizon-server.ser
 sudo systemctl daemon-reload
 sudo systemctl restart horizon-server
 ```
+The unit also loads `/etc/horizon/stripe.env` (optional — the leading `-` skips it if missing), which holds `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET` and `STRIPE_PORTAL_CONFIGURATION_ID` (names only; values live on the host).
 
 ## 2b. WhatsApp gate-approval env (HZ-140)
 
@@ -432,6 +433,196 @@ newest version that still verifies is served instead (else the file), and the
 server logs `rules: TAMPER scope=… key=… version=…`. Accepted risk: an agent
 running as this OS user can read the server's environment, so this catches
 naive or accidental DB edits, not a determined forger.
+
+## 2h. Stripe keys for shoreward.ai sign-up (HZ-633)
+
+`POST /api/billing/checkout-session` and `GET /api/billing/session-status`
+serve Stripe Embedded Checkout on shoreward.ai's sign-up and welcome pages.
+They never sign anyone in. The keys are Stripe **live** keys, in their own
+file so they stay out of `server.env`. Names only — values live on the host,
+never in this repo, never in a log line.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/stripe.env` | `STRIPE_SECRET_KEY` | live secret key. Unset ⇒ **both** routes answer **503** `billing_not_configured` |
+| `/etc/horizon/stripe.env` | `STRIPE_PRICE_ID` | the $200/month Horizon Platform price. Unset ⇒ **both** routes answer **503** |
+| `/etc/horizon/stripe.env` | `STRIPE_PUBLISHABLE_KEY` | handed to the sign-up page, so the site holds no key. Unset ⇒ `checkout-session` answers **503**; `session-status` still works |
+| `/etc/horizon/stripe.env` | `STRIPE_WEBHOOK_SECRET` | read by the webhook route (HZ-634), not by these two |
+
+`horizon-server.service` loads the file with `EnvironmentFile=-…`: the
+service still boots while it is missing. The unit line is new, so copy the
+unit once:
+
+```
+sudo install -m 600 -o ubuntu /dev/null /etc/horizon/stripe.env   # then fill it in
+sudo cp infra/host/horizon-server.service /etc/systemd/system/horizon-server.service
+sudo systemctl daemon-reload
+sudo systemctl restart horizon-server
+```
+
+Then check that the routes are configured. A bad body must get **400**, not 503:
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' \
+  -d '{}' https://shoreward.ai/horizon/api/billing/checkout-session   # 400
+```
+
+The live check is the sign-up page itself: submitting it mounts Embedded
+Checkout. No payment is needed. A Stripe failure answers **502**
+`billing_unavailable`, and the server log has the Stripe error's type and code
+only.
+
+## 2i. Stripe webhook and the owner's email (HZ-634)
+
+`POST /api/billing/stripe-webhook` keeps each account's status in sync with
+Stripe. It checks the `Stripe-Signature` header against the raw body, records
+each event id once, and sets `user.account_status`:
+
+| Event | Status |
+|---|---|
+| `checkout.session.completed` | `active`, and stores the Stripe customer and subscription ids |
+| `invoice.paid` | `active` |
+| `invoice.payment_failed` | `past_due` |
+| `customer.subscription.updated` | `cancelling` when `cancel_at_period_end` is set; else `active` if the subscription's status is `active`/`trialing`; otherwise unchanged |
+| `customer.subscription.deleted` | `cancelled` |
+
+The first time a checked-out customer is `active`, the owner gets one email
+with their name, email and company, to book the setup call. Sign-in does not
+read the status (HZ-635 owns that). Names only — values live on the host.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/stripe.env` | `STRIPE_WEBHOOK_SECRET` | the endpoint's signing secret from the Stripe dashboard. Unset ⇒ the route answers **503** `stripe_webhook_not_configured` and Stripe retries for up to 3 days |
+| `/etc/horizon/server.env` | `GMAIL_USER` | the contact form's Gmail account, the same value as in `/etc/horizon/contact.env` |
+| `/etc/horizon/server.env` | `GMAIL_APP_PASSWORD` | its app password, also in `contact.env`. **Rotate both copies together** |
+| `/etc/horizon/server.env` | `OWNER_NOTIFY_EMAIL` | who gets the email. Unset ⇒ `GMAIL_USER` |
+
+With no Gmail account set, or a failed send, the status still changes; the
+email is retried on the customer's next `active` event (e.g. the next monthly
+`invoice.paid`), and the log line says `mail_not_configured` or `mail_failed`.
+
+In the Stripe dashboard, add a webhook endpoint
+`https://shoreward.ai/horizon/api/billing/stripe-webhook` subscribed to the
+five events above, copy its signing secret into `stripe.env`, then
+`sudo systemctl restart horizon-server`.
+
+Each request logs one line with the event id, type and outcome only, never
+the payload. `outcome: "no_user"` means no Horizon account matched the
+checkout's `client_reference_id`, the buyer's email or the stored Stripe
+customer. That event is recorded and **not** replayed later, so look the
+customer up in the Stripe dashboard and fix the account by hand.
+`customer_conflict` means another account already holds that Stripe customer.
+
+Known risk: Stripe does not guarantee event order. A `checkout.session.completed`
+delivered after that subscription's `customer.subscription.updated` cancel sets
+`active` again until the next subscription event.
+
+### Owner check after deploy (success metric 5)
+
+1. Sign up on shoreward.ai and pay the $200 checkout with your own card.
+2. Check the account is `active` (the user's profile, or
+   `SELECT account_status FROM user WHERE email = …`) and that the email
+   arrived with name, email and company.
+3. In the Stripe dashboard, refund the payment and cancel the subscription
+   immediately. The account then turns `cancelled`.
+
+## 2j. The customer's billing routes (HZ-636)
+
+Four signed-in routes back the billing page: `GET /api/billing` (plan, period
+end, card brand/last 4/expiry, last 12 invoices), `POST /api/billing/cancel`
+(`cancel_at_period_end: true`, with the optional reason and comment as
+`cancellation_details`), `POST /api/billing/resume` and
+`POST /api/billing/card-session`. They use the signed-in user's own Stripe ids
+only, never write `account_status` (the webhook above does that once Stripe
+reports the change), and need only `STRIPE_SECRET_KEY`: unset, they answer
+**503** `billing_not_configured`. A Stripe failure answers **502**
+`billing_unavailable` and logs the error's type and code only.
+
+`card-session` opens Stripe's customer portal on card update only. The first
+call after a restart looks for an active portal configuration with metadata
+`horizon_portal=card_update_only` and every feature but payment-method update
+off, and creates one if there is none. Don't edit that configuration in the
+dashboard: one with another feature turned on is ignored and a new one is
+made. The portal returns to `$HORIZON_UI_URL/billing`.
+
+## 2k. Nightly DB backup (HZ-650)
+
+`horizon-db-backup.timer` runs `infra/host/horizon-db-backup.sh` as `ubuntu`
+every night at 03:30 UTC. The script:
+
+1. aborts with `ERROR disk` if free space on the backup filesystem (or the
+   live DB's, when it is a different device) is below 2 × (`horizon.db` +
+   `horizon.db-wal`);
+2. takes an online copy with `sqlite3 -readonly … ".backup …"` into
+   `~/backups/horizon-db/.staging/`. The server keeps running; nothing is
+   written into `server/data/`;
+3. sets the copy to `journal_mode=DELETE` and runs `PRAGMA integrity_check`,
+   which must print exactly `ok`;
+4. compresses it with `zstd` and tests the archive;
+5. renames it into `~/backups/horizon-db/nightly/horizon-YYYYMMDDTHHMMSSZ.db.zst`;
+6. only then deletes all but the newest 7 files in `nightly/`. Manual copies
+   anywhere else in `~/backups/horizon-db/` are never touched.
+
+Any failure logs `horizon-db-backup: ERROR <stage>: <detail>` to the journal,
+exits non-zero, and leaves every existing copy in place. Success logs
+`horizon-db-backup: OK <file> <bytes>`. Deploys ship script fixes, but they do
+not install unit files, so the units are installed once by hand.
+
+### Install (caretaker, with the owner's OK)
+
+```bash
+# 1. The unit must back up the same file the server uses. If this prints a
+#    HORIZON_DB line, edit Environment=HORIZON_DB= in the .service to match.
+sudo grep HORIZON_DB /etc/horizon/server.env
+# 2. Install and enable the timer.
+sudo cp /opt/horizon/infra/host/horizon-db-backup.service /opt/horizon/infra/host/horizon-db-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now horizon-db-backup.timer
+# 3. First run by hand, before HZ-641 (automatic deletion) lands. Time it.
+time sudo systemctl start horizon-db-backup
+```
+
+If the first run takes more than about 30 minutes (the `.backup` copy restarts
+whenever the server writes between steps), file a follow-up to switch to
+`VACUUM INTO`; that needs the owner's OK.
+
+### Verify
+
+```bash
+systemctl list-timers horizon-db-backup.timer   # NEXT shows 03:30 UTC
+journalctl -u horizon-db-backup -n 20           # an "OK <file> <bytes>" line
+ls -l ~/backups/horizon-db/nightly/
+# Freshness: a failed night only shows in the journal, so check this too.
+find ~/backups/horizon-db/nightly -name 'horizon-*.db.zst' -mmin -1560 | grep -q . \
+  && echo "fresh: newest copy is under 26 h old" || echo "STALE: no copy in the last 26 h"
+```
+
+### Restore
+
+Rehearse first: decompress the newest copy to a scratch path and check it.
+This never touches the live DB.
+
+<!-- restore-rehearsal -->
+```bash
+COPY="$(ls -1 ~/backups/horizon-db/nightly/horizon-*.db.zst | tail -n 1)"
+RESTORE="${TMPDIR:-/tmp}/horizon-restore-check.db"
+zstd -d -q -f "$COPY" -o "$RESTORE"
+sqlite3 "$RESTORE" 'PRAGMA integrity_check;'   # must print: ok
+```
+
+To cut over to the restored copy (owner's call; the server is down meanwhile):
+
+1. `sudo systemctl stop horizon-server`
+2. Move the live files aside, never delete them (a missing `-wal`/`-shm` is
+   fine): `ASIDE=~/backups/horizon-db/pre-restore-$(date -u +%Y%m%dT%H%M%SZ) && mkdir -p "$ASIDE" && mv /opt/horizon/server/data/horizon.db* "$ASIDE/"`
+3. `cp "$RESTORE" /opt/horizon/server/data/horizon.db && chown ubuntu:ubuntu /opt/horizon/server/data/horizon.db`
+4. `sudo systemctl start horizon-server`, then check
+   `curl -s http://127.0.0.1:3001/api/health` returns `{"ok":true,…}`.
+
+### Off switch
+
+`sudo systemctl disable --now horizon-db-backup.timer`. Existing copies in
+`nightly/` stay. Tested by `infra/host/test/horizon-db-backup.test.sh`.
 
 ## 3. Confirm the repo is pull-only
 
@@ -939,6 +1130,14 @@ service target.
   `RESTORE OK`, `RESTORE FAILED (<stage>)` or `RESTORE SKIPPED`, and then
   `DEPLOY FAILED: <install|test> (tag=...)` as the last line.
   `last-good-tag` never moves to the failed tag.
+- **Output (HZ-666).** Each stage's stdout and stderr go to
+  `~/.horizon/<stateKey>/deploy-<tag>-<install|test>.out`; the restore's
+  install has its own `deploy-<tag>-restore-install.out`. On failure, the
+  last 200 lines of the failing stage's file go into `self-deploy.log`
+  between `--- <stage> output (tag=...) ---` and `--- end <stage> output ...`
+  markers, before the restore lines. Only the newest 20 `deploy-*.out` files
+  are kept, by mtime: a passing deploy writes 2, so that is about the last 10
+  deploys.
 - **Step 14.** No agent and no smoke check: the step passes on `DEPLOY OK`
   for the item's tag ("deployed (code only)") and fails on `DEPLOY FAILED`.
 - **Owner: keep the tests offline.** The deploy only unsets the ledger and

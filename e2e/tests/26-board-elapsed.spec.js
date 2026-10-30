@@ -8,7 +8,7 @@
 // Rows are seeded directly (fixtures/seed.js), so the orchestrator never
 // kicks them. Two consolidated journeys: the suite shares one time budget.
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
 import { STEPS, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -109,7 +109,6 @@ test('the elapsed line stays on one line at card width in light, dark and phone 
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await page.locator('.usermenu__scrim').click()
   await expectOneLine('dark')
-  await captureScreenshot(page, 'board-elapsed-dark')
 
   await page.setViewportSize(PHONE)
   // HZ-586: a phone shows one column at a time; EL-LONG's is Technical Plan.

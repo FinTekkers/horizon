@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 
 // E2E-5 (seeded in global-setup.js) has two retained done+artifact attempts
 // at step 4 ("Plan options & trade-offs"), with a feedback row timed to
@@ -21,8 +21,6 @@ test('artifact history: board link opens the latest attempt, with a working link
   await expect(latestPage.locator('.attempts')).toContainText('Add a third option with a cost comparison.')
   await expect(latestPage.locator('article')).toContainText('marker-attempt-two-beta')
   await expect(latestPage.locator('article')).not.toContainText('marker-attempt-one-alpha')
-
-  await captureScreenshot(latestPage, 'artifact-history')
 
   // The link to the earlier attempt is a plain same-tab link, unlike the
   // board's target="_blank" artifact link above.

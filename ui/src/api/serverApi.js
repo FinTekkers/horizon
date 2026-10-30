@@ -4,6 +4,8 @@
 // POSTs; the server sends what changed after every mutation (HZ-318: a full
 // `snapshot` event on connect, then `delta` events at most once a second).
 
+import { APPROVE_FILE_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
 // '/horizon/' → '/horizon/api'). BASE_URL always ends with a slash.
@@ -654,9 +656,11 @@ export async function fixRepoWebhook(projectId, repo, pin) {
 }
 
 // HZ-561: with an attempt, that attempt's artifact (HZ-46's per-attempt route).
-export function artifactUrl(itemId, stepIndex, attempt) {
+// HZ-540: with a substepId, that sub-step's artifact at the step.
+export function artifactUrl(itemId, stepIndex, attempt, substepId = null) {
   const base = `${API_BASE}/items/${itemId}/artifacts/${stepIndex}`
-  return attempt ? `${base}/${attempt}` : base
+  const url = attempt ? `${base}/${attempt}` : base
+  return substepId ? `${url}?substep=${encodeURIComponent(substepId)}` : url
 }
 
 // Full-page views opened via "See agent output" (HZ-14) — plain links, same
@@ -707,7 +711,9 @@ function post(path, body) {
   }).catch((err) => console.error(`POST ${path} failed`, err))
 }
 
-export async function approveGate(id, notes) {
+// HZ-642: `filedAutopilot` ('default' | 'off') is Approve & file's Autopilot
+// choice for the items the Plan files; it is sent at that gate only.
+export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}) {
   const item = items.find((it) => it.id === id)
   if (!item) return { ok: false }
   // Approving "Accept the code" merges the PR server-side. If GitHub refuses
@@ -723,6 +729,9 @@ export async function approveGate(id, notes) {
     ...(notes ? { notes } : {}),
     ...(item.runPlan?.hash ? { planHash: item.runPlan.hash } : {}),
     ...(item.runPlan?.runner ? { runner: item.runPlan.runner } : {}),
+    // HZ-541: the golden-cases set this tab showed at the first gate.
+    ...(item.goldenCases?.hash && !item.goldenCases.approved && item.cursor === item.goldenCases.gateIndex ? { goldenHash: item.goldenCases.hash } : {}),
+    ...(item.cursor === APPROVE_FILE_GATE_INDEX ? { filedAutopilot } : {}),
   }
   const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, body)
   if (!res) return { ok: false }
@@ -744,9 +753,11 @@ export async function approveGate(id, notes) {
 // Rejects with Error('network') when no answer came, or Error(<error code>)
 // with `status` on a non-2xx — items are untouched either way. A 2xx answer's
 // item is applied at once, and its `restart` recorded for the step card.
-export async function requestChanges(id, target, feedback, targetStepIndex) {
+// HZ-540: targetSubstepId sends it back to that sub-step of targetStepIndex.
+export async function requestChanges(id, target, feedback, targetStepIndex, targetSubstepId) {
   const body = { target: target || '', feedback: feedback || '' }
   if (targetStepIndex != null) body.targetStepIndex = targetStepIndex
+  if (targetSubstepId != null) body.targetSubstepId = targetSubstepId
   const res = await gatePost(`/items/${id}/reject`, body)
   if (!res) throw new Error('network')
   const data = await res.json().catch(() => ({}))
@@ -979,6 +990,12 @@ export function effectivePrompt(params) {
   return getJson(`/definitions/effective?${qs}`)
 }
 
+// The one wording for a credential_pattern refusal, so a definitions save, a
+// rules save and a project definitions save (HZ-542) all say the same thing.
+export function credentialMessage(matches) {
+  return `Looks like a credential — move it to an $ENV_VAR reference (${matches.join(', ')})`
+}
+
 // Saving is a gate action (same gate PIN as approvals) — every save becomes
 // a git commit server-side, attributed to the logged-in session's own name;
 // errors carry the lint/size rejection detail.
@@ -991,13 +1008,34 @@ export async function saveDefinition(kind, name, content) {
   if (!res) throw new Error('Could not reach the server')
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
-    if (data.error === 'credential_pattern') {
-      throw new Error(`Looks like a credential — move it to an $ENV_VAR reference (${data.matches.join(', ')})`)
-    }
+    if (data.error === 'credential_pattern') throw new Error(credentialMessage(data.matches))
     if (data.error === 'rules_too_large') throw new Error(`Too large — the per-file cap is ${data.limit} bytes`)
     if (data.error === 'git_dirty') throw new Error('The server checkout has unrelated staged changes — resolve them first')
     if (data.error === 'push_failed') throw new Error(`Committed locally but the push failed — the edit is not on origin yet (${data.commit})`)
     throw new Error(data.error || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+// HZ-542: a project's personas.json or steps.json, saved as one git commit
+// under farm/projects/<slug>/. Same gate PIN handling and the same refusal
+// wording as saveDefinition; an anchor or tool refusal carries the server's
+// own message, which names it.
+export async function saveProjectDefinition(slug, file, content) {
+  const res = await gatePost(
+    `/projects/${encodeURIComponent(slug)}/definitions/${encodeURIComponent(file)}`,
+    { content },
+    'PUT',
+  )
+  if (!res) throw new Error('Could not reach the server')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    if (data.error === 'credential_pattern') throw new Error(credentialMessage(data.matches))
+    if (data.error === 'definitions_too_large') throw new Error(`Too large — the per-file cap is ${data.limit} bytes`)
+    if (data.error === 'invalid_definitions') throw new Error(`Not a valid ${file}: ${data.detail}`)
+    if (data.error === 'git_dirty') throw new Error('The server checkout has unrelated staged changes — resolve them first')
+    if (data.error === 'push_failed') throw new Error(`Committed locally but the push failed — the edit is not on origin yet (${data.commit})`)
+    throw new Error(data.message || data.error || `HTTP ${res.status}`)
   }
   return data
 }
@@ -1023,9 +1061,7 @@ async function rulesPost(path, body, pin) {
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     let message = data.error || `HTTP ${res.status}`
-    if (data.error === 'credential_pattern') {
-      message = `Looks like a credential — move it to an $ENV_VAR reference (${data.matches.join(', ')})`
-    }
+    if (data.error === 'credential_pattern') message = credentialMessage(data.matches)
     if (data.error === 'rules_too_large') message = `Too large — the cap is ${data.limit} bytes`
     if (data.error === 'rules_secret_not_configured') message = 'Rules saving is not configured on the Horizon server'
     if (data.error === 'unverified_version') message = 'That version failed its integrity check and cannot be restored'

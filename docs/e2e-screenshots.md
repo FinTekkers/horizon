@@ -1,15 +1,16 @@
 # E2E screenshots — from a test run to the PR and the baseline
 
-Every implement run photographs the UI at 13 points in the e2e journeys, so a
-reviewer at the "Accept the code" gate can see what the change looks like, and
-what changed visually, without checking out the branch. This doc explains
-where those PNGs go and why they **never ride on the code branch**.
+Every implement run photographs the screens in the repo's
+`.horizon/screenshots.json`, so a reviewer at the "Accept the code" gate can
+see what the change looks like, and what changed visually, without checking
+out the branch. This doc explains where those PNGs go and why they **never
+ride on the code branch**.
 
 ## Why not just commit them?
 
 A PNG has no merge strategy. When screenshots were committed with the code, any
-two branches that regenerated the same journey's screenshot conflicted, even if
-their code didn't (HZ-63). So `e2e/__screenshots__/` is gitignored, and the
+two branches that regenerated the same screenshot conflicted, even if their
+code didn't (HZ-63). So `e2e/__screenshots__/` is gitignored, and the
 pixels travel on their own git refs instead.
 
 ## The three refs
@@ -27,8 +28,7 @@ pixels travel on their own git refs instead.
 ```mermaid
 flowchart LR
     subgraph WT["Item worktree (farm)"]
-        A["1 · Checks<br/>e2e run writes<br/>e2e/__screenshots__/*.png"]
-        V["verify-screenshots.mjs<br/>all 13 journeys present?"]
+        A["1 · Checks<br/>config runner writes<br/>outputDir/*.png"]
     end
     subgraph REFS["Git refs on GitHub"]
         ART["e2e-artifacts/&lt;id&gt;<br/>orphan commit"]
@@ -37,23 +37,22 @@ flowchart LR
     end
     PR["4 · Pull request<br/>## Screenshots<br/>## Screenshot comparison vs. baseline"]
 
-    A --> V
-    V -- "2 · publish (force-push,<br/>temp git index)" --> ART
-    V -- "3 · commit: git add -A<br/>(PNGs gitignored)" --> CODE
+    A -- "2 · publish (force-push,<br/>temp git index)" --> ART
+    A -- "3 · commit: git add -A<br/>(PNGs gitignored)" --> CODE
     CODE -- "opens PR" --> PR
     ART -- "images by URL" --> PR
     BASE -- "fetched at publish:<br/>pixel diff → results.json" --> ART
     ART -- "5 · on merge:<br/>approved shots committed<br/>onto baseline, then ref deleted" --> BASE
 ```
 
-### 1 · Checks: capture and verify
+### 1 · Checks: capture
 
-- Each Playwright journey calls `captureScreenshot(page, name)`
-  (`e2e/fixtures/test-base.js`), which writes `e2e/__screenshots__/<name>.png`.
-  A failed capture only warns; it never fails the test.
-- `e2e/package.json`'s `test` script ends with `node verify-screenshots.mjs`,
-  which fails the run if any of the 13 names in `EXPECTED_JOURNEYS` is missing.
-  Add a name there when you add a journey that captures a screenshot.
+- The checks' screenshots slot (`_capture_screenshots` in `farm/checks.py`)
+  runs the farm's config runner over the repo's `.horizon/screenshots.json`.
+  It writes one PNG per shot, plus `manifest.json`, to the config's
+  `outputDir` (see "Repos with `.horizon/screenshots.json`" below).
+- HZ-621: the config is the only source. The e2e specs no longer capture
+  screenshots, and a repo with no config publishes none.
 - Checks run **before** anything is committed or pushed ("no green, no push").
   A failed check discards the attempt, so nothing below happens.
 
@@ -160,7 +159,7 @@ If the PR is **closed unmerged** on GitHub, the item is sent back and
 
 ## Repos with `.horizon/screenshots.json`: the farm's capture runner (HZ-506)
 
-A repo can instead commit a screenshot config (`.horizon/screenshots.json`,
+A repo opts in by committing a screenshot config (`.horizon/screenshots.json`,
 schema in `farm/screenshots_config.py`, HZ-505). It commits **no capture
 code**: one Horizon-owned runner, `farm/screenshot_runner.py` plus the
 Playwright worker in `farm/capture/`, captures every repo's screens. It is
@@ -212,11 +211,9 @@ command lines in Admin never run — a repo can not swap in its own runner.
 `publish_screenshots()` then pushes the PNGs **and `manifest.json`** from the
 configured `outputDir`, under the same `e2e/__screenshots__/` tree path on
 `e2e-artifacts/<id>`. `server/src/github.js` lists `.png` files only, so the
-manifest rides along without showing in the PR. Repos without a config keep
-publishing from `e2e/__screenshots__` until the HZ-511 cutover. HZ-512: a
-configured repo also publishes the top-level journey PNGs in
-`e2e/__screenshots__` beside its outputDir's (a name in both is the config's
-shot), so adopting a config never reads a journey shot as `removed`.
+manifest rides along without showing in the PR. Nothing outside `outputDir`
+is published (HZ-621). A repo without a config publishes nothing, and the log
+says `publish_screenshots: skipped — no .horizon/screenshots.json`.
 
 **Login.** Captures never log in: only each screen's `path` is visited. The
 key mechanism is HZ-494 (PR #498): the repo's `test_env_file` values. A
@@ -279,11 +276,11 @@ treats a match as the `ADMIN_EMAIL` account on every `/api/*` route and on
 Horizon's `.horizon/screenshots.json` holds the `layout-*` screens that
 replace the layout-only e2e tests (the follow-up removes those tests; the
 mapping is `REMOVED_LAYOUT_TESTS` in `farm/tests/test_horizon_screens.py`).
-Its outputDir is `e2e/__screenshots__/config`: gitignored, and apart from the
-journey shots, because the runner empties outputDir before each capture.
+Its outputDir is `e2e/__screenshots__/config`: gitignored, and in its own
+folder, because the runner empties outputDir before each capture.
 
 `serve` is `e2e/screenshots/serve.sh`. It builds the UI, seeds a throwaway DB
-(`e2e/screenshots/seed.mjs`, rows in `e2e/fixtures/layout-screens-seed.js`),
+(`e2e/screenshots/seed.mjs`, rows in `e2e/fixtures/*-screens-seed.js`),
 runs the server in demo mode with `HORIZON_TEST_HOOKS=1` and an empty `HOME`,
 and serves the UI with `vite preview` on fixed ports 5480 (UI, `ready`) and
 5481 (server), above both e2e port windows. A host-wide `flock` lets one
@@ -297,6 +294,28 @@ Two captures on one commit are byte-identical because of three seed rules:
   never kicks them. Rows seeded first keep the demo items out.
 - No shown item has an active step on its tracker page: the step icon pulses
   (`auraPulse`). The activity screen's item is closed for that reason.
+
+### Horizon's journey screens (HZ-613)
+
+The `journey-*` screens move the e2e journeys' old screenshots into config.
+Each shows, from seeded rows plus a URL, the state a spec clicked its way to:
+rows in `e2e/fixtures/journey-screens-seed.js`, seeded by the same two phases.
+`LEGACY_JOURNEYS` in `farm/tests/test_horizon_screens.py` maps all 64 old names to their shots, or to the reason a path-only screen can
+not show them (a modal or menu that needs a click). HZ-621 removed the old
+e2e capture helper, its calls and the e2e presence check.
+
+- Each `waitFor` names its own seeded text, so a login wall or an empty page
+  never passes as the journey (`test_each_journey_screen_waits_for_its_own_state`).
+- Items no board shot needs are seeded with a 2001 last-activity date, so the
+  board's 30-day filter hides them and only counts them; their pages still
+  open by URL. The pending-approvals count includes their gates.
+- `journey-queued-work`'s run is queued in the server's run-state cache, which
+  has no table: `seed.mjs after` posts it to `/api/test/run-state` with the
+  login key serve.sh is given. Its step is active, so its icon pulses.
+- Live values are masked: the in-flight check's clock on `journey-gate-running`,
+  and this host's box, services and times on `journey-farm-health`.
+- Most screens take one variant (`desktop`, `light`); phone is added where the
+  old shot had one.
 
 **Dark shots.** With no stored theme, the UI follows `prefers-color-scheme`
 (`ui/src/theme.js`, and the pre-paint script in `ui/index.html`), so a
@@ -330,8 +349,6 @@ prints anything, untrack those files the same way.
 
 | What | File |
 |---|---|
-| Capture helper | `e2e/fixtures/test-base.js` (`captureScreenshot`) |
-| Presence check | `e2e/verify-screenshots.mjs` (`EXPECTED_JOURNEYS`) |
 | Ignore rule | `.gitignore` (`e2e/__screenshots__/`) |
 | Publish + commit order | `farm/step_agent.py` (`publish_screenshots`, `finalize_branch`) |
 | Config-driven capture (HZ-506) | `farm/screenshot_runner.py`, `farm/capture/worker.mjs`, `farm/checks.py` (`_capture_screenshots`) |

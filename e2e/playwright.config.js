@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { pickOffset, OFFSET_RANGE, UI_BASE, SERVER_BASE } from './ports.js'
 
 // A private temp DB and non-default ports, isolated from anything a
 // developer might have running locally (~/.horizon-farm state, a real dev
@@ -27,7 +28,8 @@ import { createHash } from 'node:crypto'
 // PORT_OFFSET is a hash of the worktree path modulo 1000, so more concurrent
 // runs means a higher chance of two runs hashing to the same window. That is
 // now classified as `contention` by farm/check_metrics.py rather than being
-// lost in a generic failure bucket.
+// lost in a generic failure bucket. An offset that lands either port on
+// Chromium's restricted list moves to the next safe one (ports.js, HZ-643).
 //
 // RUN_KEY must be stable across Playwright's per-worker re-evaluation of this
 // module (see the DB_PATH note above — a pid would diverge between the worker
@@ -38,11 +40,11 @@ const RUN_KEY = process.env.HORIZON_E2E_RUN_KEY || process.cwd()
 const RUN_HASH = createHash('sha256').update(RUN_KEY).digest()
 const RUN_SUFFIX = RUN_HASH.toString('hex').slice(0, 8)
 // Two disjoint 1000-port windows, so a server port can never land on a UI one.
-const PORT_OFFSET = RUN_HASH.readUInt16BE(0) % 1000
+const PORT_OFFSET = pickOffset(RUN_HASH.readUInt16BE(0) % OFFSET_RANGE)
 
 const DB_PATH = join(tmpdir(), `horizon-e2e-${RUN_SUFFIX}.db`)
-const SERVER_PORT = Number(process.env.HORIZON_E2E_SERVER_PORT) || 3057 + PORT_OFFSET
-const UI_PORT = Number(process.env.HORIZON_E2E_UI_PORT) || 4351 + PORT_OFFSET
+const SERVER_PORT = Number(process.env.HORIZON_E2E_SERVER_PORT) || SERVER_BASE + PORT_OFFSET
+const UI_PORT = Number(process.env.HORIZON_E2E_UI_PORT) || UI_BASE + PORT_OFFSET
 const BASE_URL = `http://localhost:${UI_PORT}`
 // Every /api/* route requires a login session (HZ-21). global-setup.js logs
 // in once via the hardcoded dev-mode credential (ADMIN_EMAIL/PASSWORD are
@@ -171,10 +173,14 @@ export default defineConfig({
       // Same port-clearing + exec reasoning as the server command above.
       // `exec` goes straight into the vite binary (not `npm run preview`,
       // which would just add another non-exec'd wrapper).
-      command: `fuser -k ${UI_PORT}/tcp >/dev/null 2>&1; sleep 0.3; npm run build && exec ./node_modules/.bin/vite preview --port ${UI_PORT} --strictPort`,
+      // HZ-622: ui/scripts/ensure-build.mjs builds ui/dist only when its key
+      // (ui/ and domain/ sources plus the build env) changed, so this build,
+      // spec 53's serve.sh and the screenshot slot's serve.sh share one. The
+      // timeout covers a cache miss plus waiting on another caller's lock.
+      command: `fuser -k ${UI_PORT}/tcp >/dev/null 2>&1; sleep 0.3; node scripts/ensure-build.mjs && exec ./node_modules/.bin/vite preview --port ${UI_PORT} --strictPort`,
       cwd: '../ui',
       port: UI_PORT,
-      timeout: 45_000,
+      timeout: 120_000,
       reuseExistingServer: false,
       env: {
         VITE_PROXY_TARGET: `http://localhost:${SERVER_PORT}`,

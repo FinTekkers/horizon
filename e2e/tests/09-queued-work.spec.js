@@ -1,4 +1,4 @@
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
 import { IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -70,8 +70,6 @@ test('one running and five queued dispatched steps render as one working card an
       await expect(card.locator('.status-pill')).toHaveText('Eng agent')
     }
   }
-
-  await captureScreenshot(page, 'queued-work')
 
   // Reject/cancel on a queued row: farm/farmd.py's /steps/cancel already
   // removes a task from any queue state, so this needs no special-casing —

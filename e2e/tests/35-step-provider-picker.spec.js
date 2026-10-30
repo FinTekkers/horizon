@@ -9,7 +9,7 @@
 // Seeds its own item parked at the intake gate, so no mock agent ever starts
 // the steps under test and no gate is approved (no PIN needed).
 
-import { test, expect, captureScreenshot } from '../fixtures/test-base.js'
+import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 import { STEPS, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -70,7 +70,6 @@ test('picking Muse for a step saves it, highlights it, and survives a reload', a
   await expect(stepCard(page, SUMMARIZE).getByLabel('Runs on')).toHaveCount(1)
 
   await select.scrollIntoViewIfNeeded()
-  await captureScreenshot(page, 'step-provider-picker')
 
   // Persisted on the server, not just local state.
   await page.reload()

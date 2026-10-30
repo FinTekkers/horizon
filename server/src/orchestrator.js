@@ -52,6 +52,7 @@ import {
   registerRunStateProvider,
   registerDeployDrainProvider,
   registerProjectOverlayLoader,
+  registerSubstepsSnapshotter,
   claimGateAction,
   finishGateAction,
   getConflictRun as conflictRunOf,
@@ -91,6 +92,8 @@ import {
   projectOverlayFor,
 } from './store.js'
 import { projectPersonaOverlay } from './definitions.js'
+import { snapshotSubsteps } from './substeps.js'
+import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -1357,6 +1360,8 @@ export function kick(id, opts = {}) {
       pick?.fallbackFrom ? new Date(pick.fallbackResetMs).toISOString() : null,
     ).lastInsertRowid
 
+  // HZ-541: before either path, so neither the farm nor a mock runs it.
+  if (refuseWithoutGoldenCases(runId, id, stepIndex)) return
   if (toFarm) {
     // Only a fallback pins the task's choice; the head runs on today's routing.
     dispatchToFarm(id, stepIndex, runId, attempt, scope, opts.spawnedCode?.sha || null, pick?.fallbackFrom ? pick.entry : null)
@@ -1570,7 +1575,7 @@ function holdForTestResults(id, attempt, opts) {
   }
   if (upload.state !== 'lost') return false
   const requeued = db
-    .prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'superseded' AND instr(output, ?) > 0")
+    .prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'superseded' AND instr(output, ?) > 0")
     .get(id, REVIEW_STEP_INDEX, RESULTS_LOST_TEXT).n
   if (requeued >= LOST_RESULTS_REQUEUE_CAP) return false
   requeueLostResults(id, attempt)
@@ -1781,14 +1786,16 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // verdict and step 9's summary of it). Feeding those back biases the
   // re-review toward its own stale conclusion and, on HZ-128, pushed the
   // total 3 chars over budget so HZ-105 refused the required plan forever.
+  // HZ-539: global steps' rows only — a sub-step row shares its anchor's
+  // step_index and must not win the MAX(id) over it.
   const rows = db
     .prepare(
       `SELECT step_index, artifact, output FROM step_run
        WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
-         AND step_index < ?
+         AND step_index < ? AND substep_id IS NULL
          AND id IN (
            SELECT MAX(id) FROM step_run
-           WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?)
+           WHERE item_id = ? AND status = 'done' AND (artifact IS NOT NULL OR step_index = ?) AND substep_id IS NULL
            GROUP BY step_index
          )
        ORDER BY id`,
@@ -1819,6 +1826,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
   if (truncationNotice) artifacts.unshift(truncationNotice)
   if (overlapInput) artifacts.push(overlapInput)
+  const goldenInput = goldenCasesInput(id, stepIndex)
+  if (goldenInput) artifacts.push(goldenInput)
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
   // HZ-463: a Plan's review steps read the current draft, the Inventory's
   // gaps and the open items in scope. Context only: completeFarmRun decides.
@@ -1896,6 +1905,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...checkCommandsField(item),
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
+    // HZ-541: the metric steps and Eng plan prompts then ask for the set and
+    // its metric line. Absent on every other step, and for every item without
+    // golden cases.
+    ...(GOLDEN_PROMPT_STEP_INDEXES.includes(stepIndex) && goldenCasesRequired(item) ? { golden_cases: true } : {}),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
@@ -2693,7 +2706,7 @@ export async function forwardRejectedReview(id, actor = 'You') {
   if (!reviewRejected(item)) return { error: 'review_not_rejected' }
   if (forwarding.has(id)) return { error: 'forward_in_progress' }
   const reviewRun = db
-    .prepare("SELECT id, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' ORDER BY id DESC LIMIT 1")
+    .prepare("SELECT id, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1")
     .get(id, REVIEW_STEP_INDEX)
   if (!reviewRun) return { error: 'review_not_rejected' }
 
@@ -3078,7 +3091,9 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     verify?.summary ?? null,
     runId,
   )
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+  // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
+  // back to (store.js requestChanges).
+  db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${text.slice(0, 300)}`,
@@ -3250,6 +3265,17 @@ export function refuseUnapprovedRun(runId, id, stepIndex) {
     failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
   }
   return check
+}
+
+// HZ-541: Draft implementation plan, Implement and Review need the golden
+// cases a human approved at the first gate, when the item has them. Without
+// an approved set the run fails before dispatch, pausing the item. True when
+// it refused.
+export function refuseWithoutGoldenCases(runId, id, stepIndex) {
+  if (!GUARDED_STEP_INDEXES.includes(stepIndex)) return false
+  if (!goldenCasesRequired(getItem(id)) || approvedGoldenCases(id)) return false
+  failFarmRun(runId, NOT_APPROVED_TEXT, REASON.GOLDEN_CASES_NOT_APPROVED)
+  return true
 }
 
 // ---- HZ-378: job control (Stop run / Resume) ----
@@ -3463,7 +3489,7 @@ export function failQueuedDeploy(id, message) {
   const item = getItem(id)
   if (!item || item.cursor !== DEPLOY_STEP_INDEX) return
   const attempt = db
-    .prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ?')
+    .prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL')
     .get(id, DEPLOY_STEP_INDEX).n
   const runId = db
     .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, ?, ?)')
@@ -3551,7 +3577,7 @@ async function runMockStep(id, stepIndex, runId) {
     "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, runId)
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(after), id)
+  db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(after), id)
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${summary}`,
@@ -3812,6 +3838,8 @@ export async function reconcileActiveRuns() {
 // HZ-535: at load, not in init(), so every store read of an item in a
 // project with definitions sees its overlay as soon as the app is built.
 registerProjectOverlayLoader(projectPersonaOverlay)
+// HZ-538: likewise, so a sync that inserts an item snapshots its sub-steps.
+registerSubstepsSnapshotter(snapshotSubsteps)
 
 export async function init(log) {
   registerAgentRunner({ kick, cancel, pause })

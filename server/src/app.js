@@ -32,11 +32,15 @@ import {
   PREMERGE_QUEUE_TIMEOUT_MS,
   PREMERGE_SKIP_ENABLED,
   PREMERGE_SKIP_MAX_AGE_MS,
+  stripeConfig,
 } from './config.js'
 import { Marked, Renderer } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
+import * as billing from './billing.js'
+import * as stripeWebhook from './stripeWebhook.js'
+import * as ownerMail from './ownerMail.js'
 import { mintHumanProof } from './humanProof.js'
 import { testEnvUser } from './testEnvLogin.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
@@ -46,11 +50,13 @@ import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner,
 import * as waPollVotes from './waPollVotes.js'
 import { STEPS, endIndex, isItemKind, itemKindOf } from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
+import { SUBSTEP_ID_PATTERN, stepLabel, substepsOf } from '../../domain/js/substeps.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
+import * as projectDefinitions from './projectDefinitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
@@ -98,6 +104,18 @@ function escAttr(s) {
 // The UI builds its own (itemHref in ui/src/components/DependencyBadge.jsx).
 function itemPageUrl(id) {
   return `${UI_URL}/${id.toLowerCase()}`
+}
+
+// HZ-540: the artifact routes' optional ?substep=<id>.
+const SUBSTEP_QUERY = { type: 'object', properties: { substep: { type: 'string', pattern: SUBSTEP_ID_PATTERN } } }
+
+// HZ-540: the sub-step a ?substep= names — one of the item's snapshot at this
+// step — null without one (the global step's own runs), false for an id the
+// item has no sub-step at this step for.
+function artifactSubstep(id, stepIndex, substepId) {
+  if (substepId == null) return null
+  const item = store.getItem(id)
+  return substepsOf(item).find((s) => s.id === substepId && s.anchor === stepIndex) ?? false
 }
 
 // HZ-546: the link context (domain/js/codeRefs.js) for one step run of an item.
@@ -186,10 +204,12 @@ function cssHrefFor(routePath) {
 // steps run by the same agent (e.g. both "Eng") could in rare cases show a
 // revision as driven by feedback meant for the other step. No schema change
 // to fix this — see the HZ-46 options doc's Option B trade-offs.
-function renderArtifactPage(id, stepIndex, run, routePath) {
+// HZ-540: `substep` ({ id, label } from the item's snapshot) renders one of
+// the step's sub-steps instead: its label, and its own attempts.
+function renderArtifactPage(id, stepIndex, run, routePath, substep = null) {
   const step = STEPS[stepIndex]
-  const title = `${esc(id)} · ${esc(step?.label || `step ${stepIndex}`)}`
-  const attempts = store.listStepAttempts(id, stepIndex)
+  const title = `${esc(id)} · ${esc(substep?.label || step?.label || `step ${stepIndex}`)}`
+  const attempts = store.listStepAttempts(id, stepIndex, substep?.id ?? null)
   const current = attempts.find((a) => a.attempt === run.attempt)
   // The feedback shown next to "attempt X of Y" is what drove *this* attempt
   // — the thing a reviewer opening this page wants to check was addressed.
@@ -200,7 +220,7 @@ function renderArtifactPage(id, stepIndex, run, routePath) {
   const otherLinks = attempts
     .filter((a) => a.attempt !== run.attempt)
     .map((a) => {
-      const url = `/api/items/${encodeURIComponent(id)}/artifacts/${stepIndex}/${a.attempt}`
+      const url = `/api/items/${encodeURIComponent(id)}/artifacts/${stepIndex}/${a.attempt}${substep ? `?substep=${encodeURIComponent(substep.id)}` : ''}`
       const feedbackLabel = a.feedback ? ` — “${esc(a.feedback)}”` : ''
       return `<a href="${url}">attempt ${a.attempt}</a>${feedbackLabel}`
     })
@@ -352,6 +372,14 @@ export const SESSION_EXEMPT = [
   // Its contents are route shapes only: no values, no examples, and the
   // credential-bearing internal routes are absent from it entirely.
   /^\/api\/openapi\.json$/,
+  // HZ-633: shoreward.ai's sign-up and welcome pages, for visitors with no
+  // account yet. Exact paths only. Neither route starts a session, sets a
+  // cookie or grants access (see billing.js).
+  /^\/api\/billing\/checkout-session$/,
+  /^\/api\/billing\/session-status$/,
+  // HZ-634: Stripe's webhook. Stripe has no session; the Stripe-Signature HMAC
+  // over the raw body is the boundary (stripeWebhook.js).
+  /^\/api\/billing\/stripe-webhook$/,
 ]
 
 function sessionExempt(url) {
@@ -525,7 +553,14 @@ export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DE
 // to read each route's declared params/querystring/body and check them against
 // the published document; without it that gate could only assert the document
 // agrees with itself. Production passes nothing and the hook is never added.
-export function buildApp({ logger = true, onRoute = null } = {}) {
+//
+// `stripe` is the same kind of seam (HZ-633): tests pass a fake Stripe client
+// so no test calls Stripe. Production passes nothing and the billing routes
+// use billing.stripeClient().
+//
+// `mailer` likewise (HZ-634): tests pass a stub { sendMail } to record the
+// owner's email. Production passes nothing and gets ownerMail.gmailMailer().
+export function buildApp({ logger = true, onRoute = null, stripe = null, mailer = null } = {}) {
   const fastify = Fastify({ logger })
 
   if (onRoute) fastify.addHook('onRoute', onRoute)
@@ -809,6 +844,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           required: ['id', 'stepIndex'],
           properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
         },
+        querystring: SUBSTEP_QUERY,
         response: {
           200: textResponse('text/html', 'A standalone HTML page rendering the latest attempt’s artifact.'),
           404: ERROR_OBJECT,
@@ -817,13 +853,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       const { id, stepIndex } = request.params
-      const run = db
-        .prepare(
-          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
-        )
-        .get(id, stepIndex)
+      const substep = artifactSubstep(id, stepIndex, request.query?.substep)
+      if (substep === false) return reply.code(404).send({ error: 'no artifact for that step' })
+      const run = substep
+        ? (store.substepDoneRuns(id, stepIndex, substep.id).filter((r) => r.artifact != null).at(-1) ?? null)
+        : db
+            .prepare(
+              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
+            )
+            .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
-      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ROUTE))
+      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ROUTE, substep))
     },
   )
 
@@ -849,6 +889,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             attempt: { type: 'integer', minimum: 1 },
           },
         },
+        querystring: SUBSTEP_QUERY,
         response: {
           200: textResponse('text/html', 'A standalone HTML page rendering that specific attempt’s artifact.'),
           404: ERROR_OBJECT,
@@ -857,13 +898,17 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
     (request, reply) => {
       const { id, stepIndex, attempt } = request.params
-      const run = db
-        .prepare(
-          "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
-        )
-        .get(id, stepIndex, attempt)
+      const substep = artifactSubstep(id, stepIndex, request.query?.substep)
+      if (substep === false) return reply.code(404).send({ error: 'no artifact for that attempt' })
+      const run = substep
+        ? (store.substepDoneRuns(id, stepIndex, substep.id).find((r) => r.attempt === attempt && r.artifact != null) ?? null)
+        : db
+            .prepare(
+              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
+            )
+            .get(id, stepIndex, attempt)
       if (!run) return reply.code(404).send({ error: 'no artifact for that attempt' })
-      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ATTEMPT_ROUTE))
+      return reply.type('text/html').send(renderArtifactPage(id, stepIndex, run, ARTIFACT_ATTEMPT_ROUTE, substep))
     },
   )
 
@@ -917,7 +962,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const { id, stepIndex } = request.params
       const run = db
         .prepare(
-          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
+          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
         )
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no output for that step' })
@@ -1546,6 +1591,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
   //
   // HZ-384: `human` is { proof, planHash, runner } from the browser route only. A
   // humanOnly gate refused for want of the proof comes back as a 403.
+  // HZ-541: and goldenHash, so a first gate with golden cases refuses every
+  // other approver (store.approveGate). HZ-642: and filedAutopilot, Approve &
+  // file's Autopilot choice for the items it files.
   async function performGateApproval(id, stepIndex, notes, actor = 'You', human = {}) {
     // Accepting the code means merging its PR — the gate does not advance if
     // the pre-merge checks or the merge fail, and the reason is logged to the
@@ -1673,8 +1721,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
 
   // The /reject body, moved out unchanged (HZ-271) so every send-back — the
   // browser, the WhatsApp poll vote and the Autopilot caretaker — runs it.
-  function performSendBack(id, { target, feedback, targetStepIndex } = {}, actor = 'You') {
-    return store.requestChanges(id, target, feedback, actor, targetStepIndex ?? null)
+  // HZ-540: targetSubstepId sends it back to that sub-step of targetStepIndex.
+  function performSendBack(id, { target, feedback, targetStepIndex, targetSubstepId } = {}, actor = 'You') {
+    return store.requestChanges(id, target, feedback, actor, targetStepIndex ?? null, targetSubstepId ?? null)
   }
 
   // HZ-271: THE one approve and the one send-back. Every route below calls
@@ -1709,6 +1758,10 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             planHash: { type: 'string', maxLength: 128 },
             // HZ-491: the effective runner the same card showed.
             runner: { type: 'string', enum: ['container', 'host'] },
+            // HZ-541: the golden-cases set the first gate's table showed.
+            goldenHash: { type: 'string', maxLength: 128 },
+            // HZ-642: Approve & file's Autopilot choice for the items it files.
+            filedAutopilot: { type: 'string', enum: ['default', 'off'] },
           },
         },
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
@@ -1722,7 +1775,9 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       const notes = (request.body?.notes || '').trim()
       const planHash = request.body?.planHash || null
       const runner = request.body?.runner || null
-      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash, runner })
+      const goldenHash = request.body?.goldenHash || null
+      const filedAutopilot = request.body?.filedAutopilot || null
+      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash, runner, goldenHash, filedAutopilot })
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
     },
@@ -1844,8 +1899,11 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           // targetStepIndex stays null: store.requestChanges derives the
           // default rework target itself, Accept-gate exception included. A
           // second derivation here could only ever drift from that one.
-          sendBack: (id, feedback, actor) =>
-            gateActions.sendBack(id, { target: STEPS[store.getItem(id)?.cursor]?.label || null, feedback }, actor),
+          // HZ-540: the step named as the sub-step's when the item is at one.
+          sendBack: (id, feedback, actor) => {
+            const item = store.getItem(id)
+            return gateActions.sendBack(id, { target: (item && stepLabel(item)) || null, feedback }, actor)
+          },
         },
       )
       if (result.status === 200) {
@@ -1874,6 +1932,8 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
             target: { type: 'string' },
             feedback: { type: 'string' },
             targetStepIndex: { type: 'integer' },
+            // HZ-540: a sub-step of targetStepIndex, from the item's snapshot.
+            targetSubstepId: { type: 'string', pattern: SUBSTEP_ID_PATTERN },
           },
         },
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1889,6 +1949,7 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
           target: request.body?.target,
           feedback: request.body?.feedback,
           targetStepIndex: request.body?.targetStepIndex,
+          targetSubstepId: request.body?.targetSubstepId,
         },
         actorOf(request),
       )
@@ -2360,6 +2421,272 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     reply.clearCookie(SESSION_COOKIE_NAME, { path: '/' })
     return { ok: true }
   })
+
+  // ---- billing (HZ-633: Stripe Embedded Checkout for shoreward.ai) ----
+  // Both routes are in SESSION_EXEMPT and are reached same-origin from
+  // https://shoreward.ai/horizon/api/billing/…. They never call startSession()
+  // or set a cookie. The 503 check runs in preValidation, before any input is
+  // looked at. A Stripe failure is a bare 502: only the error's type and code
+  // are logged, never its message, and no key ever is.
+  const billingNotConfigured = (needPublishable) => (request, reply, done) => {
+    if (billing.billingReady({ needPublishable })) return done()
+    reply.code(503).send({ error: 'billing_not_configured' })
+  }
+  const stripeFor = () => stripe ?? billing.stripeClient()
+
+  fastify.post(
+    '/api/billing/checkout-session',
+    {
+      preValidation: billingNotConfigured(true),
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            email: { type: 'string' },
+            company: { type: 'string' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['clientSecret', 'publishableKey'],
+            properties: { clientSecret: { type: 'string' }, publishableKey: { type: 'string' } },
+          },
+          400: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const signup = billing.validateSignup(request.body)
+      if (signup.error) return reply.code(400).send({ error: signup.error, field: signup.field })
+      try {
+        return await billing.createCheckoutSession(stripeFor(), signup.value)
+      } catch (err) {
+        request.log.warn(billing.stripeErrorSummary(err), 'billing: checkout session failed')
+        return reply.code(502).send({ error: 'billing_unavailable' })
+      }
+    },
+  )
+
+  // logLevel 'warn' drops Fastify's per-request info lines for this route: the
+  // URL carries the session_id, which returns the buyer's email.
+  fastify.get(
+    '/api/billing/session-status',
+    {
+      logLevel: 'warn',
+      preValidation: billingNotConfigured(false),
+      schema: {
+        querystring: { type: 'object', properties: { session_id: { type: 'string' } } },
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['status', 'email'],
+            properties: {
+              status: { type: 'string', enum: ['open', 'complete', 'expired'] },
+              email: { type: ['string', 'null'] },
+            },
+          },
+          400: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const sessionId = request.query.session_id
+      if (typeof sessionId !== 'string' || sessionId.length > 255 || !billing.SESSION_ID_RE.test(sessionId)) {
+        return reply.code(400).send({ error: 'invalid_session_id' })
+      }
+      try {
+        return await billing.getSessionStatus(stripeFor(), sessionId)
+      } catch (err) {
+        if (err?.code === 'resource_missing') return reply.code(404).send({ error: 'not_found' })
+        request.log.warn(billing.stripeErrorSummary(err), 'billing: session status failed')
+        return reply.code(502).send({ error: 'billing_unavailable' })
+      }
+    },
+  )
+
+  // ---- the customer's own subscription (HZ-636) ----
+  // Behind the login gate, so signed out is 401. The Stripe ids come from the
+  // signed-in user's row only: cancel's body allows nothing but `reason` and
+  // `comment` (propertyNames, since additionalProperties: false would strip an
+  // extra key silently), the other POST bodies must be `{}`, and the query
+  // string is never read. Viewing or changing billing needs a browser session
+  // (the screenshot login may view); a token gets 403. None of these routes writes
+  // account_status — the webhook does, once Stripe reports the change.
+  const subscriptionNotConfigured = (request, reply, done) => {
+    if (billing.subscriptionBillingReady()) return done()
+    reply.code(503).send({ error: 'billing_not_configured' })
+  }
+  const billingAccountOr404 = (request, reply) => {
+    const account = billing.billingAccount(request.user.id)
+    if (!account) reply.code(404).send({ error: 'no_subscription' })
+    return account
+  }
+  const billingFailed = (request, reply, err, what) => {
+    if (err instanceof billing.BillingError) return reply.code(err.status).send({ error: err.code })
+    request.log.warn(billing.stripeErrorSummary(err), `billing: ${what} failed`)
+    return reply.code(502).send({ error: 'billing_unavailable' })
+  }
+  const PLAN_VIEW = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      product: { type: ['string', 'null'] },
+      amount: { type: ['integer', 'null'] },
+      currency: { type: ['string', 'null'] },
+      interval: { type: ['string', 'null'] },
+      status: { type: 'string' },
+      cancel_at_period_end: { type: 'boolean' },
+      current_period_end: { type: ['string', 'null'] },
+    },
+  }
+  const PLAN_RESPONSE = { type: 'object', additionalProperties: false, required: ['plan'], properties: { plan: PLAN_VIEW } }
+  const EMPTY_BODY = { type: 'object', maxProperties: 0 }
+  const SUBSCRIPTION_ERRORS = {
+    400: ERROR_OBJECT,
+    401: ERROR_OBJECT,
+    403: ERROR_OBJECT,
+    404: ERROR_OBJECT,
+    409: ERROR_OBJECT,
+    502: ERROR_OBJECT,
+    503: ERROR_OBJECT,
+  }
+
+  fastify.get(
+    '/api/billing',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: {
+        security: SESSION_SECURITY,
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['plan', 'card', 'invoices'],
+            properties: {
+              plan: PLAN_VIEW,
+              card: {
+                type: ['object', 'null'],
+                additionalProperties: false,
+                properties: {
+                  brand: { type: ['string', 'null'] },
+                  last4: { type: ['string', 'null'] },
+                  exp_month: { type: ['integer', 'null'] },
+                  exp_year: { type: ['integer', 'null'] },
+                },
+              },
+              invoices: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    date: { type: ['string', 'null'] },
+                    amount: { type: ['integer', 'null'] },
+                    currency: { type: ['string', 'null'] },
+                    status: { type: ['string', 'null'] },
+                    invoice_pdf: { type: ['string', 'null'] },
+                  },
+                },
+              },
+            },
+          },
+          ...SUBSCRIPTION_ERRORS,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireHumanSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.getBilling(stripeFor(), account)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'billing view')
+      }
+    },
+  )
+
+  fastify.post(
+    '/api/billing/cancel',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: {
+        security: SESSION_SECURITY,
+        body: {
+          type: 'object',
+          propertyNames: { enum: ['reason', 'comment'] },
+          properties: {
+            reason: { type: 'string', enum: billing.CANCEL_REASONS },
+            comment: { type: 'string', maxLength: billing.CANCEL_COMMENT_MAX },
+          },
+        },
+        response: { 200: PLAN_RESPONSE, ...SUBSCRIPTION_ERRORS },
+      },
+    },
+    async (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.cancelAtPeriodEnd(stripeFor(), account, request.body)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'cancel')
+      }
+    },
+  )
+
+  fastify.post(
+    '/api/billing/resume',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: { security: SESSION_SECURITY, body: EMPTY_BODY, response: { 200: PLAN_RESPONSE, ...SUBSCRIPTION_ERRORS } },
+    },
+    async (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.resumeSubscription(stripeFor(), account)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'resume')
+      }
+    },
+  )
+
+  // Card update only: the portal configuration has every other action off.
+  fastify.post(
+    '/api/billing/card-session',
+    {
+      preValidation: subscriptionNotConfigured,
+      schema: {
+        security: SESSION_SECURITY,
+        body: EMPTY_BODY,
+        response: {
+          200: { type: 'object', additionalProperties: false, required: ['url'], properties: { url: { type: 'string' } } },
+          ...SUBSCRIPTION_ERRORS,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const account = billingAccountOr404(request, reply)
+      if (!account) return
+      try {
+        return await billing.createCardSession(stripeFor(), account, `${UI_URL}/billing`)
+      } catch (err) {
+        return billingFailed(request, reply, err, 'card session')
+      }
+    },
+  )
 
   // The two routes below sit under /api/auth/ and so are exempt from the
   // onRequest login gate, but each checks the session itself and 401s without
@@ -3228,6 +3555,101 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
     },
   )
 
+  // ---- HZ-542: a project's own definitions files (Admin "Project definitions") ----
+  // Keyed by the project's slug (its rules key), not its id, because that is
+  // the farm/projects/<slug>/ directory. Reads never write. A save is gate-PIN
+  // protected, checked before anything is read, and becomes one HZ-9 commit
+  // touching only farm/projects/<slug>/<file>.
+
+  const PROJECT_DEFINITION_ERROR_STATUS = {
+    unknown_project: 404,
+    unknown_file: 404,
+    definitions_too_large: 400,
+    credential_pattern: 400,
+    invalid_definitions: 400,
+    tool_not_allowed: 400,
+    anchor_not_allowed: 400,
+    git_dirty: 409,
+    push_failed: 502,
+  }
+
+  // Only the listed fields leave: never the saved value itself. `message` is
+  // sent only when the error set one; otherwise Error's own is just the code.
+  function projectDefinitionError(err, reply) {
+    if (!(err instanceof definitions.DefinitionError) || !Object.hasOwn(PROJECT_DEFINITION_ERROR_STATUS, err.code)) throw err
+    const body = { error: err.code }
+    for (const key of ['limit', 'matches', 'detail', 'tool', 'anchor', 'commit']) {
+      if (Object.hasOwn(err, key)) body[key] = err[key]
+    }
+    if (err.message !== err.code) body.message = err.message
+    return reply.code(PROJECT_DEFINITION_ERROR_STATUS[err.code]).send(body)
+  }
+
+  const projectSlugParams = {
+    type: 'object',
+    required: ['slug'],
+    properties: { slug: { type: 'string', minLength: 1, maxLength: 200 } },
+  }
+  const projectDefinitionFileParams = {
+    type: 'object',
+    required: ['slug', 'file'],
+    properties: { slug: { type: 'string', minLength: 1, maxLength: 200 }, file: { type: 'string', maxLength: 200 } },
+  }
+
+  fastify.get(
+    '/api/projects/:slug/definitions',
+    { schema: { params: projectSlugParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      const view = projectDefinitions.readProjectDefinitions(request.params.slug)
+      if (!view) return reply.code(404).send({ error: 'unknown_project' })
+      return view
+    },
+  )
+
+  fastify.get(
+    '/api/projects/:slug/definitions/:file/history',
+    { schema: { params: projectDefinitionFileParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    (request, reply) => {
+      try {
+        return { history: projectDefinitions.projectDefinitionHistory(request.params.slug, request.params.file) }
+      } catch (err) {
+        return projectDefinitionError(err, reply)
+      }
+    },
+  )
+
+  fastify.put(
+    '/api/projects/:slug/definitions/:file',
+    {
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: projectDefinitionFileParams,
+        body: {
+          type: 'object',
+          required: ['content'],
+          properties: { content: { type: 'object' } },
+        },
+        response: {
+          200: OK_OBJECT,
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+        },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const { slug, file } = request.params
+      try {
+        return projectDefinitions.writeProjectDefinition(slug, file, request.body.content, actorOf(request))
+      } catch (err) {
+        return projectDefinitionError(err, reply)
+      }
+    },
+  )
+
   // HZ-370: the project's default "Runs on" for one step (Admin), used when an
   // item has no choice of its own — including steps 0-2, which run before
   // anyone opens the item. PIN-gated like /autopilot, checked before the
@@ -3970,6 +4392,58 @@ export function buildApp({ logger = true, onRoute = null } = {}) {
       }
     }
     return reply.code(204).send()
+  })
+
+  // ---- Stripe webhook (HZ-634: account status from billing events) ----
+  // The only route that sees its body as raw bytes: the signature is over the
+  // exact bytes Stripe sent, so they are verified before anything parses them.
+  // The buffer parser is registered inside this plugin only, so Fastify's
+  // encapsulation keeps the global string parser above for every other route.
+  // Logs carry the event id, type and outcome only — never the body (it holds
+  // the customer's email), the header or the secret.
+  fastify.register(async (scope) => {
+    scope.removeContentTypeParser('application/json')
+    scope.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => done(null, body))
+
+    scope.post('/api/billing/stripe-webhook', async (request, reply) => {
+      const { webhookSecret } = stripeConfig()
+      if (!webhookSecret) return reply.code(503).send({ error: 'stripe_webhook_not_configured' })
+      const rawBody = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0)
+      if (!stripeWebhook.verifyStripeSignature(webhookSecret, rawBody, request.headers['stripe-signature'])) {
+        request.log.warn({ outcome: 'bad_signature' }, 'stripe webhook: rejected')
+        return reply.code(400).send({ error: 'bad_signature' })
+      }
+      const event = stripeWebhook.parseEvent(rawBody)
+      if (!event) {
+        request.log.warn({ outcome: 'bad_payload' }, 'stripe webhook: rejected')
+        return reply.code(400).send({ error: 'bad_payload' })
+      }
+      const logged = { stripeEventId: event.id, stripeEventType: event.type }
+      let result
+      try {
+        result = stripeWebhook.applyStripeEvent(event)
+      } catch (err) {
+        request.log.error({ ...logged, outcome: 'processing_failed', errorCode: err?.code ?? null }, 'stripe webhook: failed')
+        return reply.code(500).send({ error: 'processing_failed' })
+      }
+      let outcome = result.outcome
+      // The status change is committed whatever happens to the email; a failed
+      // or impossible send is un-claimed so a later event tries again.
+      if (result.notifyOwner) {
+        try {
+          const sent = await ownerMail.sendActivationEmail(mailer ?? ownerMail.gmailMailer(), result.notifyOwner)
+          if (!sent) {
+            stripeWebhook.releaseOwnerNotice(result.userId)
+            outcome = 'mail_not_configured'
+          }
+        } catch {
+          stripeWebhook.releaseOwnerNotice(result.userId)
+          outcome = 'mail_failed'
+        }
+      }
+      request.log.info({ ...logged, outcome }, 'stripe webhook: processed')
+      return result.duplicate ? { received: true, duplicate: true } : { received: true }
+    })
   })
 
   // e2e only (HZ-54): the e2e suite has no live farm daemon (FARM_URL is

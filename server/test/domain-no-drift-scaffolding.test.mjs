@@ -43,8 +43,19 @@ const PINNED_DEPS = {
       fastify: '^5.6.2',
       'google-auth-library': '^11.0.0',
       marked: '^18.0.6',
+      // HZ-634 added `nodemailer` — deliberately: the approved plan (option A)
+      // sends the owner's "new active customer" email over the contact form's
+      // Gmail SMTP account rather than coupling to shoreward's contact service.
+      // It has no transitive packages. Only server/src/ownerMail.js imports it.
+      nodemailer: '^10.3.1',
       pixelmatch: '^7.2.0',
       pngjs: '^7.0.0',
+      // HZ-633 added `stripe` — deliberately: the approved plan chose the
+      // official SDK for the shoreward.ai Embedded Checkout routes over a
+      // hand-rolled REST client. Pinned exactly (no caret), because
+      // ui_mode 'embedded_page' depends on the API version the SDK sends.
+      // Only server/src/billing.js imports it (account-status-writers.test.mjs).
+      stripe: '23.0.1',
     },
     devDependencies: undefined,
   },

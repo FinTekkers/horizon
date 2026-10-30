@@ -1,6 +1,7 @@
 // Shared status presentation for a work item (board card + tracker header).
 
 import { isClosed, isAbandoned, curStep, awaitingGate, ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+import { currentSubstep } from '../../../domain/js/substeps.js'
 import { stepAgentToken } from './agentTokens'
 import { gateActionOf } from './gateAction'
 
@@ -93,7 +94,7 @@ export function itemStatus(item, verbose = false, { deployBlock = null } = {}) {
   if (paused) return { label: 'Paused', color: 'var(--muted-strong)', bg: 'var(--chip)' }
   // Precedence (HZ-335): Abandoned > Closed > Changes requested > Paused >
   // Blocked by a rule (HZ-346) > Blocked > Queued to merge (HZ-360) >
-  // Awaiting > Queued > working.
+  // Awaiting > Queued > At a sub-step (HZ-540) > working.
   // Danger is what "blocked" already means on the board (.dep-pill--blocked,
   // step__icon--blocked).
   if (isRuleBlocked(item)) return { label: 'Blocked by a rule', color: 'var(--danger-ink)', bg: 'var(--danger-bg)' }
@@ -103,9 +104,12 @@ export function itemStatus(item, verbose = false, { deployBlock = null } = {}) {
   if (awaiting) {
     return { label: verbose ? 'Awaiting your approval' : 'Awaiting you', color: 'var(--warning-ink)', bg: 'var(--warning-bg)' }
   }
+  // HZ-540: a queued sub-step names the sub-step when the farm gave no reason.
+  const sub = currentSubstep(item)
   if (isQueued(item)) {
-    return { label: 'Queued', color: '#8C8C8E', bg: '#EDEDEF', reason: item.activeRun.reason || undefined }
+    return { label: 'Queued', color: 'var(--muted-strong)', bg: 'var(--chip)', reason: item.activeRun.reason || sub?.label || undefined }
   }
+  if (sub) return { label: 'At a sub-step', color: 'var(--primary-ink)', bg: 'var(--primary-bg)', reason: sub.label }
   const agent = stepAgentToken(cur)
   return { label: verbose ? `${agent.label} working` : agent.label, color: 'var(--primary-ink)', bg: 'var(--primary-bg)' }
 }
@@ -160,5 +164,6 @@ export function stateLabel(item, { deployBlock = null } = {}) {
     if (queuedToMerge(item, deployBlock)) return 'Queued to merge'
     return 'Waiting on you'
   }
-  return stepStateLabel(cur)
+  // HZ-540: at a sub-step, the elapsed line names it.
+  return currentSubstep(item)?.label ?? stepStateLabel(cur)
 }

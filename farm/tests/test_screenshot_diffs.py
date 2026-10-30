@@ -21,6 +21,7 @@ from farm.step_agent import publish_screenshots
 ITEM = {"id": "T-1", "repo": "acme/demo"}
 REF = "e2e-artifacts/t-1"
 TREE = "e2e/__screenshots__"
+CONFIG = Path(__file__).parent / "fixtures" / "screenshots" / "valid.json"
 FIXTURE = Path(__file__).resolve().parents[2] / "domain" / "fixtures" / "screenshot-results.json"
 
 
@@ -59,6 +60,11 @@ def workspace(tmp_path):
     subprocess.run(["git", "clone", "-q", str(origin), str(ws)], check=True, capture_output=True)
     git(ws, "config", "user.email", "farm@example.com")
     git(ws, "config", "user.name", "Horizon Farm")
+    # HZ-621: publish reads only a config's outputDir; point it at TREE.
+    (ws / ".horizon").mkdir()
+    config = json.loads(CONFIG.read_text())
+    config["outputDir"] = TREE
+    (ws / ".horizon" / "screenshots.json").write_text(json.dumps(config))
     return ws, origin
 
 
@@ -257,8 +263,7 @@ def test_default_thresholds_are_recorded_and_a_config_can_override_them(tmp_path
     assert (doc["threshold"], doc["ratioTolerance"]) == (0.1, 0.01)
     assert statuses(doc) == {"home--desktop--light": "same"}
 
-    (ws / ".horizon").mkdir()
-    config = json.loads((Path(__file__).parent / "fixtures" / "screenshots" / "valid.json").read_text())
+    config = json.loads(CONFIG.read_text())
     config["outputDir"] = TREE
     config["diff"] = {"ratioTolerance": 0}
     (ws / ".horizon" / "screenshots.json").write_text(json.dumps(config))
@@ -352,57 +357,3 @@ def test_publish_never_moves_the_baseline(tmp_path):
     assert origin_sha(origin, "e2e-baseline") == before
     assert ref_files(origin, "e2e-baseline") == [f"{TREE}/a.png", f"{TREE}/b.png"]
 
-
-HORIZON_CONFIG = Path(__file__).resolve().parents[2] / ".horizon" / "screenshots.json"
-
-
-def write_horizon_config_shots(ws) -> dict[str, bytes]:
-    """Horizon's own .horizon/screenshots.json, plus one PNG per shot in its
-    outputDir, named as the runner names them."""
-    (ws / ".horizon").mkdir()
-    (ws / ".horizon" / "screenshots.json").write_text(HORIZON_CONFIG.read_text())
-    cfg = step_agent.screenshots_config.load_config(ws)
-    out = ws / cfg.output_dir
-    out.mkdir(parents=True)
-    taken, shots = set(), {}
-    for shot in cfg.shots:
-        name = screenshot_runner.png_name(shot, taken)
-        (out / name).write_bytes(png())
-        shots[name[: -len(".png")]] = png()
-    (out / screenshot_runner.MANIFEST_NAME).write_text('{"version": 1, "shots": []}')
-    return shots
-
-
-def test_adding_the_config_keeps_publishing_every_journey_shot(tmp_path):
-    # HZ-512 metric 4: the journey shots on e2e-baseline still publish beside
-    # the config's shots, so none reads `removed`; the config's read `new`.
-    ws, origin = workspace(tmp_path)
-    journeys = {"board-blocked-dark": png(), "mobile-layout": png()}
-    seed_baseline(tmp_path, origin, journeys)
-    write_shots(ws, journeys)
-    config_shots = write_horizon_config_shots(ws)
-    assert config_shots and not set(config_shots) & set(journeys)
-
-    publish(ws)
-
-    got = statuses(results(origin))
-    assert "removed" not in got.values(), got
-    assert got == {**{name: "same" for name in journeys}, **{name: "new" for name in config_shots}}
-    files = ref_files(origin)
-    assert {f"{TREE}/{name}.png" for name in [*journeys, *config_shots]} <= set(files)
-    assert f"{TREE}/{screenshot_runner.MANIFEST_NAME}" in files
-
-
-def test_a_config_shot_wins_over_a_journey_shot_of_the_same_name(tmp_path):
-    ws, origin = workspace(tmp_path)
-    config_shots = write_horizon_config_shots(ws)
-    name = next(iter(config_shots))
-    write_shots(ws, {name: png(changed=5), "journey": png()})
-
-    publish(ws)
-
-    shown = subprocess.run(
-        ["git", "--git-dir", str(origin), "show", f"{REF}:{TREE}/{name}.png"], capture_output=True, check=True
-    ).stdout
-    assert shown == png()
-    assert f"{TREE}/journey.png" in ref_files(origin)

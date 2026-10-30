@@ -618,26 +618,49 @@ def build_prompt(task: dict) -> str:
     if rules_section:
         lines.append("")
         lines.append(rules_section)
+    golden = golden_cases_section(task)
+    if golden:
+        lines += ["", golden]
     return "\n".join(lines)
 
 
+# ---- golden cases (HZ-541) ----
+# The server sets `golden_cases: true` on a task only when the item's project
+# has its definitions switch on and the item's snapshot has a golden_cases
+# sub-step. Without it nothing is appended, so every other prompt is
+# byte-identical. The metric line's token is domain/js/goldenCases.js's
+# GOLDEN_CASES_MARKER: the first-gate table links each case to that line.
+GOLDEN_CASES_ROLE = "golden_cases.md"
+GOLDEN_CASES_ADDENDUM = "golden_cases_addendum.md"
+GOLDEN_CASES_OUTPUT = "golden_cases"
+# Change "Define how we measure success", Task "How we'll verify", and Eng plan.
+GOLDEN_ADDENDUM_LABELS = frozenset({"Define how we measure success", "How we'll verify", ENG_PLAN_LABEL})
+
+
+def golden_cases_section(task: dict) -> str | None:
+    """The golden-cases text a task's prompt ends with, or None. A golden_cases
+    sub-step gets the producer contract; the metric steps and Eng plan of an
+    item with golden cases get the addendum."""
+    if (task.get("substep") or {}).get("output") == GOLDEN_CASES_OUTPUT:
+        return (ROLES / GOLDEN_CASES_ROLE).read_text().rstrip("\n")
+    if task.get("golden_cases") is True and task["step"].get("label") in GOLDEN_ADDENDUM_LABELS:
+        return (ROLES / GOLDEN_CASES_ADDENDUM).read_text().rstrip("\n")
+    return None
+
+
 # ---- screenshot publishing (HZ-63) ----
-# e2e/__screenshots__/*.png are gitignored, not committed — two branches that
-# both touch the same journey no longer collide on a binary file. Instead
-# they're force-pushed as an orphan commit to a per-item ref that
-# server/src/github.js reads via the same contents-API path it already used
-# for the PR-branch screenshots (naming here — "e2e-artifacts/<item-id>" —
-# must match artifactsRef() there). Best-effort: a publish failure never fails
-# the implement step, mirroring captureScreenshot's own warn-and-continue
-# philosophy in e2e/fixtures/test-base.js.
-# HZ-506: a repo with .horizon/screenshots.json publishes its configured
-# outputDir instead — the farm runner's PNGs plus its manifest.json — under the
-# same e2e/__screenshots__/ tree path, so server/src/github.js is unchanged.
-# A repo without one keeps the e2e/__screenshots__ source until HZ-511.
-# HZ-512: a configured repo ALSO publishes the e2e journey shots in
-# e2e/__screenshots__ (top level only) beside its outputDir's, so adopting a
-# config never reads a journey shot as `removed`. A name in both is the
-# config's shot.
+# Screenshots are gitignored, not committed — two branches that both touch the
+# same screen never collide on a binary file. Instead they're force-pushed as
+# an orphan commit to a per-item ref that server/src/github.js reads via the
+# contents API (naming here — "e2e-artifacts/<item-id>" — must match
+# artifactsRef() there). Best-effort: a publish failure never fails the
+# implement step.
+# HZ-506: the source is .horizon/screenshots.json's outputDir — the farm
+# runner's PNGs plus its manifest.json — published under the
+# e2e/__screenshots__/ tree path, so server/src/github.js is unchanged.
+# HZ-621: that config is the only source. The e2e specs no longer capture
+# shots, so a repo without a config publishes nothing (and logs it), and PNGs
+# outside outputDir are never published.
 # HZ-508: every publish also diffs each shot against e2e-baseline (fetched,
 # never pushed) and adds results.json plus diff/<name>.png per changed shot to
 # the SAME orphan commit, so the force-push replaces every result of the
@@ -774,20 +797,16 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
     except screenshots_config.ConfigError:
         log("publish_screenshots: skipped — invalid config")
         return
-    journey_dir = ws / SHOTS_TREE
-    shots_dir = ws / cfg.output_dir if cfg is not None else journey_dir
+    if cfg is None:
+        log("publish_screenshots: skipped — no .horizon/screenshots.json")
+        return
+    shots_dir = ws / cfg.output_dir
     pngs = _pngs_in(shots_dir)
-    if cfg is not None and shots_dir.resolve() != journey_dir.resolve():
-        taken = {png.name for png in pngs}
-        pngs = sorted([*pngs, *(png for png in _pngs_in(journey_dir) if png.name not in taken)], key=lambda p: p.name)
     manifest = shots_dir / screenshot_runner.MANIFEST_NAME
     if not pngs:
         log("publish_screenshots: no screenshots to publish — skipped")
         return
-    diff_cfg = {
-        "threshold": cfg.diff_threshold if cfg is not None else screenshots_config.DEFAULT_DIFF_THRESHOLD,
-        "ratioTolerance": cfg.diff_ratio_tolerance if cfg is not None else screenshots_config.DEFAULT_DIFF_RATIO_TOLERANCE,
-    }
+    diff_cfg = {"threshold": cfg.diff_threshold, "ratioTolerance": cfg.diff_ratio_tolerance}
     # NOT ws/".git": per-item worktrees (HZ-50) have a .git FILE containing
     # "gitdir: ...", not a directory, so writing an index inside it raises
     # ENOTDIR. GIT_INDEX_FILE may live anywhere, so use a temp path that is
@@ -805,7 +824,7 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
             git(ws, "update-index", "--add", "--cacheinfo", f"100644,{sha},{tree_path}", env=env)
             return sha
 
-        files = [*pngs, manifest] if cfg is not None and manifest.is_file() else pngs
+        files = [*pngs, manifest] if manifest.is_file() else pngs
         shots = {}
         for png in files:
             sha = add(png, f"{SHOTS_TREE}/{png.name}")
@@ -2593,6 +2612,10 @@ def _execute_pm(task: dict) -> dict:
     item = task["item"]
     kind = item_kind(item)
     prompt = pm_steps.build_prompt(task)
+    # HZ-541: the metric step of an item with golden cases names the set.
+    golden = golden_cases_section(task)
+    if golden:
+        prompt = f"{prompt}\n\n{golden}"
     # HZ-192: run_agent() resolves the model from who is calling — the step's
     # own domain/steps.json agent (PM, or Architect for "Set guardrails").
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])

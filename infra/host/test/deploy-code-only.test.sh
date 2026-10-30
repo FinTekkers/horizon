@@ -56,10 +56,16 @@ setup_repo() {
     git config user.name "Deploy Test"
     mkdir -p scripts/checks
     echo .venv/ >.gitignore
+    # HZ-666: both also print to stdout (and test.sh to stderr) what the
+    # deploy should capture: a known line, the filtered env (never the full
+    # env, which can hold host secrets), then CHECK_OUTPUT_LINES numbered lines.
     cat >scripts/checks/install.sh <<'EOF'
 #!/usr/bin/env bash
 echo "install $(git rev-parse HEAD)" >>"$CHECK_LOG"
 env | grep -E '^(LEDGER|PRICE|VALUATION)_' >>"$ENV_LOG"
+echo "install output at $(git rev-parse HEAD)"
+env | grep -E '^(LEDGER|PRICE|VALUATION|KEEP_ME)_'
+for i in $(seq 1 "${CHECK_OUTPUT_LINES:-0}"); do echo "out-line $i"; done
 if [ -n "${INSTALL_FAIL_ALWAYS:-}" ] || [ -e fail-install ]; then exit 1; fi
 mkdir -p .venv && git rev-parse HEAD >.venv/installed-for
 EOF
@@ -67,6 +73,10 @@ EOF
 #!/usr/bin/env bash
 echo "test $(git rev-parse HEAD)" >>"$CHECK_LOG"
 env | grep -E '^(LEDGER|PRICE|VALUATION)_' >>"$ENV_LOG"
+echo "test output at $(git rev-parse HEAD)"
+echo "test stderr at $(git rev-parse HEAD)" >&2
+env | grep -E '^(LEDGER|PRICE|VALUATION|KEEP_ME)_'
+for i in $(seq 1 "${CHECK_OUTPUT_LINES:-0}"); do echo "out-line $i"; done
 [ ! -e fail-test ]
 EOF
     cat >scripts/load-prices.sh <<'EOF'
@@ -92,6 +102,7 @@ run_deploy() {
     HORIZON_STATE_DIR="$base/state" \
     HORIZON_DEPLOY_LOCK_TIMEOUT_S=5 \
     LEDGER_SERVICE_HOST=ledger.invalid PRICE_SERVICE_HOST=price.invalid \
+    KEEP_ME_HOST=kept.invalid \
     CHECK_LOG="$base/checks.log" ENV_LOG="$base/env.log" FORBIDDEN_LOG="$base/forbidden.log" \
     OVERRIDE_LOG="$base/override.log" \
     "$@" \
@@ -112,6 +123,14 @@ new_base() {
 sha_of() { git -C "$1/seed" rev-parse "$2"; }
 head_of() { git -C "$1/repo" rev-parse HEAD; }
 last_line() { tail -n1 "$1/state/self-deploy.log"; }
+# block_of BASE STAGE TAG — the lines between the --- STAGE output markers
+# for TAG in self-deploy.log (HZ-666), markers excluded.
+block_of() {
+  awk -v start="--- $2 output (tag=refs/tags/$3) ---" -v end="--- end $2 output (tag=refs/tags/$3) ---" \
+    '$0 == end { on = 0 } on { print } $0 == start { on = 1 }' "$1/state/self-deploy.log"
+}
+# line_of BASE PATTERN — the number of the first log line matching PATTERN.
+line_of() { grep -n -m1 -F -- "$2" "$1/state/self-deploy.log" | cut -d: -f1; }
 
 # ---- 1. the tag is checked out, installed and tested; DEPLOY OK ----
 {
@@ -142,6 +161,18 @@ last_line() { tail -n1 "$1/state/self-deploy.log"; }
   expect "test fails: logs RESTORE OK" grep -q "RESTORE OK tag=refs/tags/deploy-mdi-1 after refs/tags/deploy-mdi-3" "$base/state/self-deploy.log"
   expect "test fails: DEPLOY FAILED: test is the last line" bash -c "tail -n1 '$base/state/self-deploy.log' | grep -q 'DEPLOY FAILED: test (tag=refs/tags/deploy-mdi-3 commit=$sha3)'"
   expect "test fails: no DEPLOY OK for the tag" bash -c "! grep -q 'DEPLOY OK tag=refs/tags/deploy-mdi-3' '$base/state/self-deploy.log'"
+  # HZ-666: the failing test output is in the log, ahead of the restore.
+  block="$(block_of "$base" test deploy-mdi-3)"
+  expect "test output: the known stdout line is in the test output block" grep -qx "test output at $sha3" <<<"$block"
+  expect "test output: the stderr line is in the block too" grep -qx "test stderr at $sha3" <<<"$block"
+  expect "test output: block, then RESTORE OK, then DEPLOY FAILED last" test \
+    "$(line_of "$base" "--- test output (tag=refs/tags/deploy-mdi-3) ---")" -lt "$(line_of "$base" "RESTORE OK tag=refs/tags/deploy-mdi-1 after refs/tags/deploy-mdi-3")"
+  expect "test output: RESTORE OK comes right before the final DEPLOY FAILED" bash -c \
+    "tail -n2 '$base/state/self-deploy.log' | head -n1 | grep -q 'RESTORE OK tag=refs/tags/deploy-mdi-1 after refs/tags/deploy-mdi-3'"
+  expect "test output: the block holds nothing from the restore install" bash -c "! grep -q '$sha1' <<<\"\$1\"" _ "$block"
+  expect "test output: the restore did not overwrite the test output file" grep -qx "test output at $sha3" "$base/state/deploy-deploy-mdi-3-test.out"
+  expect "test output: the test output file holds nothing from the restore" bash -c "! grep -q '$sha1' '$base/state/deploy-deploy-mdi-3-test.out'"
+  expect "test output: the restore install has its own file" grep -qx "install output at $sha1" "$base/state/deploy-deploy-mdi-3-restore-install.out"
 
   # ---- 3. install fails: tests never run, the last good code is put back ----
   : >"$base/checks.log"
@@ -156,6 +187,18 @@ last_line() { tail -n1 "$1/state/self-deploy.log"; }
   expect "install fails: DEPLOY FAILED: install is the last line" bash -c "tail -n1 '$base/state/self-deploy.log' | grep -q 'DEPLOY FAILED: install (tag=refs/tags/deploy-mdi-2 commit=$sha2)'"
   expect "guardrail: still no sudo, systemctl or loader after failures" test ! -s "$base/forbidden.log"
   expect "guardrail: still no ledger or price env after failures" test ! -s "$base/env.log"
+  # HZ-666: the failing install output is in the log; the restore's install,
+  # the same stage, neither overwrites its file nor adds a second block.
+  block="$(block_of "$base" install deploy-mdi-2)"
+  expect "install output: the known line is in the install output block" grep -qx "install output at $sha2" <<<"$block"
+  expect "install output: the block comes before the final DEPLOY FAILED: install" test \
+    "$(line_of "$base" "--- end install output (tag=refs/tags/deploy-mdi-2) ---")" -lt "$(wc -l <"$base/state/self-deploy.log")"
+  expect "install output: exactly one install output block for the tag" test \
+    "$(grep -cxF -- "--- install output (tag=refs/tags/deploy-mdi-2) ---" "$base/state/self-deploy.log")" -eq 1
+  expect "install output: the block holds nothing from the restore install" bash -c "! grep -q '$sha1' <<<\"\$1\"" _ "$block"
+  expect "install output: the install output file still holds the failing install" grep -qx "install output at $sha2" "$base/state/deploy-deploy-mdi-2-install.out"
+  expect "install output: the install output file holds nothing from the restore" bash -c "! grep -q '$sha1' '$base/state/deploy-deploy-mdi-2-install.out'"
+  expect "install output: the restore install has its own file" grep -qx "install output at $sha1" "$base/state/deploy-deploy-mdi-2-restore-install.out"
 
   # ---- 4. the restore's install fails too ----
   run_deploy "$base" deploy-mdi-2 INSTALL_FAIL_ALWAYS=1
@@ -165,6 +208,8 @@ last_line() { tail -n1 "$1/state/self-deploy.log"; }
   expect "restore fails: RESTORE FAILED comes right before the final DEPLOY FAILED" bash -c \
     "tail -n2 '$base/state/self-deploy.log' | head -n1 | grep -q 'RESTORE FAILED (install)' && tail -n1 '$base/state/self-deploy.log' | grep -q 'DEPLOY FAILED: install (tag=refs/tags/deploy-mdi-2'"
   expect "restore fails: last-good-tag unchanged" grep -qx "refs/tags/deploy-mdi-1:$sha1" "$base/state/last-good-tag"
+  expect "restore fails: a redeploy of the tag starts its output file afresh" test \
+    "$(grep -c '^# stage=' "$base/state/deploy-deploy-mdi-2-install.out")" -eq 1
 }
 
 # ---- 5. another deploy holds the lock: nothing moves ----
@@ -260,6 +305,59 @@ last_line() { tail -n1 "$1/state/self-deploy.log"; }
   expect "empty build command: exits 0" test "$code" -eq 0
   expect "empty build command: install then test ran" test "$(cat "$base/checks.log")" = "$(printf 'install %s\ntest %s' "$sha1" "$sha1")"
   expect "empty build command: logs the default build line" grep -qE "^[^ ]+ build: scripts/checks/install.sh$" "$base/state/self-deploy.log"
+}
+
+# ---- 9. HZ-666: the log keeps only the last 200 lines of the failing output ----
+{
+  base="$(new_base)"
+  run_deploy "$base" deploy-mdi-3 CHECK_OUTPUT_LINES=250
+  block="$(block_of "$base" test deploy-mdi-3)"
+  expect "200 lines: the block holds exactly 200 lines" test "$(grep -c '' <<<"$block")" -eq 200
+  expect "200 lines: the first is out-line 51" bash -c "head -n1 <<<\"\$1\" | grep -qx 'out-line 51'" _ "$block"
+  expect "200 lines: the last is out-line 250" bash -c "tail -n1 <<<\"\$1\" | grep -qx 'out-line 250'" _ "$block"
+  expect "200 lines: out-line 50 is not in the block" bash -c "! grep -qx 'out-line 50' <<<\"\$1\"" _ "$block"
+  expect "200 lines: DEPLOY FAILED: test is still the last line" bash -c "tail -n1 '$base/state/self-deploy.log' | grep -q 'DEPLOY FAILED: test (tag=refs/tags/deploy-mdi-3'"
+}
+
+# ---- 10. HZ-666: a passing deploy logs no output block but keeps its file ----
+{
+  base="$(new_base)"
+  run_deploy "$base" deploy-mdi-1
+  code=$?
+  sha1="$(sha_of "$base" deploy-mdi-1)"
+  expect "pass output: exits 0" test "$code" -eq 0
+  expect "pass output: no output block in the log" test "$(grep -c -- '^--- .* output' "$base/state/self-deploy.log")" -eq 0
+  expect "pass output: the test output file holds the stage output" grep -qx "test output at $sha1" "$base/state/deploy-deploy-mdi-1-test.out"
+  expect "pass output: the install output file holds the stage output" grep -qx "install output at $sha1" "$base/state/deploy-deploy-mdi-1-install.out"
+}
+
+# ---- 11. HZ-666: only the newest 20 output files are kept ----
+{
+  base="$(new_base)"
+  mkdir -p "$base/state"
+  for n in $(seq 1 22); do
+    echo old >"$base/state/deploy-old-$n-test.out"
+    touch -d "@$((1700000000 + n * 60))" "$base/state/deploy-old-$n-test.out"
+  done
+  run_deploy "$base" deploy-mdi-1
+  expect "retention: 20 output files remain" test "$(find "$base/state" -maxdepth 1 -name 'deploy-*.out' | wc -l)" -eq 20
+  for n in 1 2 3 4; do
+    expect "retention: the old file $n is deleted" test ! -e "$base/state/deploy-old-$n-test.out"
+  done
+  kept=0
+  for n in $(seq 5 22); do [ -e "$base/state/deploy-old-$n-test.out" ] && kept=$((kept + 1)); done
+  expect "retention: the 18 newest old files survive" test "$kept" -eq 18
+  expect "retention: the new install output file exists" test -e "$base/state/deploy-deploy-mdi-1-install.out"
+  expect "retention: the new test output file exists" test -e "$base/state/deploy-deploy-mdi-1-test.out"
+  expect "retention: the log and last-good-tag are left alone" test -e "$base/state/self-deploy.log" -a -e "$base/state/last-good-tag"
+}
+
+# ---- HZ-666: no output file holds a stripped variable's value ----
+{
+  outs=("$WORK"/run.*/state/deploy-*.out)
+  expect "guardrail: output files were written" test -e "${outs[0]}"
+  expect "guardrail: an unstripped variable reaches the output files" grep -qx 'KEEP_ME_HOST=kept.invalid' "${outs[@]}"
+  expect "guardrail: no output file holds the ledger or price value" bash -c '! grep -qE "ledger\.invalid|price\.invalid" "$@"' _ "${outs[@]}"
 }
 
 echo "# deploy-code-only: $pass passed, $fail failed"

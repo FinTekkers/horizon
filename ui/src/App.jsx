@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
-import { STEPS, IMPLEMENT_STEP_INDEX, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
+import { STEPS, IMPLEMENT_STEP_INDEX, APPROVE_FILE_GATE_INDEX, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
+import { substepReworkTargets } from '../../domain/js/substeps.js'
 import TopBar from './components/TopBar'
 import BottomNav from './components/BottomNav'
 import { MOBILE_QUERY, useMediaQuery } from './useMediaQuery'
@@ -212,6 +213,16 @@ function AuthenticatedApp({ user, onLogout }) {
   // covers the gap before the server's push says a gate action is running.
   const approveInFlight = useRef(new Set())
   const [approvePending, setApprovePending] = useState(() => new Set())
+  // HZ-642: Approve & file's Autopilot choice per Plan, 'default' until the
+  // owner picks; cleared once that Plan is approved or sent back.
+  const [filedAutopilot, setFiledAutopilot] = useState({})
+  const clearFiledAutopilot = (itemId) =>
+    setFiledAutopilot((m) => {
+      if (!Object.hasOwn(m, itemId)) return m
+      const { [itemId]: _cleared, ...rest } = m
+      return rest
+    })
+  const filedAutopilotOf = (itemId) => (Object.hasOwn(filedAutopilot, itemId) ? filedAutopilot[itemId] : 'default')
   // HZ-563: admins only. Polled every 10 s wherever the user is, so the
   // account menu's dot is always the page's state; Refresh reads it now.
   // The ref keeps a click and a poll tick from sending two requests at once.
@@ -339,11 +350,17 @@ function AuthenticatedApp({ user, onLogout }) {
     setApprovePending(new Set(approveInFlight.current))
     let result
     try {
-      result = await api.approveGate(itemId, notes)
+      // HZ-642: only Approve & file takes the Autopilot choice; every other
+      // gate is approved exactly as before.
+      const atFileGate = items.find((it) => it.id === itemId)?.cursor === APPROVE_FILE_GATE_INDEX
+      result = atFileGate
+        ? await api.approveGate(itemId, notes, { filedAutopilot: filedAutopilotOf(itemId) })
+        : await api.approveGate(itemId, notes)
     } finally {
       approveInFlight.current.delete(itemId)
       setApprovePending(new Set(approveInFlight.current))
     }
+    if (result?.ok) clearFiledAutopilot(itemId)
     if (result?.closed) toBoard()
   }
   const toTracker = () => {
@@ -411,7 +428,11 @@ function AuthenticatedApp({ user, onLogout }) {
     const item = items.find((it) => it.id === itemId)
     const atGate = mode === 'reject' && item && STEPS[item.cursor]?.kind === 'gate'
     // HZ-435: with the item, a row its lane skips is never offered.
-    const stepOptions = atGate ? reworkTargets(item.cursor, undefined, item) : []
+    // HZ-540: each sub-step target right after its step.
+    const subOptions = atGate ? substepReworkTargets(item) : []
+    const stepOptions = atGate
+      ? reworkTargets(item.cursor, undefined, item).flatMap((opt) => [opt, ...subOptions.filter((s) => s.index === opt.index)])
+      : []
     const defaultTargetLabel = stepOptions.length ? STEPS[defaultReworkTarget(item.cursor, undefined, item)].label : null
     // HZ-354: the abandon dialog lists what this item blocks, as of opening.
     const dependents = mode === 'abandon' ? item?.dependents || [] : []
@@ -421,8 +442,9 @@ function AuthenticatedApp({ user, onLogout }) {
   const requestApprove = (itemId, gateLabel) => setConfirmApprove({ itemId, gateLabel })
 
   // The second argument depends on the mode: reject passes the chosen
-  // send-back step index, abandon passes { removeDependentLinks }.
-  const submitComposer = (text, modeArg) => {
+  // send-back step index, abandon passes { removeDependentLinks }. HZ-540: a
+  // reject to a sub-step passes its id third.
+  const submitComposer = (text, modeArg, substepId = null) => {
     const { mode, itemId, phase, target } = composer
     // HZ-389: a send-back (reject, or HZ-365's Amend the rule — HZ-346's
     // PIN-gated send-back to implement, with the owner's ruling as the note)
@@ -433,7 +455,9 @@ function AuthenticatedApp({ user, onLogout }) {
     if (itemId && (mode === 'reject' || mode === 'amend' || mode === 'restart' || mode === 'abandon')) {
       const sent =
         mode === 'reject'
-          ? api.requestChanges(itemId, target, text, modeArg ?? null)
+          ? substepId
+            ? api.requestChanges(itemId, target, text, modeArg ?? null, substepId)
+            : api.requestChanges(itemId, target, text, modeArg ?? null)
           : mode === 'amend'
             ? api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
             : mode === 'restart'
@@ -443,7 +467,10 @@ function AuthenticatedApp({ user, onLogout }) {
       // A composer cancelled or reopened meanwhile is left as it is.
       const same = (c) => c.open && c.itemId === itemId && c.mode === mode
       Promise.resolve(sent).then(
-        () => setComposer((c) => (same(c) ? CLOSED_COMPOSER : c)),
+        () => {
+          if (mode === 'reject') clearFiledAutopilot(itemId)
+          setComposer((c) => (same(c) ? CLOSED_COMPOSER : c))
+        },
         (err) => setComposer((c) => (same(c) ? { ...c, busy: false, error: sendBackError(err) } : c)),
       )
       return
@@ -557,6 +584,8 @@ function AuthenticatedApp({ user, onLogout }) {
           onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}
           onSetStepProvider={api.setStepProvider}
+          filedAutopilot={filedAutopilotOf(selected.id)}
+          onSetFiledAutopilot={(id, value) => setFiledAutopilot((m) => ({ ...m, [id]: value }))}
           onRemoveDependency={(id, dependsOnId) => api.removeDependency(id, dependsOnId)}
           onAbandon={(id) => openComposer('abandon', id)}
           onAddDependency={(id) => setAddDependency({ itemId: id, fileNew: false })}

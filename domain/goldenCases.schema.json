@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://horizon.local/domain/goldenCases.schema.json",
+  "title": "Golden cases (HZ-541)",
+  "description": "The set a project's golden_cases sub-step writes, as the ```json golden-cases fenced block in its artifact. A human approves the whole set at the item's first gate. domain/js/goldenCases.js checks it; the server checks each source against the HZ-537 knowledge index.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cases"],
+  "properties": {
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": { "$ref": "#/definitions/case" }
+    }
+  },
+  "definitions": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "inputs", "measure", "expected", "tolerance", "source"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]{1,40}$", "description": "Unique within the set." },
+        "inputs": { "type": "object" },
+        "measure": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "expected": { "type": ["number", "string"] },
+        "tolerance": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "abs": { "type": "number", "minimum": 0 },
+            "rel": { "type": "number", "minimum": 0 }
+          }
+        },
+        "source": {
+          "type": "string",
+          "pattern": "^[a-z0-9_-]+#[a-z0-9-]+$",
+          "description": "<doc>#<section>: a knowledge doc slug and one of its indexed section ids."
+        }
+      }
+    }
+  }
+}
