@@ -24,6 +24,10 @@
 # fixed path, not under TMPDIR, so it is host-wide even when TMPDIR is per item.
 # No child holds the lock's fd (9>&-), so a leftover child can never keep it,
 # and on exit this script stops its own children.
+#
+# scripts/recorder/serve-walkthrough.sh (HZ-665) copies this script's demo-mode
+# server env for the walkthrough recordings. A change to that env probably
+# belongs in both scripts.
 set -euo pipefail
 
 UI_PORT=5480
