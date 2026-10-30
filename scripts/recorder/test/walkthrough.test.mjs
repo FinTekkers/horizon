@@ -14,7 +14,7 @@ import { chromium } from 'playwright'
 import { DEVICE_SCALE_FACTOR, VIEWPORT } from '../browser.mjs'
 import { checkBoard } from '../walkthrough-guard.mjs'
 import { TEMP_PREFIX, loadScenario } from '../walkthrough.mjs'
-import { startWalkthroughStub } from './stub-walkthrough.mjs'
+import { HOOKS_ON, startWalkthroughStub } from './stub-walkthrough.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const ENTRY = path.join(REPO_ROOT, 'scripts/record-item.mjs')
@@ -51,13 +51,13 @@ function scenario(name, actions) {
   return name
 }
 
-function childEnv() {
-  return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: childTmp, RECORDER_WALKTHROUGH_DIR: scenarios }
+function childEnv(extra = {}) {
+  return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: childTmp, RECORDER_WALKTHROUGH_DIR: scenarios, ...extra }
 }
 
-function record(args) {
+function record(args, env = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [ENTRY, ...args], { env: childEnv(), cwd: work, timeout: KILL_AFTER_MS, killSignal: 'SIGKILL' })
+    const child = spawn(process.execPath, [ENTRY, ...args], { env: childEnv(env), cwd: work, timeout: KILL_AFTER_MS, killSignal: 'SIGKILL' })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (d) => { stdout += d })
@@ -66,8 +66,8 @@ function record(args) {
   })
 }
 
-async function walkthrough(name, { board, out = path.join(work, 'out', name) } = {}) {
-  const run = await record(['--walkthrough', name, '--board', board, '--out', out])
+async function walkthrough(name, { board, out = path.join(work, 'out', name), env } = {}) {
+  const run = await record(['--walkthrough', name, '--board', board, '--out', out], env)
   return { ...run, out, mp4: path.join(out, `${name}.mp4`) }
 }
 
@@ -395,4 +395,52 @@ test('guardrail 4: a scenario file holding an email address is rejected without 
   // Control: the same scenario without the address loads.
   writeFileSync(path.join(scenarios, 'no-email.json'), JSON.stringify({ actions: [{ action: 'type', selector: '#note', text: 'a at b', delayMs: 0 }] }))
   assert.equal((await loadScenario('no-email', scenarios)).actions.length, 1)
+})
+
+// ---- HZ-665: the throwaway board's login ----
+
+const LOGIN_KEY = 'hz665-login-key-canary'
+const loginStub = (root) => startWalkthroughStub({ env: (port) => ({ ...HOOKS_ON(port), STUB_EXPECT_KEY: LOGIN_KEY, ...(root && { STUB_ROOT: root }) }) })
+
+contractTest('HZ-665: with SCREENSHOT_LOGIN_KEY set every board request carries it, without it none does, and it is never printed', async () => {
+  const name = scenario('stub-login-ok', [{ action: 'waitFor', selector: '.app' }, { action: 'pause', ms: 300 }])
+  const stub = await loginStub('login')
+  try {
+    const run = await walkthrough(name, { board: stub.url, env: { SCREENSHOT_LOGIN_KEY: LOGIN_KEY } })
+    assertExitedCleanly(run)
+    await stub.settle()
+    assert.deepEqual(stub.log.map((r) => r.path), ['/', '/api/auth/me'])
+    assert.ok(stub.log.every((r) => r.key === true), `a request went without the key: ${JSON.stringify(stub.log)}`)
+    assert.ok(!`${run.stdout}${run.stderr}`.includes(LOGIN_KEY), 'the key leaked into the output')
+  } finally {
+    await stub.close()
+  }
+  // Control: the same run without the key sends no header at all.
+  const bare = await loginStub()
+  try {
+    const run = await walkthrough(scenario('stub-short', [{ action: 'pause', ms: 200 }]), { board: bare.url })
+    assertExitedCleanly(run)
+    await bare.settle()
+    assert.ok(bare.log.length > 0)
+    assert.ok(bare.log.every((r) => r.key === false), `a request carried a key: ${JSON.stringify(bare.log)}`)
+  } finally {
+    await bare.close()
+  }
+})
+
+contractTest('HZ-665: a board that draws Sign in after load fails the run with "showed the login screen", writes no MP4 and never prints the key', async () => {
+  const stub = await loginStub('login')
+  try {
+    const name = scenario('stub-login-wrong', [{ action: 'pause', ms: 200 }])
+    const run = await walkthrough(name, { board: stub.url, env: { SCREENSHOT_LOGIN_KEY: 'not-the-key' } })
+    assert.equal(run.signal, null)
+    assert.notEqual(run.code, 0)
+    assert.match(run.stderr, /walkthrough stub-login-wrong: the board showed the login screen/)
+    assert.equal(existsSync(run.mp4), false, `${run.mp4} was written`)
+    assert.equal(existsSync(run.out), false, `${run.out} was created`)
+    assert.ok(!`${run.stdout}${run.stderr}`.includes('not-the-key'), 'the key leaked into the output')
+    assert.deepEqual(recorderTemps(), [])
+  } finally {
+    await stub.close()
+  }
 })

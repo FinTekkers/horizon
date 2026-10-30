@@ -1,0 +1,15 @@
+{
+  "actions": [
+    { "action": "caption", "text": "Chapter 1: Setting up Horizon", "ms": 3500 },
+    { "action": "waitFor", "selector": ".board__empty" },
+    { "action": "pause", "ms": 2500 },
+    { "action": "goto", "path": "/admin" },
+    { "action": "waitFor", "selector": "input[placeholder^=\"New project name\"]" },
+    { "action": "pause", "ms": 1500 },
+    { "action": "type", "selector": "input[placeholder^=\"New project name\"]", "text": "Shoreward", "delayMs": 150 },
+    { "action": "pause", "ms": 600 },
+    { "action": "click", "selector": "button:has-text(\"Create project\")" },
+    { "action": "waitFor", "selector": ".project-block__head:has-text(\"Shoreward\")" },
+    { "action": "pause", "ms": 3000 }
+  ]
+}
