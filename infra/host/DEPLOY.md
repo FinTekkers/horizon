@@ -1130,6 +1130,14 @@ service target.
   `RESTORE OK`, `RESTORE FAILED (<stage>)` or `RESTORE SKIPPED`, and then
   `DEPLOY FAILED: <install|test> (tag=...)` as the last line.
   `last-good-tag` never moves to the failed tag.
+- **Output (HZ-666).** Each stage's stdout and stderr go to
+  `~/.horizon/<stateKey>/deploy-<tag>-<install|test>.out`; the restore's
+  install has its own `deploy-<tag>-restore-install.out`. On failure, the
+  last 200 lines of the failing stage's file go into `self-deploy.log`
+  between `--- <stage> output (tag=...) ---` and `--- end <stage> output ...`
+  markers, before the restore lines. Only the newest 20 `deploy-*.out` files
+  are kept, by mtime: a passing deploy writes 2, so that is about the last 10
+  deploys.
 - **Step 14.** No agent and no smoke check: the step passes on `DEPLOY OK`
   for the item's tag ("deployed (code only)") and fails on `DEPLOY FAILED`.
 - **Owner: keep the tests offline.** The deploy only unsets the ledger and
