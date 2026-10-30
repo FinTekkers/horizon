@@ -383,10 +383,10 @@ export default function Board({
   const chips = activeChips(view, activeFilterKeys)
   const removeChip = (key) => {
     const patch = chipPatch(key)
-    if (patch?.hide) boardFilters.setActiveFilters([...activeFilterKeys, patch.hide])
+    if (patch?.hide) boardFilters.toggleFilter(patch.hide)
     else if (patch?.view) boardNarrowing.setBoardView(patch.view)
   }
-  // Back to the defaults: every hide filter on, nothing narrowed.
+  // Back to the defaults: every default-on hide filter on, nothing narrowed.
   const clearAll = () => {
     boardFilters.setActiveFilters(DEFAULT_ACTIVE_FILTERS)
     boardNarrowing.clearBoardView()

@@ -131,10 +131,10 @@ function closedItem(id, overrides = {}) {
   return item(id, { cursor: STEPS.length, ...overrides })
 }
 
-test('a Closed chip renders beside Stale and Abandoned, in registry order', () => {
+test('Closed and Blocked by dependencies chips render after Stale and Abandoned, in registry order', () => {
   const { container } = renderBoard([item('A'), closedItem('C1')])
   const labels = [...container.querySelectorAll('.board__filter-chip')].map((el) => el.textContent)
-  expect(labels).toEqual(['Stale (30+ days) (0)', 'Abandoned (0)', 'Closed (1)'])
+  expect(labels).toEqual(['Stale (30+ days) (0)', 'Abandoned (0)', 'Closed (1)', 'Blocked by dependencies (0)'])
 })
 
 test('the Closed chip is a button with an accessible name and a title explaining what it is doing', () => {
@@ -296,4 +296,33 @@ test('Clear all restores the default filters and removes every chip', () => {
   expect(utils.container.querySelectorAll('.board__chip')).toHaveLength(0)
   expect(boardFilters.getActiveFilters()).toEqual(['stale', 'abandoned', 'closed'])
   expect(cardIds(utils.container)).toEqual(['HIGH', 'W-HIGH', 'W-LOW'])
+})
+
+// ---- blocked by dependencies (HZ-669) ----
+
+test('the Blocked by dependencies filter is off by default: blocked items show and no chip appears', () => {
+  const { container, queryByText, getByRole } = renderBoard([item('FREE'), item('HELD', { blocked: true })])
+  expect(queryByText('Work item HELD')).toBeTruthy()
+  expect(getByRole('button', { name: 'Blocked by dependencies (1)' }).className).not.toContain('board__filter-chip--active')
+  expect(container.querySelectorAll('.board__chip')).toHaveLength(0)
+  expect(filterCount(container)).toBeNull()
+})
+
+test('turning Blocked by dependencies on hides blocked items, counts them, and adds a Hiding blocked chip', () => {
+  const { container, queryByText, getByText, getByRole } = renderBoard([item('FREE'), item('HELD', { blocked: true })])
+  fireEvent.click(getByRole('button', { name: 'Blocked by dependencies (1)' }))
+  expect(queryByText('Work item HELD')).toBeNull()
+  expect(queryByText('Work item FREE')).toBeTruthy()
+  expect(getByText('Hiding 1 blocked')).toBeTruthy()
+  expect(chipLabels(container)).toEqual(['Hiding blocked'])
+  expect(filterCount(container)).toBe('Filters · 1')
+})
+
+test('removing the Hiding blocked chip turns the filter back off and shows blocked items again', () => {
+  const { container, queryByText, getByRole } = renderBoard([item('FREE'), item('HELD', { blocked: true })])
+  fireEvent.click(getByRole('button', { name: 'Blocked by dependencies (1)' }))
+  fireEvent.click(getByRole('button', { name: 'Remove Hiding blocked filter' }))
+  expect(queryByText('Work item HELD')).toBeTruthy()
+  expect(container.querySelectorAll('.board__chip')).toHaveLength(0)
+  expect(boardFilters.getActiveFilters()).not.toContain('blocked')
 })

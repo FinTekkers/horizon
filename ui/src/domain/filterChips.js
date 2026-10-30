@@ -3,9 +3,11 @@
 // boardNarrowing's view). "Filters · N" is the length of this list, so the
 // count and the chips cannot drift apart.
 //
-// A hide filter is on by default, so its chip shows when it is OFF
-// ("Including closed"); removing that chip turns the filter back on.
-// chipPatch is the only place that knows how each chip is cleared.
+// A hide filter's chip shows when it differs from its default: a default-on
+// filter turned OFF reads "Including closed", a default-off filter (HZ-669's
+// `blocked`) turned ON reads "Hiding blocked". Removing either chip puts the
+// filter back to its default. chipPatch is the only place that knows how
+// each chip is cleared.
 
 import { PRIORITIES } from '../../../domain/js/priorities.js'
 import { FILTERS } from './filters'
@@ -15,8 +17,8 @@ const HIDE_PREFIX = 'hide:'
 
 export function activeChips(view, activeFilterKeys, filters = FILTERS) {
   const chips = filters
-    .filter((f) => !activeFilterKeys.includes(f.key))
-    .map((f) => ({ key: `${HIDE_PREFIX}${f.key}`, label: `Including ${f.noun}` }))
+    .filter((f) => activeFilterKeys.includes(f.key) === Boolean(f.offByDefault))
+    .map((f) => ({ key: `${HIDE_PREFIX}${f.key}`, label: `${f.offByDefault ? 'Hiding' : 'Including'} ${f.noun}` }))
   if (view.waiting) chips.push({ key: 'waiting', label: 'Waiting on me' })
   if (view.priorities.length > 0) {
     chips.push({ key: 'priorities', label: `Priority: ${PRIORITIES.filter((p) => view.priorities.includes(p)).join(', ')}` })
@@ -29,7 +31,8 @@ export function activeChips(view, activeFilterKeys, filters = FILTERS) {
   return chips
 }
 
-// What removing a chip does: `{ hide: key }` turns that hide filter back on;
+// What removing a chip does: `{ hide: key }` toggles that hide filter back to
+// its default;
 // `{ view: patch }` is a boardNarrowing.setBoardView patch. Null for a key no
 // chip has.
 export function chipPatch(key) {
