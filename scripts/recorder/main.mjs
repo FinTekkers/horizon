@@ -40,6 +40,9 @@ pause and caption actions) in real time and films it to <out>/<name>.mp4.
   --out    output directory (default ./recordings/walkthrough-<name>)
 PIN and email fields and addresses are masked in every frame. The browser
 reaches the board's origin only. Exit 0 when the MP4 is written, else 1.
+SCREENSHOT_LOGIN_KEY from the environment logs the board in (sent to the
+board's origin only). scripts/recorder/README.md has the throwaway board
+(scripts/recorder/serve-walkthrough.sh) and the steps for each chapter.
 `
 
 const DEFAULT_BOARD = 'https://shoreward.ai/horizon'

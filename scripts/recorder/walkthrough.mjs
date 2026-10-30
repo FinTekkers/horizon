@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, rmdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DEVICE_SCALE_FACTOR, EMAIL_RE, VIEWPORT, launch } from './browser.mjs'
+import { DEVICE_SCALE_FACTOR, EMAIL_RE, VIEWPORT, launch, showsLogin } from './browser.mjs'
 import { encodeVideo } from './encode.mjs'
 import { RecorderError } from './errors.mjs'
 import { checkBoard } from './walkthrough-guard.mjs'
@@ -14,6 +14,16 @@ import { MASK_INIT_SCRIPT, runAction } from './walkthrough-page.mjs'
 // (the tests use it for their stub scenarios).
 export const WALKTHROUGH_DIR = fileURLToPath(new URL('./walkthroughs/', import.meta.url))
 export const TEMP_PREFIX = 'hz-walkthrough-'
+// HZ-665: the throwaway board's login. A hooks-on server treats a request
+// carrying its SCREENSHOT_LOGIN_KEY in this header as the admin user, but
+// never as a session, so it cannot pass a gate. The same name as
+// server/src/testEnvLogin.js's TEST_ENV_LOGIN_HEADER, copied rather than
+// imported: that module loads the server's config. Never log the value.
+export const TEST_ENV_LOGIN_HEADER = 'x-horizon-test-env-screenshot-login-key'
+// What the board shows once /api/auth/me has answered: the login page's
+// Sign in button, or the logged-in app shell (ui/src/App.jsx).
+const LOGIN_OR_APP = 'button:has-text("Sign in"), .app'
+const LOGIN_WAIT_MS = 10000
 
 const NAME_RE = /^[a-z0-9-]+$/
 const STRING = (v) => typeof v === 'string' && v.length > 0
@@ -84,6 +94,7 @@ export async function runWalkthrough({ name, outDir, board, env = process.env, l
   await checkBoard(board)
   const boardUrl = board.replace(/\/+$/, '')
   const origin = new URL(boardUrl).origin
+  const loginKey = env.SCREENSHOT_LOGIN_KEY || ''
   const mp4 = path.join(outDir, `${name}.mp4`)
 
   const tmp = await mkdtemp(path.join(tmpdir(), TEMP_PREFIX))
@@ -96,10 +107,12 @@ export async function runWalkthrough({ name, outDir, board, env = process.env, l
     const context = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: DEVICE_SCALE_FACTOR, serviceWorkers: 'block', recordVideo: { dir: tmp, size: VIEWPORT } })
     await context.addInitScript(MASK_INIT_SCRIPT)
     // The browser talks to the board's origin only. Anything else (fonts,
-    // images, fetches) is aborted, and the log names just its host.
+    // images, fetches) is aborted, and the log names just its host. The
+    // login key goes to the board's origin only, so no other host sees it.
     await context.route('**/*', (route) => {
       const req = route.request()
       const url = new URL(req.url())
+      if (url.origin === origin && loginKey) return route.continue({ headers: { ...req.headers(), [TEST_ENV_LOGIN_HEADER]: loginKey } })
       if (url.origin === origin || url.protocol === 'data:' || url.protocol === 'blob:') return route.continue()
       log(`blocked ${req.resourceType()} to ${url.hostname}`)
       return route.abort('blockedbyclient')
@@ -110,6 +123,13 @@ export async function runWalkthrough({ name, outDir, board, env = process.env, l
       await page.goto(`${boardUrl}/`, { waitUntil: 'load' })
     } catch (err) {
       throw new RecorderError(`walkthrough ${name}: opening the board failed: ${firstLine(err)}`)
+    }
+    // The UI draws Sign in only once /api/auth/me has answered 401, after
+    // load, so wait for it or the app shell before deciding. A board that
+    // shows neither is left to the scenario's own first step.
+    await page.locator(LOGIN_OR_APP).first().waitFor({ state: 'visible', timeout: LOGIN_WAIT_MS }).catch(() => {})
+    if (await showsLogin(page)) {
+      throw new RecorderError(`walkthrough ${name}: the board showed the login screen: export SCREENSHOT_LOGIN_KEY with the key the board's server was started with (scripts/recorder/README.md)`)
     }
     const startedAt = Date.now()
     for (const [i, action] of scenario.actions.entries()) {
