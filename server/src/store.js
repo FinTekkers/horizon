@@ -49,6 +49,7 @@ import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
 import { getActiveProjectId, setSetting } from './settings.js'
+import { ensureUnlinkedProject, hasNoProject, unlinkedProjectId } from './membership.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
@@ -487,10 +488,15 @@ function itemGateAction(rows, itemId, cursor) {
 export function listProjects({ checks = true } = {}) {
   const projects = db.prepare('SELECT * FROM project ORDER BY name').all()
   const repos = db.prepare('SELECT * FROM project_repo ORDER BY repo').all()
+  const unlinkedId = unlinkedProjectId(db)
   return projects.map((p) => ({
     id: p.id,
     name: p.name,
     enabled: !!p.enabled,
+    // HZ-654: the `Unlinked items` project. Admin lists it like any other; the
+    // board's project filter and the new-item picker leave it out, because its
+    // items read as having no project (itemView's project_id is null).
+    unlinked: p.id === unlinkedId,
     autopilot: p.autopilot,
     autopilotEvents: selectAutopilotEvents.all(p.id),
     // HZ-535: the PIN-gated switch for the project's own definitions.
@@ -856,7 +862,7 @@ export function setProjectDefinitionsEnabled(projectId, enabled, who) {
 // leaves every persona lookup on the global registry exactly.
 const selectProjectDefinitions = db.prepare('SELECT name, definitions_enabled FROM project WHERE id = ?')
 export function projectOverlayFor(projectId) {
-  if (projectId == null) return null
+  if (hasNoProject(db, projectId)) return null
   return projectOverlayLoader(selectProjectDefinitions.get(projectId))
 }
 
@@ -1617,11 +1623,14 @@ export function itemViewById(id) {
 
 // The row filter behind listItems' scope, shared with itemStepOutputs so the
 // per-item route can never show an item the list would not.
+// HZ-654: an `Unlinked items` row is listed in every scope, as a NULL one was,
+// even while that project is disabled.
 function scopeFilter(scope) {
   const activeId = getActiveProjectId()
   const enabled = scope === 'enabled' ? enabledProjectIds() : null
+  const unlinkedId = unlinkedProjectId(db)
   const inScope = (projectId) => (enabled ? enabled.has(projectId) : projectId === activeId)
-  return (row) => row.project_id == null || activeId == null || inScope(row.project_id)
+  return (row) => row.project_id == null || row.project_id === unlinkedId || activeId == null || inScope(row.project_id)
 }
 
 // HZ-318: one item's stepOutputs exactly as listItems({ scope: 'enabled' })
@@ -1924,6 +1933,7 @@ function substepFields(row, overlay) {
 }
 
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
+  const noProject = hasNoProject(db, row.project_id)
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const overlay = projectOverlayFor(row.project_id)
   const personas = personasFromRow(row, overlay)
@@ -1942,7 +1952,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     guardrails: row.guardrails,
     issue: row.issue,
     repo: row.repo,
-    project_id: row.project_id,
+    // HZ-654: an `Unlinked items` item reads as no project, as before it moved.
+    project_id: noProject ? null : row.project_id,
     pr: row.pr,
     pr_url: row.pr_url,
     pr_mergeable: row.pr_mergeable == null ? null : !!row.pr_mergeable,
@@ -1954,12 +1965,12 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     providerChoices: providerChoicesFromRow(row),
     // HZ-370: for the item page's "Default" label only; the farm is sent the
     // merged map (resolveStepProviders) at dispatch instead.
-    projectProviderDefaults: providerDefaultsFromRow(row.project_id == null ? null : selectProjectProviderDefaults.get(row.project_id)),
+    projectProviderDefaults: providerDefaultsFromRow(noProject ? null : selectProjectProviderDefaults.get(row.project_id)),
     // HZ-544: the `autopilot-off` label as last synced, and the project's
     // Autopilot mode, so a page can tell "off for this item" applies (only
     // in an 'on' project — see caretaker.js's itemOff).
     autopilotOff: !!row.autopilot_off,
-    projectAutopilot: (row.project_id == null ? null : selectProjectAutopilot.get(row.project_id)?.autopilot) ?? 'off',
+    projectAutopilot: (noProject ? null : selectProjectAutopilot.get(row.project_id)?.autopilot) ?? 'off',
     autopilotWouldHave: autopilotWouldHave(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
@@ -2265,7 +2276,7 @@ export function approveGate(
 
   let filed = null
   if (stepIndex === APPROVE_FILE_GATE_INDEX) {
-    const mode = (it.project_id == null ? null : selectProjectAutopilot.get(it.project_id)?.autopilot) ?? 'off'
+    const mode = (hasNoProject(db, it.project_id) ? null : selectProjectAutopilot.get(it.project_id)?.autopilot) ?? 'off'
     filed = filedAutopilot === 'off' && mode === 'on' ? 'off' : 'default'
     if (filedAutopilot === 'off' && filed !== 'off') {
       addEvent(id, {
@@ -2768,9 +2779,12 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority, 
       .prepare("SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) AS n FROM work_item WHERE id LIKE 'LOC-%'")
       .get().n + 1
   const id = `LOC-${next}`
-  db.prepare(
-    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane, autopilot_off) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }), autopilotOff ? 1 : 0)
+  // HZ-654: a local item has no repo, so it goes to `Unlinked items`, never NULL.
+  db.transaction(() => {
+    db.prepare(
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane, autopilot_off, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }), autopilotOff ? 1 : 0, ensureUnlinkedProject(db))
+  })()
   addEvent(id, { who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)

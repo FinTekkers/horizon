@@ -78,8 +78,9 @@ test('createProject: the first project is enabled, later ones start disabled, an
   const fintekkers = store.createProject('FinTekkers')
   assert.equal(enabledOf(horizon.id), 1)
   assert.equal(enabledOf(fintekkers.id), 0)
+  // HZ-654: the demo seed's `Unlinked items` project is never the first project.
   const listed = Object.fromEntries(store.listProjects().map((p) => [p.name, p.enabled]))
-  assert.deepEqual(listed, { FinTekkers: false, Horizon: true })
+  assert.deepEqual(listed, { FinTekkers: false, Horizon: true, 'Unlinked items': true })
 })
 
 const projectId = (name) => store.listProjects().find((p) => p.name === name).id

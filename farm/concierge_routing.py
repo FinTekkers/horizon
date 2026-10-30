@@ -48,15 +48,21 @@ class Plan:
     note: str | None = None
 
 
+def listed_projects(snapshot: dict) -> list[dict]:
+    """Every project but `Unlinked items` (HZ-654): its items arrive with no
+    project_id, so routing treats them as unowned, as it always has."""
+    return [p for p in snapshot.get("projects") or [] if not p.get("unlinked")]
+
+
 def enabled_projects(snapshot: dict) -> list[dict]:
-    return [p for p in snapshot.get("projects") or [] if p.get("enabled")]
+    return [p for p in listed_projects(snapshot) if p.get("enabled")]
 
 
 def prefix_map(snapshot: dict) -> dict[str, dict]:
     """Upper-cased repo prefix -> its project, enabled or not. Prefixes are
     UNIQUE server-side, so one prefix is one project."""
     out: dict[str, dict] = {}
-    for project in snapshot.get("projects") or []:
+    for project in listed_projects(snapshot):
         for repo in project.get("repos") or []:
             prefix = str(repo.get("prefix") or "").upper()
             if prefix:
@@ -71,7 +77,7 @@ def _names_project(text: str, name: str) -> bool:
 
 
 def resolve(text: str, snapshot: dict) -> Resolution:
-    projects = snapshot.get("projects") or []
+    projects = listed_projects(snapshot)
     by_id = {p.get("id"): p for p in projects}
     prefixes = prefix_map(snapshot)
     items = {str(it.get("id", "")).upper(): it for it in snapshot.get("items") or []}
@@ -150,7 +156,7 @@ def render_disabled(names: list[str]) -> str:
 
 def plan(text: str, snapshot: dict) -> Plan:
     enabled = enabled_projects(snapshot)
-    any_disabled = any(not p.get("enabled") for p in snapshot.get("projects") or [])
+    any_disabled = any(not p.get("enabled") for p in listed_projects(snapshot))
     if len(enabled) < 2 and not any_disabled:
         return Plan(snapshot=snapshot)  # today's path, untouched
 

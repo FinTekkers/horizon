@@ -140,6 +140,28 @@ export function findUserById(id) {
   return toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id))
 }
 
+// HZ-654: disabled_at and credentials_valid_after (membership.js). A disabled
+// user's sign-in, sessions and API tokens are all refused; a credential issued
+// before credentials_valid_after stays refused after the user is enabled again.
+function isDisabled(id) {
+  return db.prepare('SELECT disabled_at FROM user WHERE id = ?').get(id)?.disabled_at != null
+}
+
+// session.created_at is datetime('now') (UTC, no zone); api_token.created_at
+// is an ISO string. Both read as UTC epoch ms.
+function timestampMs(value) {
+  const text = String(value)
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(text) ? text : `${text.replace(' ', 'T')}Z`)
+}
+
+// The user row a credential issued at `createdAt` may act as, or null.
+function credentialUser(userId, createdAt) {
+  const row = db.prepare('SELECT * FROM user WHERE id = ?').get(userId)
+  if (!row || row.disabled_at != null) return null
+  if (row.credentials_valid_after != null && !(timestampMs(createdAt) >= timestampMs(row.credentials_valid_after))) return null
+  return toPublicUser(row)
+}
+
 function touchLastLogin(id) {
   db.prepare("UPDATE user SET last_login_at = datetime('now') WHERE id = ?").run(id)
 }
@@ -176,15 +198,19 @@ export class GoogleLinkBlockedError extends Error {}
 // too. Re-checked even for a RETURNING sub, so removing an address from the
 // allowlist blocks a previously-linked account's very next login, not just
 // new ones.
+//
+// HZ-654: a disabled account (returning, or matched by email) is refused too.
 export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
   if (!emailVerified || !isAllowedEmail(email)) throw new GoogleLinkBlockedError('not_allowed')
   const existing = findUserByGoogleSub(sub)
   if (existing) {
+    if (isDisabled(existing.id)) throw new GoogleLinkBlockedError('disabled')
     touchLastLogin(existing.id)
     return existing
   }
   const sameEmail = findUserByEmailCI(email)
   if (sameEmail) {
+    if (isDisabled(sameEmail.id)) throw new GoogleLinkBlockedError('disabled')
     if (!emailVerified) throw new GoogleLinkBlockedError('unverified_email')
     const { google_sub: existingSub } = db.prepare('SELECT google_sub FROM user WHERE id = ?').get(sameEmail.id)
     if (existingSub) throw new GoogleLinkBlockedError('already_linked')
@@ -201,6 +227,7 @@ export function verifyPassword(email, password) {
   if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) return null
   const existing = findUserByEmail(email)
   if (existing) {
+    if (isDisabled(existing.id)) return null
     touchLastLogin(existing.id)
     return existing
   }
@@ -243,7 +270,7 @@ export function getSessionUser(token) {
     db.prepare('DELETE FROM session WHERE id = ?').run(session.id)
     return null
   }
-  return findUserById(session.user_id)
+  return credentialUser(session.user_id, session.created_at)
 }
 
 export function deleteSession(token) {
@@ -312,7 +339,8 @@ export function revokeApiToken(userId, id) {
 }
 
 // Resolves a raw bearer value to { user, tokenId, tokenName }, or null when it
-// is malformed, unknown, revoked, expired, or its user no longer exists.
+// is malformed, unknown, revoked, expired, or its user no longer exists, is
+// disabled, or was disabled after the token was created (HZ-654).
 export function getTokenAuth(raw) {
   if (typeof raw !== 'string' || !API_TOKEN_SHAPE.test(raw)) return null
   const hash = sha256(raw)
@@ -325,7 +353,7 @@ export function getTokenAuth(raw) {
   if (row.revoked_at) return null
   const now = Date.now()
   if (new Date(row.expires_at).getTime() <= now) return null
-  const user = findUserById(row.user_id)
+  const user = credentialUser(row.user_id, row.created_at)
   if (!user) return null
   // Throttled in SQL rather than in memory: at most one write per token a minute.
   db.prepare(
