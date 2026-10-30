@@ -4,7 +4,7 @@
 // actually running, five sitting in the farm's queue.
 
 import { expect, test, vi, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, within } from '@testing-library/react'
 
 vi.mock('../api', () => ({
   issueUrl: () => 'https://example.test/issue',
@@ -123,12 +123,15 @@ test('a card with both a blocker and dependents shows both, each visually distin
 
 test('an item with neither direction renders no dependency badge at all, unchanged from before HZ-95', () => {
   const items = [depItem('HZ-94', {})]
-  const { container, queryByText } = render(
+  const { container } = render(
     <Board items={items} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />,
   )
   expect(container.querySelector('.dep-badges')).toBeNull()
-  expect(queryByText(/Blocked/)).toBeNull()
-  expect(queryByText(/Blocks/)).toBeNull()
+  // Scoped to the card: the header's "Blocked by dependencies" filter toggle
+  // (HZ-669) is not a dependency badge.
+  const card = within(container.querySelector('.card'))
+  expect(card.queryByText(/Blocked/)).toBeNull()
+  expect(card.queryByText(/Blocks/)).toBeNull()
 })
 
 test('a blocked card and a paused card render distinct badges/pills, not one collapsed indicator', () => {
