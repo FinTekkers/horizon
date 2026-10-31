@@ -71,6 +71,7 @@
   "spawned": [],
   "ruleBlock": null,
   "usageWait": null,
+  "isolationRefusal": null,
   "paused_at": null,
   "waiting_since": null,
   "substeps": [
