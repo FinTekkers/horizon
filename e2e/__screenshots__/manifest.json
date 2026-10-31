@@ -1,0 +1,483 @@
+{
+  "version": 1,
+  "runner": "farm/screenshot_runner.py@schema-1",
+  "shots": [
+    {
+      "screen": "layout-board",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 994,
+      "png": "layout-board--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "layout-board",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "ok",
+      "durationMs": 976,
+      "png": "layout-board--desktop--dark.png",
+      "clipped": false
+    },
+    {
+      "screen": "layout-board",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 894,
+      "png": "layout-board--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "layout-board",
+      "viewport": "phone",
+      "theme": "dark",
+      "status": "ok",
+      "durationMs": 881,
+      "png": "layout-board--phone--dark.png",
+      "clipped": false
+    },
+    {
+      "screen": "layout-item-activity",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 846,
+      "png": "layout-item-activity--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "layout-item-badge",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 943,
+      "png": "layout-item-badge--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "layout-admin-tokens",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 894,
+      "png": "layout-admin-tokens--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "admin-sections",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 941,
+      "png": "admin-sections--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "admin-sections",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 894,
+      "png": "admin-sections--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-card",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 1026,
+      "png": "autopilot-off-card--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-card",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "ok",
+      "durationMs": 971,
+      "png": "autopilot-off-card--desktop--dark.png",
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-item",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 950,
+      "png": "autopilot-off-item--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-item",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "ok",
+      "durationMs": 914,
+      "png": "autopilot-off-item--desktop--dark.png",
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-approvals",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 956,
+      "png": "autopilot-off-approvals--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "autopilot-off-approvals",
+      "viewport": "desktop",
+      "theme": "dark",
+      "status": "ok",
+      "durationMs": 962,
+      "png": "autopilot-off-approvals--desktop--dark.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-mock-agents",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 933,
+      "png": "journey-mock-agents--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-full-lifecycle",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 890,
+      "png": "journey-full-lifecycle--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-gates",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 975,
+      "png": "journey-gates--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-gate-key",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 879,
+      "png": "journey-gate-key--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-merge-conflict",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 863,
+      "png": "journey-merge-conflict--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-merge-resolved",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 945,
+      "png": "journey-merge-resolved--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-abandon",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 877,
+      "png": "journey-abandon--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-artifact-history",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 635,
+      "png": "journey-artifact-history--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-login-error",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 778,
+      "png": "journey-login-error--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-queued-work",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 889,
+      "png": "journey-queued-work--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-markdown",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 983,
+      "png": "journey-markdown--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-persona-picker",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 962,
+      "png": "journey-persona-picker--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-premerge-red",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 946,
+      "png": "journey-premerge-red--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-gate-blocked",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 880,
+      "png": "journey-gate-blocked--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-gate-running",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 1050,
+      "png": "journey-gate-running--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-admin-projects",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 934,
+      "png": "journey-admin-projects--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-definitions",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 902,
+      "png": "journey-definitions--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-verify-fail",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 923,
+      "png": "journey-verify-fail--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-ran-ahead",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 935,
+      "png": "journey-ran-ahead--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-ran-ahead",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 905,
+      "png": "journey-ran-ahead--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-dependencies",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 993,
+      "png": "journey-dependencies--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-trivial-lane",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 1004,
+      "png": "journey-trivial-lane--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-pause-reason",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 996,
+      "png": "journey-pause-reason--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-task-spawned",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 941,
+      "png": "journey-task-spawned--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-task-first",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 924,
+      "png": "journey-task-first--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-task-planning",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 878,
+      "png": "journey-task-planning--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-plan-items",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 973,
+      "png": "journey-plan-items--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-plan-items",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 912,
+      "png": "journey-plan-items--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-plan-filed",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 907,
+      "png": "journey-plan-filed--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-usage-limit",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 978,
+      "png": "journey-usage-limit--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-step-provider",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 935,
+      "png": "journey-step-provider--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-live-feed",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 886,
+      "png": "journey-live-feed--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-plan-pill",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 989,
+      "png": "journey-plan-pill--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-plan-pill",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 842,
+      "png": "journey-plan-pill--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-plan-board",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 806,
+      "png": "journey-plan-board--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-plan-board",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 803,
+      "png": "journey-plan-board--phone--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-farm-health",
+      "viewport": "desktop",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 3779,
+      "png": "journey-farm-health--desktop--light.png",
+      "clipped": false
+    },
+    {
+      "screen": "journey-farm-health",
+      "viewport": "phone",
+      "theme": "light",
+      "status": "ok",
+      "durationMs": 927,
+      "png": "journey-farm-health--phone--light.png",
+      "clipped": false
+    }
+  ]
+}
