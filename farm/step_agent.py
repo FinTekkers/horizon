@@ -2661,12 +2661,16 @@ def _execute_pm(task: dict) -> dict:
         log("invalid reply; retrying once")
         return call(f"{prompt}\n\n{retry_prompt}")["result"]
 
-    (summary, patch, artifact), notes = parse_agent_reply(
-        reply["result"],
-        retry_once,
-        validate=lambda parsed: pm_steps.validate_within_budget(parsed, label, item),
-    )
-    outcome = pm_steps.finish(task, summary, patch, artifact, notes)
+    # HZ-685: the reply that validated, for its optional `split`.
+    accepted: dict = {}
+
+    def validate(parsed):
+        result = pm_steps.validate_within_budget(parsed, label, item)
+        accepted["split"] = parsed.get("split") if isinstance(parsed, dict) else None
+        return result
+
+    (summary, patch, artifact), notes = parse_agent_reply(reply["result"], retry_once, validate=validate)
+    outcome = pm_steps.finish(task, summary, patch, artifact, notes, split=accepted.get("split"))
     # HZ-370: step_run.provider is recorded from artifacts.provider, so a
     # reply with no artifact still gets an artifacts dict to carry it.
     if produced.get("provider"):

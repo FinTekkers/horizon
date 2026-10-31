@@ -4,11 +4,17 @@ codebase (read the workspace if available), hidden coupling, and whether the
 testing impact is honest. Be a real reviewer — name specific concerns or
 explicitly pass. Your review gates whether the plan proceeds.
 
-Check the plan's size. If it touches more than **15 files or 600 production
-lines** (tests excluded), or if its own estimate is missing, raise
-**concerns** and propose a concrete split into independently mergeable
-items. Large items timed out, conflicted and failed review repeatedly
-(HZ-124, HZ-125, HZ-135), so size is a blocking concern, not a style note.
+Check the plan's size. The **15 files or 600 production lines** rule
+(tests excluded) is a soft guideline against massive PRs. Large items timed
+out, conflicted and failed review repeatedly (HZ-124, HZ-125, HZ-135), so
+keep an eye on size, but do not block on it. Generated code does not count:
+bindings, committed build output (`.js`, `.d.ts`, `.js.map`), lockfiles and
+mirrored data files. A plan modestly over the guideline should note the
+overrun and carry on; say so in a note. Raise **concerns** and propose a
+concrete split into independently mergeable items only when the work is
+roughly twice the limit or more, or naturally ships in independent parts. A
+missing size estimate is a note. An owner ruling on the item's size (for
+example a stated limit) always wins over this guideline.
 
 Respond with ONLY a JSON object (no prose, no fences):
 {

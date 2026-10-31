@@ -412,6 +412,54 @@ test('failed step: one FAILED run acts; two stop, ping once naming the item and 
   assert.equal(callsFor('FS-2').length, 0)
 })
 
+// ---- HZ-685: a narrowing with no filed, linked follow-up is never auto-approved ----
+
+test('HZ-685: an unfiled narrowing at gate 10 pings the owner and files nothing; filed and linked, the next arrival approves', async () => {
+  const pid = project()
+  const narrowed = '1. Totals.\nDeferred to a follow-up item (not in scope here): 2. measuresForArm.'
+  item('NAR-1', pid, 9)
+  db.prepare('UPDATE work_item SET metric = ? WHERE id = ?').run(narrowed, 'NAR-1')
+  arrive('NAR-1', 10, ARTIFACT[10])
+  await settle()
+  assert.equal(cursorOf('NAR-1'), 10, 'not approved')
+  assert.equal(callsFor('NAR-1').length, 0)
+  assert.equal(decisionsOf('NAR-1').length, 0)
+  const [evaluation] = db.prepare('SELECT decision, rule_id FROM caretaker_eval WHERE item_id = ?').all('NAR-1')
+  assert.deepEqual({ ...evaluation }, { decision: 'ping_human', rule_id: 'any.unfiled_narrowing' })
+  assert.ok(caretakerTexts('NAR-1').some((t) => /^caretaker would ping the human — the outcome or metric defers work/.test(t)))
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM caretaker_ping WHERE item_id = ? AND reason = 'needs_human'").get('NAR-1').n, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM item_split WHERE source_item_id = ?').get('NAR-1').n, 0, 'nothing filed')
+  assert.equal(fetchCalls.length, 0)
+
+  // The owner files the follow-up and links it; the summary re-runs.
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id, repo) VALUES ('NAR-2', 'follow-up', 'High', 0, ?, 'Acme/acted')").run(pid)
+  db.prepare(
+    "INSERT INTO item_split (source_item_id, target_repo, status, payload_json, plan_run_id, target_issue, target_item_id) VALUES ('NAR-1', 'Acme/acted', 'filed', '{}', 0, 2, 'NAR-2')",
+  ).run()
+  db.prepare("INSERT INTO work_item_dependency (item_id, depends_on_id, created_by) VALUES ('NAR-2', 'NAR-1', 'Horizon')").run()
+  clock += 1000
+  arrive('NAR-1', 10, ARTIFACT[10])
+  await settle()
+  assert.equal(cursorOf('NAR-1'), 11)
+  const [decision] = decisionsOf('NAR-1')
+  assert.equal(decision.decided_by, 'Caretaker')
+  assert.equal(decision.decision, 'approved')
+  assert.ok(caretakerTexts('NAR-1').some((t) => /^auto-approved by caretaker \(PM said PROCEED\)$/.test(t)))
+})
+
+test('HZ-685: caretaker.js’s whole import graph stays free of github.js', () => {
+  const seen = new Set()
+  const walk = (file) => {
+    if (seen.has(file)) return
+    seen.add(file)
+    const source = readFileSync(file, 'utf8')
+    for (const m of source.matchAll(/^(?:import|export)\s[^'"]*?from\s+'(\.[^']+)'/gm)) walk(join(file, '..', m[1]))
+  }
+  walk(join(REPO_ROOT, 'server/src/caretaker.js'))
+  assert.ok(seen.has(join(REPO_ROOT, 'server/src/narrowing.js')), 'the scan reaches narrowing.js')
+  assert.deepEqual([...seen].filter((f) => f.endsWith('/github.js')), [])
+})
+
 // ---- metric 5: off stops everything ----
 
 test('off via the Admin route: a decision computed while on is never acted on, next tick included', async () => {

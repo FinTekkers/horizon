@@ -113,6 +113,8 @@ test('the field binding exports the limits and nothing presentational', () => {
       'countCriteriaLines',
       'criteriaLines',
       'fieldByName',
+      // HZ-685: whether a metric or outcome has been narrowed.
+      'hasDeferredLine',
       'intakeFields',
       'lineLimits',
       'patchLimits',

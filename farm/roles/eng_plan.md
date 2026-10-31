@@ -14,10 +14,16 @@ If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 
 Size — state it near the top of '## Changes': the number of files touched,
-and an estimate of production lines changed (tests excluded). If it exceeds
-**15 files or 600 production lines**, propose a split into independently
-mergeable items, each with its own success-metric lines. Plan only the first
-part in detail. Oversized items time out, conflict and fail review repeatedly.
+and an estimate of production lines changed (tests excluded). The
+**15 files or 600 production lines** rule is a soft guideline against
+massive PRs, not a hard limit. Generated code does not count: bindings,
+committed build output (`.js`, `.d.ts`, `.js.map`), lockfiles and mirrored
+data files. A plan modestly over the guideline notes the overrun and carries
+on. Propose a split into independently mergeable items, each with its own
+success-metric lines, only when the work is roughly twice the limit or more,
+or naturally ships in independent parts; then plan only the first part in
+detail. An owner ruling on the item's size (for example a stated limit)
+always wins over this guideline.
 Keep tests proportionate: one test per success-metric line and guardrail,
 not exhaustive permutations.
 

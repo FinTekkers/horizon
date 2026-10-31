@@ -1443,6 +1443,11 @@ export function wouldCycleBetween(id, dependsOnId) {
   return wouldCycle(id, dependsOnId)
 }
 
+// HZ-685: whether `id` depends directly on `dependsOnId`.
+export function hasDependency(id, dependsOnId) {
+  return !!db.prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(id, dependsOnId)
+}
+
 // `blocked` says whether the item is held at its current step. `blockedBy`
 // lists every edge to a blocker that has not closed, held or not, so each one
 // can still be seen and removed; `merged` marks a blocker whose PR is on main.
