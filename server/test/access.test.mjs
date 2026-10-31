@@ -112,6 +112,7 @@ test('member:repo: a body projectId naming another project, or a body repo outsi
   assert.deepEqual(await run('member:repo', { body: { repo: 'acme/alpha', projectId: beta } }), NOT_FOUND)
   assert.deepEqual(await run('member:repo', { body: { repo: 'acme/alpha', projectId: String(alpha) } }), NOT_FOUND)
   assert.deepEqual(await run('member:repo', { body: { repo: 'acme/beta' }, query: { repo: 'acme/alpha' } }), NOT_FOUND)
+  assert.deepEqual(await run('member:repo', { body: { title: 'no repo' }, query: { repo: 'acme/alpha' } }), NOT_FOUND)
 })
 
 test('member:items needs both params.id and body.dependsOnId in the member’s projects (HZ-658)', async () => {

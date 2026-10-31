@@ -120,7 +120,10 @@ export function projectForScope(scope, request) {
       break
     }
     case 'member:repo': {
-      const repo = ownString(request.body, 'repo') ?? ownString(request.query, 'repo')
+      // HZ-658: a request with a body resolves from the body alone — the
+      // handler reads body.repo, so a query repo must never stand in for it.
+      const hasBody = request.body != null && typeof request.body === 'object'
+      const repo = hasBody ? ownString(request.body, 'repo') : ownString(request.query, 'repo')
       projectId = repo == null ? null : (selectRepoProject.get(repo)?.project_id ?? null)
       // HZ-658: a body projectId naming another project resolves to nothing,
       // so a non-member cannot probe it through the handler's 400. Compared as

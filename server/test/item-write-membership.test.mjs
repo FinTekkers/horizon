@@ -237,6 +237,7 @@ test('metric 4: POST /api/items with a repo outside the caller’s projects is 4
     ['another project’s repo', '/api/items', { ...NEW_ITEM, repo: 'acme/beta' }],
     ['own repo with another projectId', '/api/items', { ...NEW_ITEM, repo: 'acme/alpha', projectId: B }],
     ['body repo outside, query repo inside', '/api/items?repo=acme/alpha', { ...NEW_ITEM, repo: 'acme/beta' }],
+    ['query repo inside, no body repo', '/api/items?repo=acme/alpha', { ...NEW_ITEM }],
   ]) {
     const res = await post(url, m, payload)
     assert.equal(res.statusCode, 404, `${label}: ${res.body}`)
