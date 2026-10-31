@@ -73,6 +73,10 @@ export function isOwner(userId) {
   return typeof userId === 'string' && selectRole.get(userId)?.role === 'owner'
 }
 
+// HZ-656: the live feed re-reads this on every flush, so a membership change
+// reaches a connected tab on its next frame. Any route that writes
+// project_member must call store.notifyChange(), or the tab waits for an
+// unrelated change.
 export function memberProjectIds(userId) {
   return new Set(selectMemberProjects.all(userId).map((row) => row.project_id))
 }
@@ -169,14 +173,26 @@ export function projectsForScope(scope, request, resolve = projectForScope) {
 // What a `filtered` handler filters by: null for the owner (unfiltered), else
 // { projectIds } — the projects the user is a member of.
 export function viewerFor(request) {
-  const userId = request.user?.id
-  if (isOwner(userId)) return null
-  return { projectIds: typeof userId === 'string' ? memberProjectIds(userId) : new Set() }
+  return viewerForUser(request.user?.id)
 }
 
-// The preHandler. `resolveProject` is a seam for tests (app.js's buildApp
-// passes it through); production uses projectForScope.
-export function createGuard({ resolveProject = projectForScope } = {}) {
+// HZ-656: viewerFor for a user id, so the live feed can re-read a connected
+// tab's viewer on every flush. Fails closed: a throw, or a missing user id, is
+// an empty viewer — nothing — never the owner's null. `memberProjects` is
+// buildApp's test seam, as in createGuard.
+export function viewerForUser(userId, memberProjects = memberProjectIds) {
+  try {
+    if (isOwner(userId)) return null
+    return { projectIds: typeof userId === 'string' ? memberProjects(userId) : new Set() }
+  } catch {
+    return { projectIds: new Set() }
+  }
+}
+
+// The preHandler. `resolveProject` and `memberProjects` are seams for tests
+// (app.js's buildApp passes them through); production uses projectForScope
+// and memberProjectIds.
+export function createGuard({ resolveProject = projectForScope, memberProjects = memberProjectIds } = {}) {
   return async function guard(request, reply) {
     // An unmatched URL keeps Fastify's own 404.
     if (request.is404) return
@@ -188,12 +204,12 @@ export function createGuard({ resolveProject = projectForScope } = {}) {
       if (isOwner(userId)) return
       if (scope === 'self') return
       if (scope === 'filtered') {
-        request.viewer = { projectIds: memberProjectIds(userId) }
+        request.viewer = { projectIds: memberProjects(userId) }
         return
       }
       if (!scope.startsWith('member:')) return reply.code(404).send(NOT_FOUND)
       const projectIds = projectsForScope(scope, request, resolveProject)
-      const memberOf = memberProjectIds(userId)
+      const memberOf = memberProjects(userId)
       if (projectIds.some((projectId) => projectId == null || !memberOf.has(projectId))) return reply.code(404).send(NOT_FOUND)
     } catch (err) {
       request.log.warn({ err }, 'access guard failed closed')

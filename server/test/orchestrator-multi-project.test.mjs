@@ -45,6 +45,9 @@ globalThis.fetch = async (url, opts) => {
   if (path === '/farm/status') return reply(200, { status: 'running' })
   if (path === '/runs/alive') return reply(200, { alive: Object.fromEntries((body.run_ids || []).map((id) => [id, true])) })
   if (path === '/steps/run' && !body.item.repo) return reply(400, { error: 'missing item.repo' })
+  if (path === '/steps/run' && body.item.id === 'HZ-TENANT') {
+    return reply(400, { error: 'tenant_launch_refused', reason: 'tenant workspace not supported yet' })
+  }
   return reply(200, { ok: true })
 }
 
@@ -234,6 +237,23 @@ test('a repo-less item refused by the farm fails as "missing repo", not as an un
   assert.equal(posted('HZ-NOREPO').length, 1)
   const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all('HZ-NOREPO').map((e) => e.text)
   assert.ok(!events.some((t) => /unreachable|transient/.test(t)), events.join(' | '))
+})
+
+// ---- HZ-663 guardrail 3: a refused tenant launch says why, in words ----
+
+test('a tenant item the farm refuses as tenant_launch_refused fails with readable text, not the generic fallback', async () => {
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, repo, project_id) VALUES ('HZ-TENANT', 'Tenant', 'Medium', 0, 'FinTekkers/horizon', ?)").run(HORIZON())
+  orchestrator.kick('HZ-TENANT')
+  await until(() => posted('HZ-TENANT').length && !activeRun('HZ-TENANT'), 'the refused run to fail')
+  await wait(20)
+
+  const runs = db.prepare('SELECT output FROM step_run WHERE item_id = ?').all('HZ-TENANT')
+  assert.equal(runs.length, 1, 'no auto-retry')
+  assert.equal(
+    runs[0].output,
+    "FAILED: the farm refused this tenant item: it needs the project's own token and test-env file, and tenant runs are not switched on yet",
+  )
+  assert.doesNotMatch(runs[0].output, /the farm refused the job|could not hand the step/)
 })
 
 // ---- metric 6: the farm project falls back to the board's project ----

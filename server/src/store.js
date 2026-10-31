@@ -1729,6 +1729,20 @@ export function itemStepOutputs(id, viewer = null) {
   return stepOutputs(row.id)
 }
 
+// HZ-656: scopeFilter('enabled', viewer) for boardView.viewSnapshot, which cuts
+// a member's board from the owner's item views. A view's project_id is null
+// for an `Unlinked items` row, which the viewer predicate hides either way.
+export function viewerItemFilter(viewer) {
+  return scopeFilter('enabled', viewer)
+}
+
+// HZ-656: whether one item is in a viewer's board, as itemStepOutputs decides
+// it, without reading the outputs. The item streams' flush re-checks members.
+export function itemInScope(id, viewer) {
+  const row = selectItemScope.get(id)
+  return !!row && scopeFilter('enabled', viewer)(row)
+}
+
 // ---- duration estimates (HZ-229) ----
 
 // The typical wall-clock duration of each agent step and of the two gate

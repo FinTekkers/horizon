@@ -101,3 +101,32 @@ test('/api/items/:id/stream gets event: heartbeat at 15 s and again at 30 s', as
     controller.abort()
   }
 })
+
+// HZ-656: both client maps are keyed by response with per-user values; the
+// heartbeat writes to each response, a member's included, and throws nowhere.
+test("a member's board stream and item stream both get event: heartbeat", async () => {
+  const P = store.createProject('Heartbeat members').id
+  store.setProjectEnabled(P, true)
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES (?, ?, ?, ?, ?)').run('HB-M', 'member heartbeat', 'Medium', 0, P)
+  const member = loginFixtureUser(auth, config, { email: 'heartbeat-member@example.com', role: 'member' })
+  db.prepare('INSERT INTO project_member (project_id, user_id) VALUES (?, ?)').run(P, member.user.id)
+  const controller = new AbortController()
+  const headers = { cookie: member.cookie }
+  try {
+    const boardRes = await fetch(`${base}/api/stream?v=2`, { headers, signal: controller.signal })
+    const itemRes = await fetch(`${base}/api/items/HB-M/stream`, { headers, signal: controller.signal })
+    assert.equal(boardRes.status, 200)
+    assert.equal(itemRes.status, 200)
+    const board = streamReader(boardRes)
+    const item = streamReader(itemRes)
+    assert.ok(await board.readUntil('event: snapshot'))
+    assert.ok(board.state.text.includes('HB-M'))
+    assert.ok(await item.readUntil('event: outputs'))
+    mock.timers.tick(15_000)
+    assert.ok(await board.readUntil(HEARTBEAT_FRAME), 'no heartbeat on the member board stream')
+    assert.ok(await item.readUntil(HEARTBEAT_FRAME), 'no heartbeat on the member item stream')
+  } finally {
+    controller.abort()
+    app.flushStream()
+  }
+})
