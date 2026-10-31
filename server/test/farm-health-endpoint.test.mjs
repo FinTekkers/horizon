@@ -82,6 +82,16 @@ const deps = {
           { slot: 0, pid: 4344, run_id: '5', item_id: 'HZ-1', caller: 'step_agent', label: 'test slot, line 2', since: NOW / 1000 - 120, env: SECRET },
         ],
       },
+      // HZ-670: only count, ppid and at reach the body — never a name or command line.
+      zombies: {
+        count: 3,
+        cmdline: SECRET,
+        parents: [
+          { ppid: 1234, count: 2, comm: SECRET },
+          { ppid: 88, count: 1, cmdline: SECRET },
+        ],
+        at: '2026-10-23T09:00:00+00:00',
+      },
     }
   },
   farmConfigured: () => true,
@@ -132,6 +142,7 @@ const SHAPE = {
   running: [ROW],
   waiting: [ROW],
   checkHolders: [HOLDER],
+  zombies: { count: null, parents: [['count', 'ppid']], at: null },
   box: [
     'diskAvailBytes',
     'diskTotalBytes',
@@ -218,6 +229,14 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
     body.recent.map((e) => e.kind),
     ['deploy', 'server_restart', 'farm_restart'],
   )
+  assert.deepEqual(body.zombies, {
+    count: 3,
+    parents: [
+      { ppid: 1234, count: 2 },
+      { ppid: 88, count: 1 },
+    ],
+    at: '2026-10-23T09:00:00+00:00',
+  })
   assert.equal(body.state, 'amber')
 })
 
@@ -344,6 +363,7 @@ test('a farmd that cannot be reached reads as not running, and the page goes red
   assert.equal(snapshot.state, 'red')
   assert.equal(snapshot.reason, 'Farm is not running')
   assert.ok(!JSON.stringify(farmHealth.toPublic(snapshot)).includes(SECRET))
+  assert.equal(farmHealth.toPublic(snapshot).zombies, null, 'no farmd, no zombie count')
 })
 
 test('a failed horizon-farm launcher unit reads up while farmd reports running', async () => {

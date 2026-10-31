@@ -333,6 +333,46 @@ def run_scope(
 # ---- farmd's sweep ----
 
 
+def active_lease_items(runs_dir: Path | None = None) -> set[str]:
+    """HZ-670: the lowercased item id of every active lease in RUNS_DIR, for
+    farm/workspace_sweep.py. A lease with no item_id names its item by its
+    worktree (<hub>__items/<id> or <hub>__premerge/<id>). Raises when the dir
+    can't be listed, a lease can't be read or parsed, or an active lease names
+    no item either way: the caller then kills nothing."""
+    runs_dir = _runs_dir(runs_dir)
+    if not runs_dir.exists():
+        return set()
+    items: set[str] = set()
+    for name in sorted(os.listdir(runs_dir)):
+        if not name.endswith(".json"):
+            continue
+        try:
+            lease = json.loads((runs_dir / name).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue  # removed since the listing: that run is over
+        if not isinstance(lease, dict):
+            raise ValueError(f"lease {name} is not an object")
+        if not lease_active(lease):
+            continue
+        item_id = lease.get("item_id")
+        if not isinstance(item_id, str) or not item_id:
+            item_id = _item_of_worktree(lease.get("worktree"))
+        if item_id is None:
+            raise ValueError(f"active lease {name} names no item")
+        items.add(item_id.lower())
+    return items
+
+
+def _item_of_worktree(worktree) -> str | None:
+    if not isinstance(worktree, str):
+        return None
+    parts = Path(worktree).parts
+    for root, item in zip(parts, parts[1:]):
+        if root.endswith(("__items", "__premerge")) and item:
+            return item
+    return None
+
+
 def _leases(runs_dir: Path) -> dict[str, dict]:
     out: dict[str, dict] = {}
     try:
@@ -386,9 +426,10 @@ def sweep(*, runs_dir: Path | None = None, grace_s: float = 1.0, log: Callable[[
 
 
 def _age_s(start_ticks: int) -> float:
-    with open("/proc/uptime", encoding="ascii") as handle:
-        uptime = float(handle.read().split()[0])
-    return max(0.0, uptime - start_ticks / os.sysconf("SC_CLK_TCK"))
+    age = procfs.age_s(start_ticks)
+    if age is None:
+        raise OSError("cannot read /proc/uptime")
+    return age
 
 
 def report(*, runs_dir: Path | None = None) -> dict:

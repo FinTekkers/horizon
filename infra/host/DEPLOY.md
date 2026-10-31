@@ -364,6 +364,18 @@ state is held by the kernel, not by the files' contents.
 farmd runs one clean-up tick at boot and then every
 `FARM_CLEANUP_INTERVAL_S` (default `3600`). Each tick:
 
+- counts defunct (zombie) processes by the parent pid holding them — only
+  that parent can reap them — for Farm health's Box card (HZ-670);
+- kills this user's processes whose cwd or exe is inside a finished item's
+  `<repo>__items/<item>` (a deleted one included) and that started over an
+  hour ago, unless the item has a live run, an active lease or a held item
+  lock (`farm/workspace_sweep.py`, HZ-670). SIGTERM by pid, then SIGKILL
+  after 5 s only if the pid still has the same start time and workspace.
+  Spared: farmd and its ancestors, a process holding a tty whose session
+  leader lives, and a parent of anything not being killed. If the run state
+  can't be read, nothing is killed. Each kill is logged as
+  `farmd: workspace sweep: killed pid=<pid> item=<item> age=<s>s` — never a
+  command line;
 - asks the server (`POST /api/farm/items/finished`) which items it holds
   worktrees for are closed or abandoned, and removes their
   `<repo>__items/<item>` and `<repo>__premerge/<item>`. A worktree in a live
