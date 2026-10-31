@@ -918,8 +918,9 @@ export function setProjectIsolation(projectId, fields, who) {
 export function projectIsolationRefusal(projectId) {
   if (hasNoProject(db, projectId)) return null
   const row = selectProjectIsolation.get(projectId)
-  // A project_id with no row is refused, never treated as internal.
-  return isolationRefusal(row ? isolationFields(row) : { isolation: undefined })
+  // A project_id with no row dispatches with no project, as before — farmd
+  // refuses that as `missing project`, so it is not an isolation question.
+  return row ? isolationRefusal(isolationFields(row)) : null
 }
 
 // HZ-535: the project overlay an item in `projectId` reads its personas
