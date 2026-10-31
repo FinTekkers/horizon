@@ -46,6 +46,7 @@ import * as ownerMail from './ownerMail.js'
 import { mintHumanProof } from './humanProof.js'
 import { testEnvUser } from './testEnvLogin.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
+import { viewSnapshot } from './boardView.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
@@ -241,7 +242,16 @@ ${nav}
 
 // HZ-318: tabs on the v2 feed (/api/stream?v=2). Each got a full slim snapshot
 // on connect and now receives `delta` events; see flushStream().
-const sseClients = new Set()
+// HZ-656: keyed by the tab's response, each holding { userId, owner,
+// memberProjects } and, for a non-owner, the baseline of its own view. Owner
+// tabs all share streamBaseline, as before.
+const sseClients = new Map()
+
+function ownerTabCount() {
+  let count = 0
+  for (const tab of sseClients.values()) if (tab.owner) count += 1
+  return count
+}
 
 // How many v2 tabs are connected — a test seam, so stream tests can wait for
 // a closed connection to be noticed.
@@ -267,10 +277,22 @@ export function streamClientCount() {
 // HZ-547: `plans` adds the top-level planProgress (planProgress.js) — each
 // Plan's or Task's filed items, summed over this snapshot's items. The
 // concierge leaves it off.
-export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true } = {}) {
+//
+// HZ-656: `viewer` is access.viewerFor(request): null (the owner, and every
+// internal caller) is the board above, unchanged; { projectIds } is a member's
+// view of it (boardView.js). Either way the board itself is built one way.
+export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true, viewer = null } = {}) {
+  const { board, parents } = buildBoard({ scope, estimates, checks, stepOutputs, plans })
+  return viewer ? memberView(board, viewer, parents) : board
+}
+
+// The owner's board, plus the spawn parents its planProgress was summed from,
+// so a member's view re-sums over its own items without a second read.
+function buildBoard({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true }) {
   const acceptWaiting = heldAccept.acceptWaitingLookup()
   const items = store.listItems({ scope, stepOutputs }).map((item) => ({ ...item, acceptWaiting: acceptWaiting(item) }))
-  return {
+  const parents = plans ? store.spawnParents() : null
+  const board = {
     repoUrl: getRepoUrl(),
     projects: store.listProjects({ checks }),
     activeProjectId: getActiveProjectId(),
@@ -279,8 +301,13 @@ export function snapshot({ scope = 'active', estimates = true, checks = true, st
     deployBlock: deployDrain.deployBlock(),
     items,
     ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
-    ...(plans ? { planProgress: planProgress(items, store.spawnParents()) } : {}),
+    ...(plans ? { planProgress: planProgress(items, parents) } : {}),
   }
+  return { board, parents }
+}
+
+function memberView(board, viewer, parents) {
+  return viewSnapshot(board, viewer, { itemVisible: store.viewerItemFilter(viewer), parents })
 }
 
 // Human gates are human-only: every account gets its own auto-generated gate
@@ -451,21 +478,45 @@ export function flushStream() {
   flushBoard()
 }
 
+// HZ-656: the board is built once per flush. Owner tabs get the one shared
+// delta, exactly as before; each member tab gets a diff of its own view
+// against what that tab was last sent, so a project it left goes out in
+// `removed` and never comes back in a later delta. Membership is read again
+// here for every tab, so a change reaches it on its next frame without a
+// reconnect — any route that writes project_member must call
+// store.notifyChange() to schedule that frame. A tab whose owner role changed
+// either way is ended; its reconnect gets the right snapshot.
 function flushBoard() {
   if (sseClients.size === 0) {
     streamBaseline = null
     return
   }
-  const current = snapshot({ scope: 'enabled', stepOutputs: false })
-  if (!streamBaseline) {
-    streamBaseline = makeBaseline(current)
-    return
+  const { board, parents } = buildBoard({ scope: 'enabled', stepOutputs: false })
+  const owners = []
+  const members = []
+  for (const [res, tab] of sseClients) {
+    const viewer = access.viewerForUser(tab.userId, tab.memberProjects)
+    if ((viewer === null) !== tab.owner) {
+      sseClients.delete(res)
+      res.end()
+    } else if (tab.owner) owners.push(res)
+    else members.push({ res, tab, viewer })
   }
-  const { delta, baseline } = diffSnapshot(streamBaseline, current)
-  streamBaseline = baseline
-  if (!delta) return
-  const data = `event: delta\ndata: ${JSON.stringify(delta)}\n\n`
-  sseClients.forEach((res) => res.write(data))
+  if (owners.length === 0) streamBaseline = null
+  else if (!streamBaseline) streamBaseline = makeBaseline(board)
+  else {
+    const { delta, baseline } = diffSnapshot(streamBaseline, board)
+    streamBaseline = baseline
+    if (delta) {
+      const data = `event: delta\ndata: ${JSON.stringify(delta)}\n\n`
+      for (const res of owners) res.write(data)
+    }
+  }
+  for (const { res, tab, viewer } of members) {
+    const { delta, baseline } = diffSnapshot(tab.baseline, memberView(board, viewer, parents))
+    tab.baseline = baseline
+    if (delta) res.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`)
+  }
 }
 
 // HZ-318: step outputs (output summaries and artifacts) reach a tab only
@@ -487,18 +538,31 @@ function itemStreamFrame(id, stepOutputs) {
 // Sends each open item its whole stepOutputs map again when it changed. An item
 // that left the board (deleted, or its project disabled) ends its streams; the
 // browser's reconnect then gets the same 404 an unknown id does.
+// HZ-656: so does an item that left one tab's board — its user was removed
+// from the item's project — for that tab only. `clients` maps each response to
+// { userId, memberProjects }.
 function flushItemStreams() {
   for (const [id, stream] of itemStreams) {
     const stepOutputs = store.itemStepOutputs(id)
     if (!stepOutputs) {
       itemStreams.delete(id)
-      stream.clients.forEach((res) => res.end())
+      for (const res of stream.clients.keys()) res.end()
+      continue
+    }
+    for (const [res, client] of stream.clients) {
+      const viewer = access.viewerForUser(client.userId, client.memberProjects)
+      if (viewer === null || store.itemInScope(id, viewer)) continue
+      stream.clients.delete(res)
+      res.end()
+    }
+    if (stream.clients.size === 0) {
+      itemStreams.delete(id)
       continue
     }
     const frame = itemStreamFrame(id, stepOutputs)
     if (frame === stream.sent) continue
     stream.sent = frame
-    stream.clients.forEach((res) => res.write(frame))
+    for (const res of stream.clients.keys()) res.write(frame)
   }
 }
 
@@ -513,8 +577,8 @@ store.onChange(broadcast)
 const HEARTBEAT_MS = 15_000
 const HEARTBEAT_FRAME = 'event: heartbeat\ndata: {}\n\n'
 setInterval(() => {
-  sseClients.forEach((res) => res.write(HEARTBEAT_FRAME))
-  itemStreams.forEach((stream) => stream.clients.forEach((res) => res.write(HEARTBEAT_FRAME)))
+  for (const res of sseClients.keys()) res.write(HEARTBEAT_FRAME)
+  for (const stream of itemStreams.values()) for (const res of stream.clients.keys()) res.write(HEARTBEAT_FRAME)
 }, HEARTBEAT_MS).unref()
 
 // POST /api/items's body properties, DERIVED from domain/fields.json (HZ-134).
@@ -571,7 +635,11 @@ export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DE
 // `resolveProject` likewise (HZ-655): tests pass a stand-in for
 // access.projectForScope to prove the route guard fails closed. Production
 // passes nothing.
-export function buildApp({ logger = true, onRoute = null, stripe = null, mailer = null, resolveProject = null } = {}) {
+//
+// `memberProjects` likewise (HZ-656): a stand-in for access.memberProjectIds,
+// used by the route guard and by this app's live feeds on every flush, so a
+// test can make the membership lookup throw. Production passes nothing.
+export function buildApp({ logger = true, onRoute = null, stripe = null, mailer = null, resolveProject = null, memberProjects = null } = {}) {
   const fastify = Fastify({ logger })
 
   if (onRoute) fastify.addHook('onRoute', onRoute)
@@ -678,7 +746,8 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // (access.js). The owner (user.role) and the session-exempt routes pass
   // untouched; anyone else gets 404, never 403, outside their own projects.
   // preHandler rather than onRequest so a member:repo scope can read the body.
-  fastify.addHook('preHandler', access.createGuard(resolveProject ? { resolveProject } : {}))
+  const lookupMembers = memberProjects ?? access.memberProjectIds
+  fastify.addHook('preHandler', access.createGuard({ ...(resolveProject ? { resolveProject } : {}), memberProjects: lookupMembers }))
 
   // The response schema documents the media type only: this route hijacks the
   // reply, so the serializer never runs on it either way (HZ-178).
@@ -698,7 +767,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/stream',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'filtered' },
       schema: {
         querystring: { type: 'object', properties: { v: { type: 'string' } } },
         response: { 200: textResponse('text/event-stream', STREAM_DESCRIPTION) },
@@ -711,23 +780,32 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       })
+      // HZ-656: the guard's `filtered` viewer — unset for the owner.
+      const viewer = request.viewer ?? null
       if (request.query.v !== '2') {
-        reply.raw.write(`retry: ${LEGACY_STREAM_RETRY_MS}\ndata: ${JSON.stringify(snapshot({ scope: 'enabled' }))}\n\n`)
+        reply.raw.write(`retry: ${LEGACY_STREAM_RETRY_MS}\ndata: ${JSON.stringify(snapshot({ scope: 'enabled', viewer }))}\n\n`)
         reply.raw.end()
         return
       }
       // Written now, never through the batch timer: a (re)connecting tab gets
       // the whole current board straight away.
-      const current = snapshot({ scope: 'enabled', stepOutputs: false })
+      const current = snapshot({ scope: 'enabled', stepOutputs: false, viewer })
       reply.raw.write(`event: snapshot\ndata: ${JSON.stringify(current)}\n\n`)
-      // The first tab seeds the baseline. With tabs already connected it is
-      // kept: any change since it is pending in the next flush, which this tab
-      // can apply on top of the snapshot it just got.
-      if (sseClients.size === 0) streamBaseline = makeBaseline(current)
-      sseClients.add(reply.raw)
+      // The first owner tab seeds the owners' baseline. With owner tabs already
+      // connected it is kept: any change since it is pending in the next flush,
+      // which this tab can apply on top of the snapshot it just got. A member
+      // tab's own baseline is the snapshot it just got.
+      const owner = viewer === null
+      if (owner && ownerTabCount() === 0) streamBaseline = makeBaseline(current)
+      sseClients.set(reply.raw, {
+        userId: request.user.id,
+        owner,
+        memberProjects: lookupMembers,
+        baseline: owner ? null : makeBaseline(current),
+      })
       request.raw.on('close', () => {
         sseClients.delete(reply.raw)
-        if (sseClients.size === 0) streamBaseline = null
+        if (ownerTabCount() === 0) streamBaseline = null
       })
     },
   )
@@ -767,13 +845,14 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'filtered' },
       schema: {
         querystring: { type: 'object', properties: { v: { type: 'string' } } },
         response: { 200: OK_OBJECT },
       },
     },
-    (request) => snapshot({ scope: 'enabled', stepOutputs: request.query.v !== '2' }),
+    // HZ-656: request.viewer is the guard's — unset for the owner.
+    (request) => snapshot({ scope: 'enabled', stepOutputs: request.query.v !== '2', viewer: request.viewer ?? null }),
   )
 
   // HZ-318: the open item's stepOutputs, the field the board feed leaves off —
@@ -785,7 +864,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/stream',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: {
@@ -800,7 +879,9 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     },
     (request, reply) => {
       const { id } = request.params
-      const stepOutputs = store.itemStepOutputs(id)
+      // HZ-656: the guard checked membership only; the viewer also hides a
+      // member's item in a disabled project, as the board does.
+      const stepOutputs = store.itemStepOutputs(id, access.viewerForUser(request.user.id, lookupMembers))
       if (!stepOutputs) return reply.code(404).send({ error: 'not_found' })
       reply.hijack()
       reply.raw.writeHead(200, {
@@ -814,10 +895,10 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       // in the window still reaches them, and this one takes it again.
       let stream = itemStreams.get(id)
       if (!stream) {
-        stream = { clients: new Set(), sent: frame }
+        stream = { clients: new Map(), sent: frame }
         itemStreams.set(id, stream)
       }
-      stream.clients.add(reply.raw)
+      stream.clients.set(reply.raw, { userId: request.user.id, memberProjects: lookupMembers })
       request.raw.on('close', () => {
         stream.clients.delete(reply.raw)
         if (stream.clients.size === 0 && itemStreams.get(id) === stream) itemStreams.delete(id)
