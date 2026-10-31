@@ -130,7 +130,7 @@ test("a member's output and log pages keep the owner's escaping", async () => {
   assert.ok(!output.body.includes('<script>alert(1)'))
   const view = await get(`/api/runs/${runA}/log/view`, memberA)
   assert.equal(view.statusCode, 200)
-  assert.match(view.body, /<title>RDA-1 · /)
+  assert.match(view.body, /RDA-1 in Horizon<\/a> · RDA-1 · /)
 })
 
 test("the owner's responses are unchanged", async () => {
