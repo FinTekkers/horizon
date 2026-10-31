@@ -14,7 +14,9 @@
 // planPurge walks PRAGMA foreign_key_list recursively from the user and the
 // sole projects, plus the references SOFT_REFERENCES names (columns without a
 // declared FK). account-purge.test.mjs seeds a row in every table the walk can
-// reach, so a future table is covered without touching this file.
+// reach, so a future table is covered without touching this file. The walk
+// and the deletes are exported as planDeletes/applyDeletes for a second
+// caller, store.purgeDemoItems (HZ-651), which seeds them with the BF-* items.
 //
 // Never deleted: the owner, an allowlisted user (ALLOWED_LOGIN_EMAILS), anyone
 // not 'cancelled' with access_ended_at at least PURGE_AFTER_DAYS ago, a
@@ -135,16 +137,39 @@ function collect(seeds, refs) {
   return { remove, clear: clears }
 }
 
+// Every row the seeds own, from seeds [{ table, column, values }]: returns
+// { remove: Map<table, Set<rowid>>, clear: [{ table, from, rowids }], order },
+// order being the tables of remove in a safe delete order. Read-only. `label`
+// prefixes the errors.
+export function planDeletes(seeds, refs = references(), { label = 'account purge' } = {}) {
+  const { remove, clear } = collect(seeds, refs)
+  return { remove, clear, order: deleteOrder([...remove.keys()], refs, label) }
+}
+
+// Carries out a planDeletes plan: clears the nullified columns, then deletes
+// table by table. Opens no transaction, so call it inside one. Throws when a
+// delete removes fewer rows than planned.
+export function applyDeletes({ remove, clear, order }, { label = 'account purge' } = {}) {
+  for (const { table, from, rowids } of clear) {
+    db.prepare(`UPDATE ${quote(table)} SET ${quote(from)} = NULL WHERE rowid ${IN_JSON}`).run(JSON.stringify(rowids))
+  }
+  for (const table of order) {
+    const rowids = [...remove.get(table)]
+    const deleted = db.prepare(`DELETE FROM ${quote(table)} WHERE rowid ${IN_JSON}`).run(JSON.stringify(rowids)).changes
+    if (deleted !== rowids.length) throw new Error(`${label}: ${table} deleted ${deleted} of ${rowids.length}`)
+  }
+}
+
 // Tables ordered so every table comes before the tables it references, so the
 // deletes never trip a foreign key. Throws on a reference cycle.
-function deleteOrder(tables, refs) {
+function deleteOrder(tables, refs, label) {
   const pending = new Set(tables)
   const order = []
   while (pending.size > 0) {
     const ready = [...pending].filter(
       (t) => !refs.some((ref) => ref.parent === t && ref.table !== t && pending.has(ref.table)),
     )
-    if (ready.length === 0) throw new Error('account purge: reference cycle between tables')
+    if (ready.length === 0) throw new Error(`${label}: reference cycle between tables`)
     for (const t of ready.sort()) {
       order.push(t)
       pending.delete(t)
@@ -214,15 +239,10 @@ function buildPlan(userId, now) {
     .all(userId)
   const soleProjects = memberships.filter((m) => m.others === 0 && m.id !== unlinked).map((m) => m.id)
   const sharedProjects = memberships.filter((m) => !soleProjects.includes(m.id)).map((m) => m.id)
-  const refs = references()
-  const { remove, clear } = collect(
-    [
-      { table: 'project', column: 'id', values: soleProjects },
-      { table: 'user', column: 'id', values: [userId] },
-    ],
-    refs,
-  )
-  const order = deleteOrder([...remove.keys()], refs)
+  const { remove, clear, order } = planDeletes([
+    { table: 'project', column: 'id', values: soleProjects },
+    { table: 'user', column: 'id', values: [userId] },
+  ])
   const rows = {}
   const counts = {}
   for (const table of [...remove.keys()].sort()) {
@@ -249,14 +269,7 @@ export function purgeUser(userId, { now = Date.now() } = {}) {
     .transaction(() => {
       const plan = buildPlan(userId, now)
       if (!plan.eligible) return { skipped: plan.reason }
-      for (const { table, from, rowids } of plan.clear) {
-        db.prepare(`UPDATE ${quote(table)} SET ${quote(from)} = NULL WHERE rowid ${IN_JSON}`).run(JSON.stringify(rowids))
-      }
-      for (const table of plan.order) {
-        const rowids = [...plan.remove.get(table)]
-        const deleted = db.prepare(`DELETE FROM ${quote(table)} WHERE rowid ${IN_JSON}`).run(JSON.stringify(rowids)).changes
-        if (deleted !== rowids.length) throw new Error(`account purge: ${table} deleted ${deleted} of ${rowids.length}`)
-      }
+      applyDeletes(plan)
       const recordItem = db.prepare('INSERT OR IGNORE INTO purged_item (id) VALUES (?)')
       for (const itemId of plan.rows.work_item ?? []) recordItem.run(itemId)
       const date = sqlTime(now).slice(0, 10)

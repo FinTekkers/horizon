@@ -53,6 +53,7 @@ import { ensureUnlinkedProject, hasNoProject, unlinkedProjectId } from './member
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
+import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 
@@ -2690,19 +2691,31 @@ export function queueFeedbackOnce(id, { message, target = 'Eng', source = 'overl
   return { ok: true, queued: true }
 }
 
-// Remove the BF-* demo items (called when real GitHub sync is connected).
+const DEMO_PURGE = 'demo purge'
+
+// Remove the BF-* demo items (called when real GitHub sync is connected), with
+// every row that references them. The rows come from HZ-641's planner
+// (accountPurge.planDeletes), which walks the schema's foreign keys, so a
+// table added later is covered with no edit here. One transaction: a throw
+// leaves every table as it was.
 export function purgeDemoItems() {
   const ids = db.prepare("SELECT id FROM work_item WHERE id LIKE 'BF-%'").all().map((r) => r.id)
   if (ids.length === 0) return
   ids.forEach((id) => agentRunner.cancel(id, 'cancelled'))
   db.transaction(() => {
-    // gate_notice is deliberately absent: it declares ON DELETE CASCADE (see
-    // db.js), so it clears with the work_item row below. Every table named here
-    // does not, and foreign_keys = ON makes a forgotten one an FK error.
-    for (const table of ['event', 'gate_decision', 'feedback', 'step_run']) {
-      db.prepare(`DELETE FROM ${table} WHERE item_id LIKE 'BF-%'`).run()
+    const refs = references()
+    const plan = planDeletes([{ table: 'work_item', column: 'id', values: ids }], refs, { label: DEMO_PURGE })
+    // Only BF-* items and the rows under them go. The walk goes down from the
+    // seeds, so it reaches another work item only through a work_item column
+    // that references work_item (none today), and a parent table never.
+    if (plan.remove.get('work_item')?.size !== ids.length) {
+      throw new Error(`${DEMO_PURGE}: the walk reached a work item that is not BF-*`)
     }
-    db.prepare("DELETE FROM work_item WHERE id LIKE 'BF-%'").run()
+    const parents = new Set(['project', 'user', ...refs.filter((r) => r.table === 'work_item').map((r) => r.parent)])
+    parents.delete('work_item')
+    const reached = [...parents].filter((table) => plan.remove.has(table))
+    if (reached.length > 0) throw new Error(`${DEMO_PURGE}: the walk reached parent table ${reached.join(', ')}`)
+    applyDeletes(plan, { label: DEMO_PURGE })
   })()
   notify()
 }
