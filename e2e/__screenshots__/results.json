@@ -1,0 +1,813 @@
+{
+  "version": 1,
+  "baseline": "736a224a0af4cebc588f61b1d721e8947b55168a",
+  "threshold": 0.1,
+  "ratioTolerance": 0.01,
+  "shots": [
+    {
+      "name": "abandon",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "activity-minimized",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "admin-sections--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "admin-sections--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "api-tokens",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "approvals-drawer",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "artifact-history",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "autopilot-off-approvals--desktop--dark",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "autopilot-off-approvals--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "autopilot-off-card--desktop--dark",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "autopilot-off-card--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "autopilot-off-item--desktop--dark",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "autopilot-off-item--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-dark",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-light",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-blocked-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-elapsed-dark",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "board-gate-status-running",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-item",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-plan",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "create-task",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dark-mode-board",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "deep-links",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "definitions-preview",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dependencies-board",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "dependencies-tracker",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "farm-health",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "farm-health-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "full-lifecycle",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-approve-confirm",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-in-flight-blocked",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gate-key",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "gates",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-abandon--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-admin-projects--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-artifact-history--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-definitions--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-dependencies--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-farm-health--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-farm-health--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-full-lifecycle--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-gate-blocked--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-gate-key--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-gate-running--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-gates--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-live-feed--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-login-error--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-markdown--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-merge-conflict--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-merge-resolved--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-mock-agents--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-pause-reason--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-persona-picker--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-plan-board--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-plan-board--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-plan-filed--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-plan-items--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-plan-items--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-plan-pill--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-plan-pill--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-premerge-red--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-queued-work--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-ran-ahead--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-ran-ahead--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-step-provider--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-task-first--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-task-planning--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-task-spawned--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-trivial-lane--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-usage-limit--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-verify-fail--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "kill-error",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-admin-tokens--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-board--desktop--dark",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-board--desktop--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-board--phone--dark",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-board--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-item-activity--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-item-badge--phone--light",
+      "status": "new",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "live-feed-step-output",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "login-error",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "markdown",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "merge-conflict",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "merge-conflict-resolved",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "mobile-layout",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "mock-agents",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "pause-reason",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "persona-picker",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-board-desktop",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-board-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-item-pill-desktop",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-filter-item-pill-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-inventory-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-items-filed",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "plan-items-table",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "premerge-checks-red",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-autopilot",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-enabled",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-filter",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "project-step-provider",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "queued-work",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "ran-ahead-desktop",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "ran-ahead-phone",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "rules-versions",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "screenshot-approvals",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "stale-filter-hidden",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "stale-filter-revealed",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "step-provider-picker",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-first-steps",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-planning-steps",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-spawned-links",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "task-verify-verdict-fail",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "trivial-lane-skipped-rows",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "usage-limit-wait",
+      "status": "removed",
+      "diffRatio": null,
+      "diff": null,
+      "error": null
+    }
+  ]
+}
