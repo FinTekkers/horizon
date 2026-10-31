@@ -37,8 +37,10 @@ defect that belongs in a shared library such as `ledger-models`), add a
     "remaining_metric": "<this item's metric, narrowed to its own repo; for a library consumer, include bumping the pinned version to the upstream release>"
   }
 }
-Omit `split` entirely when the fix stays in this item's own repo. Name one
-repo only. Horizon shows the split at the next gate, files one issue on that
+Omit `split` when the fix stays in this item's own repo and ships as one
+item. A `split` naming this item's own repo is allowed too: Horizon files it
+as a follow-up item that waits for this one, and `remaining_description` /
+`remaining_metric` narrow this item. Name one repo only. Horizon shows the split at the next gate, files one issue on that
 repo only once the gate is approved, and makes this item wait for it to
 close. A repo that is not connected to the project is refused, not filed.
 These fields become a public issue body: plan text only — never transcripts,

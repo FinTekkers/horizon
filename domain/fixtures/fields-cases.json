@@ -371,6 +371,28 @@
         "after": "- one",
         "expect": []
       }
+    ],
+    "hasDeferredLine": [
+      {
+        "case": "a metric narrowed by the split-scope line",
+        "input": "1. one\nDeferred to a follow-up item (not in scope here): 2. two",
+        "expect": true
+      },
+      {
+        "case": "list-marked and bold forms count too",
+        "input": "- one\n- **Deferred to a follow-up item (not in scope here):** two",
+        "expect": true
+      },
+      {
+        "case": "the phrase mid-line is not the deferred line",
+        "input": "1. Nothing is deferred to a follow-up item here.",
+        "expect": false
+      },
+      {
+        "case": "empty text is not narrowed",
+        "input": "",
+        "expect": false
+      }
     ]
   },
 

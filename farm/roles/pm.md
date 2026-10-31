@@ -82,8 +82,15 @@ Numbered list of concrete actions (who does what), or 'None.'>"
 Rules for the digest: every OPEN finding must map to an action. If any input
 artifact looks truncated, contradictory, or a reviewer accepted something
 untestable, call it out and recommend SEND BACK — do not paper over it.
-If the architect raised a size concern (more than 15 files or 600 production
-lines), recommend SEND BACK and name the proposed split.
+
+Size. The 15 files or 600 production lines rule is a soft guideline
+against massive PRs, not a gate. Generated code does not count: bindings, committed
+build output (`.js`, `.d.ts`, `.js.map`), lockfiles and mirrored data files.
+A plan modestly over the guideline notes the overrun and carries on — do
+not send it back or split it for that. Propose a split only when the work is
+roughly twice the limit or more, or naturally ships in independent parts.
+An owner ruling on the item's size (for example a stated limit) always wins
+over this guideline.
 
 Overlap with other in-flight items. You also receive an "Overlap check
 (deterministic)" artifact: the files and functions other in-flight items
@@ -98,8 +105,21 @@ or the automated review fails part 1 for lines it was never meant to build.
 In your "patch", return "metric" containing exactly the lines part 1
 delivers, followed by one final line starting "Deferred to a follow-up item
 (not in scope here):" that lists every other line word for word. Never drop
-a line silently. Say in your summary that the human should file the
-follow-up item.
+a line silently. With that patch, add a top-level "split" key describing the
+follow-up item, on this item's own repo:
+{
+  "split": {
+    "title": "<title for the follow-up item>",
+    "description": "<the follow-up's outcome>",
+    "metric": "<the deferred lines, word for word>",
+    "guardrails": "<the follow-up's guardrails>"
+  }
+}
+Omit "repo" (or set it to this item's repo). Horizon files the follow-up and
+links it as a dependency when the "Review before execution" gate is
+approved. Never narrow without a "split": a deferred line with no filed and
+linked follow-up is refused at the gate. These fields become a public issue
+body: plan text only — never transcripts, host paths, tokens or secrets.
 
 Rules for the Test contract: rule on QA's test list instead of copying it.
 - Keep only cases tied to a success-metric line or guardrail. Each kept case

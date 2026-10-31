@@ -63,6 +63,7 @@ import * as rulesStore from './rulesStore.js'
 import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
+import { narrowingStatus } from './narrowing.js'
 import * as planDraft from './planDraft.js'
 import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
@@ -1438,7 +1439,13 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // The body for a performGateApproval {error, status} result. `premerge`
   // tells the UI the failure is the pre-merge check's — the reason is in the
   // activity log, so it must not open the PR on GitHub as if GitHub refused.
-  const gateFailureBody = (result) => (result.premerge ? { error: result.error, premerge: true } : { error: result.error })
+  // HZ-685: `narrowing` marks a refusal for an unfiled follow-up.
+  const gateFailureBody = (result) =>
+    result.premerge
+      ? { error: result.error, premerge: true }
+      : result.narrowing
+        ? { error: result.error, narrowing: true }
+        : { error: result.error }
 
   // HZ-183: test-merge the PR head into the current base tip and run the
   // repo's checks there (server/src/premerge.js -> farm/premerge.py) before
@@ -1641,6 +1648,22 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     // the pre-merge checks or the merge fail, and the reason is logged to the
     // item's activity.
     const item = store.getItem(id)
+    // HZ-685: an outcome or metric narrowed to "Deferred to a follow-up item"
+    // passes a filing gate only with that follow-up filed and linked (or
+    // proposed, so this approval files it below). Nothing else is checked.
+    if (item && item.cursor === stepIndex && split.FILING_GATES.includes(stepIndex)) {
+      const narrowing = narrowingStatus(item)
+      if (!narrowing.ok) {
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `could not approve: ${narrowing.reason} — file the follow-up and link it, or remove the deferred line; the gate stays open`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+        store.notifyChange()
+        return { error: narrowing.reason, status: 409, narrowing: true }
+      }
+    }
     if (
       item &&
       item.cursor === stepIndex &&
@@ -1743,7 +1766,8 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     // HZ-313: approving the design files the split its plan proposed, before
     // the gate moves — the close-issue pattern above: no filing, no gate.
     // Every approver (browser, WhatsApp, Autopilot) comes through here.
-    if (item && item.cursor === stepIndex && stepIndex === split.DESIGN_GATE_INDEX) {
+    // HZ-685: so does Review before execution, for a same-repo follow-up.
+    if (item && item.cursor === stepIndex && split.FILING_GATES.includes(stepIndex)) {
       const filed = await split.fileApprovedSplit(item, actor)
       if (filed.error) return filed
     }

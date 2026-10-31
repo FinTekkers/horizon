@@ -125,7 +125,6 @@ test('a valid split is shown at gate 5 with its repo and title, and nothing is f
 for (const [name, repo, phrase] of [
   ['a repo connected to another project', OTHER, /\*\*not connected\*\* to this item’s project/],
   ['a repo not connected at all', 'FinTekkers/unknown', /\*\*not connected\*\* to this item’s project/],
-  ['the item’s own repo', SRC, /this item’s own repo/],
 ]) {
   test(`refusal: a split naming ${name} files nothing and the plan output says why`, async () => {
     const before = stub.creates().length
@@ -152,6 +151,20 @@ for (const [name, repo, phrase] of [
     assert.equal(rows(id).length, 0)
   })
 }
+
+// HZ-685: the own-repo case used to be refused. It is now a same-repo
+// follow-up: proposed, shown at gate 5, and waiting on this item once filed.
+test('a split naming the item’s own repo is proposed as a same-repo follow-up, and nothing is filed before approval', async () => {
+  const before = stub.creates().length
+  const id = newSource('own repo')
+  const artifact = await runPlan(id, { ...SPLIT, repo: SRC })
+
+  assert.match(artifact, /## Proposed split/)
+  assert.match(artifact, /That follow-up then waits for this item\./)
+  assert.deepEqual(rows(id).map((r) => [r.target_repo, r.status]), [[SRC, 'proposed']])
+  assert.equal(stub.creates().length, before)
+  assert.equal(deps(id).length, 0)
+})
 
 test('a send-back at gate 5 files nothing, and a re-run with no split drops the proposal', async () => {
   const before = stub.creates().length

@@ -127,7 +127,7 @@ import * as deployQueue from './deployQueue.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { deploySkipArtifact, deploySkipReason } from './deploySkip.js'
 import { servedRulesFor } from './rulesStore.js'
-import { OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
+import { DIGEST_STEP_INDEX, OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { awaitsSpawnedCode, hasSpawned, linkSpawned, requestKeyFor, spawnItems, spawnRuleOf, spawnedCodeLive, validateSpawnSpec } from './spawn.js'
 import { recordFlakes } from './checkFlakes.js'
 import { NON_AGENT, cleanUsage, recordRunUsage } from './stepUsage.js'
@@ -3057,9 +3057,11 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
 
   // HZ-313: a split the plan proposes is validated and recorded here, and
   // shown at gate 5. Nothing is filed until that gate is approved; a refusal
-  // is a `## Blockers` bullet, never a failed run.
-  if (run.step_index === OPTIONS_STEP_INDEX) {
-    artifactMd = proposeSplit(item, runId, artifacts?.split, artifactMd)
+  // is a `## Blockers` bullet, never a failed run. HZ-685: the summary step's
+  // same-repo follow-up the same way, filed when Review before execution is
+  // approved.
+  if (run.step_index === OPTIONS_STEP_INDEX || run.step_index === DIGEST_STEP_INDEX) {
+    artifactMd = proposeSplit(item, runId, run.step_index, artifacts?.split, artifactMd)
   }
 
   // HZ-448: the Draft items reply's plan_draft is checked with the server's
