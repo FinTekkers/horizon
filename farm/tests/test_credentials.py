@@ -258,3 +258,22 @@ def test_subprocess_module_is_still_the_one_being_patched():
     switched to another spawn API."""
     assert claude_provider.subprocess is subprocess
     assert muse_provider.subprocess is subprocess
+
+
+# ---- HZ-663: the tenant allowlist holds one named secret, and only that ----
+
+# The one secret-shaped name a tenant session may hold: the host's model auth
+# (confirmed on the host as farmd's only CLAUDE_* credential). Adding another
+# here is a decision someone has to write down.
+TENANT_SECRETS_ALLOWED = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
+
+
+def test_tenant_forward_has_no_secret_shaped_name():
+    import re
+
+    secretish = re.compile(r"SECRET|TOKEN|PASSWORD|API_KEY")
+    found = {name for name in credentials.TENANT_FORWARD if secretish.search(name)}
+    assert found == TENANT_SECRETS_ALLOWED
+    assert not credentials.TENANT_FORWARD & (credentials.GATE_APPROVING | tmux_mgr.AGENT_NEVER_NEEDS)
+    assert not {"GITHUB_TOKEN", "GH_TOKEN", "GITHUB_WEBHOOK_SECRET"} & credentials.TENANT_FORWARD
+    assert {"FARM_PORT", "HORIZON_URL", "PATH"} <= credentials.TENANT_FORWARD

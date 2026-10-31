@@ -191,3 +191,32 @@ export function insertGateAction(db, { itemId, kind = 'premerge', state, reason 
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(itemId, kind, state, crypto.randomBytes(8).toString('hex'), epoch, detail, reason, failingCheck, now, deadline, running ? null : now)
 }
+
+// HZ-656: a signed-in non-owner, written like server/src/auth.js's createUser
+// and createSession (session id is sha256 of the raw token). `projectIds` are
+// the projects they belong to. Returns { userId, token }: set `token` as the
+// horizon_session cookie in a context of their own.
+export function insertMemberSession(db, { email, name, projectIds = [] }) {
+  const userId = crypto.randomUUID()
+  const initials = name
+    .split(/\s+/)
+    .map((word) => word[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase()
+  db.prepare(
+    `INSERT INTO user (id, email, name, initials, auth_method, gate_pin_hash, role, last_login_at)
+     VALUES (?, ?, ?, ?, 'password', 'unused', 'member', datetime('now'))`,
+  ).run(userId, email, name, initials)
+  for (const projectId of projectIds) {
+    db.prepare('INSERT INTO project_member (project_id, user_id) VALUES (?, ?)').run(projectId, userId)
+  }
+  const token = crypto.randomBytes(32).toString('hex')
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  db.prepare('INSERT INTO session (id, user_id, expires_at) VALUES (?, ?, ?)').run(
+    crypto.createHash('sha256').update(token).digest('hex'),
+    userId,
+    expiresAt,
+  )
+  return { userId, token }
+}

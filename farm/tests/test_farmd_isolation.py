@@ -200,20 +200,17 @@ def test_a_ref_that_is_not_a_reference_is_never_logged(farm, capsys):
 
 
 def test_a_complete_tenant_task_launches_as_the_farm_user_with_no_resolved_token(farm, fake_tmux, monkeypatch, tmp_path):
+    """HZ-663 part 1 replaced HZ-662's interim launch: a complete tenant task
+    is refused until part 2, and never launches as the farm user."""
     monkeypatch.setenv("ACME_GITHUB_TOKEN", SECRET)
-    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
-    monkeypatch.setattr(farmd, "_refresh_rules", lambda task: False)
-    launches = []
-    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda name, command, **kwargs: launches.append((name, command, kwargs)))
-    assert client.post("/steps/run", json=make_task(6609, TENANT_COMPLETE)).status_code == 200
+    monkeypatch.setattr(farmd.farm_config, "TENANT_ENV_ROOT", tmp_path / "tenants")
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: pytest.fail("a refused tenant task must never report started"))
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda *args, **kwargs: pytest.fail("a tenant task must never launch as the farm user"))
+    task = make_task(6609, TENANT_COMPLETE)
+    task["test_env_file"] = str(tmp_path / "tenants" / "7" / "e2e.env")
 
-    claimed_path = QUEUE_DIR / "runs" / "active" / "6609.json"
-    name = farmd._claim_and_launch(QUEUE_DIR / "runs" / "6609.json", QUEUE_DIR / "runs", tmp_path)
-    assert name is not None
-    [(launched, command, kwargs)] = launches
-    # Exactly today's launch: the farm's own interpreter, no sudo/runuser, no env.
-    assert command == f"{sys.executable} -m farm.step_agent --task {claimed_path}"
-    assert set(kwargs) == {"cwd", "log_file"}
-    task = json.loads(claimed_path.read_text())
-    assert task["project"]["githubTokenRef"] == REF
-    assert SECRET not in json.dumps(task) + command + json.dumps(kwargs)
+    res = client.post("/steps/run", json=task)
+    assert res.status_code == 400
+    assert res.json() == {"error": "tenant_launch_refused", "reason": farmd.TENANT_WORKSPACE_GATE}
+    assert queued_files() == []
+    assert SECRET not in res.text

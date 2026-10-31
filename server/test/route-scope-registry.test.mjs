@@ -69,7 +69,10 @@ test('with test hooks on, the app boots and every route, /api/test/* and HEAD in
   assert.equal(byKey.get('POST /api/billing/stripe-webhook'), 'hmac')
   assert.equal(byKey.get('POST /api/wa/poll-vote'), 'wa')
   assert.equal(byKey.get('GET /api/farm/snapshot'), 'farm')
-  assert.equal(byKey.get('GET /api/items'), 'owner')
+  // HZ-656: the board and its feeds are per user.
+  assert.equal(byKey.get('GET /api/items'), 'filtered')
+  assert.equal(byKey.get('GET /api/stream'), 'filtered')
+  assert.equal(byKey.get('GET /api/items/:id/stream'), 'member:item')
 
   // HZ-657: the item and run reads are member-scoped; the writes beside them are not.
   for (const url of [

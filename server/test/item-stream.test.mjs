@@ -65,9 +65,9 @@ insertSeedRun.run('SO-CLOSED', 2, 1, 'summary only', null)
 insertSeedRun.run('SO-HIDDEN', 1, 1, 'must not leak', '# secret')
 
 // An SSE client over fetch: collects { event, data, comment } frames.
-async function openStream(path) {
+async function openStream(path, headers = { cookie }) {
   const controller = new AbortController()
-  const res = await fetch(`${base}${path}`, { headers: { cookie }, signal: controller.signal })
+  const res = await fetch(`${base}${path}`, { headers, signal: controller.signal })
   const frames = []
   let ended = false
   ;(async () => {
@@ -300,4 +300,63 @@ test("a job progress callback pushes the Execute card's view down the item's str
     client.close()
   }
   await waitForItemClients('SO-JOB', 0)
+})
+
+// HZ-656: the route is member:item. A member of ON gets ON's items and the
+// same 404 an unknown id gets for another project's item; losing ON ends an
+// open stream on the next flush.
+const OTHER = store.createProject('Other members').id
+store.setProjectEnabled(OTHER, true)
+insertItem.run('SO-OTHER', 'another project', 'Medium', 3, OTHER)
+insertSeedRun.run('SO-OTHER', 1, 1, 'other project output', null)
+const member = loginFixtureUser(auth, config, { email: 'on-member@example.com', role: 'member' })
+const addMember = db.prepare('INSERT OR IGNORE INTO project_member (project_id, user_id) VALUES (?, ?)')
+addMember.run(ON, member.user.id)
+
+test("a project member gets 404 on another project's item stream, the same as an unknown id", async () => {
+  const headers = { cookie: member.cookie }
+  const other = await get('/api/items/SO-OTHER/stream', headers)
+  const unknown = await get('/api/items/NOPE-1/stream', headers)
+  assert.equal(other.statusCode, 404)
+  assert.equal(other.body, unknown.body)
+  assert.ok(!other.body.includes('other project output'))
+  // A member of OFF, which is disabled, still gets 404 for its item.
+  addMember.run(OFF, member.user.id)
+  assert.equal((await get('/api/items/SO-HIDDEN/stream', headers)).statusCode, 404)
+  // Their own project's item streams.
+  const own = await openStream('/api/items/SO-CLOSED/stream', headers)
+  try {
+    assert.equal(own.res.status, 200)
+    assert.equal((await own.nth(0, isOutputs)).data.stepOutputs[1].output, 'newer output')
+  } finally {
+    own.close()
+  }
+  await waitForItemClients('SO-CLOSED', 0)
+})
+
+test('an open item stream ends on the flush after its member leaves the project; the owner on the same item keeps it', async () => {
+  const theirs = await openStream('/api/items/SO-OPEN/stream', { cookie: member.cookie })
+  const owners = await openStream('/api/items/SO-OPEN/stream')
+  try {
+    await theirs.nth(0, isOutputs)
+    await owners.nth(0, isOutputs)
+    await waitForItemClients('SO-OPEN', 2)
+    db.prepare('DELETE FROM project_member WHERE project_id = ? AND user_id = ?').run(ON, member.user.id)
+    insertRun.run('SO-OPEN', 6, 1, 'written after removal', null)
+    store.notifyChange()
+    appModule.flushStream()
+    for (let i = 0; i < 200 && !theirs.ended(); i++) await sleep(10)
+    assert.ok(theirs.ended(), 'the member stream stayed open')
+    assert.ok(!theirs.frames.some((f) => f.raw.includes('written after removal')))
+    const second = await owners.nth(1, isOutputs)
+    assert.equal(second.data.stepOutputs[6].output, 'written after removal')
+    assert.ok(!owners.ended())
+    assert.equal(appModule.itemStreamClientCount('SO-OPEN'), 1)
+    assert.equal((await get('/api/items/SO-OPEN/stream', { cookie: member.cookie })).statusCode, 404)
+  } finally {
+    theirs.close()
+    owners.close()
+    addMember.run(ON, member.user.id)
+  }
+  await waitForItemClients('SO-OPEN', 0)
 })

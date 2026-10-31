@@ -127,12 +127,29 @@ def _env_prefix(session_name: str) -> str:
     return "env " + " ".join(parts) + " "
 
 
-def new_session(name: str, command: str, cwd: str, log_file: str | None = None) -> None:
+# HZ-663: a tenant session's prefix. `env -i` drops everything the tmux server
+# holds (the shared $GITHUB_TOKEN included) and no agent_env() value is added:
+# the session's real env reaches the run user over stdin, via farm.tenant_launch.
+TENANT_PREFIX = "env -i PATH=/usr/bin:/bin "
+TENANT_LAUNCH_MODULE = "farm.tenant_launch"
+
+
+def _tenant_command(command: str, run_user: str) -> str:
+    """The tenant launch line, or RuntimeError: only farm.tenant_launch, for
+    this same run user, may run behind TENANT_PREFIX."""
+    words = shlex.split(command)
+    if words[1:3] != ["-m", TENANT_LAUNCH_MODULE] or words[-2:] != ["--run-user", run_user]:
+        raise RuntimeError(f"a tenant session may only run -m {TENANT_LAUNCH_MODULE} ... --run-user <its run user>")
+    return TENANT_PREFIX + command
+
+
+def new_session(name: str, command: str, cwd: str, log_file: str | None = None, *, run_user: str | None = None) -> None:
     if name.startswith(JOB_SESSION_PREFIX) and log_file is not None:
         raise RuntimeError(f"job sessions must not use pipe-pane; the runner owns the only log ({name})")
+    line = _env_prefix(name) + command if run_user is None else _tenant_command(command, run_user)
     if session_exists(name):
         kill_session(name)
-    result = _tmux("new-session", "-d", "-s", name, "-c", cwd, _env_prefix(name) + command)
+    result = _tmux("new-session", "-d", "-s", name, "-c", cwd, line)
     if result.returncode != 0:
         raise RuntimeError(f"tmux new-session failed for {name}: {result.stderr.strip()}")
     if log_file:
