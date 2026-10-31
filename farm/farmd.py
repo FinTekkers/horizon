@@ -8,7 +8,9 @@ tmux session `farm-daemon` (see run.sh) on port 4100.
 import asyncio
 import json
 import os
+import pwd
 import re
+import shlex
 import signal
 import tempfile
 import threading
@@ -24,7 +26,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -911,10 +913,12 @@ def _reconcile_one_claimed_run(task_path: Path) -> None:
         # report, which would double-report an already-resolved run.
         print(f"farmd: reconcile releasing run {run_id} — server no longer active", flush=True)
         task_path.unlink(missing_ok=True)
+        _tenant_spool_path(run_id).unlink(missing_ok=True)
         RUN_SESSIONS.pop(run_id, None)
         return
     if _report_run_dead(run_id, name):
         task_path.unlink(missing_ok=True)
+        _tenant_spool_path(run_id).unlink(missing_ok=True)
         RUN_SESSIONS.pop(run_id, None)
     # else: server unreachable or non-2xx — leave the file in place, the next
     # reconcile pass retries; an unreachable server is not evidence the run
@@ -943,10 +947,32 @@ def _reconcile_claimed_runs() -> None:
     module import (farmd boot).
     """
     for task_path in sorted((QUEUE_DIR / "runs" / "active").glob("*.json")):
+        if task_path.name.endswith(TENANT_SPOOL_SUFFIX):
+            continue
         try:
             _reconcile_one_claimed_run(task_path)
         except Exception as exc:
             print(f"farmd: reconcile error for {task_path.name}: {exc}", flush=True)
+    _sweep_orphan_tenant_spools()
+
+
+# HZ-663: a tenant launch's 0600 spool, <run_id>.tenant.json beside the
+# claimed task file. farm.tenant_launch unlinks it the moment it starts; one
+# still here is a launch that never ran, and it holds the project's token.
+TENANT_SPOOL_SUFFIX = ".tenant.json"
+
+
+def _tenant_spool_path(run_id) -> Path:
+    return QUEUE_DIR / "runs" / "active" / f"{run_id}{TENANT_SPOOL_SUFFIX}"
+
+
+def _sweep_orphan_tenant_spools() -> None:
+    """Removes every tenant spool whose claimed task file is gone: no launch
+    can still need it."""
+    for spool in (QUEUE_DIR / "runs" / "active").glob(f"*{TENANT_SPOOL_SUFFIX}"):
+        run_id = spool.name[: -len(TENANT_SPOOL_SUFFIX)]
+        if not (spool.parent / f"{run_id}.json").exists():
+            spool.unlink(missing_ok=True)
 
 
 def _reconcile_loop() -> None:
@@ -1164,6 +1190,86 @@ def _log_isolation_refusal(run_id, project: dict, reason: str) -> None:
     print(f"farmd: refused run {run_id}: {reason} (token ref {shown})", flush=True)
 
 
+# HZ-663 part 1: every tenant launch is refused here until part 2 moves the
+# workspace to the run user. As the run user, step_agent would still reach
+# workspaces.ensure()'s token-in-URL clone and the farm user's locks.
+TENANT_WORKSPACE_GATE = "tenant workspace not supported yet: the farm will not run tenant items until it is"
+
+
+def _is_tenant(task: dict) -> bool:
+    project = task.get("project")
+    return isinstance(project, dict) and project.get("isolation") == "tenant"
+
+
+def _tenant_launch_refusal(task: dict) -> str | None:
+    """Why a tenant task that passed _isolation_refusal still must not launch,
+    or None (always None for an internal task). Fails closed: the token ref
+    must resolve in farmd's env (never falling back to $GITHUB_TOKEN) and the
+    test-env file must sit under the project's own directory. The reason
+    names fields only. Kept apart from _isolation_refusal, whose rule is the
+    table shared with server/src/projectIsolation.js."""
+    if not _is_tenant(task):
+        return None
+    project = task["project"]
+    try:
+        credentials.resolve_token_ref(project.get("githubTokenRef"))
+    except credentials.TenantEnvError:
+        return "tenant project needs a resolvable github_token_ref"
+    try:
+        login_env.tenant_env_path(task.get("test_env_file"), project.get("id"))
+    except login_env.LoginEnvError:
+        return "tenant test_env_file must live under the project's own directory"
+    return TENANT_WORKSPACE_GATE
+
+
+def _run_user_home(run_user: str) -> str:
+    try:
+        return pwd.getpwnam(run_user).pw_dir
+    except KeyError:
+        raise credentials.TenantEnvError("run_user has no account on this host") from None
+
+
+def _tenant_spool(task: dict) -> Path:
+    """Writes the tenant session's whole env, its task and its test-env path
+    to <run_id>.tenant.json, mode 0600, for farm.tenant_launch to hand to the
+    run user over stdin. Raises TenantEnvError / LoginEnvError (fields only)
+    with nothing written."""
+    project = task["project"]
+    test_env_file = login_env.tenant_env_path(task.get("test_env_file"), project.get("id"))
+    env = credentials.tenant_session_env(project, home=_run_user_home(project["runUser"]))
+    path = _tenant_spool_path(task["run_id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{task['run_id']}.tenant.", suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps({"env": env, "task": task, "test_env_file": test_env_file}))
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _launch_tenant_session(name: str, task: dict, repo_root: Path) -> None:
+    """Launches a tenant run as its project's run_user: spool first, then a
+    tmux line holding only the spool path and the user name — never a value.
+    The spool is removed again if the session could not be created."""
+    run_user = task["project"]["runUser"]
+    spool = _tenant_spool(task)
+    try:
+        tmux_mgr.new_session(
+            name,
+            f"{sys.executable} -m {tmux_mgr.TENANT_LAUNCH_MODULE} --spool {shlex.quote(str(spool))} --run-user {run_user}",
+            cwd=str(repo_root),
+            log_file=str(LOGS_DIR / f"{name}.log"),
+            run_user=run_user,
+        )
+    except BaseException:
+        spool.unlink(missing_ok=True)
+        raise
+
+
 def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     """Claims one queued task file (rename into runs/active) and launches its
     ephemeral tmux session — unless the server reports the run is no longer
@@ -1179,7 +1285,7 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     fails with that reason) and the queue file is released once the server
     took it; otherwise it stays for the next tick's report."""
     task = json.loads(task_path.read_text())
-    refusal = _isolation_refusal(task.get("project"))
+    refusal = _isolation_refusal(task.get("project")) or _tenant_launch_refusal(task)
     if refusal:
         _log_isolation_refusal(task.get("run_id"), task.get("project"), refusal)
         status = _forward_result({"run_id": task.get("run_id"), "ok": False, "error": f"the farm refused this tenant item: {refusal}"})
@@ -1212,13 +1318,17 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     name = _run_session_name(task)
     # HZ-212: same session naming, same per-run log, fresh interpreter and
     # env on every step. HZ-371: one runner for both lanes — the lane only
-    # decides the queue and the cap.
-    tmux_mgr.new_session(
-        name,
-        f"{sys.executable} -m farm.step_agent --task {claimed}",
-        cwd=str(repo_root),
-        log_file=str(LOGS_DIR / f"{name}.log"),
-    )
+    # decides the queue and the cap. HZ-663: a tenant run launches as its
+    # run_user instead (unreachable until _tenant_launch_refusal's gate goes).
+    if _is_tenant(task):
+        _launch_tenant_session(name, task, repo_root)
+    else:
+        tmux_mgr.new_session(
+            name,
+            f"{sys.executable} -m farm.step_agent --task {claimed}",
+            cwd=str(repo_root),
+            log_file=str(LOGS_DIR / f"{name}.log"),
+        )
     RUN_SESSIONS[str(task["run_id"])] = name
     print(f"farmd: launched {name}", flush=True)
     return name
@@ -1886,6 +1996,12 @@ async def steps_run(request: Request):
     if refusal:
         _log_isolation_refusal(body["run_id"], project, refusal)
         return JSONResponse({"error": "isolation_refused", "reason": refusal}, status_code=400)
+    # HZ-663: a complete tenant task whose token or test-env file cannot be
+    # used — and, until part 2, every tenant task — is refused the same way.
+    refusal = _tenant_launch_refusal(body)
+    if refusal:
+        _log_isolation_refusal(body["run_id"], project, refusal)
+        return JSONResponse({"error": "tenant_launch_refused", "reason": refusal}, status_code=400)
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     if not _non_empty_str(item_repo):
         return JSONResponse({"error": "missing item.repo"}, status_code=400)
@@ -2534,7 +2650,7 @@ async def steps_cancel(request: Request):
                     print(f"farmd: cancelled in-flight run {run_id} (killed {name})", flush=True)
             except Exception as exc:
                 print(f"farmd: cancel of run {run_id} could not kill its session: {exc}", flush=True)
-            for leftover in (f"{run_id}.pid", f"{run_id}.paused", f"{run_id}.stop-reason"):
+            for leftover in (f"{run_id}.pid", f"{run_id}.paused", f"{run_id}.stop-reason", f"{run_id}{TENANT_SPOOL_SUFFIX}"):
                 (QUEUE_DIR / sub / leftover).unlink(missing_ok=True)
         task_path.unlink(missing_ok=True)
         removed = True

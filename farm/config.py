@@ -241,6 +241,14 @@ FARM_WA_SENDER_NAMES = json.loads(os.environ.get("FARM_WA_SENDER_NAMES", "{}"))
 FARM_WA_WIZARD_TTL_S = int(os.environ.get("FARM_WA_WIZARD_TTL_S", "1800"))
 FARM_WA_CHOICE_TTL_S = int(os.environ.get("FARM_WA_CHOICE_TTL_S", "600"))
 
+# HZ-663: a tenant project's test-env file must live under
+# TENANT_ENV_ROOT/<project id>/ — keyed by project, not run_user, so two
+# projects sharing a run user still cannot read each other's file.
+TENANT_ENV_ROOT = Path(os.environ.get("FARM_TENANT_ENV_ROOT", "/etc/horizon/tenants"))
+# The one command the farm user may sudo to as a run user. Fixed, never read
+# from the environment: infra/host/horizon-deploy.sudoers names this path.
+TENANT_ENTRY = "/usr/local/libexec/horizon/tenant-entry"
+
 
 def ensure_dirs() -> None:
     for d in (QUEUE_DIR / "pm", STATE_DIR, RUNS_DIR, LOGS_DIR, WORKSPACES_DIR):
