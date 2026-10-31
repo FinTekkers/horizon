@@ -1610,10 +1610,13 @@ function currentStepOf(row) {
 // HZ-318: `stepOutputs: false` leaves each item's stepOutputs off — 79% of the
 // board's bytes. The live feed and GET /api/items?v=2 use it; the Tracker
 // streams one item's outputs while it is open, through itemStepOutputs() below.
-export function listItems({ scope = 'active', stepOutputs = true } = {}) {
+//
+// HZ-655: `viewer` is access.viewerFor(request) for a non-owner, and null for
+// the owner and every internal caller (see scopeFilter).
+export function listItems({ scope = 'active', stepOutputs = true, viewer = null } = {}) {
   return selectItems
     .all()
-    .filter(scopeFilter(scope))
+    .filter(scopeFilter(scope, viewer))
     .map((row) => itemView(row, { stepOutputs }))
 }
 
@@ -1633,11 +1636,21 @@ export function itemViewById(id) {
 // per-item route can never show an item the list would not.
 // HZ-654: an `Unlinked items` row is listed in every scope, as a NULL one was,
 // even while that project is disabled.
-function scopeFilter(scope) {
+//
+// HZ-655: with a viewer ({ projectIds }, a non-owner) none of those pass-throughs
+// apply. A NULL or `Unlinked items` row is hidden, and so is everything while no
+// project is active, so a non-owner sees only their own projects' rows in scope.
+// viewer null (the owner, internal callers) keeps the predicate above exactly.
+function scopeFilter(scope, viewer = null) {
   const activeId = getActiveProjectId()
   const enabled = scope === 'enabled' ? enabledProjectIds() : null
   const unlinkedId = unlinkedProjectId(db)
   const inScope = (projectId) => (enabled ? enabled.has(projectId) : projectId === activeId)
+  if (viewer) {
+    // With no active project, inScope matches only NULL, which is already out.
+    return (row) =>
+      row.project_id != null && row.project_id !== unlinkedId && viewer.projectIds.has(row.project_id) && inScope(row.project_id)
+  }
   return (row) => row.project_id == null || row.project_id === unlinkedId || activeId == null || inScope(row.project_id)
 }
 
@@ -1645,9 +1658,9 @@ function scopeFilter(scope) {
 // carries them, or null when the id is unknown or outside that scope.
 // Runs once per open item per stream flush, so the statement is prepared once.
 const selectItemScope = db.prepare('SELECT id, project_id FROM work_item WHERE id = ?')
-export function itemStepOutputs(id) {
+export function itemStepOutputs(id, viewer = null) {
   const row = selectItemScope.get(id)
-  if (!row || !scopeFilter('enabled')(row)) return null
+  if (!row || !scopeFilter('enabled', viewer)(row)) return null
   return stepOutputs(row.id)
 }
 

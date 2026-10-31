@@ -33,6 +33,7 @@ const PROBE_PATH = '/api/hz178-probe/:probeId'
 app.post(
   PROBE_PATH,
   {
+    config: { scope: 'owner' },
     schema: {
       params: { type: 'object', required: ['probeId'], properties: { probeId: { type: 'string' } } },
       querystring: { type: 'object', properties: { dryRun: { type: 'boolean' } } },

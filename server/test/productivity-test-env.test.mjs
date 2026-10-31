@@ -25,7 +25,7 @@ const auth = await import('../src/auth.js')
 const { TEST_ENV_LOGIN_HEADER } = await import('../src/testEnvLogin.js')
 
 store.purgeDemoItems()
-auth.createUser({ email: config.ADMIN_EMAIL, name: 'Admin', authMethod: 'password' })
+auth.createUser({ email: config.ADMIN_EMAIL, name: 'Admin', authMethod: 'password', role: 'owner' })
 const app = buildApp({ logger: false })
 await app.ready()
 after(() => app.close())
