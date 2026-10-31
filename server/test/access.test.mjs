@@ -112,6 +112,34 @@ test('member:repo resolves body.repo, then query.repo', async () => {
   assert.deepEqual(await run('member:repo', {}), NOT_FOUND)
 })
 
+test('member:rule resolves a project or repo rules key; any other rule scope resolves to nothing (HZ-660)', async () => {
+  const rule = (scope, key) => ({ params: { scope, key } })
+  assert.equal(access.projectForScope('member:rule', rule('project', 'alpha-access')), alpha)
+  assert.equal(access.projectForScope('member:rule', rule('repo', 'acme__alpha')), alpha)
+  assert.equal((await run('member:rule', rule('repo', 'acme__alpha'))).passed, true)
+  assert.deepEqual(await run('member:rule', rule('project', 'beta-access')), NOT_FOUND)
+  assert.deepEqual(await run('member:rule', rule('repo', 'acme__beta')), NOT_FOUND)
+  for (const scope of ['role', 'persona', 'global', 'nope']) {
+    for (const key of ['alpha-access', 'acme__alpha', 'eng_implement']) {
+      assert.equal(access.projectForScope('member:rule', rule(scope, key)), null, `${scope}/${key}`)
+      assert.deepEqual(await run('member:rule', rule(scope, key)), NOT_FOUND, `${scope}/${key}`)
+    }
+  }
+  assert.deepEqual(await run('member:rule', { params: {} }), NOT_FOUND)
+  // A repo name holding `__` resolves forward through rulesKey, not by reversing it.
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(alpha, 'acme/a__b', 'AAB')
+  assert.equal(access.projectForScope('member:rule', rule('repo', 'acme__a__b')), alpha)
+})
+
+test('member:effective needs ?project and ?repo to name one of the member’s projects (HZ-660)', async () => {
+  assert.equal((await run('member:effective', { query: { project: 'Alpha Access' } })).passed, true)
+  assert.equal((await run('member:effective', { query: { project: 'Alpha Access', repo: 'acme/alpha' } })).passed, true)
+  assert.equal((await run('member:effective', { query: { repo: 'acme/alpha' } })).passed, true)
+  for (const query of [{}, { role: 'eng_implement' }, { project: 'Beta Access' }, { project: 'Alpha Access', repo: 'acme/beta' }, { project: 'Nope' }]) {
+    assert.deepEqual(await run('member:effective', { query }), NOT_FOUND, JSON.stringify(query))
+  }
+})
+
 test('an item with no real project (NULL or `Unlinked items`) resolves to no project, so a non-owner gets 404', async () => {
   addMember(member.id, unlinked)
   try {

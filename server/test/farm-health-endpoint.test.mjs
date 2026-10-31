@@ -1,5 +1,7 @@
 // HZ-563 metric 3 and guardrails 1-3: GET /api/admin/farm-health.
-//   - a signed-in non-admin gets 403 admin_required;
+//   - a signed-in non-owner gets 404 not_found (HZ-660: owner is user.role,
+//     and an ADMIN_EMAILS address alone grants nothing); an owner's API token
+//     still gets in;
 //   - an admin's body holds only allowlisted keys, at every depth, and a fake
 //     secret planted in every host, service, farmd and deploy input is absent;
 //   - the collector only runs `systemctl is-active …` (no sudo) and GETs
@@ -14,7 +16,8 @@ import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-farm-health-endpoint-')), 'test.db')
-for (const key of ['FARM_HOME', 'FARM_URL', 'ADMIN_EMAIL', 'ADMIN_EMAILS']) delete process.env[key]
+for (const key of ['FARM_HOME', 'FARM_URL', 'ADMIN_EMAIL']) delete process.env[key]
+process.env.ADMIN_EMAILS = 'listed-member@example.com'
 
 const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
@@ -30,7 +33,7 @@ const NOW = Date.parse('2026-10-23T10:00:00Z')
 const routes = []
 const app = buildApp({ logger: false, onRoute: (r) => routes.push(r) })
 const admin = loginFixtureUser(auth, config, { email: config.ADMIN_EMAIL, name: 'Admin' })
-const member = loginFixtureUser(auth, config, { email: 'member@example.com', name: 'Member' })
+const member = loginFixtureUser(auth, config, { email: 'listed-member@example.com', name: 'Member', role: 'member' })
 
 db.prepare(
   "INSERT INTO deploy_batch (target, repo, status, window_closes_at, tag, live_at, failure) VALUES ('horizon', 'FinTekkers/horizon', 'done', ?, 'v2026.10.23-1', ?, ?)",
@@ -116,11 +119,19 @@ test('before the first collection, an admin gets 503 farm_health_warming', async
   assert.equal(res.json().error, 'farm_health_warming')
 })
 
-test('a signed-in non-admin gets 403 admin_required', async () => {
+test('a signed-in non-owner on ADMIN_EMAILS gets 404 not_found', async () => {
   await farmHealth.refreshFarmHealth(deps)
   const res = await get(member.cookie)
-  assert.equal(res.statusCode, 403)
-  assert.equal(res.json().error, 'admin_required')
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'not_found' })
+})
+
+test("the owner's API token still reaches farm-health (HZ-660 metric 4)", async () => {
+  await farmHealth.refreshFarmHealth(deps)
+  const { token } = auth.createApiToken(admin.user.id, 'farm-health-script')
+  const res = await app.inject({ method: 'GET', url: '/api/admin/farm-health', headers: { authorization: `Bearer ${token}` } })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().farm.status, 'running')
 })
 
 test('/api/auth/me says who is an admin', async () => {

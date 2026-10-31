@@ -2,15 +2,18 @@ import { useEffect, useState } from 'react'
 import { getDeployTargets, getCheckFlakes } from '../api'
 import { BackIcon } from './icons'
 import AdminNav from './admin/AdminNav'
-import { ADMIN_HOME, adminPath } from './admin/adminRoutes'
+import { ADMIN_HOME, MEMBER_ADMIN_SECTION, adminPath, isOwnerOnlySection, visibleSections } from './admin/adminRoutes'
 import { AccountSection, GitHubSection } from './admin/AccessSections'
 import { DeployTargetsSection, FlakyTestsSection } from './admin/DeliverySections'
 import { ProjectsSection } from './admin/ProjectsSection'
 
 // HZ-564: Admin is one section at a time, picked from the grouped list on the
 // left. App owns the route (parsePath reads `/admin/<section>`); this shell
-// only shows it and asks App to navigate on a click.
-export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, onNavigate }) {
+// only shows it and asks App to navigate on a click. HZ-660: a member
+// (isOwner false) gets only the sections visibleSections allows — an
+// owner-only section is never rendered, and its owner-only reads never sent.
+// App passes isOwner; the server's 404 on those routes is the real check.
+export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, onNavigate, isOwner = true }) {
   const [deployTargetsVersion, setDeployTargetsVersion] = useState(0)
   const [deployTargets, setDeployTargets] = useState({ targets: null, error: null })
 
@@ -18,19 +21,21 @@ export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, 
   // lists them, and each project row uses them to say what a broken webhook
   // breaks (HZ-303). Bumped after each edit in Deploy target overrides.
   useEffect(() => {
+    if (!isOwner) return
     getDeployTargets()
       .then((result) => setDeployTargets({ targets: result.targets || [], error: null }))
       .catch((err) => setDeployTargets((prev) => ({ ...prev, error: err.message })))
-  }, [deployTargetsVersion])
+  }, [deployTargetsVersion, isOwner])
 
   const [checkFlakes, setCheckFlakes] = useState({ data: null, error: null })
   useEffect(() => {
+    if (!isOwner) return
     getCheckFlakes()
       .then((data) => setCheckFlakes({ data: { repos: data.repos || [] }, error: null }))
       .catch((err) => setCheckFlakes({ data: null, error: err.message }))
-  }, [])
+  }, [isOwner])
 
-  const section = route.section
+  const section = isOwner || !isOwnerOnlySection(route.section) ? route.section : MEMBER_ADMIN_SECTION
   const flakyCount = (checkFlakes.data?.repos || []).reduce((n, r) => n + (r.tests?.length || 0), 0)
   const badges = {
     projects: { value: projects.length },
@@ -51,6 +56,7 @@ export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, 
           onSelect={(key) => onNavigate?.(adminPath({ section: key }))}
           badges={badges}
           extraTerms={extraTerms}
+          sections={visibleSections(isOwner)}
         />
         <main className="admin-section" aria-label="Admin settings">
           {section === 'projects' && (

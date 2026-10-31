@@ -18,7 +18,7 @@ import NewItemModal from './components/NewItemModal'
 import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
-import { ADMIN_HOME, parseAdminPath } from './components/admin/adminRoutes'
+import { ADMIN_HOME, MEMBER_ADMIN_SECTION, adminPath, isOwnerOnlySection, parseAdminPath } from './components/admin/adminRoutes'
 import { gateActionBusy } from './domain/gateAction'
 import { queuedToMerge } from './domain/status'
 import { validPlanId } from './domain/narrowing'
@@ -409,6 +409,14 @@ function AuthenticatedApp({ user, onLogout }) {
     setAdminRoute(ADMIN_HOME)
   }, [view, adminRoute])
 
+  // HZ-660: a member's /admin or /admin/<owner-only section> shows Account, and
+  // its URL becomes /admin/account, on first load and on back/forward alike.
+  useEffect(() => {
+    if (view !== 'admin' || isAdmin || adminRoute.unknown || !isOwnerOnlySection(adminRoute.section)) return
+    window.history.replaceState(window.history.state, '', `${PREFIX}${adminPath({ section: MEMBER_ADMIN_SECTION })}`)
+    setAdminRoute({ ...ADMIN_HOME, section: MEMBER_ADMIN_SECTION })
+  }, [view, adminRoute, isAdmin])
+
   // While the board is shown its URL names the chosen Plan, so a reload or a
   // shared link keeps it, and clearing the chip drops it.
   useEffect(() => {
@@ -550,10 +558,17 @@ function AuthenticatedApp({ user, onLogout }) {
       )}
 
       {view === 'admin' && (
-        <AdminPage sync={sync} projects={projects} onBack={toBoard} route={adminRoute} onNavigate={openAdmin} />
+        <AdminPage
+          sync={sync}
+          projects={projects}
+          onBack={toBoard}
+          route={adminRoute}
+          onNavigate={openAdmin}
+          isOwner={isAdmin}
+        />
       )}
 
-      {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}
+      {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} isOwner={isAdmin} />}
 
       {view === 'farm-health' &&
         (isAdmin ? (

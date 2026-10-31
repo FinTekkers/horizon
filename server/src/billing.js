@@ -43,7 +43,7 @@ export function validateSignup(body) {
   const email = trimmed('email')
   const company = trimmed('company')
   if (!name || name.length > SIGNUP_FIELD_MAX) return { error: 'invalid_signup', field: 'name' }
-  if (!email || email.length > EMAIL_MAX || !EMAIL_RE.test(email) || auth.isAdmin({ email })) {
+  if (!email || email.length > EMAIL_MAX || !EMAIL_RE.test(email) || auth.isAdminEmail(email)) {
     return { error: 'invalid_signup', field: 'email' }
   }
   if (!company || company.length > SIGNUP_FIELD_MAX) return { error: 'invalid_signup', field: 'company' }
