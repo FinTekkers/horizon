@@ -48,13 +48,14 @@ let issueNumber = 700
 globalThis.fetch = async (url, opts) => {
   const u = String(url)
   const reply = (status, data) => ({ ok: status < 300, status, json: async () => data })
+  const ok = (data) => reply(200, data)
   if (u.startsWith('https://api.github.com/')) {
     githubCalls.push(u)
     if (u.endsWith('/issues') && opts?.method === 'POST') {
       const n = ++issueNumber
-      return reply(200, { number: n, title: JSON.parse(opts.body).title, body: '', html_url: `https://github.com/x/issues/${n}`, labels: [], state: 'open' })
+      return ok({ number: n, title: JSON.parse(opts.body).title, body: '', html_url: `https://github.com/x/issues/${n}`, labels: [], state: 'open' })
     }
-    return reply(200, {})
+    return ok({})
   }
   const path = new URL(u).pathname
   farmCalls.push(path)
