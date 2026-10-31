@@ -366,8 +366,10 @@ test('guardrail 3: this branch changes no file under server/ or ui/', (t) => {
   // The guardrail is about the recorder's own branch. Once the recorder is on
   // main, every other item's branch runs this suite too, and most of them
   // legitimately change server/ or ui/ — so apply it only while this branch
-  // still changes the recorder's code (its tests excluded) against origin/main.
-  if (git('diff', '--quiet', 'origin/main', '--', 'scripts/recorder', 'scripts/record-item.mjs', ':(exclude)scripts/recorder/test').status === 0) {
+  // still changes the recorder's code (its tests excluded) since its merge-base
+  // — not against origin/main itself, which would count recorder changes that
+  // landed on main after this branch was cut as this branch's own.
+  if (git('diff', '--quiet', base.stdout.trim(), '--', 'scripts/recorder', 'scripts/record-item.mjs', ':(exclude)scripts/recorder/test').status === 0) {
     t.skip('this branch does not change the recorder')
     return
   }
