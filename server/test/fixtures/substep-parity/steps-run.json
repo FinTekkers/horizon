@@ -1,5 +1,5 @@
 {
-  "commit": "54114a4",
+  "commit": "d46a5ee",
   "steps": {
     "0": [
       {
@@ -31,7 +31,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "project_context": {
@@ -75,7 +78,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "project_context": {
@@ -130,7 +136,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "project_context": {
@@ -195,7 +204,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }
@@ -247,7 +259,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }
@@ -303,7 +318,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }
@@ -363,7 +381,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }
@@ -431,7 +452,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "project_context": {
@@ -546,7 +570,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "scope": {
@@ -625,7 +652,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "scope": {
@@ -704,7 +734,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }
@@ -739,7 +772,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "project_context": {
@@ -844,7 +880,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "project_context": {
@@ -953,7 +992,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "project_context": {
@@ -1066,7 +1108,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }
@@ -1118,7 +1163,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": [],
         "repo_dir": null,
@@ -1180,7 +1228,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }
@@ -1201,7 +1252,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "plan_artifact": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```",
         "approved_hash": "960fde42a53e38f28e263867d87b03f87ad9c99dac0c6e1c09fbca7bf8f6e682",
@@ -1272,7 +1326,10 @@
         },
         "project": {
           "id": 2,
-          "name": "Acme Capital"
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
         },
         "feedback": []
       }

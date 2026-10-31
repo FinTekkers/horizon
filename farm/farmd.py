@@ -1115,6 +1115,55 @@ def _knowledge_loop() -> None:
             print(f"farmd: knowledge sync error: {exc}", flush=True)
 
 
+# HZ-662: a project's isolation, as the server sends it in the task's
+# `project` dict. The same rule as server/src/projectIsolation.js; both run
+# domain/fixtures/isolation-cases.json, so the two cannot drift.
+ISOLATIONS = ("internal", "tenant")
+TOKEN_REF_RE = re.compile(r"^\$[A-Z_][A-Z0-9_]*$")
+RUN_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def _isolation_refusal(project) -> str | None:
+    """Why the farm must not run this project's task, or None. Fails closed:
+    an unknown isolation, or a tenant missing a valid github_token_ref or
+    run_user, is refused. The reason names fields only — never the ref, and
+    never a value.
+
+    Named exception: a project dict with NO `isolation` key reads as
+    internal. Tasks queued before HZ-662 carry no key, and every project
+    that existed then is internal. A present but empty value (None, "",
+    "TENANT") is still refused.
+    TODO(HZ-663): make the key required once those tasks have drained."""
+    if not isinstance(project, dict):
+        return None  # no project: steps_run refuses it as `missing project`
+    isolation = project.get("isolation", "internal")
+    if isolation not in ISOLATIONS:
+        return "unknown isolation: the farm will not run this project's items"
+    if isolation == "internal":
+        return None
+    ref, run_user = project.get("githubTokenRef"), project.get("runUser")
+    missing = [
+        name
+        for name, ok in (
+            ("github_token_ref", isinstance(ref, str) and TOKEN_REF_RE.match(ref)),
+            ("run_user", isinstance(run_user, str) and RUN_USER_RE.match(run_user)),
+        )
+        if not ok
+    ]
+    if not missing:
+        return None
+    return f"tenant project needs {' and '.join(missing)} before the farm runs it"
+
+
+def _log_isolation_refusal(run_id, project: dict, reason: str) -> None:
+    """The farm log line for a refused tenant task. It names the $NAME
+    reference only — never os.environ's value for it, and never a ref that
+    is not a $NAME (which could be a pasted token)."""
+    ref = project.get("githubTokenRef") if isinstance(project, dict) else None
+    shown = ref if isinstance(ref, str) and TOKEN_REF_RE.match(ref) else ("invalid" if ref else "none")
+    print(f"farmd: refused run {run_id}: {reason} (token ref {shown})", flush=True)
+
+
 def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     """Claims one queued task file (rename into runs/active) and launches its
     ephemeral tmux session — unless the server reports the run is no longer
@@ -1123,8 +1172,20 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     it, e.g. its queue watchdog already fired). Factored out of the
     dispatcher loop so it's testable without tmux/threads, same as
     _select_dispatchable above. Returns the launched session name, or None
-    if the run was stale."""
+    if the run was stale.
+
+    HZ-662: a task whose project fails _isolation_refusal is refused before
+    the claim and before _notify_started. The server is told why (the run
+    fails with that reason) and the queue file is released once the server
+    took it; otherwise it stays for the next tick's report."""
     task = json.loads(task_path.read_text())
+    refusal = _isolation_refusal(task.get("project"))
+    if refusal:
+        _log_isolation_refusal(task.get("run_id"), task.get("project"), refusal)
+        status = _forward_result({"run_id": task.get("run_id"), "ok": False, "error": f"the farm refused this tenant item: {refusal}"})
+        if status is not None and (200 <= status < 300 or status == 404):
+            task_path.unlink(missing_ok=True)
+        return None
     active = runs_dir / "active"
     active.mkdir(exist_ok=True)
     claimed = active / task_path.name
@@ -1819,6 +1880,12 @@ async def steps_run(request: Request):
     project = body.get("project")
     if not isinstance(project, dict) or project.get("id") is None or not _non_empty_str(project.get("name")):
         return JSONResponse({"error": "missing project"}, status_code=400)
+    # HZ-662: a tenant project missing its credential reference or run user,
+    # or an unknown isolation, is never enqueued or launched — either lane.
+    refusal = _isolation_refusal(project)
+    if refusal:
+        _log_isolation_refusal(body["run_id"], project, refusal)
+        return JSONResponse({"error": "isolation_refused", "reason": refusal}, status_code=400)
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     if not _non_empty_str(item_repo):
         return JSONResponse({"error": "missing item.repo"}, status_code=400)

@@ -39,6 +39,7 @@ import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
 import * as access from './access.js'
+import { RUN_USER_RE, TOKEN_REF_RE } from './projectIsolation.js'
 import * as billing from './billing.js'
 import * as stripeWebhook from './stripeWebhook.js'
 import * as ownerMail from './ownerMail.js'
@@ -3317,10 +3318,15 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     },
   )
 
+  // HZ-662: `self` scope — any signed-in user may create a project. The owner's
+  // is `internal`, exactly as before. Anyone else's is `tenant`, with its
+  // creator as its one member; the farm holds a tenant project's items until
+  // the owner sets its credential reference and run user (PUT .../isolation).
+  // An API-token caller is judged by the token's user, like a session.
   fastify.post(
     '/api/projects',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'self' },
       schema: {
         body: {
           type: 'object',
@@ -3331,7 +3337,8 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       },
     },
     (request, reply) => {
-      const result = store.createProject(request.body.name.trim())
+      const owner = access.isOwner(request.user?.id)
+      const result = store.createProject(request.body.name.trim(), owner ? {} : { isolation: 'tenant', memberId: request.user.id })
       if (result.error === 'exists') return reply.code(409).send({ error: 'A project with that name already exists' })
       orchestrator.ensureFarm(request.log) // first project => farm comes up for it
       broadcast()
@@ -3638,6 +3645,51 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       if (result.error) return reply.code(404).send({ error: 'Project not found' })
       broadcast()
       return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
+  // HZ-662: a tenant project's GitHub credential reference and run user. Owner
+  // only (the route guard answers anyone else 404) and gate-PIN protected,
+  // checked before the lookup so a bad PIN never touches state. The ref must
+  // be a $NAME reference — anything else is a 400 that stores nothing and
+  // echoes nothing. A key left out is unchanged; null clears it. `isolation`
+  // itself cannot change here. A change re-kicks the project's items, so a
+  // hold clears at once.
+  fastify.put(
+    '/api/projects/:id/isolation',
+    {
+      config: { scope: 'owner' },
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          minProperties: 1,
+          additionalProperties: false,
+          properties: {
+            githubTokenRef: { type: ['string', 'null'], pattern: TOKEN_REF_RE.source },
+            runUser: { type: ['string', 'null'], pattern: RUN_USER_RE.source },
+          },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      if (!access.isOwner(request.user?.id)) return reply.code(403).send({ error: 'owner_required' })
+      const result = store.setProjectIsolation(request.params.id, request.body, actorOf(request))
+      if (result.error === 'not_found') return reply.code(404).send({ error: 'Project not found' })
+      if (result.error === 'invalid_ref') return reply.code(400).send({ error: 'githubTokenRef must be a $NAME reference' })
+      if (result.error === 'invalid_run_user') return reply.code(400).send({ error: 'runUser must be a lower-case user name' })
+      if (result.changed) {
+        orchestrator.kickProjectItems(request.params.id)
+        broadcast()
+      }
+      return { ok: true, projectId: request.params.id, isolation: result.isolation, githubTokenRef: result.githubTokenRef, runUser: result.runUser }
     },
   )
 
