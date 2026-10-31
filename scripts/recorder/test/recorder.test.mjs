@@ -367,7 +367,9 @@ test('guardrail 3: this branch changes no file under server/ or ui/', (t) => {
   // main, every other item's branch runs this suite too, and most of them
   // legitimately change server/ or ui/ — so apply it only while this branch
   // still changes the recorder's code (its tests excluded) against origin/main.
-  if (git('diff', '--quiet', 'origin/main', '--', 'scripts/recorder', 'scripts/record-item.mjs', ':(exclude)scripts/recorder/test').status === 0) {
+  // Diff from the merge-base, so recorder changes landed on main since this
+  // branch forked don't count as this branch's.
+  if (git('diff', '--quiet', base.stdout.trim(), '--', 'scripts/recorder', 'scripts/record-item.mjs', ':(exclude)scripts/recorder/test').status === 0) {
     t.skip('this branch does not change the recorder')
     return
   }
