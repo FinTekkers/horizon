@@ -85,10 +85,10 @@ function RuleVersions({ rules, onRestore, busy }) {
   )
 }
 
-function DefinitionTree({ tree, selected, onSelect }) {
+function DefinitionTree({ tree, selected, onSelect, isOwner }) {
   return (
     <div className="defs__tree">
-      {GROUPS.map((group) => (
+      {GROUPS.filter((group) => isOwner || group.key !== 'global').map((group) => (
         <div key={group.key} className="defs__group">
           <div className="defs__group-title" title={group.hint}>
             {group.title}
@@ -215,7 +215,10 @@ function previewParams(selected) {
   return params
 }
 
-export default function AgentDefinitionsPage({ onBack }) {
+// HZ-660: global roles and personas are the owner's; a member gets 404 from
+// /api/definitions, so their tree is their own projects' and repos' rules only.
+// App passes isOwner; the server's 404 is the real check.
+export default function AgentDefinitionsPage({ onBack, isOwner = true }) {
   const [tree, setTree] = useState(null)
   const [loadError, setLoadError] = useState(null)
   const [selected, setSelected] = useState(null)
@@ -230,7 +233,7 @@ export default function AgentDefinitionsPage({ onBack }) {
   const [pin, setPin] = useState('')
 
   const refreshTree = () =>
-    Promise.all([listDefinitions(), listRuleTargets()])
+    Promise.all([isOwner ? listDefinitions() : { global: [] }, listRuleTargets()])
       .then(([defs, targets]) =>
         setTree({ global: defs.global, projects: targets.projects.map(rulesEntry), repos: targets.repos.map(rulesEntry) }),
       )
@@ -341,7 +344,7 @@ export default function AgentDefinitionsPage({ onBack }) {
       {loadError && <div className="gh-error">{loadError}</div>}
 
       <div className="defs__layout">
-        {tree ? <DefinitionTree tree={tree} selected={selected} onSelect={select} /> : !loadError && <div>Loading…</div>}
+        {tree ? <DefinitionTree tree={tree} selected={selected} onSelect={select} isOwner={isOwner} /> : !loadError && <div>Loading…</div>}
 
         <div className="defs__editor">
           {!selected && <div className="gh-note">Select a definition to view or edit it.</div>}

@@ -32,8 +32,11 @@ const member = loginFixtureUser(auth, config, { email: 'no-memberships@example.c
 const listedMember = loginFixtureUser(auth, config, { email: 'listed-admin@example.com', role: 'member' })
 // Not on any allowlist, yet role 'owner'.
 const unlistedOwner = loginFixtureUser(auth, config, { email: 'unlisted-owner@example.com', role: 'owner' })
-assert.equal(auth.isAdmin(listedMember.user), true)
-assert.equal(auth.isAdmin(unlistedOwner.user), false)
+// HZ-660: the email allowlist grants nothing; owner is user.role only.
+const access = await import('../src/access.js')
+assert.equal(auth.isAdminEmail(listedMember.user.email), true)
+assert.equal(access.isOwner(listedMember.user.id), false)
+assert.equal(access.isOwner(unlistedOwner.user.id), true)
 
 function withProbe(app) {
   app.get('/api/zz-probe/:id', { config: { scope: 'member:item' } }, () => ({ handler: 'ran' }))
@@ -78,6 +81,12 @@ test('the owner check reads user.role: an unlisted owner gets 200, an ADMIN_EMAI
   assert.equal((await call(app, 'GET', '/api/admin/deploy-targets', unlistedOwner)).statusCode, 200)
   assert.equal((await call(app, 'GET', '/api/zz-probe/OTH-1', unlistedOwner)).statusCode, 200)
   assert.equal((await call(app, 'GET', '/api/admin/deploy-targets', listedMember)).statusCode, 404)
+  const health = await call(app, 'GET', '/api/admin/farm-health', listedMember)
+  assert.equal(health.statusCode, 404)
+  assert.deepEqual(health.json(), { error: 'not_found' })
+  const me = (who) => call(app, 'GET', '/api/auth/me', who).then((res) => res.json().user.isAdmin)
+  assert.equal(await me(listedMember), false)
+  assert.equal(await me(unlistedOwner), true)
 })
 
 test('a resolver that throws fails closed with 404 and the handler never runs', async () => {

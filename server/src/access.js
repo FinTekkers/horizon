@@ -22,6 +22,13 @@
 //   - member:item/run/project/slug/repo
 //                        resolves the request to one project and passes only
 //                        if the user is a member of it; else 404
+//   - member:rule        (HZ-660) the /api/rules/:scope/:key routes: a
+//                        `project` or `repo` key resolves to its project; any
+//                        other scope (role, persona, global…) resolves to
+//                        nothing, so a member can never edit global rules
+//   - member:effective   (HZ-660) the effective-prompt preview: ?project=
+//                        (by name) and ?repo= must resolve to one project; with
+//                        neither, nothing — no global-only preview
 // A guessed or unknown id gets the same 404 as a project the user may not see,
 // never 403, so the answer cannot reveal that a project exists. Anything the
 // guard cannot resolve — a missing scope, an unknown scope, a throw — is 404.
@@ -29,6 +36,7 @@
 import { db } from './db.js'
 import { hasNoProject } from './membership.js'
 import { resolveProjectSlug } from './projectDefinitions.js'
+import { rulesKey } from './definitions.js'
 
 // `test` is the e2e-only /api/test/* routes (HORIZON_TEST_HOOKS=1). They sit
 // behind the session gate, so it is a user scope, owner-only.
@@ -42,6 +50,8 @@ export const USER_SCOPES = Object.freeze([
   'member:project',
   'member:slug',
   'member:repo',
+  'member:rule',
+  'member:effective',
 ])
 export const EXEMPT_SCOPES = Object.freeze(['farm', 'hmac', 'wa', 'public'])
 
@@ -53,6 +63,7 @@ const selectItemProject = db.prepare('SELECT project_id FROM work_item WHERE id 
 const selectRunProject = db.prepare('SELECT w.project_id FROM step_run s JOIN work_item w ON w.id = s.item_id WHERE s.id = ?')
 const selectProject = db.prepare('SELECT id FROM project WHERE id = ?')
 const selectRepoProject = db.prepare('SELECT project_id FROM project_repo WHERE repo = ?')
+const selectRepoRows = db.prepare('SELECT repo, project_id FROM project_repo')
 
 export function isOwner(userId) {
   return typeof userId === 'string' && selectRole.get(userId)?.role === 'owner'
@@ -67,6 +78,16 @@ function ownString(source, key) {
   if (source == null || typeof source !== 'object' || !Object.hasOwn(source, key)) return null
   const value = source[key]
   return typeof value === 'string' && value !== '' ? value : null
+}
+
+// The project of the connected repo whose rules key is `key` (owner__name),
+// matched forward through rulesKey rather than by reversing `__`, which is
+// lossy. Null when no repo — or repos in two projects — share the key. A full
+// scan per rule request; fine at today's handful of repos.
+function repoKeyProject(key) {
+  if (key == null) return null
+  const ids = new Set(selectRepoRows.all().filter((row) => rulesKey('repo', row.repo) === key).map((row) => row.project_id))
+  return ids.size === 1 ? [...ids][0] : null
 }
 
 // The project a member:* scope points this request at, or null when the id is
@@ -97,6 +118,24 @@ export function projectForScope(scope, request) {
     case 'member:repo': {
       const repo = ownString(request.body, 'repo') ?? ownString(request.query, 'repo')
       projectId = repo == null ? null : (selectRepoProject.get(repo)?.project_id ?? null)
+      break
+    }
+    case 'member:rule': {
+      const ruleScope = ownString(request.params, 'scope')
+      const key = ownString(request.params, 'key')
+      if (ruleScope === 'project') projectId = resolveProjectSlug(key)?.id ?? null
+      else if (ruleScope === 'repo') projectId = repoKeyProject(key)
+      break
+    }
+    case 'member:effective': {
+      const name = ownString(request.query, 'project')
+      const repo = ownString(request.query, 'repo')
+      const fromProject = name == null ? null : (resolveProjectSlug(rulesKey('project', name))?.id ?? null)
+      const fromRepo = repo == null ? null : repoKeyProject(rulesKey('repo', repo))
+      if (name != null && fromProject == null) break
+      if (repo != null && fromRepo == null) break
+      if (fromProject != null && fromRepo != null && fromProject !== fromRepo) break
+      projectId = fromProject ?? fromRepo
       break
     }
     default:

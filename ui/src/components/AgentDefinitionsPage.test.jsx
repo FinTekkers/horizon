@@ -59,6 +59,15 @@ test('renders the three hierarchy layers with their definitions', async () => {
   expect(getByText('fintekkers')).toBeTruthy()
 })
 
+test('a member (HZ-660) gets their rules tree without the Global group, and never asks for global definitions', async () => {
+  const { findByText, queryByText, getByText } = render(<AgentDefinitionsPage onBack={() => {}} isOwner={false} />)
+  await findByText('FinTekkers__ui-service')
+  expect(getByText('fintekkers')).toBeTruthy()
+  expect(queryByText('Global — every project')).toBeNull()
+  expect(queryByText('eng_implement')).toBeNull()
+  expect(api.listDefinitions).not.toHaveBeenCalled()
+})
+
 test('selecting a definition loads its content into the editor', async () => {
   const { findByText, getByLabelText } = render(<AgentDefinitionsPage onBack={() => {}} />)
   fireEvent.click(await findByText('FinTekkers__ui-service'))

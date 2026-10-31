@@ -4,9 +4,12 @@
 // adminPath and pushes it through App's navigate.
 
 // The left-hand list, in the design's order. `keywords` feed "Find a setting".
+// HZ-660: `ownerOnly` sections read owner-only routes, so a member never sees
+// them — only Account, which reads their own PIN and tokens.
 export const ADMIN_SECTIONS = [
   {
     key: 'projects',
+    ownerOnly: true,
     group: 'Projects',
     label: 'Projects and repositories',
     keywords: [
@@ -31,18 +34,21 @@ export const ADMIN_SECTIONS = [
   },
   {
     key: 'deploys',
+    ownerOnly: true,
     group: 'Delivery',
     label: 'Deploy targets',
     keywords: ['deploy', 'target', 'script', 'service', 'dry run', 'overrides', 'health', 'release'],
   },
   {
     key: 'flaky',
+    ownerOnly: true,
     group: 'Delivery',
     label: 'Flaky tests',
     keywords: ['flaky', 'flake', 'rerun', 'tests'],
   },
   {
     key: 'github',
+    ownerOnly: true,
     group: 'Access',
     label: 'GitHub access',
     keywords: ['github', 'access token', 'personal access token', 'sync'],
@@ -58,6 +64,19 @@ export const ADMIN_SECTIONS = [
 export const ADMIN_GROUPS = [...new Set(ADMIN_SECTIONS.map((s) => s.group))]
 
 const SECTION_KEYS = new Set(ADMIN_SECTIONS.map((s) => s.key))
+
+// HZ-660: the section a member lands on in place of an owner-only one.
+export const MEMBER_ADMIN_SECTION = 'account'
+
+// The sections this user may open, in order.
+export function visibleSections(isOwner) {
+  return isOwner ? ADMIN_SECTIONS : ADMIN_SECTIONS.filter((s) => !s.ownerOnly)
+}
+
+// True when `section` is one a member may not open (an unknown key included).
+export function isOwnerOnlySection(section) {
+  return !visibleSections(false).some((s) => s.key === section)
+}
 
 export const ADMIN_HOME = { section: 'projects', project: null, repo: null, tab: null, unknown: false }
 
@@ -87,12 +106,13 @@ export function adminPath({ section }) {
 // The section keys whose label, group or keywords contain the query, case
 // insensitive. `extraTerms` adds per-section words from live data (project
 // and repository names under `projects`). An empty query matches every one.
-export function matchSections(query, extraTerms = {}) {
+// `sections` is the list to search: AdminNav passes visibleSections(isOwner).
+export function matchSections(query, extraTerms = {}, sections = ADMIN_SECTIONS) {
   const q = query.trim().toLowerCase()
-  const all = ADMIN_SECTIONS.map((s) => s.key)
+  const all = sections.map((s) => s.key)
   if (!q) return new Set(all)
   return new Set(
-    ADMIN_SECTIONS.filter((s) => {
+    sections.filter((s) => {
       const extra = Object.hasOwn(extraTerms, s.key) ? extraTerms[s.key] : []
       return [s.label, s.group, ...s.keywords, ...extra].some((term) => String(term).toLowerCase().includes(q))
     }).map((s) => s.key),

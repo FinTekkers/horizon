@@ -321,11 +321,12 @@ function requireHumanSession(request, reply) {
   return false
 }
 
-// HZ-563: an admin (auth.isAdmin) on any credential the login gate accepted.
-// 403, not 401: the caller is signed in, just not as an admin.
+// HZ-563: the owner on any credential the login gate accepted. HZ-660: owner
+// means user.role (access.isOwner), never the ADMIN_EMAILS allowlist, and
+// anyone else gets the route guard's 404 — the route does not exist for them.
 function requireAdmin(request, reply) {
-  if (auth.isAdmin(request.user)) return true
-  reply.code(403).send({ error: 'admin_required' })
+  if (access.isOwner(request.user?.id)) return true
+  reply.code(404).send({ error: 'not_found' })
   return false
 }
 
@@ -2766,7 +2767,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME]) || testEnvUser(request.headers)
       if (!user) return reply.code(401).send({ error: 'login_required' })
       // HZ-563: the UI shows the Farm health entry only when this is true.
-      return { user: { ...user, isAdmin: auth.isAdmin(user) } }
+      return { user: { ...user, isAdmin: access.isOwner(user.id) } }
     },
   )
 
@@ -2846,7 +2847,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/definitions/effective',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:effective' },
       schema: {
         querystring: {
           type: 'object',
@@ -2981,33 +2982,40 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   }
 
   // Every project and repo whose rules the owner can edit: those with a
-  // rules file, plus DB projects and connected repos that have none.
-  function ruleTargets(scope, fileDefs, named) {
+  // rules file, plus DB projects and connected repos that have none. HZ-660:
+  // a member (viewer set) gets only the named DB targets — their own — never
+  // the file-only ones.
+  function ruleTargets(scope, fileDefs, named, viewer) {
     const byKey = new Map()
-    for (const def of fileDefs) {
+    for (const def of viewer ? [] : fileDefs) {
       byKey.set(def.name, { scope, key: def.name, label: scope === 'repo' ? def.name.replace('__', '/') : def.name, file: true })
     }
     for (const name of named) {
       const key = definitions.rulesKey(scope, name)
       if (!rulesStore.isRuleKey(scope, key)) continue
-      byKey.set(key, { scope, key, label: name, file: byKey.has(key) })
+      const file = byKey.has(key) || (!!viewer && fileDefs.some((def) => def.name === key))
+      byKey.set(key, { scope, key, label: name, file })
     }
     return [...byKey.values()]
       .map((target) => ({ ...target, versions: rulesStore.listRuleVersions(scope, target.key).length }))
       .sort((a, b) => a.label.localeCompare(b.label))
   }
 
-  fastify.get('/api/rules/targets', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => {
+  // `filtered`: request.viewer is unset for the owner, else { projectIds }.
+  fastify.get('/api/rules/targets', { config: { scope: 'filtered' }, schema: { response: { 200: OK_OBJECT } } }, (request) => {
+    const viewer = request.viewer
     const files = definitions.listDefinitions()
+    const projects = store.listProjects({ checks: false }).filter((p) => !viewer || viewer.projectIds.has(p.id))
+    const repos = store.listRepos().filter((r) => !viewer || viewer.projectIds.has(r.project_id))
     return {
-      projects: ruleTargets('project', files.projects, store.listProjects({ checks: false }).map((p) => p.name)),
-      repos: ruleTargets('repo', files.repos, store.listRepos().map((r) => r.repo)),
+      projects: ruleTargets('project', files.projects, projects.map((p) => p.name), viewer),
+      repos: ruleTargets('repo', files.repos, repos.map((r) => r.repo), viewer),
     }
   })
 
   fastify.get(
     '/api/rules/:scope/:key/versions',
-    { config: { scope: 'owner' }, schema: { params: ruleParams, response: { 200: OK_OBJECT, 400: ERROR_OBJECT } } },
+    { config: { scope: 'member:rule' }, schema: { params: ruleParams, response: { 200: OK_OBJECT, 400: ERROR_OBJECT } } },
     (request, reply) => {
       const target = ruleTarget(request, reply)
       if (!target) return
@@ -3024,7 +3032,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/rules/:scope/:key',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:rule' },
       schema: {
         params: ruleParams,
         body: {
@@ -3051,7 +3059,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/rules/:scope/:key/versions/:version/restore',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:rule' },
       schema: {
         params: {
           type: 'object',
@@ -3090,7 +3098,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // never collects per request — through its allowlist serializer.
   fastify.get(
     '/api/admin/farm-health',
-    { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT, 403: ERROR_OBJECT, 503: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 503: ERROR_OBJECT } } },
     (request, reply) => {
       if (!requireAdmin(request, reply)) return
       const snapshot = farmHealth.getFarmHealth()
@@ -3114,7 +3122,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       config: { scope: 'owner' },
       schema: {
         querystring: PRODUCTIVITY_QUERY_SCHEMA,
-        response: { 200: PRODUCTIVITY_RESPONSE_SCHEMA, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT },
+        response: { 200: PRODUCTIVITY_RESPONSE_SCHEMA, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT },
         security: SESSION_SECURITY,
       },
     },

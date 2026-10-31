@@ -5,13 +5,14 @@ import { ADMIN_GROUPS, ADMIN_SECTIONS, matchSections } from './adminRoutes'
 // "Find a setting" narrowing it. The search only filters this list; the open
 // section stays shown whatever is typed. `badges` maps a section key to its
 // count ({ value, warn }); `extraTerms` adds words from live data, so a
-// project or repository name finds Projects.
-export default function AdminNav({ section, onSelect, badges = {}, extraTerms }) {
+// project or repository name finds Projects. HZ-660: `sections` is the list
+// this user may open (visibleSections); a group with none left is not shown.
+export default function AdminNav({ section, onSelect, badges = {}, extraTerms, sections: shown = ADMIN_SECTIONS }) {
   const [query, setQuery] = useState('')
-  const matches = matchSections(query, extraTerms)
+  const matches = matchSections(query, extraTerms, shown)
   const groups = ADMIN_GROUPS.map((group) => ({
     group,
-    sections: ADMIN_SECTIONS.filter((s) => s.group === group && matches.has(s.key)),
+    sections: shown.filter((s) => s.group === group && matches.has(s.key)),
   })).filter((g) => g.sections.length > 0)
 
   return (
