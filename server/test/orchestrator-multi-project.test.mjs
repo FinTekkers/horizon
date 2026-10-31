@@ -111,9 +111,11 @@ test('with Horizon and FinTekkers enabled, one dispatch pass posts both ready it
   assert.equal(calls.filter((c) => c.path === '/farm/start').length, 1)
   const [h] = posted('HZ-1')
   const [f] = posted('US-1')
-  assert.deepEqual(h.body.project, { id: horizon, name: 'Horizon' })
+  // HZ-662: today's payload plus the project's isolation fields.
+  const internal = { isolation: 'internal', githubTokenRef: null, runUser: null }
+  assert.deepEqual(h.body.project, { id: horizon, name: 'Horizon', ...internal })
   assert.equal(h.body.item.repo, 'FinTekkers/horizon')
-  assert.deepEqual(f.body.project, { id: FINTEKKERS(), name: 'FinTekkers' })
+  assert.deepEqual(f.body.project, { id: FINTEKKERS(), name: 'FinTekkers', ...internal })
   assert.equal(f.body.item.repo, 'FinTekkers/ui-service')
   assert.equal(settings.getSetting('farm_project_id'), String(horizon), 'the farm is pinned to the project it started for')
 })

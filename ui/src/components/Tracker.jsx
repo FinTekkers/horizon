@@ -1141,6 +1141,13 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
             <div className="pause-banner__title">{item.usageWait.text}</div>
           </div>
         )}
+        {/* HZ-662: the farm holds a tenant project's items until the owner sets
+            its credential reference and run user. The server builds the text. */}
+        {!abandoned && !item.paused && item.isolationRefusal && (
+          <div className="pause-banner" role="status" data-testid="isolation-hold">
+            <div className="pause-banner__title">{item.isolationRefusal}</div>
+          </div>
+        )}
         {/* HZ-365: isRuleBlocked is false while paused, so never both banners.
             The key differs from DependencyBadge's below: duplicate sibling
             keys make React leave a stale second banner behind. */}

@@ -91,8 +91,10 @@ import {
   setUsageWait,
   listUsageWaits,
   projectOverlayFor,
+  projectIsolationRefusal,
 } from './store.js'
 import { projectPersonaOverlay } from './definitions.js'
+import { isolationFields } from './projectIsolation.js'
 import { snapshotSubsteps } from './substeps.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
@@ -181,6 +183,11 @@ const pausing = new Map()
 // the drain ends without a restart; a restart forgets it, and boot's
 // resumeActiveItems() dispatches the same items again.
 const heldForDeploy = new Map()
+
+// HZ-662: item id -> the isolation reason its dispatch is held for, so the
+// item's event is written once per new reason, not on every kick. Memory-only:
+// a restart writes it once more. Cleared when the reason clears.
+const isolationHolds = new Map()
 
 // HZ-422: item id -> the timer that kicks it once its usage-limit wait ends.
 // Memory-only: boot's rearmUsageWaits() arms them again from the column.
@@ -995,18 +1002,25 @@ export function setProjectEnabled(projectId, enabled, log) {
   const written = writeProjectEnabled(projectId, enabled)
   if (written.error) return written
   if (enabled) {
-    let kicked = 0
-    for (const { id } of db.prepare('SELECT id FROM work_item WHERE project_id = ?').all(projectId)) {
-      if (runnable(getItem(id))) {
-        kick(id)
-        kicked++
-      }
-    }
+    const kicked = kickProjectItems(projectId)
     log?.info(`Project ${projectId} enabled; kicked ${kicked} item(s)`)
   } else {
     log?.info(`Project ${projectId} disabled; its in-flight steps finish, no new ones start`)
   }
   return { ok: true, enabled: !!enabled }
+}
+
+// Kicks every runnable item in the project; returns how many. HZ-662: also
+// called when a project's isolation fields change, so a hold clears at once.
+export function kickProjectItems(projectId) {
+  let kicked = 0
+  for (const { id } of db.prepare('SELECT id FROM work_item WHERE project_id = ?').all(projectId)) {
+    if (runnable(getItem(id))) {
+      kick(id)
+      kicked++
+    }
+  }
+  return kicked
 }
 
 function resumeActiveItems() {
@@ -1280,6 +1294,10 @@ export function kick(id, opts = {}) {
     heldForDeploy.set(id, opts)
     return
   }
+  // HZ-662: a tenant project missing its credential reference or run user, or
+  // an unknown isolation, holds the item before any run is written — farm and
+  // mock path alike. The board reads the reason off the item (store.js).
+  if (holdForIsolation(id, item)) return
   // HZ-422: every model this item's step may run on is usage-limited — hold
   // it until the earliest reset; a wait that has passed is cleared.
   if (item.usage_wait_until) {
@@ -1376,6 +1394,23 @@ export function kick(id, opts = {}) {
 function stepChoicesFor(item) {
   const project = hasNoProject(db, item.project_id) ? null : db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?').get(item.project_id)
   return resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project))
+}
+
+// HZ-662: true while the item's project refuses dispatch. Writes the item's
+// event once per new reason; a cleared reason forgets the hold, so breaking the
+// project again writes a fresh event.
+function holdForIsolation(id, item) {
+  const reason = projectIsolationRefusal(item.project_id)
+  if (!reason) {
+    isolationHolds.delete(id)
+    return false
+  }
+  if (isolationHolds.get(id) !== reason) {
+    isolationHolds.set(id, reason)
+    addEvent(id, { who: 'Horizon', text: `held: ${reason}`, color: '#DFA200', initials: 'HZ' })
+    notifyChange()
+  }
+  return true
 }
 
 // HZ-422: pickModel() over this step's chain — its "Runs on" choice first,
@@ -1839,7 +1874,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   const project =
     hasNoProject(db, item.project_id)
       ? null
-      : db.prepare('SELECT id, name, provider_defaults_json, definitions_enabled FROM project WHERE id = ?').get(item.project_id)
+      : db
+          .prepare('SELECT id, name, provider_defaults_json, definitions_enabled, isolation, github_token_ref, run_user FROM project WHERE id = ?')
+          .get(item.project_id)
   // HZ-188: an implement run on a PR GitHub reports as conflicted (a
   // resolve-conflicts escalation, or any other send-back while main has moved
   // underneath it) must start on a branch that already has origin/main merged
@@ -1894,9 +1931,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // personas. Sent only when the switch is on AND the project's file loads,
     // so a project with no definitions gets exactly today's payload; a farm
     // that sees it missing stays global.
-    ...(project
-      ? { project: { id: project.id, name: project.name, ...(projectPersonaOverlay(project) ? { definitionsEnabled: true } : {}) } }
-      : {}),
+    ...(project ? { project: { ...taskProject(project), ...(projectPersonaOverlay(project) ? { definitionsEnabled: true } : {}) } } : {}),
     feedback,
     ...(mergeMain ? { merge_main: true } : {}),
     ...(deployWait ? { deploy_wait: deployWait } : {}),
@@ -2005,6 +2040,14 @@ export async function fetchCheckDefaults(repo) {
   }
 }
 
+// HZ-662: the `project` dict every farm lane sends — the agent lane
+// (dispatchToFarm) and the job lane (dispatchJob) alike, so neither can drop a
+// field the other sends. The isolation fields carry the $NAME reference only;
+// farmd refuses the task when they are incomplete.
+function taskProject(row) {
+  return { id: row.id, name: row.name, ...isolationFields(row) }
+}
+
 const FARM_REFUSALS = {
   'missing project': 'missing project: this item belongs to no project, so the farm cannot run it',
   'missing item.repo': 'missing repo: this item has no repository, so the farm cannot run it',
@@ -2012,6 +2055,7 @@ const FARM_REFUSALS = {
   jobs_disabled: 'job runs are disabled on the farm (FARM_JOBS_ENABLED=0)',
   job_already_running: 'a job is already running for this item',
   job_runner_missing: 'the job named no runner (host or container), so the farm refused it',
+  isolation_refused: 'the farm refused this tenant item: its isolation settings are incomplete',
 }
 
 // HZ-415: the deploy-target checkout the plan's cwd resolves inside. Read on
@@ -2048,7 +2092,7 @@ function dispatchJob(id, stepIndex, runId, attempt) {
   const project =
     hasNoProject(db, item.project_id)
       ? null
-      : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)
+      : db.prepare('SELECT id, name, isolation, github_token_ref, run_user FROM project WHERE id = ?').get(item.project_id)
   const planArtifact = latestArtifact(id, RUN_PLAN_STEP_INDEX)
   const approved = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id)
   const approvedHash = approved?.approved_plan_hash
@@ -2065,7 +2109,7 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     attempt,
     item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
     step: { index: stepIndex, label: step.label, agent: step.agent },
-    ...(project ? { project: { id: project.id, name: project.name } } : {}),
+    ...(project ? { project: taskProject(project) } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
     runner,

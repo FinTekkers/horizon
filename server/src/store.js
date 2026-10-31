@@ -50,6 +50,7 @@ import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { ensureUnlinkedProject, hasNoProject, unlinkedProjectId } from './membership.js'
+import { RUN_USER_RE, TOKEN_REF_RE, isolationFields, isolationRefusal } from './projectIsolation.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
@@ -502,6 +503,9 @@ export function listProjects({ checks = true } = {}) {
     autopilotEvents: selectAutopilotEvents.all(p.id),
     // HZ-535: the PIN-gated switch for the project's own definitions.
     definitionsEnabled: !!p.definitions_enabled,
+    // HZ-662: internal | tenant, and a tenant's $NAME credential reference and
+    // run user — references only, never a token value.
+    ...isolationFields(p),
     providerDefaults: providerDefaultsFromRow(p),
     repos: repos
       .filter((r) => r.project_id === p.id)
@@ -764,19 +768,28 @@ export function setDefaultBranch(repoFullName, branch, now = Date.now()) {
   return changed
 }
 
-export function createProject(name) {
+// HZ-662: `isolation` is 'internal' for the owner's projects and 'tenant' for
+// one a non-owner creates (app.js decides). `memberId`, when set, is added to
+// the new project's members, so a non-owner can see the project they made.
+export function createProject(name, { isolation = 'internal', memberId = null } = {}) {
   const existing = db.prepare('SELECT id FROM project WHERE name = ?').get(name)
   if (existing) return { error: 'exists' }
   // The first project becomes active and enabled without a farm restart —
   // nothing was running before it existed. Later ones start disabled (HZ-207).
   const first = getActiveProjectId() == null
-  const id = db.prepare('INSERT INTO project (name, enabled) VALUES (?, ?)').run(name, first ? 1 : 0).lastInsertRowid
+  const id = db.transaction(() => {
+    const projectId = db
+      .prepare('INSERT INTO project (name, enabled, isolation) VALUES (?, ?, ?)')
+      .run(name, first ? 1 : 0, isolation).lastInsertRowid
+    if (memberId != null) db.prepare('INSERT OR IGNORE INTO project_member (project_id, user_id) VALUES (?, ?)').run(projectId, memberId)
+    return projectId
+  })()
   if (first) {
     setSetting('active_project_id', String(id))
     setSetting('farm_project_id', String(id))
   }
   notify()
-  return { ok: true, id, name }
+  return { ok: true, id, name, isolation }
 }
 
 // HZ-207: the farm dispatches every enabled project's items. Items with no
@@ -856,6 +869,57 @@ export function setProjectDefinitionsEnabled(projectId, enabled, who) {
   })()
   if (result.ok && !result.unchanged) notify()
   return result
+}
+
+const selectProjectIsolation = db.prepare('SELECT isolation, github_token_ref, run_user FROM project WHERE id = ?')
+
+// HZ-662: the ONLY writer of project.github_token_ref and project.run_user;
+// its one caller is the owner-only, PIN-gated Admin route. A key left out of
+// `fields` is unchanged and an explicit null clears it. The ref must be a $NAME
+// reference — re-checked here, before any write, though the route's schema
+// already refused anything else. Each changed field writes one project_event
+// row naming the reference only. `isolation` itself is never changed here.
+export function setProjectIsolation(projectId, fields, who) {
+  const updates = []
+  if (Object.hasOwn(fields, 'githubTokenRef')) {
+    const ref = fields.githubTokenRef
+    if (ref !== null && !(typeof ref === 'string' && TOKEN_REF_RE.test(ref))) return { error: 'invalid_ref' }
+    updates.push(['github_token_ref', ref])
+  }
+  if (Object.hasOwn(fields, 'runUser')) {
+    const runUser = fields.runUser
+    if (runUser !== null && !(typeof runUser === 'string' && RUN_USER_RE.test(runUser))) return { error: 'invalid_run_user' }
+    updates.push(['run_user', runUser])
+  }
+  const result = db.transaction(() => {
+    const row = selectProjectIsolation.get(projectId)
+    if (!row) return { error: 'not_found' }
+    let changed = false
+    for (const [column, value] of updates) {
+      if (row[column] === value) continue
+      db.prepare(`UPDATE project SET ${column} = ? WHERE id = ?`).run(value, projectId)
+      db.prepare('INSERT INTO project_event (project_id, kind, old_value, new_value, who) VALUES (?, ?, ?, ?, ?)').run(
+        projectId,
+        column,
+        row[column],
+        value,
+        who,
+      )
+      changed = true
+    }
+    return { ok: true, changed, ...isolationFields(selectProjectIsolation.get(projectId)) }
+  })()
+  if (result.changed) notify()
+  return result
+}
+
+// HZ-662: why the farm must not run an item in `projectId` (projectIsolation.js),
+// or null. An item with no project, or in `Unlinked items`, runs as today.
+export function projectIsolationRefusal(projectId) {
+  if (hasNoProject(db, projectId)) return null
+  const row = selectProjectIsolation.get(projectId)
+  // A project_id with no row is refused, never treated as internal.
+  return isolationRefusal(row ? isolationFields(row) : { isolation: undefined })
 }
 
 // HZ-535: the project overlay an item in `projectId` reads its personas
@@ -2015,6 +2079,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ruleBlock: ruleBlock && ruleBlockView(row.id, ruleBlock, dependencies.blockedBy),
     // HZ-422: every model this step may run on is usage-limited until `until`.
     usageWait: usageWaitView(row),
+    // HZ-662: why the farm holds this item (a tenant project missing its
+    // credential reference or run user), or null — the board shows it.
+    isolationRefusal: projectIsolationRefusal(row.project_id),
     // HZ-443: the board's "Waiting on me" filter and sort.
     paused_at: row.paused ? toIsoUtc(row.paused_at) : null,
     waiting_since: waitingSince(row, ruleBlock),

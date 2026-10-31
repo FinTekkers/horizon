@@ -940,6 +940,22 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   db.exec('ALTER TABLE project ADD COLUMN definitions_enabled INTEGER NOT NULL DEFAULT 1 CHECK (definitions_enabled IN (0, 1))')
 }
 
+// HZ-662: a project's isolation (server/src/projectIsolation.js). Additive:
+// every existing project reads 'internal' and runs exactly as before. A tenant
+// project's github_token_ref is a $NAME reference, never a token value — the
+// GLOB is a coarse backstop for the exact check in code — and its run_user is
+// nullable until the owner sets it.
+{
+  const projectColumns = new Set(db.prepare('PRAGMA table_info(project)').all().map((column) => column.name))
+  if (!projectColumns.has('isolation')) {
+    db.exec("ALTER TABLE project ADD COLUMN isolation TEXT NOT NULL DEFAULT 'internal' CHECK (isolation IN ('internal','tenant'))")
+  }
+  if (!projectColumns.has('github_token_ref')) {
+    db.exec("ALTER TABLE project ADD COLUMN github_token_ref TEXT CHECK (github_token_ref IS NULL OR github_token_ref GLOB '$[A-Z_]*')")
+  }
+  if (!projectColumns.has('run_user')) db.exec('ALTER TABLE project ADD COLUMN run_user TEXT')
+}
+
 // HZ-537: one row per project and knowledge doc — a PDF a project persona
 // names as a source, extracted by the farm (farm/knowledge.py) into
 // ~/.horizon/knowledge/<slug>/, outside every repo. source_sha is the git blob
