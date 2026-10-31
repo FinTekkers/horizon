@@ -85,13 +85,17 @@ export function setAccountStatus(userId, status, who, { accessEndedAt = null } =
 
 // Returns { user, pin } — pin is the plaintext, shown to the caller exactly
 // once; only its hash is ever persisted.
-export function createUser({ email, name, authMethod, googleSub = null }) {
+// HZ-655: `role` is 'owner' or 'member' (user.role, which access.js's route
+// guard reads). It defaults to 'member', like the column, so a caller that
+// forgets it gets the closed answer; only the owner's own paths pass 'owner'.
+export function createUser({ email, name, authMethod, googleSub = null, role = 'member' }) {
+  if (role !== 'owner' && role !== 'member') throw new Error(`invalid role: ${role}`)
   const id = crypto.randomUUID()
   const pin = generatePin()
   db.prepare(
-    `INSERT INTO user (id, email, name, initials, auth_method, google_sub, gate_pin_hash, last_login_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-  ).run(id, email, name, initialsFor(name), authMethod, googleSub, hashSecret(pin))
+    `INSERT INTO user (id, email, name, initials, auth_method, google_sub, gate_pin_hash, last_login_at, role)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+  ).run(id, email, name, initialsFor(name), authMethod, googleSub, hashSecret(pin), role)
   return { user: toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id)), pin }
 }
 
@@ -223,7 +227,9 @@ export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
     db.prepare("UPDATE user SET google_sub = ?, last_login_at = datetime('now') WHERE id = ?").run(sub, sameEmail.id)
     return findUserById(sameEmail.id)
   }
-  return createUser({ email, name, authMethod: 'google', googleSub: sub }).user
+  // HZ-655: a new allowlisted team login is an owner, as every login was
+  // before roles; an adopted sign-up row above keeps its own role.
+  return createUser({ email, name, authMethod: 'google', googleSub: sub, role: 'owner' }).user
 }
 
 // The hardcoded credential path: verifies against ADMIN_EMAIL/ADMIN_PASSWORD
@@ -252,7 +258,7 @@ export function isAdmin(user) {
 }
 
 export function adminUser() {
-  return findUserByEmail(ADMIN_EMAIL) || createUser({ email: ADMIN_EMAIL, name: 'Admin', authMethod: 'password' }).user
+  return findUserByEmail(ADMIN_EMAIL) || createUser({ email: ADMIN_EMAIL, name: 'Admin', authMethod: 'password', role: 'owner' }).user
 }
 
 // ---- sessions ----

@@ -24,12 +24,12 @@ const { TEST_ENV_LOGIN_HEADER, testEnvUser } = await import('../src/testEnvLogin
 
 store.purgeDemoItems()
 // The admin account up front, so the test knows its gate PIN.
-const { user: admin, pin: adminPin } = auth.createUser({ email: config.ADMIN_EMAIL, name: 'Admin', authMethod: 'password' })
+const { user: admin, pin: adminPin } = auth.createUser({ email: config.ADMIN_EMAIL, name: 'Admin', authMethod: 'password', role: 'owner' })
 
 const logLines = []
 const app = buildApp({ logger: { level: 'trace', stream: { write: (line) => logLines.push(line) } } })
 // Echoes the credential label the login gate set, so tests can observe it.
-app.get('/api/test/whoami', (request) => ({ via: request.auth.via, userId: request.user.id }))
+app.get('/api/test/whoami', { config: { scope: 'test' } }, (request) => ({ via: request.auth.via, userId: request.user.id }))
 await app.ready()
 after(() => app.close())
 

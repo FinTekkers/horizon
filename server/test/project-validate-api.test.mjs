@@ -87,7 +87,7 @@ function getInFreshProcess(ids) {
     const { buildApp } = await import(${url('../src/app.js')})
     const auth = await import(${url('../src/auth.js')})
     const config = await import(${url('../src/config.js')})
-    const { user } = auth.createUser({ email: 'second@example.com', name: 'Second', authMethod: 'password' })
+    const { user } = auth.createUser({ email: 'second@example.com', name: 'Second', authMethod: 'password', role: 'owner' })
     const cookie = config.SESSION_COOKIE_NAME + '=' + auth.createSession(user.id)
     const app = buildApp({ logger: false })
     const out = []

@@ -1,0 +1,168 @@
+// Per-route access scopes and the guard that enforces them (HZ-655).
+//
+// Every route in app.js declares `config: { scope }`. The registry below is fed
+// by app.js's onRoute hook and throws, naming the route, when a scope is
+// missing, unknown, or of the wrong class for the route's URL — so a route
+// without a scope stops buildApp(), and with it the server's boot.
+//
+// Two classes of scope, split by app.js's SESSION_EXEMPT list:
+//   - EXEMPT_SCOPES label the session-exempt routes by the credential they
+//     check themselves: `farm` (FARM_SHARED_SECRET), `hmac` (GitHub and Stripe
+//     signatures), `wa` (WA_APPROVAL_SECRET), `public` (none, or their own
+//     session check). The guard never touches them.
+//   - USER_SCOPES label the session-gated routes. The guard runs after the
+//     onRequest login gate, so request.user is set.
+//
+// The owner — user.role 'owner', never the email allowlist — passes every user
+// scope, so the owner sees no change. For anyone else:
+//   - owner, test        404
+//   - self               passes; the handler acts on request.user only
+//   - filtered           passes with request.viewer = { projectIds }; the
+//                        handler must filter by it (store.listItems' viewer)
+//   - member:item/run/project/slug/repo
+//                        resolves the request to one project and passes only
+//                        if the user is a member of it; else 404
+// A guessed or unknown id gets the same 404 as a project the user may not see,
+// never 403, so the answer cannot reveal that a project exists. Anything the
+// guard cannot resolve — a missing scope, an unknown scope, a throw — is 404.
+
+import { db } from './db.js'
+import { hasNoProject } from './membership.js'
+import { resolveProjectSlug } from './projectDefinitions.js'
+
+// `test` is the e2e-only /api/test/* routes (HORIZON_TEST_HOOKS=1). They sit
+// behind the session gate, so it is a user scope, owner-only.
+export const USER_SCOPES = Object.freeze([
+  'owner',
+  'self',
+  'filtered',
+  'test',
+  'member:item',
+  'member:run',
+  'member:project',
+  'member:slug',
+  'member:repo',
+])
+export const EXEMPT_SCOPES = Object.freeze(['farm', 'hmac', 'wa', 'public'])
+
+const NOT_FOUND = { error: 'not_found' }
+
+const selectRole = db.prepare('SELECT role FROM user WHERE id = ?')
+const selectMemberProjects = db.prepare('SELECT project_id FROM project_member WHERE user_id = ?')
+const selectItemProject = db.prepare('SELECT project_id FROM work_item WHERE id = ?')
+const selectRunProject = db.prepare('SELECT w.project_id FROM step_run s JOIN work_item w ON w.id = s.item_id WHERE s.id = ?')
+const selectProject = db.prepare('SELECT id FROM project WHERE id = ?')
+const selectRepoProject = db.prepare('SELECT project_id FROM project_repo WHERE repo = ?')
+
+export function isOwner(userId) {
+  return typeof userId === 'string' && selectRole.get(userId)?.role === 'owner'
+}
+
+export function memberProjectIds(userId) {
+  return new Set(selectMemberProjects.all(userId).map((row) => row.project_id))
+}
+
+// The own string property `key` of a params/query/body object, else null.
+function ownString(source, key) {
+  if (source == null || typeof source !== 'object' || !Object.hasOwn(source, key)) return null
+  const value = source[key]
+  return typeof value === 'string' && value !== '' ? value : null
+}
+
+// The project a member:* scope points this request at, or null when the id is
+// missing, unknown, or names an item with no real project (NULL or
+// `Unlinked items`, which only the owner sees).
+export function projectForScope(scope, request) {
+  let projectId = null
+  switch (scope) {
+    case 'member:item': {
+      const id = ownString(request.params, 'id')
+      projectId = id == null ? null : (selectItemProject.get(id)?.project_id ?? null)
+      break
+    }
+    case 'member:run': {
+      const runId = ownString(request.params, 'runId')
+      projectId = runId == null || !/^\d+$/.test(runId) ? null : (selectRunProject.get(Number(runId))?.project_id ?? null)
+      break
+    }
+    case 'member:project': {
+      const id = ownString(request.params, 'id')
+      projectId = id == null || !/^\d+$/.test(id) ? null : (selectProject.get(Number(id))?.id ?? null)
+      break
+    }
+    case 'member:slug': {
+      projectId = resolveProjectSlug(ownString(request.params, 'slug'))?.id ?? null
+      break
+    }
+    case 'member:repo': {
+      const repo = ownString(request.body, 'repo') ?? ownString(request.query, 'repo')
+      projectId = repo == null ? null : (selectRepoProject.get(repo)?.project_id ?? null)
+      break
+    }
+    default:
+      return null
+  }
+  return projectId == null || hasNoProject(db, projectId) ? null : projectId
+}
+
+// What a `filtered` handler filters by: null for the owner (unfiltered), else
+// { projectIds } — the projects the user is a member of.
+export function viewerFor(request) {
+  const userId = request.user?.id
+  if (isOwner(userId)) return null
+  return { projectIds: typeof userId === 'string' ? memberProjectIds(userId) : new Set() }
+}
+
+// The preHandler. `resolveProject` is a seam for tests (app.js's buildApp
+// passes it through); production uses projectForScope.
+export function createGuard({ resolveProject = projectForScope } = {}) {
+  return async function guard(request, reply) {
+    // An unmatched URL keeps Fastify's own 404.
+    if (request.is404) return
+    try {
+      const scope = request.routeOptions?.config?.scope
+      if (EXEMPT_SCOPES.includes(scope)) return
+      const userId = request.user?.id
+      if (typeof userId !== 'string' || !USER_SCOPES.includes(scope)) return reply.code(404).send(NOT_FOUND)
+      if (isOwner(userId)) return
+      if (scope === 'self') return
+      if (scope === 'filtered') {
+        request.viewer = { projectIds: memberProjectIds(userId) }
+        return
+      }
+      if (!scope.startsWith('member:')) return reply.code(404).send(NOT_FOUND)
+      const projectId = resolveProject(scope, request)
+      if (projectId == null || !memberProjectIds(userId).has(projectId)) return reply.code(404).send(NOT_FOUND)
+    } catch (err) {
+      request.log.warn({ err }, 'access guard failed closed')
+      return reply.code(404).send(NOT_FOUND)
+    }
+  }
+}
+
+export const guard = createGuard()
+
+// The route-scope registry. record() is called from app.js's onRoute hook for
+// every route, Fastify's automatic HEAD routes included; list() is what
+// app.routeScopes() returns. `isExempt(url)` is app.js's sessionExempt.
+export function createScopeRegistry({ isExempt }) {
+  const routes = []
+  return {
+    record(routeOptions) {
+      const methods = [routeOptions.method].flat()
+      const name = `${methods.join(',')} ${routeOptions.url}`
+      const scope = routeOptions.config?.scope
+      if (scope === undefined) throw new Error(`route scope missing: ${name}`)
+      const exemptScope = EXEMPT_SCOPES.includes(scope)
+      if (!exemptScope && !USER_SCOPES.includes(scope)) throw new Error(`route scope invalid: '${scope}' on ${name}`)
+      // Each :param filled with a digit, so a pattern like gates/\d+ matches.
+      if (exemptScope !== isExempt(routeOptions.url.replace(/:[^/]+/g, '0'))) {
+        throw new Error(`route scope mismatch: ${scope} on ${name}`)
+      }
+      for (const method of methods) routes.push({ method, url: routeOptions.url, scope })
+    },
+    list() {
+      return routes.map((route) => ({ ...route }))
+    },
+  }
+}

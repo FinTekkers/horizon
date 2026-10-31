@@ -38,6 +38,7 @@ import { Marked, Renderer } from 'marked'
 import { db } from './db.js'
 import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings.js'
 import * as auth from './auth.js'
+import * as access from './access.js'
 import * as billing from './billing.js'
 import * as stripeWebhook from './stripeWebhook.js'
 import * as ownerMail from './ownerMail.js'
@@ -354,6 +355,11 @@ function bearerToken(request) {
 // actually require one. openapi.js cannot import this file without a cycle, so
 // the test reads the real list from here rather than keeping a second copy that
 // could drift from the gate below.
+//
+// HZ-655: this list also decides which route scopes are legal (access.js). A
+// route matching it must declare an exempt scope (farm, hmac, wa, public) and
+// every other route a user scope, or buildApp() throws naming the route — so
+// adding or removing a pattern here means re-labelling the routes it covers.
 export const SESSION_EXEMPT = [
   /^\/api\/auth\//,
   /^\/api\/webhooks\/github$/,
@@ -560,7 +566,11 @@ export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DE
 //
 // `mailer` likewise (HZ-634): tests pass a stub { sendMail } to record the
 // owner's email. Production passes nothing and gets ownerMail.gmailMailer().
-export function buildApp({ logger = true, onRoute = null, stripe = null, mailer = null } = {}) {
+//
+// `resolveProject` likewise (HZ-655): tests pass a stand-in for
+// access.projectForScope to prove the route guard fails closed. Production
+// passes nothing.
+export function buildApp({ logger = true, onRoute = null, stripe = null, mailer = null, resolveProject = null } = {}) {
   const fastify = Fastify({ logger })
 
   if (onRoute) fastify.addHook('onRoute', onRoute)
@@ -595,7 +605,15 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // /api/auth routes which are exempt from the hook but check the session
   // themselves. Internal routes are absent from the spec, so they need no
   // security block at all.
+  //
+  // HZ-655: the same hook records each route's config.scope (access.js). A
+  // missing, unknown or wrong-class scope throws out of the fastify.get() that
+  // registered it, so buildApp() throws naming the route and the server never
+  // boots. app.routeScopes() lists them, Fastify's HEAD routes included.
+  const scopes = access.createScopeRegistry({ isExempt: sessionExempt })
+  fastify.decorate('routeScopes', () => scopes.list())
   fastify.addHook('onRoute', (routeOptions) => {
+    scopes.record(routeOptions)
     if (isInternal(routeOptions.url) || sessionExempt(routeOptions.url)) return
     if (routeOptions.schema?.security) return
     routeOptions.schema = { ...routeOptions.schema, security: API_SECURITY }
@@ -655,6 +673,12 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     request.auth = { via: 'token', tokenId: tokenAuth.tokenId, tokenName: tokenAuth.tokenName }
   })
 
+  // HZ-655: after the login gate, each route's config.scope is enforced
+  // (access.js). The owner (user.role) and the session-exempt routes pass
+  // untouched; anyone else gets 404, never 403, outside their own projects.
+  // preHandler rather than onRequest so a member:repo scope can read the body.
+  fastify.addHook('preHandler', access.createGuard(resolveProject ? { resolveProject } : {}))
+
   // The response schema documents the media type only: this route hijacks the
   // reply, so the serializer never runs on it either way (HZ-178).
   //
@@ -673,6 +697,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/stream',
     {
+      config: { scope: 'owner' },
       schema: {
         querystring: { type: 'object', properties: { v: { type: 'string' } } },
         response: { 200: textResponse('text/event-stream', STREAM_DESCRIPTION) },
@@ -741,6 +766,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items',
     {
+      config: { scope: 'owner' },
       schema: {
         querystring: { type: 'object', properties: { v: { type: 'string' } } },
         response: { 200: OK_OBJECT },
@@ -758,6 +784,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/stream',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         response: {
@@ -800,7 +827,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // The generated API reference (HZ-178). fastify.swagger() is the decorator the
   // plugin installed at the top of buildApp(); it may only be called after
   // ready(), which a request by definition is.
-  fastify.get('/api/openapi.json', { schema: { response: { 200: OK_OBJECT } } }, () => fastify.swagger())
+  fastify.get('/api/openapi.json', { config: { scope: 'public' }, schema: { response: { 200: OK_OBJECT } } }, () => fastify.swagger())
 
   // Public liveness probe for deploy.sh (HZ-43): every /api/* route sits
   // behind the session gate above except this one, because nginx proxies
@@ -812,7 +839,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // again the way the old /api/items probe did (HZ-21 gated /api/items;
   // store.listItems() is also scoped by project, a second way an unrelated
   // app change could break this probe).
-  fastify.get('/api/health', { schema: { response: { 200: OK_OBJECT, 503: ERROR_OBJECT } } }, (request, reply) => {
+  fastify.get('/api/health', { config: { scope: 'public' }, schema: { response: { 200: OK_OBJECT, 503: ERROR_OBJECT } } }, (request, reply) => {
     let itemCount
     try {
       itemCount = db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
@@ -826,7 +853,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // browser across all three instead of re-sent inline with every page.
   fastify.get(
     '/api/agent-pages.css',
-    { schema: { response: { 200: textResponse('text/css', 'Stylesheet shared by the standalone artifact, output and log pages.') } } },
+    { config: { scope: 'public' }, schema: { response: { 200: textResponse('text/css', 'Stylesheet shared by the standalone artifact, output and log pages.') } } },
     (request, reply) => {
       reply.type('text/css').send(PAGES_CSS)
     },
@@ -838,6 +865,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     ARTIFACT_ROUTE,
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -879,6 +907,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     ARTIFACT_ATTEMPT_ROUTE,
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -918,6 +947,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/runs/:runId/log',
     {
+      config: { scope: 'owner' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         querystring: { type: 'object', properties: { offset: { type: 'integer', minimum: 0, default: 0 } } },
@@ -946,6 +976,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     OUTPUT_ROUTE,
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -991,6 +1022,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     LOG_VIEW_ROUTE,
     {
+      config: { scope: 'owner' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         response: {
@@ -1027,6 +1059,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/job',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 503: ERROR_OBJECT },
@@ -1063,7 +1096,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // files an item, an issue or a dependency link.
   fastify.get(
     '/api/items/:id/plan-draft',
-    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
     (request, reply) => {
       const item = store.getItem(request.params.id)
       if (!item) return reply.code(404).send({ error: 'not_found' })
@@ -1079,6 +1112,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/items/:id/plan-draft',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -1133,7 +1167,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/items/:id/screenshots',
-    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT } } },
     async (request, reply) => {
       const found = await acceptScreenshots(request.params.id)
       if (found.error) return reply.code(found.status).send({ error: found.error })
@@ -1144,6 +1178,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/screenshots/:screen/:kind',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -1188,6 +1223,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/screenshots/approve',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -1231,6 +1267,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/job/log',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         querystring: {
@@ -1274,6 +1311,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/job/stop',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1294,6 +1332,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/job/resume',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1317,6 +1356,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items',
     {
+      config: { scope: 'owner' },
       schema: {
         body: {
           type: 'object',
@@ -1744,6 +1784,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -1809,6 +1850,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve-via-whatsapp',
     {
+      config: { scope: 'wa' },
       schema: {
         params: {
           type: 'object',
@@ -1871,6 +1913,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/wa/poll-vote',
     {
+      config: { scope: 'wa' },
       schema: {
         body: {
           type: 'object',
@@ -1924,6 +1967,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/reject',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -1967,6 +2011,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/resolve-conflicts',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1987,6 +2032,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/forward-to-accept',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -2006,6 +2052,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/feedback',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2037,6 +2084,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/pause',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2060,6 +2108,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/dependencies',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2078,6 +2127,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/dependencies/remove',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2101,6 +2151,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/persona',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2127,6 +2178,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/items/:id/steps/:stepIndex/provider',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -2154,6 +2206,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/priority',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2184,6 +2237,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/autopilot-off',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2221,6 +2275,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/phases/:phase/restart',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -2257,6 +2312,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/abandon',
     {
+      config: { scope: 'owner' },
       schema: {
         params: idParam,
         body: {
@@ -2312,6 +2368,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/auth/login',
     {
+      config: { scope: 'public' },
       schema: {
         body: {
           type: 'object',
@@ -2337,7 +2394,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // callback.
   fastify.get(
     '/api/auth/google/start',
-    { schema: { response: { 302: noContent('Redirect to Google’s consent screen, or back to the UI with ?error= when SSO is not configured.') } } },
+    { config: { scope: 'public' }, schema: { response: { 302: noContent('Redirect to Google’s consent screen, or back to the UI with ?error= when SSO is not configured.') } } },
     (request, reply) => {
       // Browser-facing (reached via a plain <a href>, not fetch()) — every
       // error on this route family redirects to the login page instead of
@@ -2358,6 +2415,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/auth/google/callback',
     {
+      config: { scope: 'public' },
       schema: {
         querystring: {
           type: 'object',
@@ -2416,7 +2474,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     },
   )
 
-  fastify.post('/api/auth/logout', { schema: { response: { 200: OK_OBJECT } } }, (request, reply) => {
+  fastify.post('/api/auth/logout', { config: { scope: 'public' }, schema: { response: { 200: OK_OBJECT } } }, (request, reply) => {
     auth.deleteSession(request.cookies[SESSION_COOKIE_NAME])
     reply.clearCookie(SESSION_COOKIE_NAME, { path: '/' })
     return { ok: true }
@@ -2437,6 +2495,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/billing/checkout-session',
     {
+      config: { scope: 'public' },
       preValidation: billingNotConfigured(true),
       schema: {
         body: {
@@ -2477,6 +2536,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/billing/session-status',
     {
+      config: { scope: 'public' },
       logLevel: 'warn',
       preValidation: billingNotConfigured(false),
       schema: {
@@ -2563,6 +2623,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/billing',
     {
+      config: { scope: 'self' },
       preValidation: subscriptionNotConfigured,
       schema: {
         security: SESSION_SECURITY,
@@ -2618,6 +2679,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/billing/cancel',
     {
+      config: { scope: 'self' },
       preValidation: subscriptionNotConfigured,
       schema: {
         security: SESSION_SECURITY,
@@ -2647,6 +2709,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/billing/resume',
     {
+      config: { scope: 'self' },
       preValidation: subscriptionNotConfigured,
       schema: { security: SESSION_SECURITY, body: EMPTY_BODY, response: { 200: PLAN_RESPONSE, ...SUBSCRIPTION_ERRORS } },
     },
@@ -2666,6 +2729,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/billing/card-session',
     {
+      config: { scope: 'self' },
       preValidation: subscriptionNotConfigured,
       schema: {
         security: SESSION_SECURITY,
@@ -2694,7 +2758,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // reads sessionExempt() (HZ-178).
   fastify.get(
     '/api/auth/me',
-    { schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
+    { config: { scope: 'public' }, schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
     (request, reply) => {
       // HZ-511: a screenshot shot's test-env header counts here too, or the
       // UI would render the login page instead of the screen.
@@ -2709,7 +2773,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // own PIN can't be gated behind the PIN it's replacing.
   fastify.post(
     '/api/auth/gate-pin/regenerate',
-    { schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
+    { config: { scope: 'public' }, schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
     (request, reply) => {
       const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
       if (!user) return reply.code(401).send({ error: 'login_required' })
@@ -2725,7 +2789,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/tokens',
-    { schema: { response: { 200: OK_OBJECT, ...TOKEN_ROUTE_RESPONSES }, security: SESSION_SECURITY } },
+    { config: { scope: 'self' }, schema: { response: { 200: OK_OBJECT, ...TOKEN_ROUTE_RESPONSES }, security: SESSION_SECURITY } },
     (request, reply) => {
       if (!requireSession(request, reply)) return
       return { tokens: auth.listApiTokens(request.user.id) }
@@ -2735,6 +2799,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/tokens',
     {
+      config: { scope: 'self' },
       schema: {
         body: {
           type: 'object',
@@ -2764,7 +2829,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.delete(
     '/api/tokens/:id',
-    { schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, ...TOKEN_ROUTE_RESPONSES }, security: SESSION_SECURITY } },
+    { config: { scope: 'self' }, schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, ...TOKEN_ROUTE_RESPONSES }, security: SESSION_SECURITY } },
     (request, reply) => {
       if (!requireSession(request, reply)) return
       if (!auth.revokeApiToken(request.user.id, request.params.id)) return reply.code(404).send({ error: 'token_not_found' })
@@ -2774,12 +2839,13 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   // ---- agent definitions (HZ-9: hierarchical, git-versioned, UI-editable) ----
 
-  fastify.get('/api/definitions', { schema: { response: { 200: OK_OBJECT } } }, () => definitions.listDefinitions())
+  fastify.get('/api/definitions', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => definitions.listDefinitions())
 
   // Static segment registered alongside /:kind/:name — Fastify prefers it.
   fastify.get(
     '/api/definitions/effective',
     {
+      config: { scope: 'owner' },
       schema: {
         querystring: {
           type: 'object',
@@ -2814,7 +2880,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/definitions/:kind/:name',
-    { schema: { params: definitionParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { params: definitionParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
     (request, reply) => {
       const def = definitions.readDefinition(request.params.kind, request.params.name)
       if (!def) return reply.code(404).send({ error: 'unknown_definition' })
@@ -2829,6 +2895,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/definitions/:kind/:name',
     {
+      config: { scope: 'owner' },
       schema: {
         params: definitionParams,
         body: {
@@ -2929,7 +2996,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       .sort((a, b) => a.label.localeCompare(b.label))
   }
 
-  fastify.get('/api/rules/targets', { schema: { response: { 200: OK_OBJECT } } }, () => {
+  fastify.get('/api/rules/targets', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => {
     const files = definitions.listDefinitions()
     return {
       projects: ruleTargets('project', files.projects, store.listProjects({ checks: false }).map((p) => p.name)),
@@ -2939,7 +3006,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/rules/:scope/:key/versions',
-    { schema: { params: ruleParams, response: { 200: OK_OBJECT, 400: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { params: ruleParams, response: { 200: OK_OBJECT, 400: ERROR_OBJECT } } },
     (request, reply) => {
       const target = ruleTarget(request, reply)
       if (!target) return
@@ -2956,6 +3023,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/rules/:scope/:key',
     {
+      config: { scope: 'owner' },
       schema: {
         params: ruleParams,
         body: {
@@ -2982,6 +3050,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/rules/:scope/:key/versions/:version/restore',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3011,7 +3080,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // The targets are rows in the deploy_target table (HZ-263) — this endpoint
   // only surfaces each target's on-disk deploy state for the Admin page.
 
-  fastify.get('/api/admin/deploy-targets', { schema: { response: { 200: OK_OBJECT } } }, () => ({
+  fastify.get('/api/admin/deploy-targets', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => ({
     targets: deploy.listTargetStatuses(),
   }))
 
@@ -3020,7 +3089,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // never collects per request — through its allowlist serializer.
   fastify.get(
     '/api/admin/farm-health',
-    { schema: { response: { 200: OK_OBJECT, 403: ERROR_OBJECT, 503: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT, 403: ERROR_OBJECT, 503: ERROR_OBJECT } } },
     (request, reply) => {
       if (!requireAdmin(request, reply)) return
       const snapshot = farmHealth.getFarmHealth()
@@ -3031,7 +3100,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   // ---- Flaky tests and test history (HZ-327) ----
   // Read-only. Flakes per repo, newest first: { repos: [{ repo, tests: [...] }] }.
-  fastify.get('/api/admin/check-flakes', { schema: { response: { 200: OK_OBJECT } } }, () => checkFlakes.listFlakes())
+  fastify.get('/api/admin/check-flakes', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => checkFlakes.listFlakes())
 
   // ---- Productivity (HZ-549, read-only) ----
   // HZ-550: aggregated from Horizon's own DB (server/src/productivity.js). The
@@ -3041,6 +3110,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/admin/productivity',
     {
+      config: { scope: 'owner' },
       schema: {
         querystring: PRODUCTIVITY_QUERY_SCHEMA,
         response: { 200: PRODUCTIVITY_RESPONSE_SCHEMA, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT },
@@ -3059,6 +3129,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/admin/test-history',
     {
+      config: { scope: 'owner' },
       schema: {
         querystring: {
           type: 'object',
@@ -3077,6 +3148,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/admin/deploy-targets/:key/dry-run',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3155,13 +3227,14 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   // The stored rows (script, repoDir, health URL…) for the overrides panel.
   // Rows hold no tokens or env values.
-  fastify.get('/api/admin/deploy-targets/config', { schema: { response: { 200: OK_OBJECT } } }, () => ({
+  fastify.get('/api/admin/deploy-targets/config', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => ({
     targets: listTargets(),
   }))
 
   fastify.post(
     '/api/admin/deploy-targets',
     {
+      config: { scope: 'owner' },
       schema: {
         body: {
           ...DEPLOY_TARGET_FIELDS,
@@ -3182,6 +3255,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/admin/deploy-targets/:key',
     {
+      config: { scope: 'owner' },
       schema: {
         params: { type: 'object', required: ['key'], properties: { key: DEPLOY_TARGET_KEY } },
         body: DEPLOY_TARGET_FIELDS,
@@ -3198,6 +3272,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.delete(
     '/api/admin/deploy-targets/:key',
     {
+      config: { scope: 'owner' },
       schema: {
         params: { type: 'object', required: ['key'], properties: { key: DEPLOY_TARGET_KEY } },
         response: { 200: OK_OBJECT, ...DEPLOY_TARGET_WRITE_RESPONSES },
@@ -3212,12 +3287,13 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   // ---- GitHub sync configuration (from the UI) ----
 
-  fastify.get('/api/sync/status', { schema: { response: { 200: OK_OBJECT } } }, () => github.getSyncState())
+  fastify.get('/api/sync/status', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => github.getSyncState())
 
   // Save the shared GitHub token (validated before persisting).
   fastify.post(
     '/api/sync/token',
     {
+      config: { scope: 'owner' },
       schema: {
         body: {
           type: 'object',
@@ -3244,6 +3320,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects',
     {
+      config: { scope: 'owner' },
       schema: {
         body: {
           type: 'object',
@@ -3266,6 +3343,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/repos',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3312,6 +3390,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/projects/:id/repos/webhooks',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3342,6 +3421,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/repos/webhook/fix',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3380,6 +3460,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/activate',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3408,6 +3489,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/enabled',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3442,6 +3524,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/validate',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3473,6 +3556,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/projects/:id/validation',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3499,6 +3583,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/autopilot',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3530,6 +3615,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/definitions-enabled',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3598,7 +3684,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/projects/:slug/definitions',
-    { schema: { params: projectSlugParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { params: projectSlugParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
     (request, reply) => {
       const view = projectDefinitions.readProjectDefinitions(request.params.slug)
       if (!view) return reply.code(404).send({ error: 'unknown_project' })
@@ -3608,7 +3694,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/projects/:slug/definitions/:file/history',
-    { schema: { params: projectDefinitionFileParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    { config: { scope: 'owner' }, schema: { params: projectDefinitionFileParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
     (request, reply) => {
       try {
         return { history: projectDefinitions.projectDefinitionHistory(request.params.slug, request.params.file) }
@@ -3621,6 +3707,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:slug/definitions/:file',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: projectDefinitionFileParams,
@@ -3659,6 +3746,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:id/step-providers/:stepIndex',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3700,6 +3788,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/autopilot-off-via-whatsapp',
     {
+      config: { scope: 'wa' },
       schema: {
         body: {
           type: 'object',
@@ -3734,6 +3823,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/repos/disconnect',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3765,6 +3855,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:id/repos/checks',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3805,6 +3896,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:id/repos/test-env',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3843,6 +3935,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:id/repos/marks',
     {
+      config: { scope: 'owner' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3879,6 +3972,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/projects/:id/repos/check-defaults',
     {
+      config: { scope: 'owner' },
       schema: {
         params: {
           type: 'object',
@@ -3953,14 +4047,14 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // Starts (or extends) the block on new pre-merge and resolve runs and lists
   // the running ones. Validated by hand: Fastify's schema coercion would
   // accept "30" as an integer.
-  fastify.post('/api/farm/deploy-drain', (request, reply) => {
+  fastify.post('/api/farm/deploy-drain', { config: { scope: 'farm' } }, (request, reply) => {
     if (!drainAuthorized(request, reply)) return
     const ttlS = request.body?.ttl_s
     if (!Number.isInteger(ttlS) || ttlS < 0) return reply.code(400).send({ error: 'ttl_s must be a non-negative integer' })
     return deployDrain.beginDrain({ ttlS })
   })
 
-  fastify.get('/api/farm/deploy-drain', (request, reply) => {
+  fastify.get('/api/farm/deploy-drain', { config: { scope: 'farm' } }, (request, reply) => {
     if (!drainAuthorized(request, reply)) return
     return deployDrain.drainStatus()
   })
@@ -3968,7 +4062,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // HZ-321: `steps` ([{runId}], default []) names the agent step runs whose
   // wait ran out; they are checkpointed and stopped, and listed back in
   // `steps`. `runs` and `interrupted` are unchanged for a gate-only caller.
-  fastify.post('/api/farm/deploy-drain/interrupt', async (request, reply) => {
+  fastify.post('/api/farm/deploy-drain/interrupt', { config: { scope: 'farm' } }, async (request, reply) => {
     if (!drainAuthorized(request, reply)) return
     const runs = request.body?.runs
     const valid =
@@ -4004,7 +4098,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     return steps.length > 0 ? { ...result, steps: stopped } : result
   })
 
-  fastify.delete('/api/farm/deploy-drain', (request, reply) => {
+  fastify.delete('/api/farm/deploy-drain', { config: { scope: 'farm' } }, (request, reply) => {
     if (!drainAuthorized(request, reply)) return
     deployDrain.endDrain()
     return { blocked: false }
@@ -4023,6 +4117,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/farm/snapshot',
     {
+      config: { scope: 'farm' },
       schema: {
         querystring: {
           type: 'object',
@@ -4042,6 +4137,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/farm/rules',
     {
+      config: { scope: 'farm' },
       schema: {
         querystring: {
           type: 'object',
@@ -4062,6 +4158,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/items/finished',
     {
+      config: { scope: 'farm' },
       schema: {
         body: {
           type: 'object',
@@ -4086,7 +4183,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // HZ-537: farmd's knowledge job (farm/knowledge.py) lists the sources to
   // extract — only projects whose definitions switch is on have any — and
   // reports one knowledge_doc row per doc back.
-  fastify.get('/api/farm/knowledge/sources', (request, reply) => {
+  fastify.get('/api/farm/knowledge/sources', { config: { scope: 'farm' } }, (request, reply) => {
     if (!farmAuthorized(request, reply)) return
     return { sources: knowledgeDocs.listSources() }
   })
@@ -4094,6 +4191,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/farm/knowledge/docs/:projectId/:slug',
     {
+      config: { scope: 'farm' },
       schema: {
         params: {
           type: 'object',
@@ -4150,6 +4248,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/started',
     {
+      config: { scope: 'farm' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
       },
@@ -4165,6 +4264,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/checks',
     {
+      config: { scope: 'farm' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: {
@@ -4183,6 +4283,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/complete',
     {
+      config: { scope: 'farm' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: {
@@ -4213,6 +4314,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/fail',
     {
+      config: { scope: 'farm' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: {
@@ -4247,6 +4349,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/progress',
     {
+      config: { scope: 'farm' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: JOB_VIEW_BODY,
@@ -4263,6 +4366,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/blocked',
     {
+      config: { scope: 'farm' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: {
@@ -4294,6 +4398,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/test-runs',
     {
+      config: { scope: 'farm' },
       bodyLimit: TEST_RUNS_BODY_LIMIT,
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
@@ -4325,6 +4430,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/farm/steps/:runId/test-runs/abandon',
     {
+      config: { scope: 'farm' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: { type: 'object', required: ['why'], properties: { why: { type: 'string', enum: testResults.UPLOAD_ABANDON_WHYS } } },
@@ -4342,7 +4448,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // Point a repo webhook (or a smee.io/ngrok tunnel locally) at this endpoint
   // with content type application/json and the shared secret.
 
-  fastify.post('/api/webhooks/github', (request, reply) => {
+  fastify.post('/api/webhooks/github', { config: { scope: 'hmac' } }, (request, reply) => {
     if (!WEBHOOK_SECRET) {
       return reply.code(503).send({ error: 'webhooks_not_configured', hint: 'set GITHUB_WEBHOOK_SECRET' })
     }
@@ -4405,7 +4511,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     scope.removeContentTypeParser('application/json')
     scope.addContentTypeParser('application/json', { parseAs: 'buffer' }, (request, body, done) => done(null, body))
 
-    scope.post('/api/billing/stripe-webhook', async (request, reply) => {
+    scope.post('/api/billing/stripe-webhook', { config: { scope: 'hmac' } }, async (request, reply) => {
       const { webhookSecret } = stripeConfig()
       if (!webhookSecret) return reply.code(503).send({ error: 'stripe_webhook_not_configured' })
       const rawBody = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0)
@@ -4454,7 +4560,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // coverage. Still sits behind the normal session-cookie gate (it's not in
   // SESSION_EXEMPT), same as every other /api/* route.
   if (TEST_HOOKS_ENABLED) {
-    fastify.post('/api/test/run-state', async (request, reply) => {
+    fastify.post('/api/test/run-state', { config: { scope: 'test' } }, async (request, reply) => {
       const { run_id, state, reason } = request.body || {}
       orchestrator.setRunStateForTest(run_id, state, reason ?? null)
       return { ok: true }
@@ -4465,7 +4571,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     // Accept gate's "send back to resolve conflicts" button makes. This queues
     // one canned farmd reply so the spec can drive the real button, through
     // the real PIN, and assert what the human actually ends up looking at.
-    fastify.post('/api/test/conflict-reply', async (request) => {
+    fastify.post('/api/test/conflict-reply', { config: { scope: 'test' } }, async (request) => {
       orchestrator.setConflictReplyForTest(request.body?.reply ?? null)
       return { ok: true }
     })
@@ -4475,7 +4581,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     // This sets GitHub's answer for one PR (see github.setPrStateForTest);
     // the farm.premerge run it triggers is the real one, under the e2e
     // server's own throwaway FARM_HOME (playwright.config.js).
-    fastify.post('/api/test/github-pr', async (request) => {
+    fastify.post('/api/test/github-pr', { config: { scope: 'test' } }, async (request) => {
       github.setPrStateForTest(request.body?.pr ?? null)
       return { ok: true }
     })
@@ -4484,7 +4590,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     // answer the Accept gate's screenshot panel. `snapshots` is keyed
     // "<repo>#<item id>" (see github.setScreenshotSnapshotForTest); `blobs`
     // maps a blob sha to its base64 bytes. Either may be null to clear it.
-    fastify.post('/api/test/screenshot-snapshot', async (request) => {
+    fastify.post('/api/test/screenshot-snapshot', { config: { scope: 'test' } }, async (request) => {
       const { snapshots = null, blobs = null } = request.body || {}
       github.setScreenshotSnapshotForTest(snapshots)
       github.setBlobsForTest(
