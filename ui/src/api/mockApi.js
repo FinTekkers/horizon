@@ -223,6 +223,10 @@ export async function addRepoToProject() {
   throw new Error('Projects are not available in mock mode')
 }
 
+export async function listProjects() {
+  return { projects: [] }
+}
+
 export async function disconnectRepo() {
   throw new Error('Projects are not available in mock mode')
 }

@@ -84,6 +84,16 @@ function ownString(source, key) {
   return typeof value === 'string' && value !== '' ? value : null
 }
 
+// HZ-659: the own positive-integer id at `key` — a number (a route schema's
+// `integer` param, which Fastify coerces before the guard runs) or a digit
+// string — else null.
+function ownId(source, key) {
+  if (source == null || typeof source !== 'object' || !Object.hasOwn(source, key)) return null
+  const value = source[key]
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null
+  return typeof value === 'string' && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null
+}
+
 // The project of the connected repo whose rules key is `key` (owner__name),
 // matched forward through rulesKey rather than by reversing `__`, which is
 // lossy. Null when no repo — or repos in two projects — share the key. A full
@@ -111,8 +121,8 @@ export function projectForScope(scope, request) {
       break
     }
     case 'member:project': {
-      const id = ownString(request.params, 'id')
-      projectId = id == null || !/^\d+$/.test(id) ? null : (selectProject.get(Number(id))?.id ?? null)
+      const id = ownId(request.params, 'id')
+      projectId = id == null ? null : (selectProject.get(id)?.id ?? null)
       break
     }
     case 'member:slug': {
