@@ -307,6 +307,8 @@ const stepRunning = (id) => !!db.prepare("SELECT 1 FROM step_run WHERE item_id =
 const gateActionRunning = (id, kind) =>
   !!db.prepare("SELECT 1 FROM gate_action WHERE item_id = ? AND kind = ? AND state = 'running'").get(id, kind)
 
+// HZ-654: `Unlinked items` is read like any project here (ruling 8 of 30 Oct):
+// enabled, its items run as NULL items do; disabled, they are skipped.
 function projectDisabled(item) {
   if (item.project_id == null) return false
   return db.prepare('SELECT enabled FROM project WHERE id = ?').get(item.project_id)?.enabled === 0
