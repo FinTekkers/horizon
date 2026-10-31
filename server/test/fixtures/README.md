@@ -45,5 +45,7 @@ HZ-656: the owner's `GET /api/items?v=2` and the concierge's
 per-user boards existed — from the fixed seed in `helpers/memberBoardSeed.mjs`.
 `owner-board-fixture.test.mjs` deep-equals both, so filtering for members can
 never change what the owner or the farm gets. The clock- and host-dependent
-keys are pinned to `"<pinned>"` (`pinVolatile`). Regenerate with
+keys are pinned to `"<pinned>"` (`pinVolatile`), and each step label and step
+`kind` is a `<step-label:N>` / `<step-kind:…>` reference (`encodeSteps`), so the
+files hold no copy of `domain/steps.json`. Regenerate with
 `UPDATE_FIXTURE=1` only on a commit already known to be right.

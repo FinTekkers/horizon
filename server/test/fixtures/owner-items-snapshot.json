@@ -145,8 +145,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },
@@ -217,8 +217,8 @@
       "cursor": 3,
       "currentStep": {
         "index": 3,
-        "label": "Approve & prioritize this work",
-        "kind": "gate",
+        "label": "<step-label:3>",
+        "kind": "<step-kind:gate>",
         "phase": "Plan",
         "gate": true
       },
@@ -279,8 +279,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Scope",
         "gate": false
       },
@@ -345,8 +345,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },
@@ -404,8 +404,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Scope",
         "gate": false
       },
@@ -470,8 +470,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },
@@ -529,8 +529,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },

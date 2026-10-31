@@ -106,8 +106,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },
@@ -179,8 +179,8 @@
       "cursor": 3,
       "currentStep": {
         "index": 3,
-        "label": "Approve & prioritize this work",
-        "kind": "gate",
+        "label": "<step-label:3>",
+        "kind": "<step-kind:gate>",
         "phase": "Plan",
         "gate": true
       },
@@ -197,7 +197,7 @@
           "attempt": 1,
           "artifact": "# alpha artifact",
           "attemptCount": 1,
-          "label": "Define how we measure success",
+          "label": "<step-label:1>",
           "provider": null,
           "model": null,
           "verdict": null,
@@ -255,8 +255,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Scope",
         "gate": false
       },
@@ -322,8 +322,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },
@@ -382,8 +382,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Scope",
         "gate": false
       },
@@ -449,8 +449,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },
@@ -509,8 +509,8 @@
       "cursor": 0,
       "currentStep": {
         "index": 0,
-        "label": "Define the outcome",
-        "kind": "agent",
+        "label": "<step-label:0>",
+        "kind": "<step-kind:agent>",
         "phase": "Plan",
         "gate": false
       },
