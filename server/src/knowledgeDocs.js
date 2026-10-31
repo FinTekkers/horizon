@@ -19,6 +19,7 @@
 
 import { createHash } from 'node:crypto'
 import { db } from './db.js'
+import { hasNoProject } from './membership.js'
 import { projectPersonaOverlay } from './definitions.js'
 
 export const SLUG_SHAPE = /^[a-z0-9_-]+$/
@@ -34,6 +35,8 @@ export function knowledgeSlug(repo, path) {
 }
 
 const selectSwitchedOnProjects = db.prepare('SELECT id, name, definitions_enabled FROM project WHERE definitions_enabled = 1 ORDER BY id')
+// HZ-654: never `Unlinked items`, whose items read their personas as no project's.
+const switchedOnProjects = () => selectSwitchedOnProjects.all().filter((p) => !hasNoProject(db, p.id))
 const selectFirstRepo = db.prepare('SELECT repo FROM project_repo WHERE project_id = ? ORDER BY id LIMIT 1')
 const selectDoc = db.prepare('SELECT * FROM knowledge_doc WHERE project_id = ? AND slug = ?')
 const selectProjectDocs = db.prepare('SELECT * FROM knowledge_doc WHERE project_id = ? ORDER BY slug')
@@ -63,7 +66,7 @@ function projectSources(project) {
 // Every current source, joined to its row: lastSha and status are null for a
 // source never extracted.
 export function listSources() {
-  return selectSwitchedOnProjects.all().flatMap((project) =>
+  return switchedOnProjects().flatMap((project) =>
     projectSources(project).map((source) => {
       const row = selectDoc.get(source.projectId, source.slug)
       return { ...source, lastSha: row?.source_sha ?? null, status: row?.status ?? null }
@@ -76,7 +79,7 @@ export function listSources() {
 // inserts the row or updates it in place (same id); `changed` is false when
 // the sha and status already match.
 export function upsertDoc(projectId, slug, body) {
-  const project = selectSwitchedOnProjects.all().find((p) => p.id === projectId)
+  const project = switchedOnProjects().find((p) => p.id === projectId)
   const source = project && projectSources(project).find((s) => s.slug === slug)
   if (!source || source.repo !== body.repo || source.path !== body.path) return { error: 'unknown_source' }
   const prior = selectDoc.get(projectId, slug)

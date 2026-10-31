@@ -12,6 +12,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { db } from './db.js'
+import { hasNoProject, unlinkedProjectId } from './membership.js'
 import { AGENTS } from './agentTokens.js'
 import {
   STEPS,
@@ -1373,7 +1374,7 @@ export function kick(id, opts = {}) {
 // HZ-422: the step's "Runs on" choices as the farm is sent them — the item's,
 // else the project's default.
 function stepChoicesFor(item) {
-  const project = item.project_id == null ? null : db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?').get(item.project_id)
+  const project = hasNoProject(db, item.project_id) ? null : db.prepare('SELECT provider_defaults_json FROM project WHERE id = ?').get(item.project_id)
   return resolveStepProviders(item.providerChoices, providerDefaultsFromRow(project))
 }
 
@@ -1834,8 +1835,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (isPlanReviewStep(stepIndex)) artifacts.push(planReviewInput(item))
   // HZ-207: every farm step carries its own project; farmd refuses one
   // without a project or repo and never falls back to a global project.
+  // HZ-654: an `Unlinked items` item is sent with no project, as a NULL one was.
   const project =
-    item.project_id == null
+    hasNoProject(db, item.project_id)
       ? null
       : db.prepare('SELECT id, name, provider_defaults_json, definitions_enabled FROM project WHERE id = ?').get(item.project_id)
   // HZ-188: an implement run on a PR GitHub reports as conflicted (a
@@ -2044,7 +2046,7 @@ function dispatchJob(id, stepIndex, runId, attempt) {
   const step = STEPS[stepIndex]
   const item = getItem(id)
   const project =
-    item.project_id == null
+    hasNoProject(db, item.project_id)
       ? null
       : db.prepare('SELECT id, name FROM project WHERE id = ?').get(item.project_id)
   const planArtifact = latestArtifact(id, RUN_PLAN_STEP_INDEX)
@@ -3850,9 +3852,10 @@ export async function init(log) {
   registerRunStateProvider(() => farm.runStates || {})
   // HZ-481: the card's deploy line reads the drain block and its steps.
   registerDeployDrainProvider({ block: deployBlock, survives: survivesRestart })
-  // Default the active project to the first one if never chosen.
+  // Default the active project to the first one if never chosen. HZ-654:
+  // never `Unlinked items`, so a demo box keeps no active project, as before.
   if (!getSetting('active_project_id')) {
-    const first = db.prepare('SELECT id FROM project ORDER BY id LIMIT 1').get()
+    const first = db.prepare('SELECT id FROM project WHERE id IS NOT ? ORDER BY id LIMIT 1').get(unlinkedProjectId(db))
     if (first) setSetting('active_project_id', String(first.id))
   }
   // HZ-449: a server step's run is in this process's memory only — one a

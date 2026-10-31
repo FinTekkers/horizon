@@ -5,6 +5,7 @@ import { expect, test, afterEach } from 'vitest'
 
 import {
   ALL_PROJECTS,
+  enabledProjects,
   filterByProject,
   projectFilterLabel,
   readStoredRepoFilters,
@@ -40,6 +41,13 @@ const ITEMS = [
   { id: 'OT-1', project_id: 8, repo: 'Other/repo' },
 ]
 const ids = (items) => items.map((it) => it.id)
+
+// HZ-654: `Unlinked items` holds the items with no project; the filter and the
+// new-item picker never offer it, enabled or not.
+test('enabledProjects leaves out disabled projects and the `Unlinked items` project', () => {
+  const projects = [FIN, { id: 8, name: 'Off', enabled: false, repos: [] }, { id: 9, name: 'Unlinked items', enabled: true, unlinked: true, repos: [] }]
+  expect(enabledProjects(projects).map((p) => p.id)).toEqual([7])
+})
 
 test('filterByProject with repos keeps only items whose repo is selected', () => {
   expect(ids(filterByProject(ITEMS, 7, [LS, HZ]))).toEqual(['LS-1', 'HZ-1'])

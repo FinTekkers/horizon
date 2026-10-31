@@ -35,6 +35,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SECRET = "hz570-restart-test-secret"
 REPO = "acme/demo"
 ITEM = "TR-1"
+# HZ-654: a fresh boot's demo seed creates the `Unlinked items` project (id 1),
+# so the fixture project takes an id clear of it.
+PROJECT = 101
 ROWS = 500
 IMPLEMENT = steps.by_kind_label("change", "Specialist agent implements")["index"]
 
@@ -115,12 +118,12 @@ class Instance:
             conn.close()
 
     def seed(self):
-        script = """
-const { db } = await import('./src/db.js')
+        script = f"""
+const {{ db }} = await import('./src/db.js')
 const store = await import('./src/store.js')
 store.purgeDemoItems()
-db.prepare("INSERT INTO project (id, name, enabled) VALUES (1, 'Upload restart test', 0)").run()
-db.prepare("INSERT INTO setting (key, value) VALUES ('active_project_id', '1'), ('farm_project_id', '1')").run()
+db.prepare("INSERT INTO project (id, name, enabled) VALUES ({PROJECT}, 'Upload restart test', 0)").run()
+db.prepare("INSERT INTO setting (key, value) VALUES ('active_project_id', '{PROJECT}'), ('farm_project_id', '{PROJECT}')").run()
 """
         out = subprocess.run(
             ["node", "--input-type=module", "-e", script],
@@ -133,10 +136,11 @@ db.prepare("INSERT INTO setting (key, value) VALUES ('active_project_id', '1'), 
         assert out.returncode == 0, out.stderr[-2000:]
         self.sql(
             "INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, repo, project_id)"
-            " VALUES (?, 'upload restart', 'Medium', 'o', 'm', 'g', ?, ?, 1)",
+            " VALUES (?, 'upload restart', 'Medium', 'o', 'm', 'g', ?, ?, ?)",
             ITEM,
             IMPLEMENT,
             REPO,
+            PROJECT,
         )
 
     def boot_server(self):

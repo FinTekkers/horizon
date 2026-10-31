@@ -21,6 +21,9 @@ globalThis.fetch = async () => {
   throw new Error('caretaker-help-ping test: no network')
 }
 
+// HZ-654: a fresh boot's demo seed creates the `Unlinked items` project (id 1),
+// so the restart fixtures' project takes an id clear of it.
+const PROJECT = 101
 const OWNER_NUMBER = '15550001111'
 const ENV = {
   WA_NOTIFY_ENABLED: '1',
@@ -160,8 +163,8 @@ test('a restart never repeats a help ping', () => {
   const path = join(mkdtempSync(join(tmpdir(), 'horizon-help-ping-restart-')), 'test.db')
   run(path, `await import(${JSON.stringify(DB)})`)
   const file = new Database(path)
-  file.prepare("INSERT INTO project (id, name, enabled, autopilot) VALUES (1, 'Restarted', 1, 'on')").run()
-  file.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('RS-help', 'Restart', 'High', 10, 1)").run()
+  file.prepare("INSERT INTO project (id, name, enabled, autopilot) VALUES (?, 'Restarted', 1, 'on')").run(PROJECT)
+  file.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('RS-help', 'Restart', 'High', 10, ?)").run(PROJECT)
   const runId = file.prepare("INSERT INTO step_run (item_id, step_index, agent, status, output) VALUES ('RS-help', 9, 'x', 'done', 'f')").run().lastInsertRowid
   file
     .prepare("INSERT INTO caretaker_eval (item_id, gate_index, arrival_run_id, mode, decision, reason) VALUES ('RS-help', 10, ?, 'on', 'ping_human', 'x')")
@@ -203,19 +206,19 @@ test('migration: an HZ-272 caretaker_ping keeps every row column by column and t
       sent_at            TEXT
     );
     CREATE INDEX idx_caretaker_ping_project ON caretaker_ping(project_id, reason, created_at_ms);
-    INSERT INTO project (id, name) VALUES (1, 'Old');
-    INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('OLD-1', 'fixture', 'High', 13, 1);
+    INSERT INTO project (id, name) VALUES (${PROJECT}, 'Old');
+    INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('OLD-1', 'fixture', 'High', 13, ${PROJECT});
   `)
   assert.throws(() =>
     file
-      .prepare("INSERT INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms) VALUES (1, 'OLD-1', 'needs_human', 'pre', 'a@s', 'b', 1)")
+      .prepare(`INSERT INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms) VALUES (${PROJECT}, 'OLD-1', 'needs_human', 'pre', 'a@s', 'b', 1)`)
       .run(),
   )
   file
     .prepare(
       `INSERT INTO caretaker_ping (id, project_id, item_id, reason, dedupe_key, recipient, body, status, attempts, last_error, created_at_ms, next_attempt_at_ms, sent_at)
-       VALUES (4, 1, 'OLD-1', 'premerge_blocked', 'g13:OLD-1:1:stop', 'a@s', 'body one', 'sent', 1, NULL, 111, 0, '2026-10-02 10:00:00'),
-              (6, 1, NULL, 'hourly_limit', 'limit:1:222', 'a@s', 'body two', 'pending', 2, 'retry', 222, 999, NULL)`,
+       VALUES (4, ${PROJECT}, 'OLD-1', 'premerge_blocked', 'g13:OLD-1:1:stop', 'a@s', 'body one', 'sent', 1, NULL, 111, 0, '2026-10-02 10:00:00'),
+              (6, ${PROJECT}, NULL, 'hourly_limit', 'limit:1:222', 'a@s', 'body two', 'pending', 2, 'retry', 222, 999, NULL)`,
     )
     .run()
   const before = file.prepare('SELECT * FROM caretaker_ping ORDER BY id').all()
@@ -226,7 +229,7 @@ test('migration: an HZ-272 caretaker_ping keeps every row column by column and t
   try {
     assert.deepEqual(after.prepare('SELECT * FROM caretaker_ping ORDER BY id').all(), before)
     after
-      .prepare("INSERT INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms) VALUES (1, 'OLD-1', 'needs_human', 'help:1', 'a@s', 'b', 1)")
+      .prepare(`INSERT INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms) VALUES (${PROJECT}, 'OLD-1', 'needs_human', 'help:1', 'a@s', 'b', 1)`)
       .run()
     assert.ok(after.prepare("SELECT 1 FROM sqlite_master WHERE name = 'idx_caretaker_ping_project'").get())
   } finally {

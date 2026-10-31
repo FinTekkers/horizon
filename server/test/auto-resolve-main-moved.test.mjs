@@ -225,6 +225,31 @@ test('metric 5: every rule — exactly one line per item, each skip names its re
   assert.ok(!autoResolve.waitingForTest().includes('MX-CLOSE'), 'the closed item left the re-check list')
 })
 
+test('HZ-654 R9: an `Unlinked items` item is not skipped as disabled, like a NULL item, until that project is disabled', async () => {
+  const { ensureUnlinkedProject } = await import('../src/membership.js')
+  const unlinked = ensureUnlinkedProject(db)
+  h.insertItem('UL-NULL', { pr: 420, projectId: null })
+  h.insertItem('UL-ITEM', { pr: 421, projectId: unlinked })
+
+  gh.mainSha = MAIN_SHA_2
+  await h.mergeWebhook(310, { sha: MAIN_SHA_2 })
+  await autoResolve.whenIdleForTest()
+  for (const id of ['UL-NULL', 'UL-ITEM']) {
+    const got = h.itemLines(id)
+    assert.equal(got.length, 1, `${id}: ${JSON.stringify(got)}`)
+    assert.ok(got[0].endsWith(': clean'), `${id}: ${got[0]}`)
+  }
+
+  db.prepare('UPDATE project SET enabled = 0 WHERE id = ?').run(unlinked)
+  lines.length = 0
+  gh.mainSha = MAIN_SHA_3
+  await h.mergeWebhook(311, { sha: MAIN_SHA_3 })
+  await autoResolve.whenIdleForTest()
+  assert.ok(h.itemLines('UL-NULL')[0].endsWith(': clean'), h.itemLines('UL-NULL')[0])
+  assert.ok(h.itemLines('UL-ITEM')[0].endsWith(': skipped (project disabled)'), h.itemLines('UL-ITEM')[0])
+  assert.equal(h.farmCalls.length, 0)
+})
+
 test('no token, webhook secret, URL or git command line in any log line or event text', () => {
   // Runs last: checks everything the tests above logged and recorded.
   const all = [...h.allLines, ...db.prepare('SELECT text FROM event').all().map((r) => r.text)]

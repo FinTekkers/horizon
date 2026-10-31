@@ -17,6 +17,9 @@ import Database from 'better-sqlite3'
 
 const ACTOR = fileURLToPath(new URL('../src/caretakerActor.js', import.meta.url))
 const DB = fileURLToPath(new URL('../src/db.js', import.meta.url))
+// HZ-654: a fresh boot's demo seed creates the `Unlinked items` project (id 1),
+// so the fixture project takes an id clear of it.
+const PROJECT = 101
 const NOW = Date.parse('2026-10-03T12:00:00Z')
 
 function run(path, script, { notify = true } = {}) {
@@ -51,9 +54,9 @@ test('a restart never repeats an Accept, a Resolve-conflicts run or an owner pin
   const path = join(mkdtempSync(join(tmpdir(), 'horizon-caretaker-accept-restart-')), 'test.db')
   run(path, `await import(${JSON.stringify(DB)})`) // creates the schema
   const db = new Database(path)
-  db.prepare("INSERT INTO project (id, name, enabled, autopilot) VALUES (1, 'Restarted', 1, 'on')").run()
+  db.prepare("INSERT INTO project (id, name, enabled, autopilot) VALUES (?, 'Restarted', 1, 'on')").run(PROJECT)
   const item = db.prepare(
-    "INSERT INTO work_item (id, title, priority, cursor, project_id, repo, pr, pr_mergeable) VALUES (?, 'fixture', 'High', 13, 1, 'Acme/r', ?, ?)",
+    `INSERT INTO work_item (id, title, priority, cursor, project_id, repo, pr, pr_mergeable) VALUES (?, 'fixture', 'High', 13, ${PROJECT}, 'Acme/r', ?, ?)`,
   )
   const review = db.prepare("INSERT INTO step_run (item_id, step_index, agent, status, output) VALUES (?, 12, 'review', 'done', 'passed')")
   item.run('RS-acc', 1, 1) // clean: Accept
@@ -122,13 +125,13 @@ test('migration: an old caretaker_ping keeps its rows column by column and accep
       sent_at            TEXT
     );
     CREATE INDEX idx_caretaker_ping_project ON caretaker_ping(project_id, reason, created_at_ms);
-    INSERT INTO project (id, name) VALUES (1, 'Old');
-    INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('OLD-1', 'fixture', 'High', 10, 1);
+    INSERT INTO project (id, name) VALUES (${PROJECT}, 'Old');
+    INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('OLD-1', 'fixture', 'High', 10, ${PROJECT});
   `)
   db.prepare(
     `INSERT INTO caretaker_ping (id, project_id, item_id, reason, dedupe_key, recipient, body, status, attempts, last_error, created_at_ms, next_attempt_at_ms, sent_at)
-     VALUES (7, 1, 'OLD-1', 'review_cycle_cap', 'stall:OLD-1', 'a@s', 'body one', 'sent', 1, NULL, 111, 0, '2026-10-02 10:00:00'),
-            (9, 1, NULL, 'hourly_limit', 'limit:1:222', 'a@s', 'body two', 'failed', 3, 'gave up', 222, 999, NULL)`,
+     VALUES (7, ${PROJECT}, 'OLD-1', 'review_cycle_cap', 'stall:OLD-1', 'a@s', 'body one', 'sent', 1, NULL, 111, 0, '2026-10-02 10:00:00'),
+            (9, ${PROJECT}, NULL, 'hourly_limit', 'limit:1:222', 'a@s', 'body two', 'failed', 3, 'gave up', 222, 999, NULL)`,
   ).run()
   const before = db.prepare('SELECT * FROM caretaker_ping ORDER BY id').all()
   db.close()
@@ -140,7 +143,7 @@ test('migration: an old caretaker_ping keeps its rows column by column and accep
     assert.deepEqual(after.prepare('SELECT * FROM caretaker_ping ORDER BY id').all(), before)
     after
       .prepare(
-        "INSERT INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms) VALUES (1, 'OLD-1', 'premerge_blocked', 'g13:x', 'a@s', 'b', 1)",
+        `INSERT INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms) VALUES (${PROJECT}, 'OLD-1', 'premerge_blocked', 'g13:x', 'a@s', 'b', 1)`,
       )
       .run()
     assert.ok(schema().some((row) => row.name === 'idx_caretaker_ping_project'))

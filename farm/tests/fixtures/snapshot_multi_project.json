@@ -1,8 +1,8 @@
 {
-  "activeProjectId": 1,
+  "activeProjectId": 2,
   "projects": [
     {
-      "id": 2,
+      "id": 3,
       "name": "FinTekkers",
       "enabled": true,
       "repos": [
@@ -10,10 +10,11 @@
           "repo": "FinTekkers/ui-service",
           "prefix": "US"
         }
-      ]
+      ],
+      "unlinked": false
     },
     {
-      "id": 1,
+      "id": 2,
       "name": "Horizon",
       "enabled": true,
       "repos": [
@@ -21,10 +22,11 @@
           "repo": "FinTekkers/horizon",
           "prefix": "HZ"
         }
-      ]
+      ],
+      "unlinked": false
     },
     {
-      "id": 3,
+      "id": 4,
       "name": "Ledger",
       "enabled": false,
       "repos": [
@@ -32,13 +34,21 @@
           "repo": "FinTekkers/ledger-service",
           "prefix": "LS"
         }
-      ]
+      ],
+      "unlinked": false
+    },
+    {
+      "id": 1,
+      "name": "Unlinked items",
+      "enabled": true,
+      "repos": [],
+      "unlinked": true
     }
   ],
   "items": [
     {
       "id": "HZ-12",
-      "project_id": 1,
+      "project_id": 2,
       "title": "Horizon dashboard refresh",
       "priority": "High",
       "desc": "Horizon dashboard refresh outcome",
@@ -58,7 +68,7 @@
     },
     {
       "id": "US-12",
-      "project_id": 2,
+      "project_id": 3,
       "title": "Portfolio export button",
       "priority": "High",
       "desc": "Portfolio export button outcome",

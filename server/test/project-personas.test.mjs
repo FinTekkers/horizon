@@ -79,6 +79,8 @@ test('the definitions_enabled column defaults to 1 on rows that existed before i
       { name: 'Acme Capital', definitions_enabled: 1 },
       { name: 'Other Co', definitions_enabled: 1 },
       { name: 'Switched Off', definitions_enabled: 1 },
+      // HZ-654: the demo seed's project, created with its definitions off.
+      { name: 'Unlinked items', definitions_enabled: 0 },
     ],
   )
   assert.equal(store.listProjects().find((p) => p.id === ACME).definitionsEnabled, true)
