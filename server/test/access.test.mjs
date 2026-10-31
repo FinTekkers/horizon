@@ -107,6 +107,25 @@ test('member:repo resolves body.repo, then query.repo', async () => {
   assert.deepEqual(await run('member:repo', {}), NOT_FOUND)
 })
 
+test('member:repo: a body projectId naming another project, or a body repo outside with a query repo inside, is 404 (HZ-658)', async () => {
+  assert.equal((await run('member:repo', { body: { repo: 'acme/alpha', projectId: alpha } })).passed, true)
+  assert.deepEqual(await run('member:repo', { body: { repo: 'acme/alpha', projectId: beta } }), NOT_FOUND)
+  assert.deepEqual(await run('member:repo', { body: { repo: 'acme/alpha', projectId: String(alpha) } }), NOT_FOUND)
+  assert.deepEqual(await run('member:repo', { body: { repo: 'acme/beta' }, query: { repo: 'acme/alpha' } }), NOT_FOUND)
+})
+
+test('member:items needs both params.id and body.dependsOnId in the member’s projects (HZ-658)', async () => {
+  addItem('ALA-2', alpha)
+  assert.equal((await run('member:items', { params: { id: 'ALA-1' }, body: { dependsOnId: 'ALA-2' } })).passed, true)
+  assert.deepEqual(await run('member:items', { params: { id: 'ALA-1' }, body: { dependsOnId: 'BTA-1' } }), NOT_FOUND)
+  assert.deepEqual(await run('member:items', { params: { id: 'BTA-1' }, body: { dependsOnId: 'ALA-1' } }), NOT_FOUND)
+  assert.deepEqual(await run('member:items', { params: { id: 'ALA-1' }, body: {} }), NOT_FOUND)
+  assert.deepEqual(await run('member:items', { params: { id: 'ALA-1' }, body: { dependsOnId: 'NOPE-404' } }), NOT_FOUND)
+  assert.equal((await run('member:items', { user: owner, params: { id: 'ALA-1' }, body: { dependsOnId: 'BTA-1' } })).passed, true)
+  assert.deepEqual(access.projectsForScope('member:items', { params: { id: 'ALA-1' }, body: { dependsOnId: 'BTA-1' } }), [alpha, beta])
+  db.prepare("DELETE FROM work_item WHERE id = 'ALA-2'").run()
+})
+
 test('member:rule resolves a project or repo rules key; any other rule scope resolves to nothing (HZ-660)', async () => {
   const rule = (scope, key) => ({ params: { scope, key } })
   assert.equal(access.projectForScope('member:rule', rule('project', 'alpha-access')), alpha)
