@@ -866,7 +866,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     ARTIFACT_ROUTE,
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -908,7 +908,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     ARTIFACT_ATTEMPT_ROUTE,
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -948,7 +948,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/runs/:runId/log',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:run' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         querystring: { type: 'object', properties: { offset: { type: 'integer', minimum: 0, default: 0 } } },
@@ -977,7 +977,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     OUTPUT_ROUTE,
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -1023,7 +1023,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     LOG_VIEW_ROUTE,
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:run' },
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         response: {
@@ -1060,7 +1060,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/job',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 503: ERROR_OBJECT },
@@ -1097,7 +1097,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // files an item, an issue or a dependency link.
   fastify.get(
     '/api/items/:id/plan-draft',
-    { config: { scope: 'owner' }, schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    { config: { scope: 'member:item' }, schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
     (request, reply) => {
       const item = store.getItem(request.params.id)
       if (!item) return reply.code(404).send({ error: 'not_found' })
@@ -1168,7 +1168,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/items/:id/screenshots',
-    { config: { scope: 'owner' }, schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT } } },
+    { config: { scope: 'member:item' }, schema: { params: idParam, response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT } } },
     async (request, reply) => {
       const found = await acceptScreenshots(request.params.id)
       if (found.error) return reply.code(found.status).send({ error: found.error })
@@ -1179,7 +1179,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/screenshots/:screen/:kind',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -1268,7 +1268,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/items/:id/job/log',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         querystring: {

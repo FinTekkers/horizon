@@ -69,6 +69,15 @@ function ownString(source, key) {
   return typeof value === 'string' && value !== '' ? value : null
 }
 
+// The own property `key` as a row id — a non-negative safe integer, or a
+// string of digits — else null.
+function ownRowId(source, key) {
+  if (source == null || typeof source !== 'object' || !Object.hasOwn(source, key)) return null
+  const value = source[key]
+  if (Number.isSafeInteger(value) && value >= 0) return value
+  return typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : null
+}
+
 // The project a member:* scope points this request at, or null when the id is
 // missing, unknown, or names an item with no real project (NULL or
 // `Unlinked items`, which only the owner sees).
@@ -81,8 +90,9 @@ export function projectForScope(scope, request) {
       break
     }
     case 'member:run': {
-      const runId = ownString(request.params, 'runId')
-      projectId = runId == null || !/^\d+$/.test(runId) ? null : (selectRunProject.get(Number(runId))?.project_id ?? null)
+      // The run routes' params schema has already coerced runId to an integer.
+      const runId = ownRowId(request.params, 'runId')
+      projectId = runId == null ? null : (selectRunProject.get(runId)?.project_id ?? null)
       break
     }
     case 'member:project': {
