@@ -69,6 +69,42 @@ test('a blocked card reads Blocked and keeps its blocker link inside the card in
   await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
 })
 
+// HZ-669: the off-by-default Blocked by dependencies filter hides held cards,
+// counts them, survives a reload, and its chip turns it back off.
+test('the Blocked by dependencies filter hides blocked cards, stays on after a reload, and its chip turns it off', async ({ page }) => {
+  await page.goto('/')
+  const toggle = page.getByRole('button', { name: /^Blocked by dependencies \(\d+\)$/ })
+  const bar = page.getByRole('group', { name: 'Active filters' })
+  const hidingChip = bar.locator('.board__chip-label', { hasText: /^Hiding blocked$/ })
+  await expect(card(page, 'DEP-2')).toBeVisible()
+  await expect(hidingChip).toHaveCount(0)
+
+  async function expectFilterOn() {
+    await expect(card(page, 'DEP-2')).toHaveCount(0)
+    await expect(card(page, 'DEPPLAN-2')).toBeVisible()
+    // Other specs seed blocked items too, so the note counts what the toggle counts.
+    const held = Number((await toggle.textContent()).match(/\((\d+)\)$/)[1])
+    expect(held).toBeGreaterThanOrEqual(1)
+    await expect(page.locator('.board__hidden-note')).toContainText(new RegExp(`\\b${held} blocked`))
+    await expect(hidingChip).toHaveCount(1)
+  }
+
+  try {
+    await toggle.click()
+    await expectFilterOn()
+
+    await page.reload()
+    await expectFilterOn()
+
+    await bar.getByRole('button', { name: 'Remove Hiding blocked filter' }).click()
+    await expect(card(page, 'DEP-2')).toBeVisible()
+    await expect(hidingChip).toHaveCount(0)
+  } finally {
+    // Leave the shared board as other specs expect it.
+    await page.evaluate(() => localStorage.removeItem('horizon_board_filters_v2'))
+  }
+})
+
 test('a planning item with an open blocker is not Blocked, and keeps its blocker link and remove control', async ({ page }) => {
   await page.goto('/')
   const planning = page.locator('.card', { hasText: 'E2E fixture — plans past its open blocker' })
