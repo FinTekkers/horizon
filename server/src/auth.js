@@ -12,6 +12,7 @@ import crypto from 'node:crypto'
 import { db } from './db.js'
 import { ADMIN_EMAIL, ADMIN_EMAILS, ADMIN_PASSWORD, SESSION_TTL_DAYS } from './config.js'
 import { isAllowedEmail } from './loginAllowlist.js'
+import { sqlTime } from './sqlTime.js'
 
 function hashSecret(plain) {
   const salt = crypto.randomBytes(16)
@@ -61,7 +62,11 @@ export const ACCOUNT_STATUSES = Object.freeze(['pending_payment', 'active', 'pas
 // transaction. Returns { ok, from, to }, { ok, from, to, unchanged } for a
 // same-value write (no audit row), or { error } with 'invalid_status',
 // 'invalid_who' or 'not_found'. Sign-in does not read the status yet.
-export function setAccountStatus(userId, status, who) {
+// HZ-641: a change to 'cancelled' also stores access_ended_at (accessEndedAt,
+// in sqlTime form, else now), and any other change clears it, so a reactivated
+// user is never purged. A repeated 'cancelled' is unchanged and keeps the
+// original date.
+export function setAccountStatus(userId, status, who, { accessEndedAt = null } = {}) {
   if (typeof status !== 'string' || !ACCOUNT_STATUSES.includes(status)) return { error: 'invalid_status' }
   if (typeof who !== 'string' || who.trim() === '') return { error: 'invalid_who' }
   return db.transaction(() => {
@@ -69,7 +74,8 @@ export function setAccountStatus(userId, status, who) {
     if (!row) return { error: 'not_found' }
     const from = row.account_status
     if (from === status) return { ok: true, from, to: status, unchanged: true }
-    db.prepare('UPDATE user SET account_status = ? WHERE id = ?').run(status, userId)
+    const endedAt = status === 'cancelled' ? (accessEndedAt ?? sqlTime(Date.now())) : null
+    db.prepare('UPDATE user SET account_status = ?, access_ended_at = ? WHERE id = ?').run(status, endedAt, userId)
     db.prepare(
       "INSERT INTO user_event (user_id, kind, old_value, new_value, who) VALUES (?, 'account_status', ?, ?, ?)",
     ).run(userId, from, status, who)

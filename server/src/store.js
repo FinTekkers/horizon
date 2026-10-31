@@ -1339,6 +1339,13 @@ export function finishedItems(ids) {
     if (isAbandoned(row)) found.push({ id: row.id, state: 'abandoned' })
     else if (isClosed(row)) found.push({ id: row.id, state: 'closed' })
   }
+  // HZ-641: an item the account purge deleted reads as abandoned.
+  const purged = db
+    .prepare(`SELECT id FROM purged_item WHERE lower(id) IN (${wanted.map(() => '?').join(', ')}) ORDER BY id`)
+    .all(...wanted)
+  for (const row of purged) {
+    if (!found.some((f) => f.id.toLowerCase() === row.id.toLowerCase())) found.push({ id: row.id, state: 'abandoned' })
+  }
   return found
 }
 

@@ -16,6 +16,7 @@
 import crypto from 'node:crypto'
 import { db } from './db.js'
 import * as auth from './auth.js'
+import { sqlTime } from './sqlTime.js'
 
 // Stripe's own default: a signed timestamp more than 5 minutes off is refused,
 // so a captured request cannot be replayed later.
@@ -90,6 +91,14 @@ export function statusForEvent(event) {
     default:
       return null
   }
+}
+
+// HZ-641: when the customer's access ended, in sqlTime form: the
+// subscription's ended_at (Unix seconds), else the event's created time, else
+// now. Stored on the user only with a change to 'cancelled'.
+export function accessEndedAtFor(event, now = Date.now()) {
+  const seconds = [event?.data?.object?.ended_at, event?.created].find((value) => Number.isInteger(value) && value > 0)
+  return sqlTime(seconds ? seconds * 1000 : now)
 }
 
 // Stripe sends an id as a string, or as the object when it was expanded.
@@ -190,7 +199,8 @@ export function applyStripeEvent(event) {
 
       const status = statusForEvent(event)
       if (status) {
-        const written = auth.setAccountStatus(user.id, status, WEBHOOK_WHO)
+        const accessEndedAt = status === 'cancelled' ? accessEndedAtFor(event) : null
+        const written = auth.setAccountStatus(user.id, status, WEBHOOK_WHO, { accessEndedAt })
         if (written.error) throw new Error(`setAccountStatus: ${written.error}`)
         result.status = status
       }

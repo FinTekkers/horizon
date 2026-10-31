@@ -49,3 +49,23 @@ export async function sendActivationEmail(mailer, customer) {
   await mailer.sendMail(activationEmail(customer, { from: user ?? to, to }))
   return true
 }
+
+// HZ-641: one line per account purge. Ids, the date and a row count only: the
+// customer's name, email and projects are never in it.
+export function purgeEmail({ userId, date, counts }, { from, to }) {
+  const total = Object.values(counts ?? {}).reduce((sum, n) => sum + n, 0)
+  return {
+    from,
+    to,
+    subject: `Horizon: account data deleted — ${oneLine(userId)}`,
+    text: `Deleted account ${oneLine(userId)} on ${oneLine(date)}: ${total} rows.\n`,
+  }
+}
+
+// Same contract as sendActivationEmail.
+export async function sendPurgeEmail(mailer, notice) {
+  const { user, to } = ownerMailConfig()
+  if (!mailer || !to) return false
+  await mailer.sendMail(purgeEmail(notice, { from: user ?? to, to }))
+  return true
+}
