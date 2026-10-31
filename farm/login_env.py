@@ -117,6 +117,26 @@ def load_login_env(path: str, *, workspace: Path | None = None) -> dict[str, str
     return _parse(path, text)
 
 
+def tenant_env_path(path: str | None, project_id) -> str:
+    """HZ-663: a tenant project's test-env file path, checked as a string.
+    Returns `path` only when it is absolute, normalised (no `..` or `.`) and
+    sits under config.TENANT_ENV_ROOT/<project id>/. Raises LoginEnvError
+    otherwise, None included. Nothing is opened or stat'ed: the file lives in
+    the run user's own directory, which farmd cannot read; tenant-entry
+    checks it exists as the run user."""
+    if not isinstance(path, str) or not path:
+        raise LoginEnvError(str(path), "a tenant project needs a test-env file")
+    if not os.path.isabs(path) or os.path.normpath(path) != path:
+        raise LoginEnvError(path, "the path must be absolute and normalised")
+    if isinstance(project_id, bool) or not isinstance(project_id, (int, str)) or not str(project_id).isdigit():
+        raise LoginEnvError(path, "the task names no valid project id")
+    own = Path(config.TENANT_ENV_ROOT) / str(project_id)
+    parts = Path(path).parts
+    if len(parts) <= len(own.parts) or parts[: len(own.parts)] != own.parts:
+        raise LoginEnvError(path, f"a tenant test-env file must live under the project's own directory ({own})")
+    return path
+
+
 def login_env_names(path: str, *, workspace: Path | None = None) -> list[str] | None:
     """The file's variable names, sorted — the values are dropped at once.
     None when the file cannot be loaded."""

@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""HZ-663: the run-user half of a tenant launch.
+
+Installed root-owned, mode 0755, at /usr/local/libexec/horizon/tenant-entry
+with the farm venv's interpreter on the shebang (HZ-663 part 3, alongside the
+sudoers line that lets the farm user run exactly this path as each run_user).
+farm/tenant_launch.py execs it via `sudo -n -u <run_user>` with farmd's 0600
+spool on stdin:
+
+    {"env": {...}, "task": {...}, "test_env_file": "/etc/horizon/tenants/<id>/..."}
+
+It refuses to run as root or as the farm user that invoked sudo, and refuses a
+missing or unreadable test-env file. Otherwise it writes the task, 0600, under
+the run user's own FARM_HOME and execs `python -m farm.step_agent` with exactly
+the env it was given — nothing from its own environment is merged in, and no
+value goes on argv. Errors name a field only, never a value.
+"""
+
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def refuse(why: str):
+    print(f"tenant-entry: refused: {why}", file=sys.stderr, flush=True)
+    sys.exit(2)
+
+
+def read_payload(stream) -> tuple[dict, dict, str]:
+    try:
+        payload = json.loads(stream.read())
+    except (ValueError, UnicodeDecodeError):
+        refuse("stdin is not one JSON object")
+    if not isinstance(payload, dict):
+        refuse("stdin is not one JSON object")
+    env, task, test_env_file = payload.get("env"), payload.get("task"), payload.get("test_env_file")
+    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
+        refuse("env must map names to strings")
+    if not isinstance(task, dict) or not RUN_ID_RE.match(str(task.get("run_id", ""))):
+        refuse("task names no valid run_id")
+    if not isinstance(test_env_file, str) or not os.path.isabs(test_env_file):
+        refuse("test_env_file must be an absolute path")
+    if not isinstance(env.get("FARM_HOME"), str) or not os.path.isabs(env["FARM_HOME"]):
+        refuse("env names no absolute FARM_HOME")
+    return env, task, test_env_file
+
+
+def write_task(farm_home: str, task: dict) -> Path:
+    runs = Path(farm_home) / "runs"
+    runs.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = runs / f"{task['run_id']}.json"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(json.dumps(task))
+    os.chmod(path, 0o600)
+    return path
+
+
+def main(stream=None) -> None:
+    uid = os.getuid()
+    invoker = os.environ.get("SUDO_UID", "")
+    if uid == 0 or not invoker.isdigit() or uid == int(invoker):
+        refuse("must run as a tenant run user, via sudo from the farm user")
+    env, task, test_env_file = read_payload(sys.stdin if stream is None else stream)
+    if not os.path.isfile(test_env_file) or not os.access(test_env_file, os.R_OK):
+        refuse("test_env_file is missing or unreadable")
+    task["test_env_file"] = test_env_file
+    path = write_task(env["FARM_HOME"], task)
+    python = sys.executable
+    os.execve(python, [python, "-m", "farm.step_agent", "--task", str(path)], env)
+
+
+if __name__ == "__main__":
+    main()

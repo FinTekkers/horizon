@@ -2056,6 +2056,10 @@ const FARM_REFUSALS = {
   job_already_running: 'a job is already running for this item',
   job_runner_missing: 'the job named no runner (host or container), so the farm refused it',
   isolation_refused: 'the farm refused this tenant item: its isolation settings are incomplete',
+  // HZ-663: the token ref did not resolve, the test-env file is outside the
+  // project's own directory, or tenant runs are not switched on yet.
+  tenant_launch_refused:
+    "the farm refused this tenant item: it needs the project's own token and test-env file, and tenant runs are not switched on yet",
 }
 
 // HZ-415: the deploy-target checkout the plan's cwd resolves inside. Read on

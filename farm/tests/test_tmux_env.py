@@ -199,3 +199,47 @@ def test_farm_model_override_is_forwarded_to_a_step_session():
     must reach the pane — and it is no secret."""
     assert "FARM_MODEL_OVERRIDE" not in tmux_mgr.NEVER_FORWARD
     assert tmux_mgr.agent_env(STEP_SESSION, {"FARM_MODEL_OVERRIDE": "claude-x"})["FARM_MODEL_OVERRIDE"] == "claude-x"
+
+
+# ---- HZ-663 metric 3: the internal launch is byte-identical to before ----
+
+# Generated on origin/main (445c194) before HZ-663 changed new_session, from
+# FULL_ENV above and the same name, command, cwd and log file. Never copy it
+# from the new code: it is the "before" side of the comparison.
+INTERNAL_LAUNCH_BEFORE_HZ663 = [
+    ("has-session", "-t", "=farm-run-hz-1-s10-a1"),
+    (
+        "new-session",
+        "-d",
+        "-s",
+        "farm-run-hz-1-s10-a1",
+        "-c",
+        "/repo",
+        "env -u FARM_EXPRESS_SLOTS -u FARM_MAX_EPHEMERAL -u FARM_SHARED_SECRET -u WA_APPROVAL_SECRET "
+        "FARM_HOME=/home/farm/.horizon-farm FARM_PROVIDER=claude WA_BRIDGE_URL=http://localhost:8080 "
+        "CLAUDE_CODE_OAUTH_TOKEN=claude-cli-own-auth HORIZON_URL=http://localhost:3001 "
+        "/venv/bin/python -m farm.step_agent --task /q/runs/active/1.json",
+    ),
+    ("pipe-pane", "-t", "farm-run-hz-1-s10-a1", "-o", "cat >> '/logs/x.log'"),
+]
+
+
+def test_internal_launch_command_is_unchanged(monkeypatch, fake_tmux):
+    monkeypatch.setattr(tmux_mgr.os, "environ", dict(FULL_ENV))
+    tmux_mgr.new_session(
+        "farm-run-hz-1-s10-a1",
+        "/venv/bin/python -m farm.step_agent --task /q/runs/active/1.json",
+        cwd="/repo",
+        log_file="/logs/x.log",
+    )
+    assert fake_tmux.calls == INTERNAL_LAUNCH_BEFORE_HZ663
+
+
+def test_a_tenant_session_refuses_any_command_but_tenant_launch_for_its_run_user(fake_tmux):
+    for command in (
+        "/venv/bin/python -m farm.step_agent --task /q/1.json",
+        "/venv/bin/python -m farm.tenant_launch --spool /q/1.tenant.json --run-user other_run",
+    ):
+        with pytest.raises(RuntimeError):
+            tmux_mgr.new_session("farm-run-ac-1-s10-a1", command, cwd="/repo", run_user="acme_run")
+    assert fake_tmux.calls == []
