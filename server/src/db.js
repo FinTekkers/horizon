@@ -1075,6 +1075,33 @@ if (!userColumnNames().has('owner_notified_at')) {
     if (!userColumnNames().has('owner_notified_at')) db.exec('ALTER TABLE user ADD COLUMN owner_notified_at TEXT')
   }).immediate()
 }
+// HZ-641: when a cancelled customer's access ended (sqlTime form), written
+// only by auth.setAccountStatus; accountPurge.js deletes their data 30 days
+// later. Additive and once-only, like the blocks above. Users cancelled before
+// this column existed get the time of their last change to 'cancelled'; every
+// other row stays NULL, and a NULL date is never purged.
+if (!userColumnNames().has('access_ended_at')) {
+  db.transaction(() => {
+    if (userColumnNames().has('access_ended_at')) return
+    db.exec('ALTER TABLE user ADD COLUMN access_ended_at TEXT')
+    const cancelled = db.prepare('SELECT id FROM user WHERE account_status = ?').all('cancelled')
+    const backfill = db.prepare(
+      `UPDATE user SET access_ended_at = (
+         SELECT MAX(e.created_at) FROM user_event e
+          WHERE e.user_id = user.id AND e.kind = 'account_status' AND e.new_value = 'cancelled')
+        WHERE id = ?`,
+    )
+    for (const { id } of cancelled) backfill.run(id)
+  }).immediate()
+}
+// HZ-641: ids of work items the account purge deleted, so store.finishedItems
+// still reports them and farmd reaps their worktrees. Ids only, no content.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS purged_item (
+    id        TEXT PRIMARY KEY,
+    purged_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`)
 
 // HZ-544: item_off = 1 marks an evaluation recorded as 'shadow' because
 // Autopilot was off for the ITEM (its `autopilot-off` label) in an 'on'

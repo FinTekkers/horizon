@@ -161,6 +161,41 @@ test('each of the five events, signed, sets the listed status; checkout stores t
   assert.ok(audit.every((a) => a.who === 'stripe-webhook'))
 })
 
+// HZ-641: when access ended, as the purge reads it (sqlTime form).
+const sqlTimeOf = (sec) => new Date(sec * 1000).toISOString().replace('T', ' ').slice(0, 19)
+const endedAtOf = (id) => row(id).access_ended_at
+
+function deletedEvent(user, { endedAt, created } = {}) {
+  const event = subscriptionEvent('customer.subscription.deleted', user, { status: 'canceled' })
+  if (endedAt !== undefined) event.data.object.ended_at = endedAt
+  if (created !== undefined) event.created = created
+  return event
+}
+
+test('a cancel stores access_ended_at from ended_at, else event.created; reactivating clears it; a re-cancel sets a fresh date and a repeat keeps it', async () => {
+  const { app } = appWith()
+  const user = seedUser()
+  await send(app, checkoutEvent(user))
+  assert.equal(endedAtOf(user.id), null)
+
+  const first = now() - 3600
+  await send(app, deletedEvent(user, { endedAt: first, created: first + 10 }))
+  assert.equal(statusOf(user.id), 'cancelled')
+  assert.equal(endedAtOf(user.id), sqlTimeOf(first))
+
+  await send(app, subscriptionEvent('customer.subscription.updated', user, { cancel: false, status: 'active' }))
+  assert.equal(statusOf(user.id), 'active')
+  assert.equal(endedAtOf(user.id), null)
+
+  const second = now() - 60
+  await send(app, deletedEvent(user, { created: second }))
+  assert.equal(endedAtOf(user.id), sqlTimeOf(second), 'no ended_at: the event time')
+
+  await send(app, deletedEvent(user, { endedAt: now(), created: now() }))
+  assert.equal(statusOf(user.id), 'cancelled')
+  assert.equal(endedAtOf(user.id), sqlTimeOf(second), 'a repeated cancel keeps the original date')
+})
+
 test('customer.subscription.updated without a cancel, status active, takes cancelling back to active and sends no email', async () => {
   const { app, mailer } = appWith()
   const user = seedUser()
@@ -404,5 +439,32 @@ test('buildApp boots twice on one DB, and on a DB that already has account_statu
   const cols = after.prepare('PRAGMA table_info(user)').all().map((c) => c.name)
   assert.ok(cols.includes('account_status') && cols.includes('owner_notified_at'))
   assert.ok(after.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stripe_event'").get())
+  after.close()
+})
+
+test('the access_ended_at migration backfills users already cancelled from their last change to cancelled, and no one else', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'horizon-stripe-webhook-boot-')), 'test.db')
+  boot(path)
+  const raw = new Database(path)
+  raw.exec('ALTER TABLE user DROP COLUMN access_ended_at')
+  const insert = raw.prepare(
+    "INSERT INTO user (id, email, name, initials, auth_method, gate_pin_hash, account_status) VALUES (?, ?, 'N', 'N', 'password', 'x', ?)",
+  )
+  insert.run('u-cancelled', 'c@example.com', 'cancelled')
+  insert.run('u-active', 'a@example.com', 'active')
+  const event = raw.prepare(
+    "INSERT INTO user_event (user_id, kind, old_value, new_value, who, created_at) VALUES (?, 'account_status', ?, ?, 'test', ?)",
+  )
+  event.run('u-cancelled', 'active', 'cancelled', '2026-01-01 00:00:00')
+  event.run('u-cancelled', 'cancelled', 'active', '2026-02-01 00:00:00')
+  event.run('u-cancelled', 'active', 'cancelled', '2026-03-01 00:00:00')
+  event.run('u-active', 'active', 'cancelled', '2026-01-01 00:00:00')
+  raw.close()
+  boot(path)
+
+  const after = new Database(path, { readonly: true })
+  const endedAt = (id) => after.prepare('SELECT access_ended_at FROM user WHERE id = ?').get(id).access_ended_at
+  assert.equal(endedAt('u-cancelled'), '2026-03-01 00:00:00')
+  assert.equal(endedAt('u-active'), null)
   after.close()
 })

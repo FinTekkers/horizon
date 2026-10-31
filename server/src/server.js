@@ -11,6 +11,7 @@ import * as caretakerRuling from './caretakerRuling.js'
 import * as autoResolve from './autoResolve.js'
 import * as heldAccept from './heldAccept.js'
 import * as farmHealth from './farmHealth.js'
+import * as accountPurge from './accountPurge.js'
 import { PORT } from './config.js'
 
 const fastify = buildApp()
@@ -46,6 +47,9 @@ caretakerActor.init(fastify.log, { gateActions: fastify.gateActions, refreshMerg
 // Autopilot 'on' projects — edits only the named issue-body lines, then sends
 // back with a note through the same gateActions.
 caretakerRuling.init(fastify.log, { gateActions: fastify.gateActions })
+// HZ-641: the daily purge of cancelled customers' data. Off unless
+// ACCOUNT_PURGE=on.
+accountPurge.init(fastify.log)
 // Before polling starts, so the first tick already seeds main's head (HZ-235).
 autoResolve.startAutoResolve(fastify.log)
 github.startPolling(fastify.log)
