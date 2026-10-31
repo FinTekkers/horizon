@@ -37,3 +37,15 @@ Excerpts of HZ-270's own planning artifacts, copied from its step runs:
 caretaker policy over them. The options artifact is kept because it says
 "Blocking finding" in prose with no `## Blockers` section, which must not send
 it back.
+
+## owner-items-snapshot.json, farm-snapshot-enabled.json
+
+HZ-656: the owner's `GET /api/items?v=2` and the concierge's
+`GET /api/farm/snapshot?scope=enabled`, captured on main at 445c194 — before
+per-user boards existed — from the fixed seed in `helpers/memberBoardSeed.mjs`.
+`owner-board-fixture.test.mjs` deep-equals both, so filtering for members can
+never change what the owner or the farm gets. The clock- and host-dependent
+keys are pinned to `"<pinned>"` (`pinVolatile`), and each step label and step
+`kind` is a `<step-label:N>` / `<step-kind:…>` reference (`encodeSteps`), so the
+files hold no copy of `domain/steps.json`. Regenerate with
+`UPDATE_FIXTURE=1` only on a commit already known to be right.
