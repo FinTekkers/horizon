@@ -11,7 +11,9 @@ vi.mock('./api', () => {
   return {
     subscribe: () => () => {},
     getItems: () => none,
-    getCurrentUser: vi.fn(async () => ({ name: 'Test User', initials: 'TU', email: 'test@example.com' })),
+    // HZ-660: the owner — a member sees only Account (App.adminRoutes.test.jsx).
+    getCurrentUser: vi.fn(async () => ({ name: 'Test User', initials: 'TU', email: 'test@example.com', isAdmin: true })),
+    getFarmHealth: vi.fn(() => new Promise(() => {})),
     getSync: () => ({ connected: false }),
     getProjects: () => none,
     getActiveProjectId: () => null,

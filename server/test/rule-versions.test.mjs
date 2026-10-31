@@ -180,6 +180,32 @@ test('GET /api/rules/targets lists DB projects and connected repos that have no 
   assert.deepEqual(defs.repos.map((d) => d.name), ['acme__demo'])
 })
 
+// ---- HZ-660 metric 3: the owner's picker is unchanged, file-only targets included ----
+
+test("the owner's GET /api/rules/targets body is unchanged by HZ-660", async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/rules/targets', headers: { cookie } })
+  assert.equal(res.statusCode, 200)
+  const target = (scope, key, label, file) => ({ scope, key, label, file, versions: 0 })
+  assert.deepEqual(res.json(), {
+    projects: [
+      target('project', 'acme', 'Acme', true),
+      target('project', 'blank-co', 'blank-co', true),
+      target('project', 'fileless', 'Fileless', false),
+      target('project', 'ready-repos', 'Ready repos', false),
+      target('project', 'restore-co', 'Restore Co', false),
+      target('project', 'tamper-co', 'tamper-co', true),
+      target('project', 'unlinked-items', 'Unlinked items', false),
+      target('project', 'verbatim-co', 'Verbatim Co', false),
+    ],
+    repos: [
+      target('repo', 'acme__demo', 'acme/demo', true),
+      target('repo', 'acme__none', 'acme/none', false),
+      target('repo', 'acme__restore', 'acme/restore', false),
+      target('repo', 'acme__verbatim', 'acme/verbatim', false),
+    ],
+  })
+})
+
 // ---- metric 3 / guardrail 4: a missing or wrong PIN stores nothing ----
 
 test('save and restore with a missing or wrong PIN are 401, store nothing, and never echo or log the PIN', async () => {
@@ -384,4 +410,87 @@ test('a row edited directly in SQLite is not served: the last verified version i
   insertRepo.run(tamperCo, 'acme/tamper', 'AT')
   connectReadyRepo(db, 'acme/tamper')
   assert.equal(Object.hasOwn(await dispatchFor('RV-7', 'acme/tamper', tamperCo), 'rules_override'), false)
+})
+
+// ---- HZ-660: a member reads and saves rules for their own project only ----
+
+const memberOf = (email, ...projectIds) => {
+  const login = loginFixtureUser(auth, config, { email, name: email, role: 'member' })
+  for (const id of projectIds) db.prepare('INSERT INTO project_member (project_id, user_id) VALUES (?, ?)').run(id, login.user.id)
+  return login
+}
+const acmeMember = memberOf('acme-member@example.com', acme)
+const loneMember = memberOf('lone-member@example.com')
+const as = (who, method, url, payload) =>
+  app.inject({ method, url, headers: { cookie: who.cookie, 'x-human-key': who.pin }, ...(payload ? { payload } : {}) })
+
+test("a member's GET /api/rules/targets lists only their own projects and repos, never a file-only target", async () => {
+  const res = await as(acmeMember, 'GET', '/api/rules/targets')
+  assert.equal(res.statusCode, 200)
+  const { projects, repos } = res.json()
+  assert.deepEqual(projects.map((t) => [t.key, t.file]), [['acme', true]])
+  assert.deepEqual(repos.map((t) => [t.key, t.file]), [['acme__demo', true]])
+  assert.ok(!res.body.includes('blank-co') && !res.body.includes('fileless'))
+
+  const lone = await as(loneMember, 'GET', '/api/rules/targets')
+  assert.equal(lone.statusCode, 200)
+  assert.deepEqual(lone.json(), { projects: [], repos: [] })
+})
+
+test('a member reads, saves and restores rules for their own project and repo; the owner sees the new versions', async () => {
+  for (const [scope, key] of [['project', 'acme'], ['repo', 'acme__demo']]) {
+    const read = await as(acmeMember, 'GET', `/api/rules/${scope}/${key}/versions`)
+    assert.equal(read.statusCode, 200, read.body)
+    const before = countOf(scope, key)
+
+    const saved = await as(acmeMember, 'POST', `/api/rules/${scope}/${key}`, { content: `MEMBER ${key}` })
+    assert.equal(saved.statusCode, 200, saved.body)
+    const restored = await as(acmeMember, 'POST', `/api/rules/${scope}/${key}/versions/1/restore`)
+    assert.equal(restored.statusCode, 200, restored.body)
+
+    const listed = await versions(scope, key)
+    assert.equal(listed.versions.length, before + 2)
+    assert.ok(listed.versions.some((v) => v.content === `MEMBER ${key}` && v.actor === 'acme-member@example.com'))
+  }
+})
+
+test("a member gets 404 — and nothing is written — on another project's rules or a global scope; the owner still gets bad_scope", async () => {
+  await save('project', 'fileless', 'OWNER FILELESS')
+  const targets = [
+    ['project', 'fileless'],
+    ['repo', 'acme__none'],
+    ['project', 'blank-co'],
+    ['role', 'eng_implement'],
+    ['persona', 'fullstack'],
+    ['global', 'rules'],
+  ]
+  for (const [scope, key] of targets) {
+    const before = countOf(scope, key)
+    for (const [method, url, payload] of [
+      ['GET', `/api/rules/${scope}/${key}/versions`],
+      ['POST', `/api/rules/${scope}/${key}`, { content: 'MEMBER WRITE' }],
+      ['POST', `/api/rules/${scope}/${key}/versions/1/restore`],
+    ]) {
+      const res = await as(acmeMember, method, url, payload)
+      assert.equal(res.statusCode, 404, `${method} ${url}: ${res.body}`)
+      assert.deepEqual(res.json(), { error: 'not_found' })
+    }
+    assert.equal(countOf(scope, key), before, `${scope}/${key}`)
+  }
+  assert.equal((await versions('project', 'fileless')).versions.length, 1)
+  const ownerRole = await save('role', 'eng_implement', 'x')
+  assert.equal(ownerRole.statusCode, 400)
+  assert.equal(ownerRole.json().error, 'bad_scope')
+})
+
+test('a member previews the effective prompt only for their own project and repo', async () => {
+  const effective = (qs) => as(acmeMember, 'GET', `/api/definitions/effective?${new URLSearchParams(qs)}`)
+  assert.equal((await effective({ project: 'Acme' })).statusCode, 200)
+  assert.equal((await effective({ project: 'Acme', repo: 'acme/demo' })).statusCode, 200)
+  assert.equal((await effective({ repo: 'acme/demo' })).statusCode, 200)
+  for (const qs of [{ project: 'Fileless' }, {}, { role: 'eng_implement' }, { project: 'Acme', repo: 'acme/none' }, { project: 'No Such Co' }]) {
+    const res = await effective(qs)
+    assert.equal(res.statusCode, 404, JSON.stringify(qs))
+    assert.deepEqual(res.json(), { error: 'not_found' })
+  }
 })
