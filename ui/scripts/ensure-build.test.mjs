@@ -1,6 +1,8 @@
 // HZ-622: the shared, keyed root-base UI build (ensure-build.mjs). Every case
 // runs against a tiny ui/ + domain/ tree in a temp dir, with a fake build (in
 // process) or a fake node_modules/.bin/vite (for the CLI), never real Vite.
+// HZ-671: that build lives in ui/dist-local; ui/dist is the production build
+// and must come through every case untouched.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -9,7 +11,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import os from 'node:os'
 import path from 'node:path'
 
-import { computeKey, ensureBuild, KEY_FILE, LOCK_FILE, readKey } from './ensure-build.mjs'
+import { computeKey, ensureBuild, KEY_FILE, LOCK_FILE, OUT_DIR, readKey } from './ensure-build.mjs'
 
 const HERE = import.meta.dirname
 const REPO_ROOT = path.resolve(HERE, '../..')
@@ -50,7 +52,7 @@ function makeTree() {
   copyFileSync(path.join(HERE, 'ensure-build.mjs'), path.join(ui, 'scripts/ensure-build.mjs'))
   writeFileSync(path.join(ui, 'node_modules/.bin/vite'), FAKE_VITE)
   chmodSync(path.join(ui, 'node_modules/.bin/vite'), 0o755)
-  return { root, ui, domain, dist: path.join(ui, 'dist'), counter: path.join(root, 'counter') }
+  return { root, ui, domain, dist: path.join(ui, OUT_DIR), prodDist: path.join(ui, 'dist'), counter: path.join(root, 'counter') }
 }
 
 function fakeBuild() {
@@ -74,12 +76,12 @@ function deadPid() {
 }
 
 function leftovers(ui) {
-  return readdirSync(ui).filter((n) => n.startsWith('.dist-tmp-') || n.startsWith('.dist-old-') || n === LOCK_FILE)
+  return readdirSync(ui).filter((n) => n.startsWith('.dist-local-tmp-') || n.startsWith('.dist-local-old-') || n === LOCK_FILE)
 }
 
 // --- in-process -------------------------------------------------------------
 
-test('a second run on an unchanged tree skips the build and leaves ui/dist and its key untouched', async (t) => {
+test('a second run on an unchanged tree skips the build and leaves ui/dist-local and its key untouched', async (t) => {
   const tree = makeTree()
   t.after(() => rmSync(tree.root, { recursive: true, force: true }))
   const { build, calls } = fakeBuild()
@@ -178,7 +180,7 @@ test('a plain build never reuses a coverage or /horizon/ build, or the other way
   }
 })
 
-test('a failed build writes no key, leaves the old ui/dist alone and no temp dir behind', async (t) => {
+test('a failed build writes no key, leaves the old ui/dist-local alone and no temp dir behind', async (t) => {
   const tree = makeTree()
   t.after(() => rmSync(tree.root, { recursive: true, force: true }))
   const good = await run(tree, fakeBuild())
@@ -204,13 +206,13 @@ test('an interrupted builder’s leftovers are ignored by the key and never prom
   const before = computeKey({ uiDir: tree.ui, domainDir: tree.domain, env: plainEnv() }).key
 
   const pid = deadPid()
-  const tmp = path.join(tree.ui, `.dist-tmp-${pid}`)
+  const tmp = path.join(tree.ui, `.dist-local-tmp-${pid}`)
   mkdirSync(tmp)
   writeFileSync(path.join(tmp, 'index.html'), 'from the killed builder')
   // A valid-looking key: even this must not get the dir promoted.
   writeFileSync(path.join(tmp, KEY_FILE), JSON.stringify({ key: before }))
-  mkdirSync(path.join(tree.ui, `.dist-old-${pid}`))
-  writeFileSync(path.join(tree.ui, `.dist-old-${pid}`, 'index.html'), 'old')
+  mkdirSync(path.join(tree.ui, `.dist-local-old-${pid}`))
+  writeFileSync(path.join(tree.ui, `.dist-local-old-${pid}`, 'index.html'), 'old')
   writeFileSync(path.join(tree.ui, LOCK_FILE), String(pid))
 
   assert.equal(computeKey({ uiDir: tree.ui, domainDir: tree.domain, env: plainEnv() }).key, before)
@@ -229,6 +231,24 @@ test('a corrupt key file rebuilds instead of crashing', async (t) => {
   mkdirSync(tree.dist)
   writeFileSync(path.join(tree.dist, KEY_FILE), 'not json')
   assert.equal((await run(tree, fakeBuild())).built, true)
+})
+
+test('HZ-622 leftovers and a production ui/dist never change the key', () => {
+  const tree = makeTree()
+  try {
+    const key = () => computeKey({ uiDir: tree.ui, domainDir: tree.domain, env: plainEnv() }).key
+    const before = key()
+    writeFileSync(path.join(tree.ui, '.build.lock'), '1')
+    mkdirSync(path.join(tree.ui, '.dist-tmp-1'))
+    writeFileSync(path.join(tree.ui, '.dist-tmp-1/index.html'), 'tmp')
+    mkdirSync(path.join(tree.ui, '.dist-old-1'))
+    writeFileSync(path.join(tree.ui, '.dist-old-1/index.html'), 'old')
+    mkdirSync(tree.prodDist)
+    writeFileSync(path.join(tree.prodDist, 'index.html'), '<script src="/horizon/assets/a.js"></script>')
+    assert.equal(key(), before)
+  } finally {
+    rmSync(tree.root, { recursive: true, force: true })
+  }
 })
 
 // --- CLI --------------------------------------------------------------------
@@ -251,13 +271,13 @@ test('CLI: the first run logs building, the second logs reusing without running 
 
   const first = runCli(tree)
   assert.equal(first.status, 0, first.stderr)
-  assert.match(first.stdout, /ensure-build: building ui\/dist \(key [0-9a-f]{12}\)/)
+  assert.match(first.stdout, /ensure-build: building ui\/dist-local \(key [0-9a-f]{12}\)/)
   assert.equal(count(tree), 1)
   assert.ok(existsSync(path.join(tree.dist, 'index.html')))
 
   const second = runCli(tree)
   assert.equal(second.status, 0, second.stderr)
-  assert.match(second.stdout, /ensure-build: reusing ui\/dist \(key [0-9a-f]{12}\)/)
+  assert.match(second.stdout, /ensure-build: reusing ui\/dist-local \(key [0-9a-f]{12}\)/)
   assert.doesNotMatch(second.stdout, /ensure-build: building/)
   assert.equal(count(tree), 1)
 
@@ -286,24 +306,146 @@ test('CLI: two processes at once build once, and both exit 0 with the same key',
   const results = await Promise.all([spawnCli(tree, { FAKE_VITE_SLEEP_MS: '500' }), spawnCli(tree, { FAKE_VITE_SLEEP_MS: '500' })])
   for (const r of results) assert.equal(r.status, 0, r.stderr)
   assert.equal(count(tree), 1, 'vite ran more than once')
-  const keys = results.map((r) => /ensure-build: (?:building|reusing) ui\/dist \(key ([0-9a-f]{12})\)/.exec(r.stdout)?.[1])
+  const keys = results.map((r) => /ensure-build: (?:building|reusing) ui\/dist-local \(key ([0-9a-f]{12})\)/.exec(r.stdout)?.[1])
   assert.ok(keys[0], results[0].stdout)
   assert.equal(keys[0], keys[1])
   assert.equal(results.filter((r) => /ensure-build: building/.test(r.stdout)).length, 1)
   assert.deepEqual(leftovers(tree.ui), [])
 })
 
+// --- HZ-671: ui/dist is the production build ---------------------------------
+
+// Every entry under dir: relative path, kind, bytes and mtimeMs. Deep-equal
+// snapshots mean nothing was added, removed, rewritten or touched.
+function snapshot(dir) {
+  const out = []
+  const walk = (sub) => {
+    for (const entry of readdirSync(path.join(dir, sub), { withFileTypes: true })) {
+      const rel = path.join(sub, entry.name)
+      const full = path.join(dir, rel)
+      const { mtimeMs } = statSync(full)
+      if (entry.isDirectory()) {
+        out.push({ rel, kind: 'dir', mtimeMs })
+        walk(rel)
+      } else {
+        out.push({ rel, kind: 'file', bytes: readFileSync(full).toString('base64'), mtimeMs })
+      }
+    }
+  }
+  walk('')
+  return out.sort((a, b) => a.rel.localeCompare(b.rel))
+}
+
+// A deploy checkout: a /horizon/ production build in ui/dist, with an old
+// HZ-622 key inside it, and HZ-622's lock and dead temp dirs beside it.
+function seedProduction(tree, { key = 'an-old-root-base-key' } = {}) {
+  const pid = deadPid()
+  mkdirSync(path.join(tree.prodDist, 'assets'), { recursive: true })
+  writeFileSync(path.join(tree.prodDist, 'index.html'), '<script type="module" src="/horizon/assets/a.js"></script>\n')
+  writeFileSync(path.join(tree.prodDist, 'assets/a.js'), 'console.log("live")\n')
+  writeFileSync(path.join(tree.prodDist, KEY_FILE), JSON.stringify({ key }))
+  writeFileSync(path.join(tree.ui, '.build.lock'), String(pid))
+  for (const prefix of ['.dist-tmp-', '.dist-old-']) {
+    mkdirSync(path.join(tree.ui, `${prefix}${pid}`))
+    writeFileSync(path.join(tree.ui, `${prefix}${pid}`, 'index.html'), prefix)
+  }
+  return pid
+}
+
+test('CLI: the build lands in ui/dist-local and ui/dist and the HZ-622 leftovers stay byte-for-byte unchanged', (t) => {
+  const tree = makeTree()
+  t.after(() => rmSync(tree.root, { recursive: true, force: true }))
+  const pid = seedProduction(tree)
+  const legacy = ['.build.lock', `.dist-tmp-${pid}`, `.dist-old-${pid}`]
+  const before = snapshot(tree.prodDist)
+  const legacyBefore = legacy.map((name) => (statSync(path.join(tree.ui, name)).isDirectory() ? snapshot(path.join(tree.ui, name)) : readFileSync(path.join(tree.ui, name), 'utf8')))
+
+  const result = runCli(tree)
+  assert.equal(result.status, 0, result.stderr)
+  assert.ok(existsSync(path.join(tree.dist, 'index.html')), 'no ui/dist-local/index.html')
+  assert.ok(existsSync(path.join(tree.dist, KEY_FILE)), 'no ui/dist-local/.build-key')
+  assert.deepEqual(snapshot(tree.prodDist), before, 'ui/dist changed')
+  const legacyAfter = legacy.map((name) => (statSync(path.join(tree.ui, name)).isDirectory() ? snapshot(path.join(tree.ui, name)) : readFileSync(path.join(tree.ui, name), 'utf8')))
+  assert.deepEqual(legacyAfter, legacyBefore, 'an HZ-622 leftover was removed or rewritten')
+  assert.deepEqual(leftovers(tree.ui), [])
+})
+
+test('CLI: a current key inside ui/dist is not reused; the first run still builds ui/dist-local', (t) => {
+  const tree = makeTree()
+  t.after(() => rmSync(tree.root, { recursive: true, force: true }))
+  const { key } = computeKey({ uiDir: tree.ui, domainDir: tree.domain, env: cliEnv(tree) })
+  seedProduction(tree, { key })
+  const before = snapshot(tree.prodDist)
+
+  const result = runCli(tree)
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /ensure-build: building ui\/dist-local \(key [0-9a-f]{12}\)/)
+  assert.doesNotMatch(result.stdout, /ensure-build: reusing/)
+  assert.equal(count(tree), 1)
+  assert.equal(readKey(tree.dist), key)
+  assert.ok(existsSync(path.join(tree.dist, 'index.html')))
+  assert.deepEqual(snapshot(tree.prodDist), before)
+})
+
+test('CLI: a production build into ui/dist between runs does not stop ui/dist-local being reused', (t) => {
+  const tree = makeTree()
+  t.after(() => rmSync(tree.root, { recursive: true, force: true }))
+  assert.equal(runCli(tree).status, 0)
+  // What `npm run build` or the deploy leaves behind.
+  mkdirSync(path.join(tree.prodDist, 'assets'), { recursive: true })
+  writeFileSync(path.join(tree.prodDist, 'index.html'), '<script type="module" src="/horizon/assets/b.js"></script>\n')
+
+  const second = runCli(tree)
+  assert.equal(second.status, 0, second.stderr)
+  assert.match(second.stdout, /ensure-build: reusing ui\/dist-local \(key [0-9a-f]{12}\)/)
+  assert.equal(count(tree), 1)
+})
+
 // --- wiring -----------------------------------------------------------------
 
-test('the e2e webServer and serve.sh both build through ensure-build.mjs, and serve.sh keeps 9>&-', () => {
-  const config = readFileSync(path.join(REPO_ROOT, 'e2e/playwright.config.js'), 'utf8')
-  const serve = readFileSync(path.join(REPO_ROOT, 'e2e/screenshots/serve.sh'), 'utf8')
-  for (const [name, text] of [['e2e/playwright.config.js', config], ['e2e/screenshots/serve.sh', serve]]) {
-    assert.match(text, /node scripts\/ensure-build\.mjs/, `${name} does not call ensure-build.mjs`)
-    assert.doesNotMatch(text, /npm run build/, `${name} still runs npm run build`)
-    assert.doesNotMatch(text, /vite build/, `${name} still runs vite build itself`)
+// HZ-671: every local server that builds and serves the UI. A new one must be
+// listed here too, so it cannot build or serve the production ui/dist.
+const LOCAL_SERVERS = ['scripts/recorder/serve-walkthrough.sh', 'e2e/screenshots/serve.sh', 'e2e/playwright.config.js']
+
+// The file without its comment lines (# for shell, // for JS): the comments
+// explain ui/dist, and only the commands count.
+function commands(file) {
+  return readFileSync(path.join(REPO_ROOT, file), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*(?:#|\/\/)/.test(line))
+    .join('\n')
+}
+
+test('the local servers build through ensure-build.mjs and serve ui/dist-local, never ui/dist', () => {
+  for (const file of LOCAL_SERVERS) {
+    const text = commands(file)
+    assert.match(text, /node scripts\/ensure-build\.mjs/, `${file} does not call ensure-build.mjs`)
+    const previews = text.split('\n').filter((line) => /vite preview/.test(line))
+    assert.ok(previews.length > 0, `${file} runs no vite preview`)
+    for (const line of previews) assert.match(line, /--outDir\s+dist-local\b/, `${file}: ${line.trim()}`)
+    assert.doesNotMatch(text, /--outDir\s+dist(?![-\w])/, `${file} names --outDir dist`)
+    assert.doesNotMatch(text, /\bui\/dist(?![-\w])/, `${file} names ui/dist`)
+    assert.doesNotMatch(text, /npm run build/, `${file} still runs npm run build`)
+    assert.doesNotMatch(text, /vite build/, `${file} still runs vite build itself`)
   }
-  assert.match(serve, /^\(cd "\$ROOT\/ui" && env -u HORIZON_BASE -u HORIZON_E2E_COVERAGE_DIR -u VITE_PROXY_TARGET node scripts\/ensure-build\.mjs\) 9>&-$/m)
+  assert.match(commands('e2e/screenshots/serve.sh'), /^\(cd "\$ROOT\/ui" && env -u HORIZON_BASE -u HORIZON_E2E_COVERAGE_DIR -u VITE_PROXY_TARGET node scripts\/ensure-build\.mjs\) 9>&-$/m)
+})
+
+test('git ignores ui/dist-local and its lock and temp dirs', () => {
+  const paths = ['ui/dist-local/index.html', 'ui/.dist-local.lock', 'ui/.dist-local-tmp-1/', 'ui/.dist-local-old-1/']
+  for (const p of paths) {
+    const r = spawnSync('git', ['check-ignore', '-q', p], { cwd: REPO_ROOT })
+    assert.equal(r.status, 0, `git check-ignore ${p} exited ${r.status}`)
+  }
+})
+
+test('the production build still writes ui/dist with the /horizon/ base', () => {
+  const verify = readFileSync(path.join(HERE, 'verify-base-build.mjs'), 'utf8')
+  assert.match(verify, /path\.join\(REPO_ROOT, 'ui\/dist'\)/)
+  assert.match(verify, /HORIZON_BASE: '\/horizon\/'/)
+  const deploy = readFileSync(path.join(REPO_ROOT, 'infra/host/deploy-horizon.sh'), 'utf8')
+  assert.match(deploy, /HORIZON_BASE=\/horizon\/ npm run build/)
+  assert.match(deploy, /grep -q '\/horizon\/assets\/' ui\/dist\/index\.html/)
 })
 
 test('verify-base-build.mjs wipes ui/dist, and so its key, before its /horizon/ build', () => {

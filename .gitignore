@@ -19,3 +19,9 @@ recordings/
 ui/.dist-tmp-*/
 ui/.dist-old-*/
 ui/.build.lock
+# HZ-671: ensure-build.mjs's local root-base build, its temp dirs and lock.
+# The dist/ pattern above does not match dist-local/.
+ui/dist-local/
+ui/.dist-local-tmp-*/
+ui/.dist-local-old-*/
+ui/.dist-local.lock
