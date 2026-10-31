@@ -7,8 +7,10 @@ export const ALL_PROJECTS = 'all'
 
 const STORAGE_KEY = 'horizon.projectFilter'
 
+// HZ-654: never the `Unlinked items` project (`unlinked`): its items arrive
+// with no project_id, so the filter and new-item picker leave it out.
 export function enabledProjects(projects) {
-  return (projects || []).filter((p) => p.enabled)
+  return (projects || []).filter((p) => p.enabled && !p.unlinked)
 }
 
 // 'all', or the id of a project that is still enabled. Anything else — an

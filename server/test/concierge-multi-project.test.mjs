@@ -95,7 +95,7 @@ const stateOf = (id) => ({ cursor: row(id).cursor, rejected: row(id).rejected, n
 function forPython(snapshot) {
   return {
     activeProjectId: snapshot.activeProjectId,
-    projects: snapshot.projects.map(({ id, name, enabled, repos }) => ({ id, name, enabled, repos })),
+    projects: snapshot.projects.map(({ id, name, enabled, repos, unlinked }) => ({ id, name, enabled, repos, unlinked })),
     items: snapshot.items.map((it) => ({
       id: it.id,
       project_id: it.project_id,
@@ -133,8 +133,11 @@ test('?scope=enabled returns every enabled project\'s items, never a disabled on
   }
   assert.deepEqual(
     body.projects.map((p) => [p.name, p.enabled, p.repos.map((r) => r.prefix)]),
-    [['FinTekkers', true, ['US']], ['Horizon', true, ['HZ']], ['Ledger', false, ['LS']]],
+    [['FinTekkers', true, ['US']], ['Horizon', true, ['HZ']], ['Ledger', false, ['LS']], ['Unlinked items', true, []]],
   )
+  // HZ-654: the demo seed's `Unlinked items` project is listed and flagged, so
+  // farm/concierge_routing.py can leave it out of routing.
+  assert.deepEqual(body.projects.filter((p) => p.unlinked).map((p) => p.name), ['Unlinked items'])
 
   // The checked-in fixture IS this reply, so the Python tests can't drift
   // from it. UPDATE_FIXTURES=1 rewrites it after a deliberate shape change.

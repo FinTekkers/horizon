@@ -3,6 +3,8 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
+import { ensureUnlinkedProject, runMembershipMigration } from './membership.js'
+import { ADMIN_EMAIL, ADMIN_EMAILS } from './config.js'
 import { ACCEPT_GATE_INDEX, endIndex, gateStepIndexes, IMPLEMENT_ITEM_KIND, ITEM_KINDS, itemKindOf } from '../../domain/js/lifecycle.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
 
@@ -1017,8 +1019,8 @@ db.exec(`
 
 // HZ-632: every account carries a billing state. user_event is the user-level
 // audit trail, like project_event above (event.item_id is NOT NULL). user_id has
-// no FK on purpose: reconcileGoogleUsers deletes user rows, and the audit
-// history must outlive them. account_status is written only by
+// no FK on purpose: the audit history must outlive any user row (until HZ-654,
+// reconcileGoogleUsers deleted them). account_status is written only by
 // auth.setAccountStatus after this migration. Additive and once-only: the
 // column check is repeated inside the immediate transaction, so a racing boot
 // skips it, and the backfill to 'active' runs only on the boot that adds the
@@ -1550,6 +1552,12 @@ if (!shiftedReview) {
   })()
 }
 
+// HZ-654: project membership, roles and per-user active project, and every
+// work_item onto a project (membership.js). Once-only and one transaction;
+// placed after every user and work_item column add, before the allowlist
+// reconcile (which writes user.disabled_at) and the demo seed.
+runMembershipMigration(db, { adminEmails: new Set([ADMIN_EMAIL.trim().toLowerCase(), ...ADMIN_EMAILS]) })
+
 // Enforce the login allowlist immediately, every boot (HZ-36) — unlike the
 // one-time-gated shifts above, this must re-run every time the process
 // starts: ops can edit ALLOWED_LOGIN_EMAILS while the server is down and
@@ -1561,11 +1569,15 @@ reconcileGoogleUsers(db)
 const count = db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
 const syncConfigured = db.prepare('SELECT COUNT(*) AS n FROM project_repo').get().n > 0
 if (count === 0 && !syncConfigured) {
+  // HZ-654: demo items carry the `Unlinked items` project, never NULL.
   const insert = db.prepare(`
-    INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, cursor)
-    VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @issue, @cursor)
+    INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, cursor, project_id)
+    VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @issue, @cursor, @project_id)
   `)
-  const seedAll = db.transaction((items) => items.forEach((it) => insert.run(it)))
+  const seedAll = db.transaction((items) => {
+    const project_id = ensureUnlinkedProject(db)
+    items.forEach((it) => insert.run({ ...it, project_id }))
+  })
   seedAll(SEED_ITEMS)
 }
 

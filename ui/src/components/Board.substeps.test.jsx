@@ -23,8 +23,15 @@ const FILE_ONLY_LABELS = ['Audit, renamed in the file', 'Only in the project fil
 beforeEach(() => {
   boardFilters._resetForTests()
   boardNarrowing._resetForTests()
+  // The fixture's timestamps are pinned to 2026-10-01; read them a day later,
+  // so the default Stale (30+ days) filter never hides the cards as time passes.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-02T10:00:00Z'))
 })
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 const noop = () => {}
 const PLAIN = { ...ITEM, id: 'AC-2', title: 'A chore', cursor: 2, substeps: undefined, substep_cursor: undefined, substep: undefined }

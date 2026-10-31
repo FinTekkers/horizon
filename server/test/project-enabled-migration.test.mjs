@@ -27,6 +27,12 @@ function oldSchemaDb(activeName) {
   const db = new Database(path)
   db.exec('ALTER TABLE project DROP COLUMN enabled')
   db.exec("DELETE FROM setting WHERE key = 'farm_project_id'")
+  // That release had no `Unlinked items` project (HZ-654): its demo items had none.
+  db.exec(`
+    UPDATE work_item SET project_id = NULL;
+    DELETE FROM project WHERE id = (SELECT CAST(value AS INTEGER) FROM setting WHERE key = 'unlinked_project_id');
+    DELETE FROM setting WHERE key = 'unlinked_project_id';
+  `)
   for (const name of ['Horizon', 'FinTekkers', 'Ledger']) db.prepare('INSERT INTO project (name) VALUES (?)').run(name)
   const id = (name) => db.prepare('SELECT id FROM project WHERE name = ?').get(name).id
   db.prepare("INSERT OR REPLACE INTO setting (key, value) VALUES ('active_project_id', ?)").run(String(id(activeName)))

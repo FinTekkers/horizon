@@ -48,6 +48,8 @@ test('existing projects migrate to off, and a new project starts off', () => {
   assert.deepEqual(db.prepare('SELECT name, autopilot FROM project ORDER BY id').all(), [
     { name: 'Horizon', autopilot: 'off' },
     { name: 'FinTekkers', autopilot: 'off' },
+    // HZ-654: the demo seed's project, created with Autopilot off.
+    { name: 'Unlinked items', autopilot: 'off' },
   ])
   const created = store.createProject('Brand New')
   assert.equal(modeOf(created.id), 'off')

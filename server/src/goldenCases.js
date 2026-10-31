@@ -17,6 +17,7 @@
 
 import { createHash } from 'node:crypto'
 import { db } from './db.js'
+import { hasNoProject } from './membership.js'
 import { substepsOf } from '../../domain/js/substeps.js'
 import { extractGoldenCases, metricLineFor, parseSource } from '../../domain/js/goldenCases.js'
 import { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, kindStepIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
@@ -68,7 +69,7 @@ export function goldenSubstep(item) {
 // item is a work_item row or getItem() — either carries project_id and
 // substeps_json.
 export function goldenCasesRequired(item) {
-  if (!item || item.project_id == null || !goldenSubstep(item)) return false
+  if (!item || hasNoProject(db, item.project_id) || !goldenSubstep(item)) return false
   return selectProjectSwitch.get(item.project_id)?.definitions_enabled === 1
 }
 
