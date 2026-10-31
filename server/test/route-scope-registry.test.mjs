@@ -75,3 +75,26 @@ test('with test hooks on, the app boots and every route, /api/test/* and HEAD in
   assert.equal(byKey.get('GET /api/items/:id/stream'), 'member:item')
   await app.close()
 })
+
+// HZ-658: an allow-list, so a new item write route shipped as owner, self,
+// filtered or with any other scope fails here. Only the write methods are
+// checked; item reads are HZ-657's.
+test('every /api/items/:id/* write is member:item or member:items, the WhatsApp ones wa; POST /api/items is member:repo', async () => {
+  const app = buildApp({ logger: false })
+  await app.ready()
+  const routes = app.routeScopes()
+  const WA_ROUTES = new Set(['POST /api/items/:id/gates/:stepIndex/approve-via-whatsapp'])
+  const writes = routes.filter((r) => r.url.startsWith('/api/items/:id/') && r.method !== 'GET' && r.method !== 'HEAD')
+  assert.ok(writes.length >= 19)
+  for (const route of writes) {
+    const key = `${route.method} ${route.url}`
+    const allowed = WA_ROUTES.has(key) ? ['wa'] : ['member:item', 'member:items']
+    assert.ok(allowed.includes(route.scope), `${key}: ${route.scope}`)
+  }
+  const byKey = new Map(routes.map((r) => [`${r.method} ${r.url}`, r.scope]))
+  assert.equal(byKey.get('POST /api/items/:id/gates/:stepIndex/approve-via-whatsapp'), 'wa')
+  assert.equal(byKey.get('POST /api/items/:id/dependencies'), 'member:items')
+  assert.equal(byKey.get('POST /api/items/:id/dependencies/remove'), 'member:items')
+  assert.equal(byKey.get('POST /api/items'), 'member:repo')
+  await app.close()
+})

@@ -1196,7 +1196,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/items/:id/plan-draft',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -1307,7 +1307,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/screenshots/approve',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -1395,7 +1395,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/job/stop',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1416,7 +1416,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/job/resume',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1440,7 +1440,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:repo' },
       schema: {
         body: {
           type: 'object',
@@ -1891,7 +1891,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -2074,7 +2074,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/reject',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2118,7 +2118,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/resolve-conflicts',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -2139,7 +2139,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/forward-to-accept',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -2159,7 +2159,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/feedback',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2191,7 +2191,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/pause',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2215,7 +2215,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/dependencies',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:items' },
       schema: {
         params: idParam,
         body: {
@@ -2234,7 +2234,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/dependencies/remove',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:items' },
       schema: {
         params: idParam,
         body: {
@@ -2258,7 +2258,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/persona',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2285,7 +2285,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/items/:id/steps/:stepIndex/provider',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -2313,7 +2313,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/priority',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2344,7 +2344,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/autopilot-off',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2382,7 +2382,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/phases/:phase/restart',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -2419,7 +2419,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/abandon',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
