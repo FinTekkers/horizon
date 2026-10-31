@@ -192,11 +192,10 @@ db.exec(`
   -- later sends the state the item was in when it reached the gate rather than
   -- whatever has drifted since.
   --
-  -- ON DELETE CASCADE, unlike every other child table here: purgeDemoItems()
-  -- in store.js deletes work_item rows directly with foreign_keys = ON, and it
-  -- hand-enumerates the children to clear first. A table missing from that list
-  -- turns demo-item cleanup into an FK constraint error, so this one does not
-  -- rely on being remembered there.
+  -- ON DELETE CASCADE, unlike every other child table here. It dates from when
+  -- purgeDemoItems() in store.js hand-enumerated the children to clear; it now
+  -- finds them with the foreign-key planner (accountPurge.planDeletes, HZ-651),
+  -- so the cascade is kept but no longer needed for that.
   CREATE TABLE IF NOT EXISTS gate_notice (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
@@ -239,9 +238,8 @@ db.exec(`
   -- superseded_at closes the other end of the same window: arrival #2's poll
   -- being live must not leave arrival #1's poll able to decide it.
   --
-  -- ON DELETE CASCADE for the same reason gate_notice has it: purgeDemoItems()
-  -- in store.js hand-enumerates the children it clears, and this must not rely
-  -- on being remembered there.
+  -- ON DELETE CASCADE for the same historical reason as gate_notice; the
+  -- demo purge now finds these rows through the foreign-key planner (HZ-651).
   CREATE TABLE IF NOT EXISTS gate_poll (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
