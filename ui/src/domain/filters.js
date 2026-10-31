@@ -61,13 +61,25 @@ export const FILTERS = [
     noun: 'closed',
     hides: (item) => isClosed(item) && !isAbandoned(item),
   },
+  // HZ-669: show only actionable work. `blocked` is the item view's flag from
+  // dependencyFields (server/src/store.js) — held at the current step by an
+  // open blocker. Items stopped by a rule or paused don't set it, so they stay
+  // visible: they need the owner, which makes them actionable. Off by default.
+  {
+    key: 'blocked',
+    label: 'Blocked by dependencies',
+    noun: 'blocked',
+    hides: (item) => item.blocked === true,
+    offByDefault: true,
+  },
 ]
 
-// Hidden-by-default: every predicate starts active, matching the success
-// metric ("hides items with no progress for 30+ days by default") plus the
-// later scope additions to also hide abandoned (HZ-59) and closed (HZ-143)
-// items by default.
-export const DEFAULT_ACTIVE_FILTERS = FILTERS.map((f) => f.key)
+// Hidden-by-default: every predicate starts active unless it says
+// `offByDefault`, matching the success metric ("hides items with no progress
+// for 30+ days by default") plus the later scope additions to also hide
+// abandoned (HZ-59) and closed (HZ-143) items by default. `blocked` (HZ-669)
+// is opt-in.
+export const DEFAULT_ACTIVE_FILTERS = FILTERS.filter((f) => !f.offByDefault).map((f) => f.key)
 
 // `filters` defaults to the real registry but takes an explicit param so a
 // caller (or a test) can prove the mechanism works with an extended

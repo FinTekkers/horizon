@@ -9,7 +9,7 @@ import path from 'node:path'
 export const REPO_ROOT = path.resolve(import.meta.dirname, '../../..')
 
 // Build output, dependencies and VCS internals are not source.
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '__pycache__', '.pytest_cache', '.venv', 'test-results', 'playwright-report', 'blob-report'])
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'dist-local', '__pycache__', '.pytest_cache', '.venv', 'test-results', 'playwright-report', 'blob-report'])
 // HZ-328: the repo root's tests/ holds generated data (the test inventory, its
 // coverage map, the blocking set), which copies every test's name verbatim. Only
 // that top-level dir — farm/tests/ is source.

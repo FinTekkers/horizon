@@ -10,9 +10,28 @@ import { join } from 'node:path'
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-farm-health-rules-')), 'test.db')
 for (const key of ['FARM_HOME', 'FARM_URL']) delete process.env[key]
 
-const { deriveHealth, UNITS } = await import('../src/farmHealth.js')
+const { deriveHealth, buildServiceRows } = await import('../src/farmHealth.js')
 
-const allUp = () => UNITS.map((u) => ({ name: u.name, up: true }))
+// HZ-595: deploy targets as listTargets() returns them, in rowid order.
+const TARGETS = [
+  { key: 'ui-service', service: 'fintekkers-ui', healthUrl: 'https://www.fintekkers.org/', healthCheckType: 'ssr-asset-check' },
+  { key: 'broker', service: 'fintekkers-broker', healthUrl: 'http://127.0.0.1:8085', healthCheckType: 'grpc-health' },
+  { key: 'market-data-inputs', service: '', healthUrl: 'https://github.com/FinTekkers/market-data-inputs', healthCheckType: 'deploy-log' },
+  { key: 'ledger-models', service: null, healthUrl: 'https://pypi.org/project/ledger-models/', healthCheckType: 'registry-publish' },
+  { key: 'price', service: 'fintekkers-price', healthUrl: 'http://localhost:8083/', healthCheckType: 'grpc-health' },
+  { key: 'shoreward', service: 'shoreward-contact', healthUrl: 'https://shoreward.ai/', healthCheckType: 'json-health' },
+  {
+    key: 'horizon',
+    service: 'horizon-server',
+    healthUrl: 'http://127.0.0.1:3001/api/health',
+    healthCheckType: 'json-health',
+    extraServices: ['horizon-farm', 'nginx'],
+  },
+  // A second target naming a unit already shown adds no row.
+  { key: 'zz-copy', service: 'fintekkers-price', healthUrl: 'http://127.0.0.1:9999/', healthCheckType: 'json-health' },
+]
+
+const allUp = () => buildServiceRows(TARGETS).map((u) => ({ name: u.name, up: true }))
 
 // Green: every service up, slots free, figures normal.
 const normal = () => ({
@@ -59,7 +78,7 @@ test('red wins over amber', () => {
   inputs.services[0].up = false
   const health = deriveHealth(inputs)
   assert.equal(health.state, 'red')
-  assert.match(health.reason, /horizon-server is down/)
+  assert.match(health.reason, /fintekkers-broker is down/)
   assertOneLine(health.reason)
 })
 
@@ -69,22 +88,48 @@ test('the farm-not-running reason names the farm', () => {
   assert.equal(deriveHealth(inputs).reason, 'Farm is not running')
 })
 
-test('UNITS are the 12 services ~/post-migration-check.sh checks', () => {
+test('deploy targets give the service rows: by key, then the box units, each unit once (HZ-595)', () => {
+  const rows = buildServiceRows(TARGETS)
   assert.deepEqual(
-    UNITS.map((u) => u.unit),
+    rows.map((r) => [r.unit, r.name, r.detail]),
     [
-      'horizon-server',
-      'horizon-farm',
-      'nginx',
-      'postgresql@16-main',
-      'fintekkers-ui',
-      'fintekkers-ledger',
-      'fintekkers-valuation',
-      'fintekkers-broker',
-      'fintekkers-price',
-      'whatsapp-bridge',
-      'shoreward-contact',
-      'earlyoom',
+      ['fintekkers-broker', 'fintekkers-broker', 'gRPC :8085'],
+      ['horizon-server', 'horizon-server', ':3001'],
+      ['horizon-farm', 'horizon-farm', null],
+      // nginx came in as horizon's extra service, so the box unit adds no second row.
+      ['nginx', 'nginx', null],
+      ['fintekkers-price', 'fintekkers-price', 'gRPC :8083'],
+      ['shoreward-contact', 'shoreward-contact', null],
+      ['fintekkers-ui', 'fintekkers-ui', null],
+      ['postgresql@16-main', 'postgresql', null],
+      ['whatsapp-bridge', 'whatsapp-bridge', null],
+      ['earlyoom', 'earlyoom', null],
     ],
   )
+  const units = rows.map((r) => r.unit)
+  assert.equal(new Set(units).size, units.length, 'a unit appears twice')
+  assert.ok(!units.includes('') && !units.includes(null), 'a target without a service gave a row')
+})
+
+test('a gRPC health target on a public or unparsable URL shows the label but no port (HZ-595)', () => {
+  const rows = buildServiceRows(
+    [
+      { key: 'a', service: 'svc-a', healthUrl: 'https://grpc.example.com:8443/', healthCheckType: 'grpc-health' },
+      { key: 'b', service: 'svc-b', healthUrl: 'not a url', healthCheckType: 'grpc-health' },
+      { key: 'c', service: 'svc-c', healthUrl: 'http://127.0.0.1/', healthCheckType: 'toString' },
+    ],
+    [],
+  )
+  assert.deepEqual(rows.map((r) => r.detail), ['gRPC', 'gRPC', null])
+})
+
+test('a unit name that systemctl would read as an option gives no row (HZ-595)', () => {
+  const rows = buildServiceRows(
+    [
+      { key: 'a', service: '--host=evil', healthUrl: 'http://127.0.0.1:1/', healthCheckType: 'json-health', extraServices: ['skipped-too'] },
+      { key: 'b', service: 'ok-unit', healthUrl: 'http://127.0.0.1:2/', healthCheckType: 'json-health', extraServices: ['-H', 'a b', 'ok-extra'] },
+    ],
+    [],
+  )
+  assert.deepEqual(rows.map((r) => r.unit), ['ok-unit', 'ok-extra'])
 })

@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspaces
+from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact
 from .task_files import read_launchable_task
@@ -980,6 +980,10 @@ def _run_sweep_loop(stop: threading.Event | None = None) -> None:
 # HZ-604: the most ids POST /api/farm/items/finished takes per call (its schema).
 FINISHED_BATCH = 1000
 
+# HZ-670: the cleanup tick's last count of defunct processes by parent, for
+# /farm/status. None until a tick has run — and always with cleanup off.
+_zombies: dict | None = None
+
 
 def _fetch_finished(ids: list[str]) -> dict[str, str]:
     """HZ-604: POST /api/farm/items/finished — the subset of `ids` the server
@@ -1011,9 +1015,21 @@ def _reap_finished_items() -> None:
     """HZ-604: removes the item and pre-merge worktrees of every item the
     server reports closed or abandoned. An id it leaves out, or any failure
     asking, reaps nothing; a worktree in use is skipped until a later tick.
-    Each outcome is logged with its repo and id."""
+    Each outcome is logged with its repo and id.
+
+    HZ-670: first kills the processes left running in those items' workspaces
+    (farm/workspace_sweep.py) — including ones whose worktree an earlier tick
+    already removed, so their ids join the one finished-items lookup."""
     held = workspaces.repos_with_worktrees()
-    ids = sorted({i for repo_ids in held.values() for i in repo_ids if len(i) <= 64 and premerge._ITEM_RE.match(i)})
+    try:
+        orphans = workspace_sweep.scan()
+    except Exception as exc:
+        orphans = []
+        print(f"farmd: workspace sweep error: {type(exc).__name__}", flush=True)
+    ids = sorted(
+        {i for repo_ids in held.values() for i in repo_ids if len(i) <= 64 and premerge._ITEM_RE.match(i)}
+        | {orphan.item_id for orphan in orphans}
+    )
     if not ids:
         return
     try:
@@ -1021,6 +1037,10 @@ def _reap_finished_items() -> None:
     except Exception as exc:
         print(f"farmd: reap skipped, finished-items lookup failed: {type(exc).__name__}: {exc}", flush=True)
         return
+    try:
+        workspace_sweep.kill(orphans, set(finished), log=lambda line: print(f"farmd: {line}", flush=True))
+    except Exception as exc:
+        print(f"farmd: workspace sweep error: {type(exc).__name__}", flush=True)
     for repo_full, repo_ids in sorted(held.items()):
         for item_id in sorted(repo_ids & finished.keys()):
             for worktree, reap in (("item", workspaces.reap_finished_item), ("premerge", premerge.reap_if_idle)):
@@ -1034,7 +1054,13 @@ def _reap_finished_items() -> None:
 
 def _cleanup_tick() -> None:
     """HZ-604: one clean-up pass. The /tmp sweep runs even when the reap
-    could not ask the server."""
+    could not ask the server. HZ-670: the zombie count goes first, so it is
+    taken even when the reap fails."""
+    global _zombies
+    try:
+        _zombies = workspace_sweep.count_zombies()
+    except Exception as exc:
+        print(f"farmd: zombie count error: {type(exc).__name__}: {exc}", flush=True)
     try:
         _reap_finished_items()
     except Exception as exc:
@@ -1632,6 +1658,8 @@ def farm_status():
         "checks": check_slots.status(),
         # HZ-571: free memory and how many runs wait on it to start.
         "memory": check_slots.memory_status(),
+        # HZ-670: {count, parents: [{ppid, count}], at} from the cleanup tick.
+        "zombies": _zombies,
     }
 
 

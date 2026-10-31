@@ -213,10 +213,12 @@ def ensure(repo_full: str, token: str | None) -> Path:
     return path
 
 
-def _active_item_ids() -> set[str]:
+def _active_item_ids(strict: bool = False) -> set[str]:
     """Item ids with a claimed (in-flight) task file — read straight off the
     same directory farmd's dispatcher and /runs/{id}/log resolution use, so
-    the eviction pool never reaps a worktree a live run is sitting in."""
+    the eviction pool never reaps a worktree a live run is sitting in.
+    strict=True (HZ-670's process sweep) raises on a task file it can't read
+    or parse instead of skipping it, so the caller kills nothing."""
     active_dir = QUEUE_DIR / "runs" / "active"
     ids: set[str] = set()
     if not active_dir.exists():
@@ -226,7 +228,11 @@ def _active_item_ids() -> set[str]:
             task = json.loads(task_path.read_text())
             item_id = task.get("item", {}).get("id")
         except (json.JSONDecodeError, AttributeError):
+            if strict:
+                raise
             continue
+        if strict and item_id is not None and not isinstance(item_id, str):
+            raise ValueError(f"task file {task_path.name} has a non-string item id")
         if item_id:
             ids.add(item_id.lower())
     return ids

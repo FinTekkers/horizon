@@ -79,7 +79,7 @@ db.close()
 (
   cd "$ROOT/ui"
   exec env VITE_PROXY_TARGET="http://127.0.0.1:$SERVER_PORT" \
-    ./node_modules/.bin/vite preview --host 127.0.0.1 --port "$UI_PORT" --strictPort
+    ./node_modules/.bin/vite preview --outDir dist-local --host 127.0.0.1 --port "$UI_PORT" --strictPort
 ) &
 ui=$!
 
