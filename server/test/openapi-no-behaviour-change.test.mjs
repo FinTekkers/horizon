@@ -266,7 +266,8 @@ test('POST /api/projects/:id/repos and /repos/disconnect keep their error bodies
   assert.equal(bad.statusCode, 400)
   assert.match(bad.json().error, /owner\/name/, `the parse error was stripped: ${bad.body}`)
 
-  const gone = await inject({
+  // HZ-659: disconnect is gate-PIN protected now.
+  const gone = await gated({
     method: 'POST',
     url: `/api/projects/${project.id}/repos/disconnect`,
     payload: { repo: 'FinTekkers/nothing-here' },

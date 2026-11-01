@@ -487,10 +487,17 @@ function itemGateAction(rows, itemId, cursor) {
 // `checks` (HZ-245) adds each repo's check commands, (HZ-304) its
 // 'no checks' / 'no deploy' marks and (HZ-425) its default branch; off for
 // consumers with no use for them.
-export function listProjects({ checks = true } = {}) {
-  const projects = db.prepare('SELECT * FROM project ORDER BY name').all()
+//
+// HZ-659: `viewer` is access.viewerFor(request). null (the owner, and every
+// internal caller) lists every project; { projectIds } lists only those, and
+// never `Unlinked items`, which only the owner sees.
+export function listProjects({ checks = true, viewer = null } = {}) {
+  const unlinked = unlinkedProjectId(db)
+  const projects = db
+    .prepare('SELECT * FROM project ORDER BY name')
+    .all()
+    .filter((p) => !viewer || (p.id !== unlinked && viewer.projectIds.has(p.id)))
   const repos = db.prepare('SELECT * FROM project_repo ORDER BY repo').all()
-  const unlinkedId = unlinkedProjectId(db)
   return projects.map((p) => ({
     id: p.id,
     name: p.name,
@@ -498,7 +505,7 @@ export function listProjects({ checks = true } = {}) {
     // HZ-654: the `Unlinked items` project. Admin lists it like any other; the
     // board's project filter and the new-item picker leave it out, because its
     // items read as having no project (itemView's project_id is null).
-    unlinked: p.id === unlinkedId,
+    unlinked: p.id === unlinked,
     autopilot: p.autopilot,
     autopilotEvents: selectAutopilotEvents.all(p.id),
     // HZ-535: the PIN-gated switch for the project's own definitions.
@@ -523,6 +530,16 @@ export function listProjects({ checks = true } = {}) {
           : {}),
       })),
   }))
+}
+
+// HZ-659: the user's own active project — what a member's Activate writes.
+// The global setting.active_project_id stays the owner's.
+export function getUserActiveProject(userId) {
+  return db.prepare('SELECT active_project_id FROM user WHERE id = ?').get(userId)?.active_project_id ?? null
+}
+
+export function setUserActiveProject(userId, projectId) {
+  db.prepare('UPDATE user SET active_project_id = ? WHERE id = ?').run(projectId, userId)
 }
 
 // ---- per-repo check commands (HZ-245) ----
@@ -961,13 +978,17 @@ export function latestValidation(projectId) {
     .prepare('SELECT * FROM project_validation WHERE project_id = ? ORDER BY id DESC LIMIT 1')
     .get(projectId)
   if (!row) return null
+  const checks = JSON.parse(row.checks_json)
   return {
     id: row.id,
     projectId: row.project_id,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     pass: row.pass === 1,
-    checks: JSON.parse(row.checks_json),
+    // HZ-659: a member's run skips the shared-token checks; `partial` says so,
+    // so its pass never reads as a full validation.
+    partial: checks.some((c) => c?.skipped === true),
+    checks,
   }
 }
 
@@ -1441,6 +1462,11 @@ export function itemsComingToDeploy(repo, excludeIds = []) {
 // whose already-filed upstream item now depends on this one.
 export function wouldCycleBetween(id, dependsOnId) {
   return wouldCycle(id, dependsOnId)
+}
+
+// HZ-685: whether `id` depends directly on `dependsOnId`.
+export function hasDependency(id, dependsOnId) {
+  return !!db.prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(id, dependsOnId)
 }
 
 // `blocked` says whether the item is held at its current step. `blockedBy`

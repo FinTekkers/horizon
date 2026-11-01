@@ -28,6 +28,10 @@ matches, the decision is **ping the human**.
    limits: it may narrow, clarify or restore only the named metric or
    guardrail lines in the GitHub issue body, and sends the item back with a
    note. Anything its checks reject is left for the human.
+   - At Approve the high-level design and Review before execution, an
+     outcome or metric with a `Deferred to a follow-up item` line whose
+     follow-up is not filed and linked (nor proposed for this approval to
+     file) means **ping the human**, never approve.
 2. **Approve the high-level design.** Read the options artifact.
    - An open bullet under `## Blockers` means **send back with comment**,
      naming the blocker. A bullet that says `None` or is ticked `[x]` is not open.
@@ -69,6 +73,7 @@ copy. `gate` is a step label, or `any`.
 {
   "rules": [
     { "id": "any.operator_decide", "gate": "any", "decision": "ping_human", "linePrefix": "operator must decide:" },
+    { "id": "any.unfiled_narrowing", "gate": "any", "decision": "ping_human" },
     { "id": "g5.blocker", "gate": "Approve the high-level design", "decision": "send_back", "section": "## Blockers" },
     { "id": "g5.approve", "gate": "Approve the high-level design", "decision": "approve", "section": "## Recommendation",
       "patterns": [

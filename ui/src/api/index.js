@@ -32,6 +32,7 @@ export const {
   saveToken,
   createProject,
   addRepoToProject,
+  listProjects,
   disconnectRepo,
   saveRepoChecks,
   saveRepoMarks,

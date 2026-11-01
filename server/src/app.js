@@ -46,7 +46,7 @@ import * as ownerMail from './ownerMail.js'
 import { mintHumanProof } from './humanProof.js'
 import { testEnvUser } from './testEnvLogin.js'
 import { diffSnapshot, makeBaseline } from './streamDelta.js'
-import { viewSnapshot } from './boardView.js'
+import { memberProject, viewSnapshot } from './boardView.js'
 import { googleAuth } from './googleAuth.js'
 import { isAllowedEmail } from './loginAllowlist.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
@@ -64,6 +64,7 @@ import * as rulesStore from './rulesStore.js'
 import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
 import * as split from './split.js'
+import { narrowingStatus } from './narrowing.js'
 import * as planDraft from './planDraft.js'
 import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
@@ -1195,7 +1196,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/items/:id/plan-draft',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -1306,7 +1307,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/screenshots/approve',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -1394,7 +1395,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/job/stop',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1415,7 +1416,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/job/resume',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -1439,7 +1440,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:repo' },
       schema: {
         body: {
           type: 'object',
@@ -1519,7 +1520,13 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   // The body for a performGateApproval {error, status} result. `premerge`
   // tells the UI the failure is the pre-merge check's — the reason is in the
   // activity log, so it must not open the PR on GitHub as if GitHub refused.
-  const gateFailureBody = (result) => (result.premerge ? { error: result.error, premerge: true } : { error: result.error })
+  // HZ-685: `narrowing` marks a refusal for an unfiled follow-up.
+  const gateFailureBody = (result) =>
+    result.premerge
+      ? { error: result.error, premerge: true }
+      : result.narrowing
+        ? { error: result.error, narrowing: true }
+        : { error: result.error }
 
   // HZ-183: test-merge the PR head into the current base tip and run the
   // repo's checks there (server/src/premerge.js -> farm/premerge.py) before
@@ -1722,6 +1729,22 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     // the pre-merge checks or the merge fail, and the reason is logged to the
     // item's activity.
     const item = store.getItem(id)
+    // HZ-685: an outcome or metric narrowed to "Deferred to a follow-up item"
+    // passes a filing gate only with that follow-up filed and linked (or
+    // proposed, so this approval files it below). Nothing else is checked.
+    if (item && item.cursor === stepIndex && split.FILING_GATES.includes(stepIndex)) {
+      const narrowing = narrowingStatus(item)
+      if (!narrowing.ok) {
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `could not approve: ${narrowing.reason} — file the follow-up and link it, or remove the deferred line; the gate stays open`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+        store.notifyChange()
+        return { error: narrowing.reason, status: 409, narrowing: true }
+      }
+    }
     if (
       item &&
       item.cursor === stepIndex &&
@@ -1824,7 +1847,8 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     // HZ-313: approving the design files the split its plan proposed, before
     // the gate moves — the close-issue pattern above: no filing, no gate.
     // Every approver (browser, WhatsApp, Autopilot) comes through here.
-    if (item && item.cursor === stepIndex && stepIndex === split.DESIGN_GATE_INDEX) {
+    // HZ-685: so does Review before execution, for a same-repo follow-up.
+    if (item && item.cursor === stepIndex && split.FILING_GATES.includes(stepIndex)) {
       const filed = await split.fileApprovedSplit(item, actor)
       if (filed.error) return filed
     }
@@ -1867,7 +1891,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/gates/:stepIndex/approve',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -2050,7 +2074,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/reject',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2094,7 +2118,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/resolve-conflicts',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -2115,7 +2139,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/forward-to-accept',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
@@ -2135,7 +2159,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/feedback',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2167,7 +2191,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/pause',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2191,7 +2215,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/dependencies',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:items' },
       schema: {
         params: idParam,
         body: {
@@ -2210,7 +2234,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/dependencies/remove',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:items' },
       schema: {
         params: idParam,
         body: {
@@ -2234,7 +2258,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/persona',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2261,7 +2285,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/items/:id/steps/:stepIndex/provider',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -2289,7 +2313,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/priority',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2320,7 +2344,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/autopilot-off',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -2358,7 +2382,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/phases/:phase/restart',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
@@ -2395,7 +2419,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/items/:id/abandon',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:item' },
       schema: {
         params: idParam,
         body: {
@@ -3435,6 +3459,15 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     },
   )
 
+  // HZ-659: the projects the caller belongs to — every project for the owner.
+  // A member's rows carry only the fields their board does (boardView.js), so
+  // isolation refs and a repo's Admin settings stay the owner's.
+  fastify.get('/api/projects', { config: { scope: 'filtered' }, schema: { response: { 200: OK_OBJECT } } }, (request) => {
+    const viewer = request.viewer ?? null
+    const projects = store.listProjects({ viewer })
+    return { projects: viewer ? projects.map(memberProject) : projects }
+  })
+
   // Connect a repo to a project; issues from it start syncing immediately.
   fastify.post(
     '/api/projects/:id/repos',
@@ -3553,10 +3586,13 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   // Activate a project. Activate only — it never enables the project (HZ-208).
   // No farm restart and no cancel — `restarting` stays in the body, always false.
+  // HZ-659: `member:project`. Every caller's own user.active_project_id is
+  // set; only the owner's call also moves the global setting the farm and the
+  // board read, so one member never changes another's active project.
   fastify.post(
     '/api/projects/:id/activate',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         params: {
           type: 'object',
@@ -3569,11 +3605,16 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     (request, reply) => {
       const project = store.listProjects().find((p) => p.id === request.params.id)
       if (!project) return reply.code(404).send({ error: 'Project not found' })
-      if (project.id === getActiveProjectId()) {
+      const owner = access.isOwner(request.user?.id)
+      const activeId = owner ? getActiveProjectId() : store.getUserActiveProject(request.user.id)
+      store.setUserActiveProject(request.user.id, project.id)
+      if (project.id === activeId) {
         return { ok: true, alreadyActive: true }
       }
-      setSetting('active_project_id', String(project.id))
-      broadcast()
+      if (owner) {
+        setSetting('active_project_id', String(project.id))
+        broadcast()
+      }
       return { ok: true, restarting: false }
     },
   )
@@ -3585,7 +3626,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/enabled',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3620,7 +3661,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/validate',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3638,8 +3679,10 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       if (!project) return reply.code(404).send({ error: 'Project not found' })
       if (!projectValidate.tryBeginValidation(project.id)) return reply.code(409).send({ error: 'validation_in_progress' })
       const startedAt = new Date().toISOString()
+      // HZ-659: a member's run skips the checks that use the shared token.
+      const tokenChecks = access.isOwner(request.user?.id)
       projectValidate
-        .validateProject(project, { who: actorOf(request), log: fastify.log })
+        .validateProject(project, { who: actorOf(request), log: fastify.log, tokenChecks })
         .catch((err) => fastify.log.error(`project validation crashed: ${projectValidate.scrub(err?.message ?? err)}`))
         .finally(() => {
           projectValidate.endValidation(project.id)
@@ -3652,7 +3695,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/projects/:id/validation',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         params: {
           type: 'object',
@@ -3679,7 +3722,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/autopilot',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3711,7 +3754,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.post(
     '/api/projects/:id/definitions-enabled',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3825,7 +3868,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/projects/:slug/definitions',
-    { config: { scope: 'owner' }, schema: { params: projectSlugParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    { config: { scope: 'member:slug' }, schema: { params: projectSlugParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
     (request, reply) => {
       const view = projectDefinitions.readProjectDefinitions(request.params.slug)
       if (!view) return reply.code(404).send({ error: 'unknown_project' })
@@ -3835,7 +3878,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
 
   fastify.get(
     '/api/projects/:slug/definitions/:file/history',
-    { config: { scope: 'owner' }, schema: { params: projectDefinitionFileParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
+    { config: { scope: 'member:slug' }, schema: { params: projectDefinitionFileParams, response: { 200: OK_OBJECT, 404: ERROR_OBJECT } } },
     (request, reply) => {
       try {
         return { history: projectDefinitions.projectDefinitionHistory(request.params.slug, request.params.file) }
@@ -3848,7 +3891,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:slug/definitions/:file',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:slug' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: projectDefinitionFileParams,
@@ -3887,7 +3930,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:id/step-providers/:stepIndex',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -3961,11 +4004,14 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
     },
   )
 
+  // HZ-659: gate-PIN protected like every other repo write, checked before the
+  // lookup so a bad PIN never touches state.
   fastify.post(
     '/api/projects/:id/repos/disconnect',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
+        security: HUMAN_GATE_SECURITY,
         params: {
           type: 'object',
           required: ['id'],
@@ -3976,10 +4022,11 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
           required: ['repo'],
           properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
         },
-        response: { 200: OK_OBJECT, 404: ERROR_OBJECT },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
       },
     },
     (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
       const result = store.removeRepoFromProject(request.params.id, request.body.repo)
       if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
       broadcast()
@@ -3996,7 +4043,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:id/repos/checks',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -4076,7 +4123,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.put(
     '/api/projects/:id/repos/marks',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         security: HUMAN_GATE_SECURITY,
         params: {
@@ -4113,7 +4160,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
   fastify.get(
     '/api/projects/:id/repos/check-defaults',
     {
-      config: { scope: 'owner' },
+      config: { scope: 'member:project' },
       schema: {
         params: {
           type: 'object',

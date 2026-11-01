@@ -305,6 +305,46 @@ def test_replaying_step9_through_step_agent_carries_the_test_contract(pm_run, fa
     assert not path.exists()  # released once the result was posted
 
 
+# ---- HZ-685: the summary step's same-repo split reaches the server ----
+
+SPLIT = {"title": "measuresForArm", "description": "The deferred half.", "metric": "1. measuresForArm works."}
+
+
+@pytest.mark.parametrize(
+    ("label", "step_index", "kept"),
+    [("Summarize reviews & recommend", 9, True), ("Define how we measure success", 1, False)],
+)
+def test_a_pm_reply_split_rides_through_only_from_the_summary_step(pm_run, farm, label, step_index, kept):
+    path = write_json(
+        QUEUE_DIR / "runs" / "active" / f"71{step_index}.json",
+        make_task(710 + step_index, step_index=step_index, label=label),
+    )
+    reply = {
+        "summary": "recommend",
+        "artifact_md": "## Recommendation\n**PROCEED**",
+        "patch": {"metric": "1. Totals.\nDeferred to a follow-up item (not in scope here): 2. measuresForArm works."},
+        "split": SPLIT,
+    }
+    pm_run.replies = [json.dumps(reply)]
+
+    assert pm_run.main(path) == 0
+
+    posted = pm_run.posted[-1]
+    assert posted["ok"] is True
+    artifacts = posted.get("artifacts") or {}
+    if kept:
+        assert artifacts["split"] == SPLIT
+        assert posted["patch"]["metric"].endswith("2. measuresForArm works.")
+    else:
+        assert "split" not in artifacts
+
+
+def test_a_summary_split_that_is_not_an_object_is_dropped():
+    task = make_task(720)
+    outcome = pm_steps.finish(task, "s", {}, "## Recommendation", [], split=["not", "an", "object"])
+    assert "split" not in outcome.get("artifacts", {})
+
+
 # ---- metric 5: a claimed PM task is never lost and reported exactly once ----
 
 

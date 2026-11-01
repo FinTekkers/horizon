@@ -2,7 +2,7 @@
 // item's project — enabled or disabled — gets the owner's status and body; a
 // non-member gets the guard's 404 { error: 'not_found' } for a real id exactly
 // as for an unknown one, never 403. The owner's responses are pinned to fixed
-// values below. The writes beside these reads stay owner-only.
+// values below.
 
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -153,19 +153,6 @@ test("the owner's responses are unchanged", async () => {
     assert.match(res.body, /RDB-1 in Horizon/, url)
   }
   assert.match((await get('/api/items/RDB-1/artifacts/0', owner)).body, /The artifact\./)
-})
-
-test('the writes beside these reads stay owner-only', async () => {
-  // Valid bodies, so the schema's 400 cannot answer before the guard does.
-  for (const [method, url, payload] of [
-    ['POST', '/api/items/RDA-1/screenshots/approve', { commit: 'abc', all: true }],
-    ['POST', '/api/items/RDA-1/job/stop', undefined],
-    ['POST', '/api/items/RDA-1/job/resume', undefined],
-  ]) {
-    const res = await app.inject({ method, url, headers: { cookie: memberA.cookie, 'x-human-key': memberA.pin }, payload })
-    statuses.push(res.statusCode)
-    assertNotFound(res, `${method} ${url}`)
-  }
 })
 
 test('no response in this file is a 403', () => {

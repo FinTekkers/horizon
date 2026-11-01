@@ -153,6 +153,11 @@ test('js/addedCriteriaLines: every non-blank line is compared, and the Deferred 
   }
 })
 
+// HZ-685
+test('js/hasDeferredLine: a line that is the split-scope Deferred line marks the text narrowed', () => {
+  for (const c of js.hasDeferredLine) assert.equal(binding.hasDeferredLine(c.input), c.expect, c.case)
+})
+
 test('js/FIELDS: the live table is non-empty', () => {
   for (const c of js.FIELDS) assert.ok(binding.FIELDS.length > 0, `FIELDS: ${c.case}`)
 })

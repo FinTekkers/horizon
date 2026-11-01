@@ -22,6 +22,9 @@
 //   - member:item/run/project/slug/repo
 //                        resolves the request to one project and passes only
 //                        if the user is a member of it; else 404
+//   - member:items       (HZ-658) the dependency routes: both params.id and
+//                        body.dependsOnId must resolve to projects the user is
+//                        a member of; else 404
 //   - member:rule        (HZ-660) the /api/rules/:scope/:key routes: a
 //                        `project` or `repo` key resolves to its project; any
 //                        other scope (role, persona, global…) resolves to
@@ -46,6 +49,7 @@ export const USER_SCOPES = Object.freeze([
   'filtered',
   'test',
   'member:item',
+  'member:items',
   'member:run',
   'member:project',
   'member:slug',
@@ -84,13 +88,14 @@ function ownString(source, key) {
   return typeof value === 'string' && value !== '' ? value : null
 }
 
-// The own property `key` as a row id — a non-negative safe integer, or a
-// string of digits — else null.
-function ownRowId(source, key) {
+// HZ-659: the own positive-integer id at `key` — a number (a route schema's
+// `integer` param, which Fastify coerces before the guard runs) or a digit
+// string — else null.
+function ownId(source, key) {
   if (source == null || typeof source !== 'object' || !Object.hasOwn(source, key)) return null
   const value = source[key]
-  if (Number.isSafeInteger(value) && value >= 0) return value
-  return typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : null
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null
+  return typeof value === 'string' && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null
 }
 
 // The project of the connected repo whose rules key is `key` (owner__name),
@@ -116,13 +121,13 @@ export function projectForScope(scope, request) {
     }
     case 'member:run': {
       // The run routes' params schema has already coerced runId to an integer.
-      const runId = ownRowId(request.params, 'runId')
+      const runId = ownId(request.params, 'runId')
       projectId = runId == null ? null : (selectRunProject.get(runId)?.project_id ?? null)
       break
     }
     case 'member:project': {
-      const id = ownString(request.params, 'id')
-      projectId = id == null || !/^\d+$/.test(id) ? null : (selectProject.get(Number(id))?.id ?? null)
+      const id = ownId(request.params, 'id')
+      projectId = id == null ? null : (selectProject.get(id)?.id ?? null)
       break
     }
     case 'member:slug': {
@@ -130,8 +135,16 @@ export function projectForScope(scope, request) {
       break
     }
     case 'member:repo': {
-      const repo = ownString(request.body, 'repo') ?? ownString(request.query, 'repo')
+      // HZ-658: a request with a body resolves from the body alone — the
+      // handler reads body.repo, so a query repo must never stand in for it.
+      const hasBody = request.body != null && typeof request.body === 'object'
+      const repo = hasBody ? ownString(request.body, 'repo') : ownString(request.query, 'repo')
       projectId = repo == null ? null : (selectRepoProject.get(repo)?.project_id ?? null)
+      // HZ-658: a body projectId naming another project resolves to nothing,
+      // so a non-member cannot probe it through the handler's 400. Compared as
+      // the integer the body schema makes it, never through ownString.
+      const named = request.body != null && typeof request.body === 'object' && Object.hasOwn(request.body, 'projectId') ? request.body.projectId : null
+      if (named != null && named !== projectId) projectId = null
       break
     }
     case 'member:rule': {
@@ -156,6 +169,16 @@ export function projectForScope(scope, request) {
       return null
   }
   return projectId == null || hasNoProject(db, projectId) ? null : projectId
+}
+
+// The projects a member:* scope points this request at — every one must be the
+// user's. member:items (HZ-658) is the item and the item it depends on; any
+// other scope is its one project. Only createGuard (and its tests) call this.
+export function projectsForScope(scope, request, resolve = projectForScope) {
+  if (scope === 'member:items') {
+    return [resolve('member:item', request), resolve('member:item', { params: { id: ownString(request.body, 'dependsOnId') } })]
+  }
+  return [resolve(scope, request)]
 }
 
 // What a `filtered` handler filters by: null for the owner (unfiltered), else
@@ -196,8 +219,9 @@ export function createGuard({ resolveProject = projectForScope, memberProjects =
         return
       }
       if (!scope.startsWith('member:')) return reply.code(404).send(NOT_FOUND)
-      const projectId = resolveProject(scope, request)
-      if (projectId == null || !memberProjects(userId).has(projectId)) return reply.code(404).send(NOT_FOUND)
+      const projectIds = projectsForScope(scope, request, resolveProject)
+      const memberOf = memberProjects(userId)
+      if (projectIds.some((projectId) => projectId == null || !memberOf.has(projectId))) return reply.code(404).send(NOT_FOUND)
     } catch (err) {
       request.log.warn({ err }, 'access guard failed closed')
       return reply.code(404).send(NOT_FOUND)
