@@ -15,10 +15,11 @@ import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import FarmHealthPage from './components/FarmHealthPage'
 import NewItemModal from './components/NewItemModal'
+import FirstProjectScreen from './components/FirstProjectScreen'
 import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
-import { ADMIN_HOME, parseAdminPath } from './components/admin/adminRoutes'
+import { ADMIN_HOME, MEMBER_ADMIN_SECTION, adminPath, isOwnerOnlySection, parseAdminPath } from './components/admin/adminRoutes'
 import { gateActionBusy } from './domain/gateAction'
 import { queuedToMerge } from './domain/status'
 import { validPlanId } from './domain/narrowing'
@@ -260,6 +261,10 @@ function AuthenticatedApp({ user, onLogout }) {
   // HZ-547: each Plan's filed items, summed by the server.
   const planProgress = api.getPlanProgress()
   const activeProject = projects.find((p) => p.id === activeProjectId) || null
+  // HZ-661: a non-owner in no project — new, or just removed from their last
+  // one — sets one up instead of seeing an empty board. Never the owner, and
+  // never before the first board frame, when `projects` is not loaded yet.
+  const needsFirstProject = !isAdmin && api.hasSnapshot() && projects.length === 0
   // HZ-208: the project filter is view state only. It is re-validated on every
   // render, so a project disabled live (over SSE) while selected falls back to
   // 'All projects' instead of hiding everything.
@@ -409,6 +414,14 @@ function AuthenticatedApp({ user, onLogout }) {
     setAdminRoute(ADMIN_HOME)
   }, [view, adminRoute])
 
+  // HZ-660: a member's /admin or /admin/<owner-only section> shows Account, and
+  // its URL becomes /admin/account, on first load and on back/forward alike.
+  useEffect(() => {
+    if (view !== 'admin' || isAdmin || adminRoute.unknown || !isOwnerOnlySection(adminRoute.section)) return
+    window.history.replaceState(window.history.state, '', `${PREFIX}${adminPath({ section: MEMBER_ADMIN_SECTION })}`)
+    setAdminRoute({ ...ADMIN_HOME, section: MEMBER_ADMIN_SECTION })
+  }, [view, adminRoute, isAdmin])
+
   // While the board is shown its URL names the chosen Plan, so a reload or a
   // shared link keeps it, and clearing the chip drops it.
   useEffect(() => {
@@ -531,7 +544,9 @@ function AuthenticatedApp({ user, onLogout }) {
         </div>
       )}
 
-      {view === 'board' && (
+      {view === 'board' && needsFirstProject && <FirstProjectScreen onCreate={api.createProject} />}
+
+      {view === 'board' && !needsFirstProject && (
         <Board
           items={visibleItems}
           projects={projects}
@@ -546,14 +561,22 @@ function AuthenticatedApp({ user, onLogout }) {
           isGateBusy={isGateBusy}
           planProgress={planProgress}
           onOpenPlan={openPlanOnBoard}
+          activeProjectName={isAdmin ? null : (activeProject?.name ?? null)}
         />
       )}
 
       {view === 'admin' && (
-        <AdminPage sync={sync} projects={projects} onBack={toBoard} route={adminRoute} onNavigate={openAdmin} />
+        <AdminPage
+          sync={sync}
+          projects={projects}
+          onBack={toBoard}
+          route={adminRoute}
+          onNavigate={openAdmin}
+          isOwner={isAdmin}
+        />
       )}
 
-      {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} />}
+      {view === 'definitions' && <AgentDefinitionsPage onBack={toBoard} isOwner={isAdmin} />}
 
       {view === 'farm-health' &&
         (isAdmin ? (

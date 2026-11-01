@@ -1,0 +1,54 @@
+{
+  "$comment": "HZ-662: pinned cases for a project's isolation rule — server/src/projectIsolation.js isolationRefusal() and farm/farmd.py _isolation_refusal(). `project` is the `project` dict the server sends farmd (null: an item with no project). `refusal` is the exact reason, or null when the farm may run it. server/test/project-isolation.test.mjs and farm/tests/test_farmd_isolation.py each run every `shared` case. `farmPayloadOnly` is farmd's one named exception: a task queued before HZ-662 carries no `isolation` key and reads as internal; the server always sends the key, so only the Python suite runs it.",
+  "shared": [
+    { "id": "no-project", "project": null, "refusal": null },
+    { "id": "internal", "project": { "isolation": "internal", "githubTokenRef": null, "runUser": null }, "refusal": null },
+    { "id": "tenant-complete", "project": { "isolation": "tenant", "githubTokenRef": "$ACME_GITHUB_TOKEN", "runUser": "acme" }, "refusal": null },
+    {
+      "id": "tenant-missing-ref",
+      "project": { "isolation": "tenant", "githubTokenRef": null, "runUser": "acme" },
+      "refusal": "tenant project needs github_token_ref before the farm runs it"
+    },
+    {
+      "id": "tenant-missing-run-user",
+      "project": { "isolation": "tenant", "githubTokenRef": "$ACME_GITHUB_TOKEN", "runUser": null },
+      "refusal": "tenant project needs run_user before the farm runs it"
+    },
+    {
+      "id": "tenant-missing-both",
+      "project": { "isolation": "tenant", "githubTokenRef": null, "runUser": null },
+      "refusal": "tenant project needs github_token_ref and run_user before the farm runs it"
+    },
+    {
+      "id": "tenant-ref-not-a-reference",
+      "project": { "isolation": "tenant", "githubTokenRef": "ghp_abc123", "runUser": "acme" },
+      "refusal": "tenant project needs github_token_ref before the farm runs it"
+    },
+    {
+      "id": "tenant-empty-run-user",
+      "project": { "isolation": "tenant", "githubTokenRef": "$ACME_GITHUB_TOKEN", "runUser": "" },
+      "refusal": "tenant project needs run_user before the farm runs it"
+    },
+    {
+      "id": "unknown-upper-case",
+      "project": { "isolation": "TENANT", "githubTokenRef": "$ACME_GITHUB_TOKEN", "runUser": "acme" },
+      "refusal": "unknown isolation: the farm will not run this project's items"
+    },
+    {
+      "id": "unknown-empty",
+      "project": { "isolation": "", "githubTokenRef": null, "runUser": null },
+      "refusal": "unknown isolation: the farm will not run this project's items"
+    },
+    {
+      "id": "unknown-null",
+      "project": { "isolation": null, "githubTokenRef": null, "runUser": null },
+      "refusal": "unknown isolation: the farm will not run this project's items"
+    },
+    {
+      "id": "unknown-other",
+      "project": { "isolation": "shared", "githubTokenRef": null, "runUser": null },
+      "refusal": "unknown isolation: the farm will not run this project's items"
+    }
+  ],
+  "farmPayloadOnly": [{ "id": "no-isolation-key", "project": { "id": 1, "name": "Horizon" }, "refusal": null }]
+}

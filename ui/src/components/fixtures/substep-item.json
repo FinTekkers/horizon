@@ -9,7 +9,7 @@
   "guardrails": "",
   "issue": 1,
   "repo": "Acme/core",
-  "project_id": 1,
+  "project_id": 2,
   "pr": null,
   "pr_url": null,
   "pr_mergeable": null,
@@ -71,6 +71,7 @@
   "spawned": [],
   "ruleBlock": null,
   "usageWait": null,
+  "isolationRefusal": null,
   "paused_at": null,
   "waiting_since": null,
   "substeps": [

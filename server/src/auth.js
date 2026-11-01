@@ -12,6 +12,7 @@ import crypto from 'node:crypto'
 import { db } from './db.js'
 import { ADMIN_EMAIL, ADMIN_EMAILS, ADMIN_PASSWORD, SESSION_TTL_DAYS } from './config.js'
 import { isAllowedEmail, isEntitled, isGoogleGated } from './loginAllowlist.js'
+import { sqlTime } from './sqlTime.js'
 
 function hashSecret(plain) {
   const salt = crypto.randomBytes(16)
@@ -62,7 +63,11 @@ export const ACCOUNT_STATUSES = Object.freeze(['pending_payment', 'active', 'pas
 // same-value write (no audit row), or { error } with 'invalid_status',
 // 'invalid_who' or 'not_found'. Google sign-in and every request read it
 // through loginAllowlist.isEntitled (HZ-635); nothing there writes it.
-export function setAccountStatus(userId, status, who) {
+// HZ-641: a change to 'cancelled' also stores access_ended_at (accessEndedAt,
+// in sqlTime form, else now), and any other change clears it, so a reactivated
+// user is never purged. A repeated 'cancelled' is unchanged and keeps the
+// original date.
+export function setAccountStatus(userId, status, who, { accessEndedAt = null } = {}) {
   if (typeof status !== 'string' || !ACCOUNT_STATUSES.includes(status)) return { error: 'invalid_status' }
   if (typeof who !== 'string' || who.trim() === '') return { error: 'invalid_who' }
   return db.transaction(() => {
@@ -70,7 +75,8 @@ export function setAccountStatus(userId, status, who) {
     if (!row) return { error: 'not_found' }
     const from = row.account_status
     if (from === status) return { ok: true, from, to: status, unchanged: true }
-    db.prepare('UPDATE user SET account_status = ? WHERE id = ?').run(status, userId)
+    const endedAt = status === 'cancelled' ? (accessEndedAt ?? sqlTime(Date.now())) : null
+    db.prepare('UPDATE user SET account_status = ?, access_ended_at = ? WHERE id = ?').run(status, endedAt, userId)
     db.prepare(
       "INSERT INTO user_event (user_id, kind, old_value, new_value, who) VALUES (?, 'account_status', ?, ?, ?)",
     ).run(userId, from, status, who)
@@ -80,13 +86,17 @@ export function setAccountStatus(userId, status, who) {
 
 // Returns { user, pin } — pin is the plaintext, shown to the caller exactly
 // once; only its hash is ever persisted.
-export function createUser({ email, name, authMethod, googleSub = null }) {
+// HZ-655: `role` is 'owner' or 'member' (user.role, which access.js's route
+// guard reads). It defaults to 'member', like the column, so a caller that
+// forgets it gets the closed answer; only the owner's own paths pass 'owner'.
+export function createUser({ email, name, authMethod, googleSub = null, role = 'member' }) {
+  if (role !== 'owner' && role !== 'member') throw new Error(`invalid role: ${role}`)
   const id = crypto.randomUUID()
   const pin = generatePin()
   db.prepare(
-    `INSERT INTO user (id, email, name, initials, auth_method, google_sub, gate_pin_hash, last_login_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-  ).run(id, email, name, initialsFor(name), authMethod, googleSub, hashSecret(pin))
+    `INSERT INTO user (id, email, name, initials, auth_method, google_sub, gate_pin_hash, last_login_at, role)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+  ).run(id, email, name, initialsFor(name), authMethod, googleSub, hashSecret(pin), role)
   return { user: toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id)), pin }
 }
 
@@ -141,6 +151,29 @@ export function findUserById(id) {
   return toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id))
 }
 
+// HZ-654: disabled_at and credentials_valid_after (membership.js). A disabled
+// user's sign-in, sessions and API tokens are all refused; a credential issued
+// before credentials_valid_after stays refused after the user is enabled again.
+function isDisabled(id) {
+  return db.prepare('SELECT disabled_at FROM user WHERE id = ?').get(id)?.disabled_at != null
+}
+
+// session.created_at is datetime('now') (UTC, no zone); api_token.created_at
+// is an ISO string. Both read as UTC epoch ms.
+function timestampMs(value) {
+  const text = String(value)
+  return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(text) ? text : `${text.replace(' ', 'T')}Z`)
+}
+
+// The raw user row a credential issued at `createdAt` may act as, or null.
+// Raw, not toPublicUser, so callers can also check entitlement (HZ-635).
+function credentialRow(userId, createdAt) {
+  const row = db.prepare('SELECT * FROM user WHERE id = ?').get(userId)
+  if (!row || row.disabled_at != null) return null
+  if (row.credentials_valid_after != null && !(timestampMs(createdAt) >= timestampMs(row.credentials_valid_after))) return null
+  return row
+}
+
 function touchLastLogin(id) {
   db.prepare("UPDATE user SET last_login_at = datetime('now') WHERE id = ?").run(id)
 }
@@ -179,15 +212,19 @@ export class GoogleLinkBlockedError extends Error {}
 // next login, not just new ones. Only an allowlisted email ever gets a new
 // row: a paid customer already has one from sign-up (HZ-633), and that row is
 // linked through the adopt path above. account_status is never written here.
+//
+// HZ-654: a disabled account (returning, or matched by email) is refused too.
 export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
   if (!googleLoginAllowed({ sub, email, emailVerified })) throw new GoogleLinkBlockedError('not_allowed')
   const existing = findUserByGoogleSub(sub)
   if (existing) {
+    if (isDisabled(existing.id)) throw new GoogleLinkBlockedError('disabled')
     touchLastLogin(existing.id)
     return existing
   }
   const sameEmail = findUserByEmailCI(email)
   if (sameEmail) {
+    if (isDisabled(sameEmail.id)) throw new GoogleLinkBlockedError('disabled')
     if (!emailVerified) throw new GoogleLinkBlockedError('unverified_email')
     const { google_sub: existingSub } = db.prepare('SELECT google_sub FROM user WHERE id = ?').get(sameEmail.id)
     if (existingSub) throw new GoogleLinkBlockedError('already_linked')
@@ -195,7 +232,9 @@ export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
     return findUserById(sameEmail.id)
   }
   if (!isAllowedEmail(email)) throw new GoogleLinkBlockedError('not_allowed')
-  return createUser({ email, name, authMethod: 'google', googleSub: sub }).user
+  // HZ-655: a new allowlisted team login is an owner, as every login was
+  // before roles; an adopted sign-up row above keeps its own role.
+  return createUser({ email, name, authMethod: 'google', googleSub: sub, role: 'owner' }).user
 }
 
 // The row a Google profile would sign in to: by sub, then by email
@@ -225,6 +264,7 @@ export function verifyPassword(email, password) {
   if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) return null
   const existing = findUserByEmail(email)
   if (existing) {
+    if (isDisabled(existing.id)) return null
     touchLastLogin(existing.id)
     return existing
   }
@@ -234,16 +274,17 @@ export function verifyPassword(email, password) {
 // The ADMIN_EMAIL account, created on first use. Shared by the password path
 // above and the screenshot test-env login (testEnvLogin.js, HZ-511), which
 // does not count as a login and so leaves last_login_at alone.
-// HZ-563: ADMIN_EMAIL or one of ADMIN_EMAILS, case-insensitively. Gates only
-// Farm health; the Admin page and its routes stay open to every signed-in user.
-export function isAdmin(user) {
-  const email = typeof user?.email === 'string' ? user.email.trim().toLowerCase() : ''
+// HZ-563: ADMIN_EMAIL or one of ADMIN_EMAILS, case-insensitively. HZ-660:
+// this grants no access — owner checks read user.role (access.isOwner). It
+// only stops a sign-up from claiming an admin address (billing.js).
+export function isAdminEmail(value) {
+  const email = typeof value === 'string' ? value.trim().toLowerCase() : ''
   if (!email) return false
   return email === ADMIN_EMAIL.trim().toLowerCase() || ADMIN_EMAILS.has(email)
 }
 
 export function adminUser() {
-  return findUserByEmail(ADMIN_EMAIL) || createUser({ email: ADMIN_EMAIL, name: 'Admin', authMethod: 'password' }).user
+  return findUserByEmail(ADMIN_EMAIL) || createUser({ email: ADMIN_EMAIL, name: 'Admin', authMethod: 'password', role: 'owner' }).user
 }
 
 // ---- sessions ----
@@ -267,7 +308,7 @@ export function getSessionUser(token) {
     db.prepare('DELETE FROM session WHERE id = ?').run(session.id)
     return null
   }
-  const row = userRow(session.user_id)
+  const row = credentialRow(session.user_id, session.created_at)
   if (!row) return null
   if (refusedAccess(row)) {
     // A lookup with a write: a Google user who is no longer entitled (lapsed
@@ -277,10 +318,6 @@ export function getSessionUser(token) {
     return null
   }
   return toPublicUser(row)
-}
-
-function userRow(id) {
-  return db.prepare('SELECT * FROM user WHERE id = ?').get(id) ?? null
 }
 
 // A Google-gated row (loginAllowlist.isGoogleGated) that is neither allowlisted
@@ -355,8 +392,9 @@ export function revokeApiToken(userId, id) {
 }
 
 // Resolves a raw bearer value to { user, tokenId, tokenName }, or null when it
-// is malformed, unknown, revoked, expired, or its user no longer exists or is
-// no longer entitled.
+// is malformed, unknown, revoked, expired, or its user no longer exists, is
+// disabled, was disabled after the token was created (HZ-654), or is no longer
+// entitled (HZ-635).
 export function getTokenAuth(raw) {
   if (typeof raw !== 'string' || !API_TOKEN_SHAPE.test(raw)) return null
   const hash = sha256(raw)
@@ -372,7 +410,7 @@ export function getTokenAuth(raw) {
   // A token whose Google user is no longer entitled is refused, not revoked:
   // unlike a session it was created deliberately, so it works again once the
   // user pays again (HZ-635).
-  const userAccount = userRow(row.user_id)
+  const userAccount = credentialRow(row.user_id, row.created_at)
   if (!userAccount || refusedAccess(userAccount)) return null
   const user = toPublicUser(userAccount)
   // Throttled in SQL rather than in memory: at most one write per token a minute.

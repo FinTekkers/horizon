@@ -43,6 +43,7 @@ import { gateStepIndexes, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../dom
 import { ACTOR, DECISIONS, decide, parsePolicy, redact } from './caretakerRules.js'
 import { MERGEABLE_DEFER_CAP_MS, mergeableProbeState, reviewPassed } from './caretakerMergeable.js'
 import { deploySkipReason } from './deploySkip.js'
+import { FILING_GATES, narrowingStatus } from './narrowing.js'
 
 // Gate 3 is excluded HERE, in code, before any evaluation in any mode: new
 // work never enters without a human.
@@ -91,6 +92,9 @@ export function gatherFacts(item, gateIndex, sourceRun) {
     review: gateIndex === ACCEPT_GATE_INDEX && sourceRun ? (sourceRun.id === item.forwarded_review_run_id ? 'fail' : 'pass') : null,
     releaseTag: item.release_tag ?? null,
     lastGoodTag: null,
+    // HZ-685: at a filing gate, whether a narrowing has its follow-up filed
+    // and linked. null at every other gate, which it never holds back.
+    narrowing: FILING_GATES.includes(gateIndex) ? narrowingStatus({ ...item, cursor: gateIndex }) : null,
   }
   if (gateIndex === RELEASE_GATE) {
     facts.lastGoodTag = bareTag(releaseTarget(item)?.lastTag)

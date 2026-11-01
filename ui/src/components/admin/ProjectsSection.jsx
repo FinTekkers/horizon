@@ -115,47 +115,90 @@ function FixWebhookForm({ projectId, repo, onFixed }) {
   )
 }
 
-function RepoRow({ projectId, repoConn, syncRepos, webhook }) {
+// HZ-659: Disconnect is gate-PIN protected. Same PIN handling as
+// FixWebhookForm: the PIN lives in this form's state only until the request
+// settles and goes out in a header.
+function DisconnectForm({ projectId, repo, onCancel }) {
+  const [pin, setPin] = useState('')
+  const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
-  const state = syncRepos?.find((r) => r.repo === repoConn.repo)
-  const failing = state?.last?.error
-  const lastAt = state?.last?.at ? new Date(state.last.at).toLocaleTimeString() : null
 
-  const disconnect = async () => {
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!pin || busy) return
     setBusy(true)
+    setError(null)
     try {
-      await disconnectRepo(projectId, repoConn.repo)
+      await disconnectRepo(projectId, repo, pin)
+    } catch (err) {
+      setError(err.status === 401 ? 'Wrong PIN' : err.message)
     } finally {
+      setPin('')
       setBusy(false)
     }
   }
 
   return (
-    <div className="repo-row">
-      <span
-        className="admin-status__dot"
-        style={{ background: failing ? 'var(--danger)' : state?.last ? 'var(--success)' : 'var(--neutral-badge)' }}
-      />
-      <a className="repo-row__name" href={`https://github.com/${repoConn.repo}`} target="_blank" rel="noopener noreferrer">
-        {repoConn.repo}
-      </a>
-      <span className="repo-row__prefix">{repoConn.prefix}-*</span>
-      <span className="repo-row__branch">
-        default branch: {repoConn.defaultBranch ?? 'not read yet'}
-      </span>
-      {webhook && <WebhookStatus webhook={webhook} />}
-      <span className="repo-row__status">
-        {failing ? failing : lastAt ? `checked ${lastAt}` : 'waiting for first poll'}
-      </span>
-      <button
-        className="repo-row__disconnect"
-        title="Disconnect this repository (stops sync; existing items keep their history)"
-        onClick={disconnect}
-        disabled={busy}
-      >
-        ✕
-      </button>
-    </div>
+    <>
+      <form className="project-block__add" style={{ marginTop: 0 }} onSubmit={submit}>
+        <input
+          className="field__input"
+          type="password"
+          autoComplete="off"
+          aria-label={`Gate PIN to disconnect ${repo}`}
+          placeholder="Gate PIN to disconnect this repo"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          autoFocus
+        />
+        <button type="submit" className="composer__submit" style={{ background: 'var(--danger)' }} disabled={!pin || busy}>
+          {busy ? 'Disconnecting…' : 'Disconnect'}
+        </button>
+        <button type="button" className="composer__cancel" onClick={onCancel}>
+          Cancel
+        </button>
+      </form>
+      {error && <div className="gh-error">{error}</div>}
+    </>
+  )
+}
+
+function RepoRow({ projectId, repoConn, syncRepos, webhook }) {
+  const [asking, setAsking] = useState(false)
+  const state = syncRepos?.find((r) => r.repo === repoConn.repo)
+  const failing = state?.last?.error
+  const lastAt = state?.last?.at ? new Date(state.last.at).toLocaleTimeString() : null
+
+  return (
+    <>
+      <div className="repo-row">
+        <span
+          className="admin-status__dot"
+          style={{ background: failing ? 'var(--danger)' : state?.last ? 'var(--success)' : 'var(--neutral-badge)' }}
+        />
+        <a className="repo-row__name" href={`https://github.com/${repoConn.repo}`} target="_blank" rel="noopener noreferrer">
+          {repoConn.repo}
+        </a>
+        <span className="repo-row__prefix">{repoConn.prefix}-*</span>
+        <span className="repo-row__branch">
+          default branch: {repoConn.defaultBranch ?? 'not read yet'}
+        </span>
+        {webhook && <WebhookStatus webhook={webhook} />}
+        <span className="repo-row__status">
+          {failing ? failing : lastAt ? `checked ${lastAt}` : 'waiting for first poll'}
+        </span>
+        <button
+          className="repo-row__disconnect"
+          title="Disconnect this repository (stops sync; existing items keep their history)"
+          aria-label={`Disconnect ${repoConn.repo}`}
+          onClick={() => setAsking(true)}
+          disabled={asking}
+        >
+          ✕
+        </button>
+      </div>
+      {asking && <DisconnectForm projectId={projectId} repo={repoConn.repo} onCancel={() => setAsking(false)} />}
+    </>
   )
 }
 

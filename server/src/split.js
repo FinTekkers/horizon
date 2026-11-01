@@ -1,16 +1,21 @@
 // HZ-313: a plan can split an item — file the upstream part of the fix on
 // another repo connected to the same project, and make the item wait for it.
+// HZ-685: or file the deferred part of the item on its OWN repo, as a
+// follow-up that waits for this item (the dependency runs the other way).
 //
 // Two moments, two callers:
 //   - proposeSplit: orchestrator.completeFarmRun, when "Plan options &
-//     trade-offs" finishes. It validates the Ensemble's `split` field, records
-//     one 'proposed' item_split row and shows the split (or the reason it was
-//     refused, as a `## Blockers` bullet) in the artifact gate 5 reads. It
-//     never calls GitHub.
+//     trade-offs" or "Summarize reviews & recommend" finishes. It validates
+//     the reply's `split` field, records one 'proposed' item_split row and
+//     shows the split (or the reason it was refused, as a `## Blockers`
+//     bullet) in the artifact the next gate reads. It never calls GitHub. The
+//     summary step proposes same-repo splits only and never touches a row for
+//     another repo.
 //   - fileApprovedSplit: app.js's performGateApproval, BEFORE approveGate at
-//     "Approve the high-level design" — the close-issue pattern: no filing, no
-//     gate. It files the issue, syncs it in as an item, adds the dependency
-//     with store.addDependency (the existing blocking path) and narrows the
+//     "Approve the high-level design" or "Review before execution" (the
+//     FILING_GATES) — the close-issue pattern: no filing, no gate. It files
+//     the issue, syncs it in as an item, adds the dependency with
+//     store.addDependency (the existing blocking path) and narrows the
 //     source item's scope. It never retries: a failure marks the row 'failed'
 //     and only a re-run plan makes it claimable again.
 //
@@ -25,10 +30,14 @@ import { UI_URL } from './config.js'
 import { redact } from './caretakerRules.js'
 import { isAbandoned, isClosed, requiredStepIndex } from '../../domain/js/lifecycle.js'
 import { fieldByName } from '../../domain/js/fields.js'
+import { DESIGN_GATE_INDEX, EXECUTION_GATE_INDEX, FILING_GATES } from './narrowing.js'
 
 // Resolved here so a renamed step throws at boot instead of turning this off.
 export const OPTIONS_STEP_INDEX = requiredStepIndex('Plan options & trade-offs (pros / cons)')
-export const DESIGN_GATE_INDEX = requiredStepIndex('Approve the high-level design')
+export const DIGEST_STEP_INDEX = requiredStepIndex('Summarize reviews & recommend')
+export { DESIGN_GATE_INDEX, EXECUTION_GATE_INDEX, FILING_GATES }
+// The step whose split each filing gate files.
+const PROPOSING_STEP = { [DESIGN_GATE_INDEX]: OPTIONS_STEP_INDEX, [EXECUTION_GATE_INDEX]: DIGEST_STEP_INDEX }
 
 // The split's text fields and the work-item limit each is held to.
 const FIELD_CAPS = {
@@ -59,8 +68,9 @@ function clean(text, cap) {
 
 // ---- plan time ----
 
-// { split } for a usable split, { refused } (with the message gate 5 shows)
-// for one that must not be filed, or null when the plan proposes none.
+// { split } for a usable split, { refused } (with the message the gate shows)
+// for one that must not be filed, or null when the plan proposes none. A
+// split with no repo, or the item's own, is a same-repo follow-up.
 export function validateSplit(item, raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const split = {}
@@ -69,6 +79,7 @@ export function validateSplit(item, raw) {
   }
   split.title = split.title.replace(/\s+/g, ' ')
   split.repo = Object.hasOwn(raw, 'repo') && typeof raw.repo === 'string' ? raw.repo.trim() : ''
+  if (!split.repo && item.repo) split.repo = item.repo
   const missing = REQUIRED.filter((key) => !split[key])
   const named = split.repo ? `\`${split.repo}\`` : 'the proposed repo'
   if (missing.length > 0) {
@@ -76,20 +87,23 @@ export function validateSplit(item, raw) {
   }
 
   const sameRepo = (repo) => repo.toLowerCase() === split.repo.toLowerCase()
-  if (item.repo && sameRepo(item.repo)) {
-    return { refused: `${named} is this item’s own repo — a split must name another repo. Nothing will be filed.` }
-  }
   const connected = store.listRepos().find((r) => sameRepo(r.repo) && item.project_id != null && r.project_id === item.project_id)
   if (!connected) {
     return { refused: `${named} is **not connected** to this item’s project — nothing will be filed.` }
   }
   split.repo = connected.repo
+  split.sameRepo = !!item.repo && sameRepo(item.repo)
 
   const filed = selectRows.all(item.id).find((r) => r.target_repo === split.repo && r.status === 'filed')
-  if (filed?.target_item_id && store.wouldCycleBetween(item.id, filed.target_item_id)) {
-    return {
-      refused: `${filed.target_item_id} on \`${split.repo}\` already depends on ${item.id} — depending on it would create a cycle. Nothing will be filed.`,
-    }
+  // A same-repo follow-up depends on this item, not the other way round.
+  const cycle = split.sameRepo
+    ? filed?.target_item_id && store.wouldCycleBetween(filed.target_item_id, item.id)
+    : filed?.target_item_id && store.wouldCycleBetween(item.id, filed.target_item_id)
+  if (cycle) {
+    const why = split.sameRepo
+      ? `${item.id} already depends on ${filed.target_item_id}`
+      : `${filed.target_item_id} on \`${split.repo}\` already depends on ${item.id}`
+    return { refused: `${why} — depending on it would create a cycle. Nothing will be filed.` }
   }
   return { split, filed: filed || null }
 }
@@ -99,10 +113,13 @@ export function validateSplit(item, raw) {
 // 'filing' row is reset to 'proposed' — a re-run plan is the only retry. A
 // 'filed' row is never touched. target_issue is kept, so a re-filing reuses
 // an issue an earlier attempt already created.
-export function recordProposedSplit(itemId, runId, split) {
+// HZ-685: `ownRepo` (the summary step) limits all of that to the item's own
+// repo's row; a row for any other repo is left exactly as it is.
+export function recordProposedSplit(itemId, runId, split, { ownRepo = null } = {}) {
   db.transaction(() => {
     for (const row of selectRows.all(itemId)) {
       if (row.status === 'filed' || inflight.has(row.id)) continue
+      if (ownRepo != null && row.target_repo.toLowerCase() !== ownRepo.toLowerCase()) continue
       if (split && row.target_repo === split.repo) {
         db.prepare(
           "UPDATE item_split SET status = 'proposed', payload_json = ?, plan_run_id = ?, error = NULL, updated_at = datetime('now') WHERE id = ?",
@@ -129,16 +146,17 @@ const quote = (text) =>
     .map((l) => `> ${l}`)
     .join('\n')
 
-export function renderSplitSection(split, filed = null) {
+export function renderSplitSection(split, filed = null, gateLabel = 'gate 5') {
   if (filed) {
     return [
       '## Proposed split',
       `**Already filed** as ${filed.target_item_id} (\`${filed.target_repo}#${filed.target_issue}\`). Nothing new will be filed.`,
     ].join('\n')
   }
+  const waits = split.sameRepo ? 'That follow-up then waits for this item.' : 'This item then waits for that item to close.'
   const lines = [
     '## Proposed split',
-    `**Horizon files this on \`${split.repo}\` when gate 5 is approved.** This item then waits for that item to close.`,
+    `**Horizon files this on \`${split.repo}\` when ${gateLabel} is approved.** ${waits}`,
     '',
     `- **Target repo:** \`${split.repo}\``,
     `- **Title:** ${split.title}`,
@@ -169,21 +187,28 @@ export function addBlocker(artifactMd, bullet) {
 }
 
 // The one plan-time entry point: validate, record, render. Returns the
-// artifact gate 5 shows.
-export function proposeSplit(item, runId, raw, artifactMd) {
+// artifact the next gate shows. At the summary step only a same-repo split is
+// taken, and only the item's own-repo row is touched (HZ-685).
+export function proposeSplit(item, runId, stepIndex, raw, artifactMd) {
+  const digest = stepIndex === DIGEST_STEP_INDEX
+  const opts = digest ? { ownRepo: item.repo || '' } : {}
+  const gateLabel = digest ? '“Review before execution”' : 'gate 5'
   const result = validateSplit(item, raw)
   if (!result) {
-    recordProposedSplit(item.id, runId, null)
+    recordProposedSplit(item.id, runId, null, opts)
     return artifactMd
   }
+  if (!result.refused && digest && !result.split.sameRepo) {
+    result.refused = `\`${result.split.repo}\` is another repo — at this step a split may only file a follow-up on this item’s own repo. Nothing will be filed.`
+  }
   if (result.refused) {
-    recordProposedSplit(item.id, runId, null)
+    recordProposedSplit(item.id, runId, null, opts)
     return addBlocker(artifactMd, result.refused)
   }
   // A 'filed' row for this repo is left as it is; the call still drops
-  // proposals for other repos.
-  recordProposedSplit(item.id, runId, result.split)
-  return [artifactMd, renderSplitSection(result.split, result.filed)].filter(Boolean).join('\n\n')
+  // proposals for other repos (at the options step).
+  recordProposedSplit(item.id, runId, result.split, opts)
+  return [artifactMd, renderSplitSection(result.split, result.filed, gateLabel)].filter(Boolean).join('\n\n')
 }
 
 // ---- approval time ----
@@ -193,11 +218,12 @@ export const splitMarker = (sourceId) => `<!-- horizon-split-of: ${sourceId} -->
 // The new issue's body after its Outcome / Success metric / Guardrails: a
 // back-link and the marker. Its own heading, so parseIssueBody keeps both out
 // of the new item's guardrails.
-function splitBodySuffix(item) {
+function splitBodySuffix(item, sameRepo) {
   const issueRef = item.repo && item.issue != null ? ` · \`${item.repo}#${item.issue}\`` : ''
+  const waits = sameRepo ? 'this follow-up waits for that item to close.' : 'that item waits for this one to close.'
   return [
     '## Split from',
-    `[${item.id}](${UI_URL}/${item.id.toLowerCase()})${issueRef} — that item waits for this one to close.`,
+    `[${item.id}](${UI_URL}/${item.id.toLowerCase()})${issueRef} — ${waits}`,
     '',
     splitMarker(item.id),
   ].join('\n')
@@ -219,7 +245,9 @@ function claim(item) {
   const rows = selectRows.all(item.id)
   const busy = rows.find((r) => r.status === 'filing' && inflight.has(r.id))
   if (busy) return { error: `split filing is already in progress for ${item.id}`, status: 409 }
-  const row = rows.find((r) => r.status === 'proposed') || rows.find((r) => r.status === 'filing')
+  // HZ-685: Review before execution files only the item's own-repo follow-up.
+  const own = (r) => item.cursor !== EXECUTION_GATE_INDEX || (!!item.repo && r.target_repo.toLowerCase() === item.repo.toLowerCase())
+  const row = rows.find((r) => own(r) && r.status === 'proposed') || rows.find((r) => own(r) && r.status === 'filing')
   if (row) {
     // A 'filing' row here was left by a restart; it is taken over, and
     // findSplitIssue below keeps that from filing a second issue.
@@ -232,8 +260,8 @@ function claim(item) {
   }
   // This plan's split already failed: approving would let the item run
   // without its upstream part. Only a re-run plan retries.
-  const latestPlan = selectLatestPlanRun.get(item.id, OPTIONS_STEP_INDEX).id
-  const failed = rows.find((r) => r.status === 'failed' && r.plan_run_id === latestPlan)
+  const latestPlan = selectLatestPlanRun.get(item.id, PROPOSING_STEP[item.cursor]).id
+  const failed = rows.find((r) => own(r) && r.status === 'failed' && r.plan_run_id === latestPlan)
   if (failed) {
     return {
       error: `split filing failed earlier (${failed.error}) — send the design back to re-run the plan, which is the only retry`,
@@ -249,7 +277,7 @@ function canApprove(item) {
   return (
     !isClosed(item) &&
     !isAbandoned(item) &&
-    item.cursor === DESIGN_GATE_INDEX &&
+    FILING_GATES.includes(item.cursor) &&
     store.isProjectEnabled(item.project_id)
   )
 }
@@ -263,6 +291,10 @@ export async function fileApprovedSplit(item, actor = 'You') {
   if (claimed.skipped) return { ok: true, skipped: true }
   const row = claimed.row
   const split = JSON.parse(row.payload_json)
+  const sameRepo = !!item.repo && row.target_repo.toLowerCase() === item.repo.toLowerCase()
+  // The edge as [item, dependsOn]: a same-repo follow-up waits for this item;
+  // this item waits for an upstream part.
+  const edge = (targetId) => (sameRepo ? [targetId, item.id] : [item.id, targetId])
   let dependencyAdded = null
   try {
     const repoRow = store.findRepo(row.target_repo)
@@ -278,7 +310,7 @@ export async function fileApprovedSplit(item, actor = 'You') {
         metric: split.metric,
         guardrails: split.guardrails,
         priority: item.priority,
-        bodySuffix: splitBodySuffix(item),
+        bodySuffix: splitBodySuffix(item, sameRepo),
       })
     }
     setTargetIssue.run(ghIssue.number, row.id)
@@ -289,8 +321,8 @@ export async function fileApprovedSplit(item, actor = 'You') {
     const target = store.findItemByIssue(row.target_repo, ghIssue.number)
     if (!target) throw new Error(`${row.target_repo}#${ghIssue.number} did not sync in as an item`)
 
-    const dep = store.addDependency(item.id, target.id, 'Horizon')
-    if (dep.error) throw new Error(dep.message || `could not add the dependency on ${target.id} (${dep.error})`)
+    const dep = store.addDependency(...edge(target.id), 'Horizon')
+    if (dep.error) throw new Error(dep.message || `could not add the dependency between ${item.id} and ${target.id} (${dep.error})`)
     dependencyAdded = dep.unchanged ? null : target.id
 
     // GitHub first: upsertFromGithub reads desc from the issue body, so a
@@ -305,7 +337,9 @@ export async function fileApprovedSplit(item, actor = 'You') {
     finish.run('filed', null, target.id, row.id)
     store.addEvent(item.id, {
       who: 'Horizon',
-      text: `filed the upstream part of this plan as ${target.id} (\`${row.target_repo}#${ghIssue.number}\`) on ${actor}’s approval — this item waits for it to close`,
+      text: sameRepo
+        ? `filed the deferred part of this item as ${target.id} (\`${row.target_repo}#${ghIssue.number}\`) on ${actor}’s approval — it waits for this item`
+        : `filed the upstream part of this plan as ${target.id} (\`${row.target_repo}#${ghIssue.number}\`) on ${actor}’s approval — this item waits for it to close`,
       color: '#0E6E74',
       initials: 'HZ',
     })
@@ -313,7 +347,7 @@ export async function fileApprovedSplit(item, actor = 'You') {
     return { ok: true, target: target.id }
   } catch (err) {
     // No half-made split: a dependency this attempt added is taken back.
-    if (dependencyAdded) store.removeDependency(item.id, dependencyAdded, 'Horizon')
+    if (dependencyAdded) store.removeDependency(...edge(dependencyAdded), 'Horizon')
     const message = redact(err.message)
     finish.run('failed', message, null, row.id)
     store.addEvent(item.id, {

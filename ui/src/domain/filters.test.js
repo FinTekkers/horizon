@@ -41,8 +41,8 @@ test('stale, abandoned and closed are all active by default', () => {
 // registry's shape — and its order, which Board.jsx renders chips in — is
 // what's worth pinning. See the extensibility test at the bottom for the
 // other half: visibleItems/hiddenCounts needed no edit to support it.
-test('FILTERS is exactly three entries, in chip order', () => {
-  expect(FILTERS.map((f) => f.key)).toEqual(['stale', 'abandoned', 'closed'])
+test('FILTERS is exactly four entries, in chip order', () => {
+  expect(FILTERS.map((f) => f.key)).toEqual(['stale', 'abandoned', 'closed', 'blocked'])
 })
 
 // ---- staleness boundary ----
@@ -86,7 +86,7 @@ test('an abandoned item is hidden by default and reappears once the abandoned fi
 test('an item that is both stale and abandoned counts in both buckets, and toggling only one filter off leaves it hidden', () => {
   const both = item('BOTH', { last_activity_at: daysAgo(60), abandoned_at: daysAgo(60) })
   const counts = hiddenCounts([both], DEFAULT_ACTIVE_FILTERS, NOW)
-  expect(counts).toEqual({ stale: 1, abandoned: 1, closed: 0 })
+  expect(counts).toEqual({ stale: 1, abandoned: 1, closed: 0, blocked: 0 })
 
   // Turning off just 'stale' — it's still caught by 'abandoned'.
   expect(visibleItems([both], ['abandoned'], NOW)).toEqual([])
@@ -98,8 +98,8 @@ test('an item that is both stale and abandoned counts in both buckets, and toggl
 
 test('hiddenCounts is 0 for a filter that is not active, even though items still match its predicate', () => {
   const stale = item('S', { last_activity_at: daysAgo(45) })
-  expect(hiddenCounts([stale], [], NOW)).toEqual({ stale: 0, abandoned: 0, closed: 0 })
-  expect(matchCounts([stale], NOW)).toEqual({ stale: 1, abandoned: 0, closed: 0 })
+  expect(hiddenCounts([stale], [], NOW)).toEqual({ stale: 0, abandoned: 0, closed: 0, blocked: 0 })
+  expect(matchCounts([stale], NOW)).toEqual({ stale: 1, abandoned: 0, closed: 0, blocked: 0 })
 })
 
 // ---- closed (HZ-143) ----
@@ -128,7 +128,7 @@ test('an in-progress item is not hidden by the closed filter', () => {
 
 test('the closed filter counts what it hides, so the header can say "Hiding N closed"', () => {
   const items = [item('C1', { cursor: CLOSED_CURSOR }), item('C2', { cursor: CLOSED_CURSOR }), item('WIP')]
-  expect(hiddenCounts(items, DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 0, abandoned: 0, closed: 2 })
+  expect(hiddenCounts(items, DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 0, abandoned: 0, closed: 2, blocked: 0 })
 })
 
 // Closed and abandoned stay independent predicates: an item abandoned at the
@@ -136,14 +136,14 @@ test('the closed filter counts what it hides, so the header can say "Hiding N cl
 // the precedence in domain/status.js's itemStatus.
 test('an item abandoned at the final gate counts as abandoned only, never closed', () => {
   const abandonedAtEnd = item('AF', { cursor: CLOSED_CURSOR, abandoned_at: daysAgo(1) })
-  expect(matchCounts([abandonedAtEnd], NOW)).toEqual({ stale: 0, abandoned: 1, closed: 0 })
+  expect(matchCounts([abandonedAtEnd], NOW)).toEqual({ stale: 0, abandoned: 1, closed: 0, blocked: 0 })
   expect(hiddenCounts([abandonedAtEnd], ['closed'], NOW).closed).toBe(0)
   expect(visibleItems([abandonedAtEnd], ['closed'], NOW)).toEqual([abandonedAtEnd])
 })
 
 test('an item both closed and stale counts in both buckets and needs both filters off to reappear', () => {
   const both = item('CS', { cursor: CLOSED_CURSOR, last_activity_at: daysAgo(45) })
-  expect(hiddenCounts([both], DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 1, abandoned: 0, closed: 1 })
+  expect(hiddenCounts([both], DEFAULT_ACTIVE_FILTERS, NOW)).toEqual({ stale: 1, abandoned: 0, closed: 1, blocked: 0 })
   expect(visibleItems([both], ['stale'], NOW)).toEqual([])
   expect(visibleItems([both], ['closed'], NOW)).toEqual([])
   expect(visibleItems([both], [], NOW)).toEqual([both])
@@ -173,6 +173,7 @@ test('a persona-style predicate can be appended without touching visibleItems or
     stale: 0,
     abandoned: 0,
     closed: 0,
+    blocked: 0,
     'persona:eng': 1,
   })
 })
@@ -184,4 +185,33 @@ test('a blocked item with recent activity stays visible under the default filter
   const items = [blocked, item('B-2')]
   expect(visibleItems(items, DEFAULT_ACTIVE_FILTERS, NOW).map((it) => it.id)).toEqual(['B-1', 'B-2'])
   expect(Object.values(hiddenCounts(items, DEFAULT_ACTIVE_FILTERS, NOW)).every((n) => n === 0)).toBe(true)
+})
+
+// ---- blocked by dependencies (HZ-669) ----
+
+test('DEFAULT_ACTIVE_FILTERS still holds only stale, abandoned and closed: blocked is off by default', () => {
+  expect([...DEFAULT_ACTIVE_FILTERS].sort()).toEqual(['abandoned', 'closed', 'stale'])
+  expect(DEFAULT_ACTIVE_FILTERS).not.toContain('blocked')
+})
+
+test('with the blocked filter on, a blocked item is hidden and an unblocked one shown; with it off, both show', () => {
+  const blocked = item('BL', { blocked: true })
+  const free = item('FR', { blocked: false })
+  expect(visibleItems([blocked, free], ['blocked'], NOW).map((it) => it.id)).toEqual(['FR'])
+  expect(visibleItems([blocked, free], [], NOW).map((it) => it.id)).toEqual(['BL', 'FR'])
+})
+
+test('the blocked filter counts what it hides, so the header can say "Hiding N blocked"', () => {
+  const items = [item('BL1', { blocked: true }), item('BL2', { blocked: true }), item('FR', { blocked: false })]
+  expect(hiddenCounts(items, ['blocked'], NOW).blocked).toBe(2)
+  expect(hiddenCounts(items, [], NOW).blocked).toBe(0)
+  expect(matchCounts(items, NOW).blocked).toBe(2)
+})
+
+// Guardrail: rule-blocked and paused items need the owner, so they are
+// actionable and stay visible — only `blocked` (an open blocker) hides.
+test('rule-blocked and paused items stay visible with the blocked filter on', () => {
+  const ruleBlocked = item('RB', { blocked: false, ruleBlock: { needs: ['owner'] } })
+  const paused = item('PA', { blocked: false, paused: true })
+  expect(visibleItems([ruleBlocked, paused], ['blocked'], NOW).map((it) => it.id)).toEqual(['RB', 'PA'])
 })

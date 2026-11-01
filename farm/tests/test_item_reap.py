@@ -8,16 +8,21 @@ use. The server is stubbed at the httpx layer, answering ids in upper case
 as the real one does, so the case join to the lowercased dirs is exercised.
 """
 
+import functools
 import os
+import re
+import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from farm import config as farm_config
-from farm import farmd, premerge, workspaces
+from farm import farmd, premerge, procfs, run_reaper, workspace_sweep, workspaces
 
 
 def git(cwd, *args):
@@ -55,6 +60,12 @@ def add_worktrees(repo_full, item_id):
 def listed_worktrees(repo_full):
     porcelain = git(workspaces.hub_path(repo_full), "worktree", "list", "--porcelain")
     return {Path(line[len("worktree "):]).resolve() for line in porcelain.splitlines() if line.startswith("worktree ")}
+
+
+@pytest.fixture(autouse=True)
+def keep_zombie_count(monkeypatch):
+    """A test that ticks sets farmd._zombies; put it back after."""
+    monkeypatch.setattr(farmd, "_zombies", farmd._zombies)
 
 
 @pytest.fixture
@@ -226,6 +237,8 @@ def test_no_answer_reaps_nothing_but_the_tmp_sweep_still_runs(farm, monkeypatch,
 def test_cleanup_is_off_in_the_suite_so_importing_farmd_starts_no_loop(monkeypatch):
     assert farm_config.CLEANUP_INTERVAL_S == 0
     assert not [t for t in threading.enumerate() if t.name == "farmd-cleanup"]
+    # HZ-670: with cleanup off no zombie count is ever taken.
+    assert farmd._zombies is None
     monkeypatch.setattr(farmd, "_cleanup_tick", lambda: pytest.fail("ticked while switched off"))
 
     farmd._cleanup_loop()
@@ -241,3 +254,62 @@ def test_cleanup_loop_ticks_once_at_start_then_stops(monkeypatch):
     farmd._cleanup_loop(stop)
 
     assert ticks == [1]
+
+
+# ---- HZ-670: the tick kills leftover processes and counts zombies ----
+
+
+def test_a_real_leftover_process_in_a_finished_items_workspace_is_killed(farm, monkeypatch, capsys):
+    ws = workspaces.WORKSPACES_DIR / "acme__demo__items" / "hz-1"
+    ws.mkdir(parents=True)
+    monkeypatch.setattr(workspaces, "_active_item_ids", lambda strict=False: set())
+    monkeypatch.setattr(run_reaper.config, "RUNS_DIR", farm / "runs")
+    monkeypatch.setattr(farmd.workspace_sweep, "scan", functools.partial(workspace_sweep.scan, min_age_s=-1))
+    monkeypatch.setattr(farmd.workspace_sweep, "kill", functools.partial(workspace_sweep.kill, grace_s=2.0))
+    serve(monkeypatch, finished={"HZ-1": "closed"})
+    # setsid and no tty: an orphan as a killed run leaves it, not a person's shell.
+    child = subprocess.Popen(["setsid", "sleep", "600"], cwd=ws, stdin=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 5
+        while procfs.link(child.pid, "exe") in (None, "/usr/bin/setsid") and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+        farmd._reap_finished_items()
+
+        assert child.wait(timeout=5) == -signal.SIGTERM
+        lines = [line for line in capsys.readouterr().out.splitlines() if "workspace sweep" in line]
+        assert len(lines) == 1
+        assert re.fullmatch(rf"farmd: workspace sweep: killed pid={child.pid} item=hz-1 age=\d+s", lines[0])
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+
+def test_the_tick_counts_zombies_and_runs_the_sweep(monkeypatch):
+    zombies = {"count": 1, "parents": [{"ppid": 77, "count": 1}], "at": "2026-10-30T12:00:00+00:00"}
+    orphan = workspace_sweep.Orphan(pid=4321, start=1, repo_full="acme/demo", item_id="hz-1", age_s=7200.0)
+    calls = []
+    monkeypatch.setattr(farmd.workspace_sweep, "count_zombies", lambda: calls.append("count_zombies") or zombies)
+    monkeypatch.setattr(farmd.workspace_sweep, "scan", lambda: calls.append("scan") or [orphan])
+    monkeypatch.setattr(
+        farmd.workspace_sweep, "kill", lambda orphans, finished, **kw: calls.append(("kill", orphans, finished)) or []
+    )
+    monkeypatch.setattr(workspaces, "repos_with_worktrees", lambda: {})
+    monkeypatch.setattr(farmd.tmp_sweep, "sweep", lambda **kw: [])
+    serve(monkeypatch, finished={"HZ-1": "closed"})
+
+    farmd._cleanup_tick()
+
+    assert calls == ["count_zombies", "scan", ("kill", [orphan], {"hz-1"})]
+    assert farmd._zombies == zombies
+    assert TestClient(farmd.app).get("/farm/status").json()["zombies"] == zombies
+
+
+def test_a_failed_finished_lookup_kills_nothing(farm, monkeypatch):
+    orphan = workspace_sweep.Orphan(pid=4321, start=1, repo_full="acme/demo", item_id="hz-1", age_s=7200.0)
+    monkeypatch.setattr(farmd.workspace_sweep, "scan", lambda: [orphan])
+    monkeypatch.setattr(farmd.workspace_sweep, "kill", lambda *a, **kw: pytest.fail("killed without an answer"))
+    serve(monkeypatch, status=500)
+
+    farmd._reap_finished_items()

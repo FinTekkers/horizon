@@ -42,10 +42,10 @@ function fail(message) {
   process.exit(1)
 }
 
-// HZ-622: this also deletes ui/dist/.build-key, the root-base key
-// ensure-build.mjs writes inside dist, so this /horizon/ build can never pass
-// as a reusable root-base build. Keep it before the build below
-// (ensure-build.test.mjs pins the order).
+// HZ-622: a clean production build. Since HZ-671, ensure-build.mjs keeps its
+// root-base key in ui/dist-local, not here, so this wipe no longer guards that
+// key; it stays so no stale file survives into the /horizon/ build. Keep it
+// before the build below (ensure-build.test.mjs pins the order).
 rmSync(DIST, { recursive: true, force: true })
 
 const started = process.hrtime.bigint()

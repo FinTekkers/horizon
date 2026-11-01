@@ -75,6 +75,9 @@ export const EVALUATORS = {
     const [line] = operatorDecideLines(rule, facts.artifact)
     return line ? { reason: `ruling needed: ${line.slice(rule.linePrefix.length).trim()}` } : null
   },
+  // HZ-685: never approve an outcome or metric narrowed to a follow-up that
+  // is not filed and linked.
+  'any.unfiled_narrowing': (rule, facts) => (facts.narrowing && !facts.narrowing.ok ? { reason: facts.narrowing.reason } : null),
   'g5.blocker': (rule, facts) => {
     const open = bullets(section(facts.artifact, rule.section)).filter(
       (b) => !/^\[x\]/i.test(b) && !/^none\b/i.test(firstSentence(b)),

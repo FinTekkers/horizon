@@ -45,6 +45,9 @@ globalThis.fetch = async (url, opts) => {
   if (path === '/farm/status') return reply(200, { status: 'running' })
   if (path === '/runs/alive') return reply(200, { alive: Object.fromEntries((body.run_ids || []).map((id) => [id, true])) })
   if (path === '/steps/run' && !body.item.repo) return reply(400, { error: 'missing item.repo' })
+  if (path === '/steps/run' && body.item.id === 'HZ-TENANT') {
+    return reply(400, { error: 'tenant_launch_refused', reason: 'tenant workspace not supported yet' })
+  }
   return reply(200, { ok: true })
 }
 
@@ -78,8 +81,9 @@ test('createProject: the first project is enabled, later ones start disabled, an
   const fintekkers = store.createProject('FinTekkers')
   assert.equal(enabledOf(horizon.id), 1)
   assert.equal(enabledOf(fintekkers.id), 0)
+  // HZ-654: the demo seed's `Unlinked items` project is never the first project.
   const listed = Object.fromEntries(store.listProjects().map((p) => [p.name, p.enabled]))
-  assert.deepEqual(listed, { FinTekkers: false, Horizon: true })
+  assert.deepEqual(listed, { FinTekkers: false, Horizon: true, 'Unlinked items': true })
 })
 
 const projectId = (name) => store.listProjects().find((p) => p.name === name).id
@@ -110,9 +114,11 @@ test('with Horizon and FinTekkers enabled, one dispatch pass posts both ready it
   assert.equal(calls.filter((c) => c.path === '/farm/start').length, 1)
   const [h] = posted('HZ-1')
   const [f] = posted('US-1')
-  assert.deepEqual(h.body.project, { id: horizon, name: 'Horizon' })
+  // HZ-662: today's payload plus the project's isolation fields.
+  const internal = { isolation: 'internal', githubTokenRef: null, runUser: null }
+  assert.deepEqual(h.body.project, { id: horizon, name: 'Horizon', ...internal })
   assert.equal(h.body.item.repo, 'FinTekkers/horizon')
-  assert.deepEqual(f.body.project, { id: FINTEKKERS(), name: 'FinTekkers' })
+  assert.deepEqual(f.body.project, { id: FINTEKKERS(), name: 'FinTekkers', ...internal })
   assert.equal(f.body.item.repo, 'FinTekkers/ui-service')
   assert.equal(settings.getSetting('farm_project_id'), String(horizon), 'the farm is pinned to the project it started for')
 })
@@ -231,6 +237,23 @@ test('a repo-less item refused by the farm fails as "missing repo", not as an un
   assert.equal(posted('HZ-NOREPO').length, 1)
   const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all('HZ-NOREPO').map((e) => e.text)
   assert.ok(!events.some((t) => /unreachable|transient/.test(t)), events.join(' | '))
+})
+
+// ---- HZ-663 guardrail 3: a refused tenant launch says why, in words ----
+
+test('a tenant item the farm refuses as tenant_launch_refused fails with readable text, not the generic fallback', async () => {
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, repo, project_id) VALUES ('HZ-TENANT', 'Tenant', 'Medium', 0, 'FinTekkers/horizon', ?)").run(HORIZON())
+  orchestrator.kick('HZ-TENANT')
+  await until(() => posted('HZ-TENANT').length && !activeRun('HZ-TENANT'), 'the refused run to fail')
+  await wait(20)
+
+  const runs = db.prepare('SELECT output FROM step_run WHERE item_id = ?').all('HZ-TENANT')
+  assert.equal(runs.length, 1, 'no auto-retry')
+  assert.equal(
+    runs[0].output,
+    "FAILED: the farm refused this tenant item: it needs the project's own token and test-env file, and tenant runs are not switched on yet",
+  )
+  assert.doesNotMatch(runs[0].output, /the farm refused the job|could not hand the step/)
 })
 
 // ---- metric 6: the farm project falls back to the board's project ----

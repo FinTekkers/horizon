@@ -25,6 +25,9 @@ let deployBlock = null
 // (server/src/planProgress.js). Sent on connect and when it changes.
 let planProgress = []
 let sync = { tokenConfigured: false, repos: [] }
+// HZ-661: whether a whole board has arrived yet — until then an empty
+// `projects` means "not loaded", not "in no project".
+let snapshotSeen = false
 let started = false
 const listeners = new Set()
 
@@ -35,6 +38,7 @@ function emit() {
 function applySnapshot(data) {
   applyTop(data)
   items = data.items || []
+  snapshotSeen = true
   emit()
 }
 
@@ -81,10 +85,12 @@ export function getRestartSent(id) {
 // The board's top-level keys from a snapshot or a delta's `top`. A key the
 // payload leaves out keeps its last value.
 function applyTop(data) {
-  repoUrl = data.repoUrl || repoUrl
+  // HZ-661: null is news for these two as well — a member's active project
+  // can go (removed from it) or move to a project with no repo.
+  if ('repoUrl' in data) repoUrl = data.repoUrl
   sync = data.sync || sync
   projects = data.projects || projects
-  activeProjectId = data.activeProjectId ?? activeProjectId
+  if ('activeProjectId' in data) activeProjectId = data.activeProjectId
   farm = data.farm || farm
   durationEstimates = data.durationEstimates ?? durationEstimates
   // HZ-360: null is news here (the block ended), so it is copied as given.
@@ -462,6 +468,11 @@ export function getActiveProjectId() {
   return activeProjectId
 }
 
+// HZ-661: true once the first board snapshot has been applied.
+export function hasSnapshot() {
+  return snapshotSeen
+}
+
 export function getFarm() {
   return farm
 }
@@ -628,8 +639,27 @@ export function addRepoToProject(projectId, repo) {
   return postJson(`/projects/${projectId}/repos`, { repo })
 }
 
-export function disconnectRepo(projectId, repo) {
-  return postJson(`/projects/${projectId}/repos/disconnect`, { repo })
+// HZ-659: the projects the signed-in user belongs to (every project for the
+// owner).
+export function listProjects() {
+  return getJson('/projects')
+}
+
+// HZ-659: gate-PIN protected like fixRepoWebhook — the PIN goes only in the
+// x-human-key header, never cached or put in the URL.
+export async function disconnectRepo(projectId, repo, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/disconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ repo }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
 }
 
 // HZ-244: each connected repo's GitHub webhook status, read live by the server.
@@ -680,8 +710,10 @@ export function jobLogUrl(itemId) {
   return `${API_BASE}/items/${itemId}/job/log?format=text`
 }
 
+// A member with no active repo (HZ-661) gets null, never a "null/issues/…" link.
 export function issueUrl(item) {
-  return item.repo ? `https://github.com/${item.repo}/issues/${item.issue}` : `${repoUrl}/issues/${item.issue}`
+  if (item.repo) return `https://github.com/${item.repo}/issues/${item.issue}`
+  return repoUrl ? `${repoUrl}/issues/${item.issue}` : null
 }
 
 export function issueLabel(item) {

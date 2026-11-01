@@ -3,6 +3,8 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
+import { ensureUnlinkedProject, runMembershipMigration } from './membership.js'
+import { ADMIN_EMAIL, ADMIN_EMAILS } from './config.js'
 import { ACCEPT_GATE_INDEX, endIndex, gateStepIndexes, IMPLEMENT_ITEM_KIND, ITEM_KINDS, itemKindOf } from '../../domain/js/lifecycle.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
 
@@ -190,11 +192,10 @@ db.exec(`
   -- later sends the state the item was in when it reached the gate rather than
   -- whatever has drifted since.
   --
-  -- ON DELETE CASCADE, unlike every other child table here: purgeDemoItems()
-  -- in store.js deletes work_item rows directly with foreign_keys = ON, and it
-  -- hand-enumerates the children to clear first. A table missing from that list
-  -- turns demo-item cleanup into an FK constraint error, so this one does not
-  -- rely on being remembered there.
+  -- ON DELETE CASCADE, unlike every other child table here. It dates from when
+  -- purgeDemoItems() in store.js hand-enumerated the children to clear; it now
+  -- finds them with the foreign-key planner (accountPurge.planDeletes, HZ-651),
+  -- so the cascade is kept but no longer needed for that.
   CREATE TABLE IF NOT EXISTS gate_notice (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
@@ -237,9 +238,8 @@ db.exec(`
   -- superseded_at closes the other end of the same window: arrival #2's poll
   -- being live must not leave arrival #1's poll able to decide it.
   --
-  -- ON DELETE CASCADE for the same reason gate_notice has it: purgeDemoItems()
-  -- in store.js hand-enumerates the children it clears, and this must not rely
-  -- on being remembered there.
+  -- ON DELETE CASCADE for the same historical reason as gate_notice; the
+  -- demo purge now finds these rows through the foreign-key planner (HZ-651).
   CREATE TABLE IF NOT EXISTS gate_poll (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     item_id         TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
@@ -940,6 +940,22 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   db.exec('ALTER TABLE project ADD COLUMN definitions_enabled INTEGER NOT NULL DEFAULT 1 CHECK (definitions_enabled IN (0, 1))')
 }
 
+// HZ-662: a project's isolation (server/src/projectIsolation.js). Additive:
+// every existing project reads 'internal' and runs exactly as before. A tenant
+// project's github_token_ref is a $NAME reference, never a token value — the
+// GLOB is a coarse backstop for the exact check in code — and its run_user is
+// nullable until the owner sets it.
+{
+  const projectColumns = new Set(db.prepare('PRAGMA table_info(project)').all().map((column) => column.name))
+  if (!projectColumns.has('isolation')) {
+    db.exec("ALTER TABLE project ADD COLUMN isolation TEXT NOT NULL DEFAULT 'internal' CHECK (isolation IN ('internal','tenant'))")
+  }
+  if (!projectColumns.has('github_token_ref')) {
+    db.exec("ALTER TABLE project ADD COLUMN github_token_ref TEXT CHECK (github_token_ref IS NULL OR github_token_ref GLOB '$[A-Z_]*')")
+  }
+  if (!projectColumns.has('run_user')) db.exec('ALTER TABLE project ADD COLUMN run_user TEXT')
+}
+
 // HZ-537: one row per project and knowledge doc — a PDF a project persona
 // names as a source, extracted by the farm (farm/knowledge.py) into
 // ~/.horizon/knowledge/<slug>/, outside every repo. source_sha is the git blob
@@ -1017,8 +1033,8 @@ db.exec(`
 
 // HZ-632: every account carries a billing state. user_event is the user-level
 // audit trail, like project_event above (event.item_id is NOT NULL). user_id has
-// no FK on purpose: reconcileGoogleUsers deletes user rows, and the audit
-// history must outlive them. account_status is written only by
+// no FK on purpose: the audit history must outlive any user row (until HZ-654,
+// reconcileGoogleUsers deleted them). account_status is written only by
 // auth.setAccountStatus after this migration. Additive and once-only: the
 // column check is repeated inside the immediate transaction, so a racing boot
 // skips it, and the backfill to 'active' runs only on the boot that adds the
@@ -1073,6 +1089,33 @@ if (!userColumnNames().has('owner_notified_at')) {
     if (!userColumnNames().has('owner_notified_at')) db.exec('ALTER TABLE user ADD COLUMN owner_notified_at TEXT')
   }).immediate()
 }
+// HZ-641: when a cancelled customer's access ended (sqlTime form), written
+// only by auth.setAccountStatus; accountPurge.js deletes their data 30 days
+// later. Additive and once-only, like the blocks above. Users cancelled before
+// this column existed get the time of their last change to 'cancelled'; every
+// other row stays NULL, and a NULL date is never purged.
+if (!userColumnNames().has('access_ended_at')) {
+  db.transaction(() => {
+    if (userColumnNames().has('access_ended_at')) return
+    db.exec('ALTER TABLE user ADD COLUMN access_ended_at TEXT')
+    const cancelled = db.prepare('SELECT id FROM user WHERE account_status = ?').all('cancelled')
+    const backfill = db.prepare(
+      `UPDATE user SET access_ended_at = (
+         SELECT MAX(e.created_at) FROM user_event e
+          WHERE e.user_id = user.id AND e.kind = 'account_status' AND e.new_value = 'cancelled')
+        WHERE id = ?`,
+    )
+    for (const { id } of cancelled) backfill.run(id)
+  }).immediate()
+}
+// HZ-641: ids of work items the account purge deleted, so store.finishedItems
+// still reports them and farmd reaps their worktrees. Ids only, no content.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS purged_item (
+    id        TEXT PRIMARY KEY,
+    purged_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`)
 
 // HZ-544: item_off = 1 marks an evaluation recorded as 'shadow' because
 // Autopilot was off for the ITEM (its `autopilot-off` label) in an 'on'
@@ -1550,6 +1593,12 @@ if (!shiftedReview) {
   })()
 }
 
+// HZ-654: project membership, roles and per-user active project, and every
+// work_item onto a project (membership.js). Once-only and one transaction;
+// placed after every user and work_item column add, before the allowlist
+// reconcile (which writes user.disabled_at) and the demo seed.
+runMembershipMigration(db, { adminEmails: new Set([ADMIN_EMAIL.trim().toLowerCase(), ...ADMIN_EMAILS]) })
+
 // Enforce the login allowlist immediately, every boot (HZ-36) — unlike the
 // one-time-gated shifts above, this must re-run every time the process
 // starts: ops can edit ALLOWED_LOGIN_EMAILS while the server is down and
@@ -1561,11 +1610,15 @@ reconcileGoogleUsers(db)
 const count = db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
 const syncConfigured = db.prepare('SELECT COUNT(*) AS n FROM project_repo').get().n > 0
 if (count === 0 && !syncConfigured) {
+  // HZ-654: demo items carry the `Unlinked items` project, never NULL.
   const insert = db.prepare(`
-    INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, cursor)
-    VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @issue, @cursor)
+    INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, cursor, project_id)
+    VALUES (@id, @title, @priority, @desc, @metric, @guardrails, @issue, @cursor, @project_id)
   `)
-  const seedAll = db.transaction((items) => items.forEach((it) => insert.run(it)))
+  const seedAll = db.transaction((items) => {
+    const project_id = ensureUnlinkedProject(db)
+    items.forEach((it) => insert.run({ ...it, project_id }))
+  })
   seedAll(SEED_ITEMS)
 }
 

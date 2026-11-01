@@ -55,6 +55,8 @@
 //   GMAIL_USER / GMAIL_APP_PASSWORD  the contact form's Gmail account, used for the owner's
 //                          "new active customer" email (HZ-634). Unset ⇒ no email is sent
 //   OWNER_NOTIFY_EMAIL     recipient of that email (default GMAIL_USER)
+//   ACCOUNT_PURGE          "on" arms the daily purge of cancelled customers' data (HZ-641).
+//                          Unset/anything else means it never runs
 
 import { ITEM_KINDS, agentStepIndexes, isServerStep } from '../../domain/js/lifecycle.js'
 
@@ -258,6 +260,12 @@ export function stripeConfig() {
     // HZ-634: the webhook signing secret. Only ever handed to createHmac.
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || null,
   }
+}
+// HZ-641: ACCOUNT_PURGE=on arms the daily purge of cancelled customers' data
+// (accountPurge.js). Anything else, or unset, leaves it off: the owner turns it
+// on once the nightly database backup (HZ-650) runs. Read per call.
+export function accountPurgeEnabled() {
+  return process.env.ACCOUNT_PURGE === 'on'
 }
 // HZ-634: the owner's "new active customer" email goes out through the same
 // Gmail account as shoreward's contact form (GMAIL_USER / GMAIL_APP_PASSWORD,

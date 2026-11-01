@@ -1,5 +1,7 @@
 // HZ-563 metric 3 and guardrails 1-3: GET /api/admin/farm-health.
-//   - a signed-in non-admin gets 403 admin_required;
+//   - a signed-in non-owner gets 404 not_found (HZ-660: owner is user.role,
+//     and an ADMIN_EMAILS address alone grants nothing); an owner's API token
+//     still gets in;
 //   - an admin's body holds only allowlisted keys, at every depth, and a fake
 //     secret planted in every host, service, farmd and deploy input is absent;
 //   - the collector only runs `systemctl is-active …` (no sudo) and GETs
@@ -14,7 +16,8 @@ import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-farm-health-endpoint-')), 'test.db')
-for (const key of ['FARM_HOME', 'FARM_URL', 'ADMIN_EMAIL', 'ADMIN_EMAILS']) delete process.env[key]
+for (const key of ['FARM_HOME', 'FARM_URL', 'ADMIN_EMAIL']) delete process.env[key]
+process.env.ADMIN_EMAILS = 'listed-member@example.com'
 
 const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
@@ -30,11 +33,20 @@ const NOW = Date.parse('2026-10-23T10:00:00Z')
 const routes = []
 const app = buildApp({ logger: false, onRoute: (r) => routes.push(r) })
 const admin = loginFixtureUser(auth, config, { email: config.ADMIN_EMAIL, name: 'Admin' })
-const member = loginFixtureUser(auth, config, { email: 'member@example.com', name: 'Member' })
+const member = loginFixtureUser(auth, config, { email: 'listed-member@example.com', name: 'Member', role: 'member' })
 
 db.prepare(
   "INSERT INTO deploy_batch (target, repo, status, window_closes_at, tag, live_at, failure) VALUES ('horizon', 'FinTekkers/horizon', 'done', ?, 'v2026.10.23-1', ?, ?)",
 ).run(sqlTime(NOW), sqlTime(NOW - 20 * 60 * 1000), `restart failed: token=${SECRET}`)
+
+// HZ-595: the deploy targets the collector reads, as listTargets() returns them.
+const TARGETS = [
+  { key: 'horizon', service: 'horizon-server', healthUrl: 'http://127.0.0.1:3001/api/health', healthCheckType: 'json-health', extraServices: ['horizon-farm'] },
+  { key: 'broker', service: 'fintekkers-broker', healthUrl: 'http://127.0.0.1:8085', healthCheckType: 'grpc-health' },
+  { key: 'ui-service', service: 'fintekkers-ui', healthUrl: `https://www.fintekkers.org/${SECRET}`, healthCheckType: 'ssr-asset-check' },
+  { key: 'market-data-inputs', service: '', healthUrl: 'https://github.com/FinTekkers/market-data-inputs', healthCheckType: 'deploy-log' },
+]
+const UNITS = farmHealth.buildServiceRows(TARGETS)
 
 const calls = { exec: [], farm: [] }
 const deps = {
@@ -48,7 +60,7 @@ const deps = {
   statfs: async () => ({ bsize: 4096, blocks: 1000, bfree: 400, bavail: 380 }),
   execProbe: async (cmd, args, timeoutMs) => {
     calls.exec.push({ cmd, args, timeoutMs })
-    const lines = farmHealth.UNITS.map(() => 'active')
+    const lines = UNITS.map(() => 'active')
     return { code: 0, stdout: `${lines.join('\n')}\n${SECRET}\n`, timedOut: false }
   },
   farmFetch: async (path, body, opts) => {
@@ -73,6 +85,16 @@ const deps = {
           { slot: 0, pid: 4344, run_id: '5', item_id: 'HZ-1', caller: 'step_agent', label: 'test slot, line 2', since: NOW / 1000 - 120, env: SECRET },
         ],
       },
+      // HZ-670: only count, ppid and at reach the body — never a name or command line.
+      zombies: {
+        count: 3,
+        cmdline: SECRET,
+        parents: [
+          { ppid: 1234, count: 2, comm: SECRET },
+          { ppid: 88, count: 1, cmdline: SECRET },
+        ],
+        at: '2026-10-23T09:00:00+00:00',
+      },
     }
   },
   farmConfigured: () => true,
@@ -86,6 +108,7 @@ const deps = {
   ],
   liveDeploysSince: (since) => store.listLiveDeploysSince(since),
   serverBootedAt: () => new Date(NOW - 30 * 60 * 1000).toISOString(),
+  deployTargets: () => TARGETS,
 }
 
 const get = (cookie) => app.inject({ method: 'GET', url: '/api/admin/farm-health', headers: { cookie } })
@@ -96,11 +119,19 @@ test('before the first collection, an admin gets 503 farm_health_warming', async
   assert.equal(res.json().error, 'farm_health_warming')
 })
 
-test('a signed-in non-admin gets 403 admin_required', async () => {
+test('a signed-in non-owner on ADMIN_EMAILS gets 404 not_found', async () => {
   await farmHealth.refreshFarmHealth(deps)
   const res = await get(member.cookie)
-  assert.equal(res.statusCode, 403)
-  assert.equal(res.json().error, 'admin_required')
+  assert.equal(res.statusCode, 404)
+  assert.deepEqual(res.json(), { error: 'not_found' })
+})
+
+test("the owner's API token still reaches farm-health (HZ-660 metric 4)", async () => {
+  await farmHealth.refreshFarmHealth(deps)
+  const { token } = auth.createApiToken(admin.user.id, 'farm-health-script')
+  const res = await app.inject({ method: 'GET', url: '/api/admin/farm-health', headers: { authorization: `Bearer ${token}` } })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().farm.status, 'running')
 })
 
 test('/api/auth/me says who is an admin', async () => {
@@ -122,6 +153,7 @@ const SHAPE = {
   running: [ROW],
   waiting: [ROW],
   checkHolders: [HOLDER],
+  zombies: { count: null, parents: [['count', 'ppid']], at: null },
   box: [
     'diskAvailBytes',
     'diskTotalBytes',
@@ -175,7 +207,19 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
   assertShape(body, SHAPE, 'body')
   // The figures still came through, and each row is the right kind.
   assert.equal(body.farm.status, 'running')
-  assert.equal(body.services.length, 12)
+  assert.deepEqual(
+    body.services.map((s) => [s.name, s.detail]),
+    [
+      ['fintekkers-broker', 'gRPC :8085'],
+      ['horizon-server', ':3001'],
+      ['horizon-farm', null],
+      ['fintekkers-ui', null],
+      ['nginx', null],
+      ['postgresql', null],
+      ['whatsapp-bridge', null],
+      ['earlyoom', null],
+    ],
+  )
   assert.ok(body.services.every((s) => s.up))
   assert.equal(body.box.machine, null, 'an unexpected machine string is dropped, not echoed')
   assert.deepEqual(body.box.load, [2.1, 1.8, 1.5])
@@ -196,6 +240,14 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
     body.recent.map((e) => e.kind),
     ['deploy', 'server_restart', 'farm_restart'],
   )
+  assert.deepEqual(body.zombies, {
+    count: 3,
+    parents: [
+      { ppid: 1234, count: 2 },
+      { ppid: 88, count: 1 },
+    ],
+    at: '2026-10-23T09:00:00+00:00',
+  })
   assert.equal(body.state, 'amber')
 })
 
@@ -294,7 +346,7 @@ test('the collector only runs systemctl is-active and only GETs /farm/status', a
   for (const c of calls.exec) {
     assert.equal(c.cmd, 'systemctl')
     assert.equal(c.args[0], 'is-active')
-    assert.deepEqual(c.args.slice(1), farmHealth.UNITS.map((u) => u.unit))
+    assert.deepEqual(c.args.slice(1), UNITS.map((u) => u.unit))
     assert.ok(!c.args.includes('sudo'))
     assert.ok(c.timeoutMs > 0, 'systemctl runs under a timeout')
   }
@@ -322,11 +374,12 @@ test('a farmd that cannot be reached reads as not running, and the page goes red
   assert.equal(snapshot.state, 'red')
   assert.equal(snapshot.reason, 'Farm is not running')
   assert.ok(!JSON.stringify(farmHealth.toPublic(snapshot)).includes(SECRET))
+  assert.equal(farmHealth.toPublic(snapshot).zombies, null, 'no farmd, no zombie count')
 })
 
 test('a failed horizon-farm launcher unit reads up while farmd reports running', async () => {
   const execProbe = async () => {
-    const lines = farmHealth.UNITS.map((u) => (u.unit === 'horizon-farm' ? 'failed' : 'active'))
+    const lines = UNITS.map((u) => (u.unit === 'horizon-farm' ? 'failed' : 'active'))
     return { code: 3, stdout: `${lines.join('\n')}\n`, timedOut: false }
   }
   const snapshot = await farmHealth.collectOnce({ ...deps, execProbe })
@@ -372,4 +425,17 @@ test('an armed loop collects nothing until the cache is read, then collects off 
   } finally {
     stop()
   }
+})
+
+test('a deploy_target read that fails still checks the box units (HZ-595)', async () => {
+  const snapshot = await farmHealth.collectOnce({
+    ...deps,
+    deployTargets: () => {
+      throw new Error('no such table')
+    },
+  })
+  assert.deepEqual(
+    snapshot.services.map((s) => s.unit),
+    farmHealth.BOX_UNITS.map((u) => u.unit),
+  )
 })

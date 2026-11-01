@@ -171,6 +171,11 @@ export function getActiveProjectId() {
   return null
 }
 
+// The mock board is local, so it is always loaded (HZ-661).
+export function hasSnapshot() {
+  return true
+}
+
 export function getFarm() {
   return { status: 'running' }
 }
@@ -221,6 +226,10 @@ export async function createProject() {
 
 export async function addRepoToProject() {
   throw new Error('Projects are not available in mock mode')
+}
+
+export async function listProjects() {
+  return { projects: [] }
 }
 
 export async function disconnectRepo() {
@@ -590,6 +599,15 @@ export async function getFarmHealth() {
       { slot: 0, itemId: 'HZ-101', runId: '901', caller: 'implement', label: 'test slot, line 2', startedAt: ago(250) },
       { slot: 1, itemId: 'HZ-102', runId: '902', caller: 'pre-merge', label: 'e2e slot', startedAt: ago(95) },
     ],
+    // HZ-670: defunct processes by the parent pid holding them.
+    zombies: {
+      count: 3,
+      parents: [
+        { ppid: 1234, count: 2 },
+        { ppid: 88, count: 1 },
+      ],
+      at: ago(600),
+    },
     box: {
       load: [2.1, 1.8, 1.5],
       vcpus: 4,

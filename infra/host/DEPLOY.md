@@ -364,6 +364,18 @@ state is held by the kernel, not by the files' contents.
 farmd runs one clean-up tick at boot and then every
 `FARM_CLEANUP_INTERVAL_S` (default `3600`). Each tick:
 
+- counts defunct (zombie) processes by the parent pid holding them — only
+  that parent can reap them — for Farm health's Box card (HZ-670);
+- kills this user's processes whose cwd or exe is inside a finished item's
+  `<repo>__items/<item>` (a deleted one included) and that started over an
+  hour ago, unless the item has a live run, an active lease or a held item
+  lock (`farm/workspace_sweep.py`, HZ-670). SIGTERM by pid, then SIGKILL
+  after 5 s only if the pid still has the same start time and workspace.
+  Spared: farmd and its ancestors, a process holding a tty whose session
+  leader lives, and a parent of anything not being killed. If the run state
+  can't be read, nothing is killed. Each kill is logged as
+  `farmd: workspace sweep: killed pid=<pid> item=<item> age=<s>s` — never a
+  command line;
 - asks the server (`POST /api/farm/items/finished`) which items it holds
   worktrees for are closed or abandoned, and removes their
   `<repo>__items/<item>` and `<repo>__premerge/<item>`. A worktree in a live
@@ -545,6 +557,85 @@ off, and creates one if there is none. Don't edit that configuration in the
 dashboard: one with another feature turned on is ignored and a new one is
 made. The portal returns to `$HORIZON_UI_URL/billing`.
 
+## 2k. Nightly DB backup (HZ-650)
+
+`horizon-db-backup.timer` runs `infra/host/horizon-db-backup.sh` as `ubuntu`
+every night at 03:30 UTC. The script:
+
+1. aborts with `ERROR disk` if free space on the backup filesystem (or the
+   live DB's, when it is a different device) is below 2 × (`horizon.db` +
+   `horizon.db-wal`);
+2. takes an online copy with `sqlite3 -readonly … ".backup …"` into
+   `~/backups/horizon-db/.staging/`. The server keeps running; nothing is
+   written into `server/data/`;
+3. sets the copy to `journal_mode=DELETE` and runs `PRAGMA integrity_check`,
+   which must print exactly `ok`;
+4. compresses it with `zstd` and tests the archive;
+5. renames it into `~/backups/horizon-db/nightly/horizon-YYYYMMDDTHHMMSSZ.db.zst`;
+6. only then deletes all but the newest 7 files in `nightly/`. Manual copies
+   anywhere else in `~/backups/horizon-db/` are never touched.
+
+Any failure logs `horizon-db-backup: ERROR <stage>: <detail>` to the journal,
+exits non-zero, and leaves every existing copy in place. Success logs
+`horizon-db-backup: OK <file> <bytes>`. Deploys ship script fixes, but they do
+not install unit files, so the units are installed once by hand.
+
+### Install (caretaker, with the owner's OK)
+
+```bash
+# 1. The unit must back up the same file the server uses. If this prints a
+#    HORIZON_DB line, edit Environment=HORIZON_DB= in the .service to match.
+sudo grep HORIZON_DB /etc/horizon/server.env
+# 2. Install and enable the timer.
+sudo cp /opt/horizon/infra/host/horizon-db-backup.service /opt/horizon/infra/host/horizon-db-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now horizon-db-backup.timer
+# 3. First run by hand, before HZ-641 (automatic deletion) lands. Time it.
+time sudo systemctl start horizon-db-backup
+```
+
+If the first run takes more than about 30 minutes (the `.backup` copy restarts
+whenever the server writes between steps), file a follow-up to switch to
+`VACUUM INTO`; that needs the owner's OK.
+
+### Verify
+
+```bash
+systemctl list-timers horizon-db-backup.timer   # NEXT shows 03:30 UTC
+journalctl -u horizon-db-backup -n 20           # an "OK <file> <bytes>" line
+ls -l ~/backups/horizon-db/nightly/
+# Freshness: a failed night only shows in the journal, so check this too.
+find ~/backups/horizon-db/nightly -name 'horizon-*.db.zst' -mmin -1560 | grep -q . \
+  && echo "fresh: newest copy is under 26 h old" || echo "STALE: no copy in the last 26 h"
+```
+
+### Restore
+
+Rehearse first: decompress the newest copy to a scratch path and check it.
+This never touches the live DB.
+
+<!-- restore-rehearsal -->
+```bash
+COPY="$(ls -1 ~/backups/horizon-db/nightly/horizon-*.db.zst | tail -n 1)"
+RESTORE="${TMPDIR:-/tmp}/horizon-restore-check.db"
+zstd -d -q -f "$COPY" -o "$RESTORE"
+sqlite3 "$RESTORE" 'PRAGMA integrity_check;'   # must print: ok
+```
+
+To cut over to the restored copy (owner's call; the server is down meanwhile):
+
+1. `sudo systemctl stop horizon-server`
+2. Move the live files aside, never delete them (a missing `-wal`/`-shm` is
+   fine): `ASIDE=~/backups/horizon-db/pre-restore-$(date -u +%Y%m%dT%H%M%SZ) && mkdir -p "$ASIDE" && mv /opt/horizon/server/data/horizon.db* "$ASIDE/"`
+3. `cp "$RESTORE" /opt/horizon/server/data/horizon.db && chown ubuntu:ubuntu /opt/horizon/server/data/horizon.db`
+4. `sudo systemctl start horizon-server`, then check
+   `curl -s http://127.0.0.1:3001/api/health` returns `{"ok":true,…}`.
+
+### Off switch
+
+`sudo systemctl disable --now horizon-db-backup.timer`. Existing copies in
+`nightly/` stay. Tested by `infra/host/test/horizon-db-backup.test.sh`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must
@@ -610,10 +701,12 @@ infra/host/deploy-horizon.sh "$(cat ~/.horizon/horizon/last-good-tag | cut -d: -
 ```
 
 **Before rolling Horizon back past HZ-635, copy the database aside.** An
-older build's boot-time `reconcileGoogleUsers` deletes every `google`-auth
-user row that is not on `ALLOWED_LOGIN_EMAILS`, paid or not. HZ-635's version
-keeps a paid user's row. So a rollback can wipe paid users and their
-ownership. Copy the database first:
+older build only lets `ALLOWED_LOGIN_EMAILS` sign in with Google, so paying
+customers lose access. Its boot-time `reconcileGoogleUsers` also acts on every
+`google`-auth row that is not on the list, paid or not. A build from HZ-654 on
+disables the row, and its sessions stay refused after a later re-enable. A
+build from before HZ-654 deletes the row, which can wipe a paid user and what
+they own. Copy the database first:
 
 ```
 sqlite3 /opt/horizon/server/data/horizon.db ".backup '/opt/horizon/server/data/horizon.db.pre-rollback'"
@@ -1061,6 +1154,14 @@ service target.
   `RESTORE OK`, `RESTORE FAILED (<stage>)` or `RESTORE SKIPPED`, and then
   `DEPLOY FAILED: <install|test> (tag=...)` as the last line.
   `last-good-tag` never moves to the failed tag.
+- **Output (HZ-666).** Each stage's stdout and stderr go to
+  `~/.horizon/<stateKey>/deploy-<tag>-<install|test>.out`; the restore's
+  install has its own `deploy-<tag>-restore-install.out`. On failure, the
+  last 200 lines of the failing stage's file go into `self-deploy.log`
+  between `--- <stage> output (tag=...) ---` and `--- end <stage> output ...`
+  markers, before the restore lines. Only the newest 20 `deploy-*.out` files
+  are kept, by mtime: a passing deploy writes 2, so that is about the last 10
+  deploys.
 - **Step 14.** No agent and no smoke check: the step passes on `DEPLOY OK`
   for the item's tag ("deployed (code only)") and fails on `DEPLOY FAILED`.
 - **Owner: keep the tests offline.** The deploy only unsets the ledger and

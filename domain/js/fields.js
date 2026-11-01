@@ -181,6 +181,12 @@ export function criteriaLines(text) {
     .filter((line) => line && !isDeferredLine(line))
 }
 
+// HZ-685: true when any line of `text` is the split-scope "Deferred to a
+// follow-up item" line, i.e. the item has been narrowed.
+export function hasDeferredLine(text) {
+  return nonBlankLines(text).some((line) => isDeferredLine(normaliseLine(line)))
+}
+
 export function countCriteriaLines(text) {
   return criteriaLines(text).length
 }

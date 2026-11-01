@@ -49,9 +49,12 @@ import { priorityFromLabels } from './priorityLabels.js'
 import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
 import { getActiveProjectId, setSetting } from './settings.js'
+import { ensureUnlinkedProject, hasNoProject, unlinkedProjectId } from './membership.js'
+import { RUN_USER_RE, TOKEN_REF_RE, isolationFields, isolationRefusal } from './projectIsolation.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
+import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 
@@ -484,17 +487,32 @@ function itemGateAction(rows, itemId, cursor) {
 // `checks` (HZ-245) adds each repo's check commands, (HZ-304) its
 // 'no checks' / 'no deploy' marks and (HZ-425) its default branch; off for
 // consumers with no use for them.
-export function listProjects({ checks = true } = {}) {
-  const projects = db.prepare('SELECT * FROM project ORDER BY name').all()
+//
+// HZ-659: `viewer` is access.viewerFor(request). null (the owner, and every
+// internal caller) lists every project; { projectIds } lists only those, and
+// never `Unlinked items`, which only the owner sees.
+export function listProjects({ checks = true, viewer = null } = {}) {
+  const unlinked = unlinkedProjectId(db)
+  const projects = db
+    .prepare('SELECT * FROM project ORDER BY name')
+    .all()
+    .filter((p) => !viewer || (p.id !== unlinked && viewer.projectIds.has(p.id)))
   const repos = db.prepare('SELECT * FROM project_repo ORDER BY repo').all()
   return projects.map((p) => ({
     id: p.id,
     name: p.name,
     enabled: !!p.enabled,
+    // HZ-654: the `Unlinked items` project. Admin lists it like any other; the
+    // board's project filter and the new-item picker leave it out, because its
+    // items read as having no project (itemView's project_id is null).
+    unlinked: p.id === unlinked,
     autopilot: p.autopilot,
     autopilotEvents: selectAutopilotEvents.all(p.id),
     // HZ-535: the PIN-gated switch for the project's own definitions.
     definitionsEnabled: !!p.definitions_enabled,
+    // HZ-662: internal | tenant, and a tenant's $NAME credential reference and
+    // run user — references only, never a token value.
+    ...isolationFields(p),
     providerDefaults: providerDefaultsFromRow(p),
     repos: repos
       .filter((r) => r.project_id === p.id)
@@ -512,6 +530,16 @@ export function listProjects({ checks = true } = {}) {
           : {}),
       })),
   }))
+}
+
+// HZ-659: the user's own active project — what a member's Activate writes.
+// The global setting.active_project_id stays the owner's.
+export function getUserActiveProject(userId) {
+  return db.prepare('SELECT active_project_id FROM user WHERE id = ?').get(userId)?.active_project_id ?? null
+}
+
+export function setUserActiveProject(userId, projectId) {
+  db.prepare('UPDATE user SET active_project_id = ? WHERE id = ?').run(projectId, userId)
 }
 
 // ---- per-repo check commands (HZ-245) ----
@@ -757,19 +785,33 @@ export function setDefaultBranch(repoFullName, branch, now = Date.now()) {
   return changed
 }
 
-export function createProject(name) {
+// HZ-662: `isolation` is 'internal' for the owner's projects and 'tenant' for
+// one a non-owner creates (app.js decides). `memberId`, when set, is added to
+// the new project's members, so a non-owner can see the project they made.
+export function createProject(name, { isolation = 'internal', memberId = null } = {}) {
   const existing = db.prepare('SELECT id FROM project WHERE name = ?').get(name)
   if (existing) return { error: 'exists' }
   // The first project becomes active and enabled without a farm restart —
   // nothing was running before it existed. Later ones start disabled (HZ-207).
   const first = getActiveProjectId() == null
-  const id = db.prepare('INSERT INTO project (name, enabled) VALUES (?, ?)').run(name, first ? 1 : 0).lastInsertRowid
+  const id = db.transaction(() => {
+    const projectId = db
+      .prepare('INSERT INTO project (name, enabled, isolation) VALUES (?, ?, ?)')
+      .run(name, first ? 1 : 0, isolation).lastInsertRowid
+    // HZ-661: a member's new project is also their active one — always a
+    // project they were just made a member of, never any other id.
+    if (memberId != null) {
+      db.prepare('INSERT OR IGNORE INTO project_member (project_id, user_id) VALUES (?, ?)').run(projectId, memberId)
+      db.prepare('UPDATE user SET active_project_id = ? WHERE id = ?').run(projectId, memberId)
+    }
+    return projectId
+  })()
   if (first) {
     setSetting('active_project_id', String(id))
     setSetting('farm_project_id', String(id))
   }
   notify()
-  return { ok: true, id, name }
+  return { ok: true, id, name, isolation }
 }
 
 // HZ-207: the farm dispatches every enabled project's items. Items with no
@@ -851,12 +893,64 @@ export function setProjectDefinitionsEnabled(projectId, enabled, who) {
   return result
 }
 
+const selectProjectIsolation = db.prepare('SELECT isolation, github_token_ref, run_user FROM project WHERE id = ?')
+
+// HZ-662: the ONLY writer of project.github_token_ref and project.run_user;
+// its one caller is the owner-only, PIN-gated Admin route. A key left out of
+// `fields` is unchanged and an explicit null clears it. The ref must be a $NAME
+// reference — re-checked here, before any write, though the route's schema
+// already refused anything else. Each changed field writes one project_event
+// row naming the reference only. `isolation` itself is never changed here.
+export function setProjectIsolation(projectId, fields, who) {
+  const updates = []
+  if (Object.hasOwn(fields, 'githubTokenRef')) {
+    const ref = fields.githubTokenRef
+    if (ref !== null && !(typeof ref === 'string' && TOKEN_REF_RE.test(ref))) return { error: 'invalid_ref' }
+    updates.push(['github_token_ref', ref])
+  }
+  if (Object.hasOwn(fields, 'runUser')) {
+    const runUser = fields.runUser
+    if (runUser !== null && !(typeof runUser === 'string' && RUN_USER_RE.test(runUser))) return { error: 'invalid_run_user' }
+    updates.push(['run_user', runUser])
+  }
+  const result = db.transaction(() => {
+    const row = selectProjectIsolation.get(projectId)
+    if (!row) return { error: 'not_found' }
+    let changed = false
+    for (const [column, value] of updates) {
+      if (row[column] === value) continue
+      db.prepare(`UPDATE project SET ${column} = ? WHERE id = ?`).run(value, projectId)
+      db.prepare('INSERT INTO project_event (project_id, kind, old_value, new_value, who) VALUES (?, ?, ?, ?, ?)').run(
+        projectId,
+        column,
+        row[column],
+        value,
+        who,
+      )
+      changed = true
+    }
+    return { ok: true, changed, ...isolationFields(selectProjectIsolation.get(projectId)) }
+  })()
+  if (result.changed) notify()
+  return result
+}
+
+// HZ-662: why the farm must not run an item in `projectId` (projectIsolation.js),
+// or null. An item with no project, or in `Unlinked items`, runs as today.
+export function projectIsolationRefusal(projectId) {
+  if (hasNoProject(db, projectId)) return null
+  const row = selectProjectIsolation.get(projectId)
+  // A project_id with no row dispatches with no project, as before — farmd
+  // refuses that as `missing project`, so it is not an isolation question.
+  return row ? isolationRefusal(isolationFields(row)) : null
+}
+
 // HZ-535: the project overlay an item in `projectId` reads its personas
 // through — null for no project, the switch off, or no personas.json, which
 // leaves every persona lookup on the global registry exactly.
 const selectProjectDefinitions = db.prepare('SELECT name, definitions_enabled FROM project WHERE id = ?')
 export function projectOverlayFor(projectId) {
-  if (projectId == null) return null
+  if (hasNoProject(db, projectId)) return null
   return projectOverlayLoader(selectProjectDefinitions.get(projectId))
 }
 
@@ -889,13 +983,17 @@ export function latestValidation(projectId) {
     .prepare('SELECT * FROM project_validation WHERE project_id = ? ORDER BY id DESC LIMIT 1')
     .get(projectId)
   if (!row) return null
+  const checks = JSON.parse(row.checks_json)
   return {
     id: row.id,
     projectId: row.project_id,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     pass: row.pass === 1,
-    checks: JSON.parse(row.checks_json),
+    // HZ-659: a member's run skips the shared-token checks; `partial` says so,
+    // so its pass never reads as a full validation.
+    partial: checks.some((c) => c?.skipped === true),
+    checks,
   }
 }
 
@@ -1333,6 +1431,13 @@ export function finishedItems(ids) {
     if (isAbandoned(row)) found.push({ id: row.id, state: 'abandoned' })
     else if (isClosed(row)) found.push({ id: row.id, state: 'closed' })
   }
+  // HZ-641: an item the account purge deleted reads as abandoned.
+  const purged = db
+    .prepare(`SELECT id FROM purged_item WHERE lower(id) IN (${wanted.map(() => '?').join(', ')}) ORDER BY id`)
+    .all(...wanted)
+  for (const row of purged) {
+    if (!found.some((f) => f.id.toLowerCase() === row.id.toLowerCase())) found.push({ id: row.id, state: 'abandoned' })
+  }
   return found
 }
 
@@ -1362,6 +1467,11 @@ export function itemsComingToDeploy(repo, excludeIds = []) {
 // whose already-filed upstream item now depends on this one.
 export function wouldCycleBetween(id, dependsOnId) {
   return wouldCycle(id, dependsOnId)
+}
+
+// HZ-685: whether `id` depends directly on `dependsOnId`.
+export function hasDependency(id, dependsOnId) {
+  return !!db.prepare('SELECT 1 FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(id, dependsOnId)
 }
 
 // `blocked` says whether the item is held at its current step. `blockedBy`
@@ -1596,10 +1706,13 @@ function currentStepOf(row) {
 // HZ-318: `stepOutputs: false` leaves each item's stepOutputs off — 79% of the
 // board's bytes. The live feed and GET /api/items?v=2 use it; the Tracker
 // streams one item's outputs while it is open, through itemStepOutputs() below.
-export function listItems({ scope = 'active', stepOutputs = true } = {}) {
+//
+// HZ-655: `viewer` is access.viewerFor(request) for a non-owner, and null for
+// the owner and every internal caller (see scopeFilter).
+export function listItems({ scope = 'active', stepOutputs = true, viewer = null } = {}) {
   return selectItems
     .all()
-    .filter(scopeFilter(scope))
+    .filter(scopeFilter(scope, viewer))
     .map((row) => itemView(row, { stepOutputs }))
 }
 
@@ -1617,21 +1730,48 @@ export function itemViewById(id) {
 
 // The row filter behind listItems' scope, shared with itemStepOutputs so the
 // per-item route can never show an item the list would not.
-function scopeFilter(scope) {
+// HZ-654: an `Unlinked items` row is listed in every scope, as a NULL one was,
+// even while that project is disabled.
+//
+// HZ-655: with a viewer ({ projectIds }, a non-owner) none of those pass-throughs
+// apply. A NULL or `Unlinked items` row is hidden, and so is everything while no
+// project is active, so a non-owner sees only their own projects' rows in scope.
+// viewer null (the owner, internal callers) keeps the predicate above exactly.
+function scopeFilter(scope, viewer = null) {
   const activeId = getActiveProjectId()
   const enabled = scope === 'enabled' ? enabledProjectIds() : null
+  const unlinkedId = unlinkedProjectId(db)
   const inScope = (projectId) => (enabled ? enabled.has(projectId) : projectId === activeId)
-  return (row) => row.project_id == null || activeId == null || inScope(row.project_id)
+  if (viewer) {
+    // With no active project, inScope matches only NULL, which is already out.
+    return (row) =>
+      row.project_id != null && row.project_id !== unlinkedId && viewer.projectIds.has(row.project_id) && inScope(row.project_id)
+  }
+  return (row) => row.project_id == null || row.project_id === unlinkedId || activeId == null || inScope(row.project_id)
 }
 
 // HZ-318: one item's stepOutputs exactly as listItems({ scope: 'enabled' })
 // carries them, or null when the id is unknown or outside that scope.
 // Runs once per open item per stream flush, so the statement is prepared once.
 const selectItemScope = db.prepare('SELECT id, project_id FROM work_item WHERE id = ?')
-export function itemStepOutputs(id) {
+export function itemStepOutputs(id, viewer = null) {
   const row = selectItemScope.get(id)
-  if (!row || !scopeFilter('enabled')(row)) return null
+  if (!row || !scopeFilter('enabled', viewer)(row)) return null
   return stepOutputs(row.id)
+}
+
+// HZ-656: scopeFilter('enabled', viewer) for boardView.viewSnapshot, which cuts
+// a member's board from the owner's item views. A view's project_id is null
+// for an `Unlinked items` row, which the viewer predicate hides either way.
+export function viewerItemFilter(viewer) {
+  return scopeFilter('enabled', viewer)
+}
+
+// HZ-656: whether one item is in a viewer's board, as itemStepOutputs decides
+// it, without reading the outputs. The item streams' flush re-checks members.
+export function itemInScope(id, viewer) {
+  const row = selectItemScope.get(id)
+  return !!row && scopeFilter('enabled', viewer)(row)
 }
 
 // ---- duration estimates (HZ-229) ----
@@ -1924,6 +2064,7 @@ function substepFields(row, overlay) {
 }
 
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
+  const noProject = hasNoProject(db, row.project_id)
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
   const overlay = projectOverlayFor(row.project_id)
   const personas = personasFromRow(row, overlay)
@@ -1942,7 +2083,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     guardrails: row.guardrails,
     issue: row.issue,
     repo: row.repo,
-    project_id: row.project_id,
+    // HZ-654: an `Unlinked items` item reads as no project, as before it moved.
+    project_id: noProject ? null : row.project_id,
     pr: row.pr,
     pr_url: row.pr_url,
     pr_mergeable: row.pr_mergeable == null ? null : !!row.pr_mergeable,
@@ -1954,12 +2096,12 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     providerChoices: providerChoicesFromRow(row),
     // HZ-370: for the item page's "Default" label only; the farm is sent the
     // merged map (resolveStepProviders) at dispatch instead.
-    projectProviderDefaults: providerDefaultsFromRow(row.project_id == null ? null : selectProjectProviderDefaults.get(row.project_id)),
+    projectProviderDefaults: providerDefaultsFromRow(noProject ? null : selectProjectProviderDefaults.get(row.project_id)),
     // HZ-544: the `autopilot-off` label as last synced, and the project's
     // Autopilot mode, so a page can tell "off for this item" applies (only
     // in an 'on' project — see caretaker.js's itemOff).
     autopilotOff: !!row.autopilot_off,
-    projectAutopilot: (row.project_id == null ? null : selectProjectAutopilot.get(row.project_id)?.autopilot) ?? 'off',
+    projectAutopilot: (noProject ? null : selectProjectAutopilot.get(row.project_id)?.autopilot) ?? 'off',
     autopilotWouldHave: autopilotWouldHave(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
@@ -1983,6 +2125,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ruleBlock: ruleBlock && ruleBlockView(row.id, ruleBlock, dependencies.blockedBy),
     // HZ-422: every model this step may run on is usage-limited until `until`.
     usageWait: usageWaitView(row),
+    // HZ-662: why the farm holds this item (a tenant project missing its
+    // credential reference or run user), or null — the board shows it.
+    isolationRefusal: projectIsolationRefusal(row.project_id),
     // HZ-443: the board's "Waiting on me" filter and sort.
     paused_at: row.paused ? toIsoUtc(row.paused_at) : null,
     waiting_since: waitingSince(row, ruleBlock),
@@ -2265,7 +2410,7 @@ export function approveGate(
 
   let filed = null
   if (stepIndex === APPROVE_FILE_GATE_INDEX) {
-    const mode = (it.project_id == null ? null : selectProjectAutopilot.get(it.project_id)?.autopilot) ?? 'off'
+    const mode = (hasNoProject(db, it.project_id) ? null : selectProjectAutopilot.get(it.project_id)?.autopilot) ?? 'off'
     filed = filedAutopilot === 'off' && mode === 'on' ? 'off' : 'default'
     if (filedAutopilot === 'off' && filed !== 'off') {
       addEvent(id, {
@@ -2672,19 +2817,31 @@ export function queueFeedbackOnce(id, { message, target = 'Eng', source = 'overl
   return { ok: true, queued: true }
 }
 
-// Remove the BF-* demo items (called when real GitHub sync is connected).
+const DEMO_PURGE = 'demo purge'
+
+// Remove the BF-* demo items (called when real GitHub sync is connected), with
+// every row that references them. The rows come from HZ-641's planner
+// (accountPurge.planDeletes), which walks the schema's foreign keys, so a
+// table added later is covered with no edit here. One transaction: a throw
+// leaves every table as it was.
 export function purgeDemoItems() {
   const ids = db.prepare("SELECT id FROM work_item WHERE id LIKE 'BF-%'").all().map((r) => r.id)
   if (ids.length === 0) return
   ids.forEach((id) => agentRunner.cancel(id, 'cancelled'))
   db.transaction(() => {
-    // gate_notice is deliberately absent: it declares ON DELETE CASCADE (see
-    // db.js), so it clears with the work_item row below. Every table named here
-    // does not, and foreign_keys = ON makes a forgotten one an FK error.
-    for (const table of ['event', 'gate_decision', 'feedback', 'step_run']) {
-      db.prepare(`DELETE FROM ${table} WHERE item_id LIKE 'BF-%'`).run()
+    const refs = references()
+    const plan = planDeletes([{ table: 'work_item', column: 'id', values: ids }], refs, { label: DEMO_PURGE })
+    // Only BF-* items and the rows under them go. The walk goes down from the
+    // seeds, so it reaches another work item only through a work_item column
+    // that references work_item (none today), and a parent table never.
+    if (plan.remove.get('work_item')?.size !== ids.length) {
+      throw new Error(`${DEMO_PURGE}: the walk reached a work item that is not BF-*`)
     }
-    db.prepare("DELETE FROM work_item WHERE id LIKE 'BF-%'").run()
+    const parents = new Set(['project', 'user', ...refs.filter((r) => r.table === 'work_item').map((r) => r.parent)])
+    parents.delete('work_item')
+    const reached = [...parents].filter((table) => plan.remove.has(table))
+    if (reached.length > 0) throw new Error(`${DEMO_PURGE}: the walk reached parent table ${reached.join(', ')}`)
+    applyDeletes(plan, { label: DEMO_PURGE })
   })()
   notify()
 }
@@ -2768,9 +2925,12 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority, 
       .prepare("SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) AS n FROM work_item WHERE id LIKE 'LOC-%'")
       .get().n + 1
   const id = `LOC-${next}`
-  db.prepare(
-    'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane, autopilot_off) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }), autopilotOff ? 1 : 0)
+  // HZ-654: a local item has no repo, so it goes to `Unlinked items`, never NULL.
+  db.transaction(() => {
+    db.prepare(
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, kind, lane, autopilot_off, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(id, title, priority, outcome, metric, guardrails || '', firstStepIndex(itemKind), itemKind, laneOf({ kind: itemKind, lane }), autopilotOff ? 1 : 0, ensureUnlinkedProject(db))
+  })()
   addEvent(id, { who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' })
   notify()
   agentRunner.kick(id)

@@ -39,6 +39,11 @@ import * as webhooks from './webhooks.js'
 
 export const VALIDATION_CHECKS = Object.freeze(['repo_access', 'webhook', 'check_commands', 'rules', 'dry_run', 'drift'])
 
+// HZ-659: the checks that read GitHub with the shared token (or need main's
+// sha from it) or start a deploy Dry run. Only the owner's run does them; a
+// member's run reports each as skipped, so no member action uses the token.
+export const OWNER_ONLY_CHECKS = Object.freeze(['repo_access', 'webhook', 'check_commands', 'dry_run', 'drift'])
+
 export const CHECK_TIMEOUT_MS = Object.freeze({
   repo_access: 15_000,
   webhook: 15_000,
@@ -267,11 +272,13 @@ const CHECKS = {
 }
 
 // Runs the six checks and stores the result. Resolves
-// { id, projectId, startedAt, finishedAt, pass, checks: [{ check, pass, detail, durationMs }] }
-// with checks in VALIDATION_CHECKS order. Never throws.
+// { id, projectId, startedAt, finishedAt, pass, partial, checks: [{ check, pass, detail, durationMs }] }
+// with checks in VALIDATION_CHECKS order. Never throws. With `tokenChecks`
+// false (a member's run) every OWNER_ONLY_CHECKS entry is
+// { pass: true, skipped: true, detail: 'skipped: owner only' } and never runs.
 export async function validateProject(
   project,
-  { who = 'unknown', now = Date.now, timeouts = CHECK_TIMEOUT_MS, capMs = RUN_CAP_MS, log = null } = {},
+  { who = 'unknown', now = Date.now, timeouts = CHECK_TIMEOUT_MS, capMs = RUN_CAP_MS, log = null, tokenChecks = true } = {},
 ) {
   const startedMs = now()
   const capDeadline = startedMs + capMs
@@ -289,6 +296,9 @@ export async function validateProject(
 
   const checks = await Promise.all(
     VALIDATION_CHECKS.map(async (check) => {
+      if (!tokenChecks && OWNER_ONLY_CHECKS.includes(check)) {
+        return { check, pass: true, skipped: true, detail: 'skipped: owner only', durationMs: 0 }
+      }
       const begun = now()
       const timeoutMs = Math.max(0, Math.min(timeouts[check], capDeadline - begun))
       const probe = async () => {
@@ -310,6 +320,7 @@ export async function validateProject(
     startedAt: new Date(startedMs).toISOString(),
     finishedAt: new Date(now()).toISOString(),
     pass: checks.every((c) => c.pass),
+    partial: checks.some((c) => c.skipped === true),
     checks,
   }
   try {

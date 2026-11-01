@@ -148,6 +148,21 @@ test('precedence: an operator-decide line beats approve at gate 5 and gate 10, w
   assert.match(r10.reason, /ruling needed/)
 })
 
+test('HZ-685: an unfiled narrowing pings the human instead of g10.approve; filed and linked, it approves', () => {
+  const artifact = '## Recommendation\n**PROCEED** — part 2 deferred.\n'
+  const reason = 'the outcome or metric defers work to a follow-up item, but no follow-up is filed and linked'
+  const unfiled = decide(G10, facts({ artifact, narrowing: { ok: false, reason } }), policy)
+  assert.equal(unfiled.decision, 'ping_human')
+  assert.equal(unfiled.ruleId, 'any.unfiled_narrowing')
+  assert.equal(unfiled.reason, reason)
+
+  const filed = decide(G10, facts({ artifact, narrowing: { ok: true } }), policy)
+  assert.equal(filed.decision, 'approve')
+  assert.equal(filed.ruleId, 'g10.approve')
+  // No fact (any gate but 5 and 10) leaves every other rule as it was.
+  assert.equal(decide(G10, facts({ artifact, narrowing: null }), policy).ruleId, 'g10.approve')
+})
+
 test('precedence: a phrase merely quoting `operator must decide` is not a ruling request', () => {
   // HZ-270's own PM summary quotes the phrase in its test contract.
   assert.equal(decide(G10, facts({ artifact: fixture('hz270-pm-summary.md') }), policy).decision, 'send_back')
@@ -304,6 +319,8 @@ test('HZ-299 changed only g5.approve: every other rule parses as before', () => 
     others.map(({ gateIndex, ...r }) => r),
     [
       { id: 'any.operator_decide', gate: 'any', decision: 'ping_human', linePrefix: 'operator must decide:' },
+      // HZ-685 added this rule; it reads a fact, no markers.
+      { id: 'any.unfiled_narrowing', gate: 'any', decision: 'ping_human' },
       { id: 'g5.blocker', gate: 'Approve the high-level design', decision: 'send_back', section: '## Blockers' },
       { id: 'g10.send_back', gate: 'Review before execution', decision: 'send_back', section: '## Recommendation',
         markers: ['**SEND BACK**'], commentSection: '## Actions' },

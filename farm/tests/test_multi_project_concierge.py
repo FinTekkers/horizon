@@ -288,6 +288,19 @@ def test_with_one_enabled_project_a_message_with_no_key_runs_todays_prompt(monke
     assert routing.plan(msg.text, snap) == routing.Plan(snapshot=snap)
 
 
+# HZ-654: `Unlinked items` holds the items that used to have no project. Enabled
+# or disabled, it is never a project to route to, list or call disabled.
+@pytest.mark.parametrize("unlinked_enabled", [True, False])
+def test_the_unlinked_items_project_leaves_routing_as_it_was(unlinked_enabled):
+    snap = only_enabled("Horizon", *(["Unlinked items"] if unlinked_enabled else []))
+    snap["projects"] = [p for p in snap["projects"] if p["name"] in ("Horizon", "Unlinked items")]
+    assert [p["name"] for p in snap["projects"] if p.get("unlinked")] == ["Unlinked items"]
+
+    assert [p["name"] for p in routing.enabled_projects(snap)] == ["Horizon"]
+    assert routing.plan("what's pending my approval?", snap) == routing.Plan(snapshot=snap)
+    assert routing.plan("anything in Unlinked items?", snap) == routing.Plan(snapshot=snap)
+
+
 # ---- guardrail 8: the session rename keeps today's state ----
 
 

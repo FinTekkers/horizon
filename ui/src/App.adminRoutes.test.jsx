@@ -2,20 +2,27 @@
 // owns them, so a deep link opens its section, a click pushes its URL, back
 // and forward show the matching section, an unknown /admin/... path falls back
 // to /admin, and no /admin/... path ever reaches the item tracker. The other
-// routes behave as before.
+// routes behave as before. HZ-660: those are the owner's; a member is shown
+// only Account, and never reads an owner-only route.
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup, waitFor, screen } from '@testing-library/react'
 
 let items = []
+const OWNER = { name: 'Test User', initials: 'TU', email: 'test@example.com', isAdmin: true }
+const MEMBER = { name: 'Max Member', initials: 'MM', email: 'member@example.com', isAdmin: false }
+let currentUser = OWNER
 
 vi.mock('./api', () => ({
   subscribe: () => () => {},
   getItems: () => items,
-  getCurrentUser: vi.fn(async () => ({ name: 'Test User', initials: 'TU', email: 'test@example.com' })),
+  getCurrentUser: vi.fn(async () => currentUser),
+  getFarmHealth: vi.fn(() => new Promise(() => {})),
   getSync: () => ({ connected: false }),
   getProjects: () => [{ id: 1, name: 'Fintekkers', enabled: true, repos: [{ repo: 'FinTekkers/ui-service', prefix: 'US' }] }],
   getActiveProjectId: () => null,
+  // HZ-661: no board frame yet, so the first-project screen stays off.
+  hasSnapshot: () => false,
   getFarm: () => null,
   getDurationEstimates: () => null,
   getDeployBlock: () => null,
@@ -54,6 +61,7 @@ afterEach(() => {
   vi.clearAllMocks()
   window.history.pushState({}, '', '/')
   items = []
+  currentUser = OWNER
 })
 
 // [section, its heading, its button in the list]
@@ -168,4 +176,55 @@ test.each([
   expect(await find()).toBeTruthy()
   expect(document.querySelector('.admin-nav')).toBeNull()
   expect(window.location.pathname).toBe(path)
+})
+
+// ---- HZ-660 metric 5: a member's Admin page renders none of the owner-only sections ----
+
+const navLabels = () => [...document.querySelectorAll('.admin-nav__label')].map((el) => el.textContent)
+
+test('a member cold-loading /admin/deploys lands on /admin/account, sees only Account and reads no owner-only route', async () => {
+  const api = await import('./api')
+  currentUser = MEMBER
+  window.history.pushState({}, '', '/admin/deploys')
+  render(<App />)
+  expect(await heading('Personal API tokens')).toBeTruthy()
+  await waitFor(() => expect(window.location.pathname).toBe('/admin/account'))
+  expect(navLabels()).toEqual(['Your PIN and API tokens'])
+  expect(navButton('Your PIN and API tokens').getAttribute('aria-current')).toBe('page')
+  expect(screen.queryByRole('heading', { name: 'Deploy targets' })).toBeNull()
+  expect(screen.queryByRole('heading', { name: 'Projects' })).toBeNull()
+  expect(api.getDeployTargets).not.toHaveBeenCalled()
+  expect(api.getCheckFlakes).not.toHaveBeenCalled()
+  expect(api.getDeployTargetConfig).not.toHaveBeenCalled()
+
+  fireEvent.click(document.querySelector('.topbar__avatar'))
+  expect(screen.getByRole('button', { name: 'Admin' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: /Farm health/ })).toBeNull()
+  expect(api.getFarmHealth).not.toHaveBeenCalled()
+})
+
+test('a member opening Admin from the menu, or an owner-only section by popstate, gets Account', async () => {
+  currentUser = MEMBER
+  render(<App />)
+  await screen.findByText('Work in flight')
+  fireEvent.click(document.querySelector('.topbar__avatar'))
+  fireEvent.click(screen.getByRole('button', { name: 'Admin' }))
+  expect(await heading('Personal API tokens')).toBeTruthy()
+  await waitFor(() => expect(window.location.pathname).toBe('/admin/account'))
+
+  window.history.pushState({}, '', '/admin/github')
+  window.dispatchEvent(new PopStateEvent('popstate'))
+  await waitFor(() => expect(window.location.pathname).toBe('/admin/account'))
+  expect(screen.queryByRole('heading', { name: 'GitHub access' })).toBeNull()
+  expect(navLabels()).toEqual(['Your PIN and API tokens'])
+})
+
+test('the owner cold-loading /admin/deploys stays there and sees all five sections', async () => {
+  const api = await import('./api')
+  window.history.pushState({}, '', '/admin/deploys')
+  render(<App />)
+  expect(await heading('Deploy targets')).toBeTruthy()
+  expect(window.location.pathname).toBe('/admin/deploys')
+  expect(navLabels()).toEqual(SECTIONS.map(([, , label]) => label))
+  expect(api.getDeployTargets).toHaveBeenCalled()
 })

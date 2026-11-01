@@ -159,6 +159,26 @@ test('with the switch off the project lists no source', async () => {
   }
 })
 
+// HZ-654: `Unlinked items` stands in for "no project", so even with its switch
+// on (and a personas.json under its slug) it lists no source and takes no report.
+test('Unlinked items lists no source and takes no report, even switched on', async () => {
+  const { ensureUnlinkedProject } = await import('../src/membership.js')
+  writeProject('unlinked-items', [{ ...QUANT, knowledge: KNOWLEDGE }])
+  const unlinked = ensureUnlinkedProject(db)
+  db.prepare('UPDATE project SET definitions_enabled = 1 WHERE id = ?').run(unlinked)
+  try {
+    const listed = (await sources()).json().sources
+    assert.ok(listed.some((s) => s.projectId === ON), 'the real project is still listed')
+    assert.ok(!listed.some((s) => s.projectId === unlinked), JSON.stringify(listed))
+    const docsBody = body({ repo: 'Acme/handbooks', path: 'pricing.pdf' })
+    assert.deepEqual(knowledgeDocs.upsertDoc(unlinked, DOCS_SLUG, docsBody), { error: 'unknown_source' })
+    assert.deepEqual((await put(unlinked, DOCS_SLUG, docsBody)).json(), { error: 'unknown_source' })
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM knowledge_doc WHERE project_id = ?').get(unlinked).n, 0)
+  } finally {
+    db.prepare('UPDATE project SET definitions_enabled = 0 WHERE id = ?').run(unlinked)
+  }
+})
+
 test('both routes refuse a request without the farm secret', async () => {
   assert.equal((await sources({})).statusCode, 401)
   assert.equal((await put(ON, OWN_SLUG, body(), {})).statusCode, 401)

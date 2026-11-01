@@ -7,8 +7,14 @@
 // passing those modules in (instead of importing them here) avoids a second,
 // possibly-earlier-cached import of db.js under the wrong DB path.
 export function loginFixtureUser(auth, config, opts = {}) {
-  const { email = 'fixture@example.com', name = 'Fixture User', authMethod = 'password' } = opts
-  const { user, pin } = auth.createUser({ email, name, authMethod })
+  const { email = 'fixture@example.com', name = 'Fixture User', authMethod = 'password', role = 'owner' } = opts
+  const { user, pin } = auth.createUser({ email, name, authMethod, role })
   const token = auth.createSession(user.id)
   return { user, pin, cookie: `${config.SESSION_COOKIE_NAME}=${token}` }
+}
+
+// HZ-664: a real personal API token for `user`, as an Authorization header.
+export function loginFixtureToken(auth, user, name = 'fixture token') {
+  const { id, token } = auth.createApiToken(user.id, name)
+  return { id, raw: token, headers: { authorization: `Bearer ${token}` } }
 }

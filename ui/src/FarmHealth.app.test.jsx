@@ -20,6 +20,8 @@ vi.mock('./api', () => ({
   getSync: () => SYNC,
   getProjects: () => NO_PROJECTS,
   getActiveProjectId: () => null,
+  // HZ-661: no board frame yet, so the first-project screen stays off.
+  hasSnapshot: () => false,
   getFarm: () => null,
   getDurationEstimates: () => null,
   getDeployBlock: () => null,
@@ -222,4 +224,20 @@ test('a capacity-slot waiter with no reason reads as needing a capacity slot', a
     'needs a capacity slot',
     'holding an agent slot · needs a capacity slot',
   ])
+})
+
+// ---- HZ-670: the Box card shows defunct processes and who holds them ----
+
+test('the Box card lists defunct processes by the parent holding them, and says when none were measured', async () => {
+  await openWithMockReading()
+  const box = screen.getByRole('region', { name: 'Box' })
+  expect(within(box).getByText('Defunct processes: 3 · PID 1234 holds 2 · PID 88 holds 1')).toBeTruthy()
+  cleanup()
+  vi.useRealTimers()
+
+  reading = snapshot('green', 'All services up, slots free and box figures normal')
+  reading.zombies = null
+  render(<App />)
+  const unmeasured = await screen.findByRole('region', { name: 'Box' })
+  expect(within(unmeasured).getByText('Defunct processes: not measured')).toBeTruthy()
 })

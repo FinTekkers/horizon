@@ -7,7 +7,8 @@
 // tabs never adds a systemctl call or a farmd request. The only things a
 // collection does are file reads under /proc and /sys, a statfs of '/', one
 // `systemctl is-active <units>` (deployDryRun's execProbe: no shell, no sudo,
-// a timeout, and a minimal env) and one GET of farmd's /farm/status.
+// a timeout, and a minimal env) over the units buildServiceRows takes from
+// the deploy_target table and BOX_UNITS, and one GET of farmd's /farm/status.
 //
 // What reaches the browser is decided by toPublic, an allowlist: it copies
 // named keys only and never spreads an input object, so farmd's `sessions`,
@@ -22,27 +23,75 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import { FARM_HEALTH_POLL_MS, FARM_URL } from './config.js'
 import { execProbe } from './deployDryRun.js'
+import { listTargets } from './deployTargets.js'
 import { farmFetch } from './orchestrator.js'
 import * as store from './store.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 
-// The services ~/post-migration-check.sh checks, in its order. `name` and
-// `detail` are the design's labels; `unit` is what systemctl is asked about.
-export const UNITS = Object.freeze([
-  { unit: 'horizon-server', name: 'horizon-server', detail: ':3001' },
-  { unit: 'horizon-farm', name: 'horizon-farm', detail: ':4100' },
-  { unit: 'nginx', name: 'nginx', detail: null },
-  { unit: 'postgresql@16-main', name: 'postgresql', detail: ':5432' },
-  { unit: 'fintekkers-ui', name: 'fintekkers-ui', detail: ':3002' },
-  { unit: 'fintekkers-ledger', name: 'ledger', detail: 'gRPC :8082' },
-  { unit: 'fintekkers-valuation', name: 'valuation', detail: 'gRPC :8080' },
-  { unit: 'fintekkers-broker', name: 'broker', detail: ':8083' },
-  { unit: 'fintekkers-price', name: 'price', detail: ':8085' },
-  { unit: 'whatsapp-bridge', name: 'whatsapp-bridge', detail: null },
-  { unit: 'shoreward-contact', name: 'shoreward-contact', detail: ':3003' },
-  { unit: 'earlyoom', name: 'earlyoom', detail: null },
+// HZ-595: box units that are not deploy targets, in the order they are shown
+// after the targets' rows. No ports or protocols: nothing here says which.
+// `unit` is what systemctl is asked about; `name` is the page's label.
+export const BOX_UNITS = Object.freeze([
+  Object.freeze({ unit: 'nginx', name: 'nginx', detail: null }),
+  Object.freeze({ unit: 'postgresql@16-main', name: 'postgresql', detail: null }),
+  Object.freeze({ unit: 'whatsapp-bridge', name: 'whatsapp-bridge', detail: null }),
+  Object.freeze({ unit: 'earlyoom', name: 'earlyoom', detail: null }),
 ])
+
+// A target's protocol label, by its health check type. Other types show none.
+const PROTOCOL_LABELS = Object.freeze({ 'grpc-health': 'gRPC' })
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost'])
+
+// The port a target's own service listens on, read from its health URL —
+// only when that URL is a loopback address. A public URL (nginx in front)
+// says nothing about the service's port, so it gives none.
+function loopbackPort(healthUrl) {
+  let url
+  try {
+    url = new URL(healthUrl)
+  } catch {
+    return null
+  }
+  return LOOPBACK_HOSTS.has(url.hostname) && url.port ? url.port : null
+}
+
+function targetDetail(target) {
+  const protocol = typeof target.healthCheckType === 'string' && Object.hasOwn(PROTOCOL_LABELS, target.healthCheckType)
+    ? PROTOCOL_LABELS[target.healthCheckType]
+    : null
+  const port = loopbackPort(target.healthUrl)
+  return [protocol, port ? `:${port}` : null].filter(Boolean).join(' ') || null
+}
+
+// deploy_target rows are agent-writable and the unit goes into systemctl's
+// argv, so only a plain unit name gives a row: never one that reads as an option.
+const unitName = (u) => typeof u === 'string' && /^[\w@.:][\w@.:-]{0,99}$/.test(u)
+
+// HZ-595: the rows systemctl is asked about. One per deploy target with a
+// service, then each of its extra services (no detail: the health URL is the
+// main service's), targets by key; then the box units. Each unit appears once —
+// the first row that names it wins.
+export function buildServiceRows(targets, boxUnits = BOX_UNITS) {
+  const rows = []
+  const seen = new Set()
+  const add = (row) => {
+    if (seen.has(row.unit)) return
+    seen.add(row.unit)
+    rows.push(row)
+  }
+  const sorted = (Array.isArray(targets) ? targets : [])
+    .filter((t) => t && unitName(t.service))
+    .sort((a, b) => String(a.key).localeCompare(String(b.key)))
+  for (const t of sorted) {
+    add({ unit: t.service, name: t.service, detail: targetDetail(t) })
+    for (const extra of Array.isArray(t.extraServices) ? t.extraServices : []) {
+      if (unitName(extra)) add({ unit: extra, name: extra, detail: null })
+    }
+  }
+  for (const u of boxUnits) add({ unit: u.unit, name: u.name, detail: u.detail })
+  return rows
+}
 
 // systemctl's own state words. Anything else (or a missing line) reads 'unknown'.
 const UNIT_STATES = new Set(['active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading', 'unknown'])
@@ -126,7 +175,7 @@ export function parseMeminfo(text) {
 
 // `systemctl is-active a b c` prints one state per unit, in order, and exits
 // non-zero when any is not active — so stdout is read whatever the exit code.
-export function parseIsActive(stdout, units = UNITS) {
+export function parseIsActive(stdout, units) {
   const lines = String(stdout || '').split('\n').map((l) => l.trim())
   return units.map((u, i) => {
     const state = UNIT_STATES.has(lines[i]) ? lines[i] : 'unknown'
@@ -176,6 +225,22 @@ function checkHoldersOf(raw) {
   return out.sort((a, b) => a.slot - b.slot)
 }
 
+// HZ-670: farmd's cleanup-tick count of defunct processes by parent pid.
+// Only the named fields are read; null when farmd sent none (cleanup off, no
+// tick yet, farmd down) or any field is malformed.
+const MAX_ZOMBIE_PARENTS = 20
+function zombiesOf(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const count = finite(raw.count)
+  if (count == null || !Array.isArray(raw.parents) || typeof raw.at !== 'string') return null
+  const parents = []
+  for (const p of raw.parents.slice(0, MAX_ZOMBIE_PARENTS)) {
+    if (!p || !Number.isInteger(p.ppid) || finite(p.count) == null) return null
+    parents.push({ ppid: p.ppid, count: p.count })
+  }
+  return { count, parents, at: raw.at }
+}
+
 const isoOfSql = (sql) => {
   const ms = typeof sql === 'string' ? msOf(sql) : NaN
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null
@@ -195,18 +260,26 @@ export const defaultDeps = {
   activeRuns: () => store.listActiveRunsWithState(),
   liveDeploysSince: (sinceSql) => store.listLiveDeploysSince(sinceSql),
   serverBootedAt: () => store.BOOTED_AT,
+  deployTargets: () => listTargets(),
 }
 
 const settle = (promise) => Promise.resolve().then(() => promise).then((v) => v, () => null)
 
 export async function collectOnce(deps = defaultDeps) {
   const now = deps.now()
+  let targets = []
+  try {
+    targets = deps.deployTargets()
+  } catch {
+    // A deploy_target read that fails still leaves the box units to check.
+  }
+  const units = buildServiceRows(targets)
   const [loadText, memText, machineText, disk, probe, farmRaw] = await Promise.all([
     settle(deps.readFile('/proc/loadavg')),
     settle(deps.readFile('/proc/meminfo')),
     settle(deps.readFile('/sys/class/dmi/id/product_name')),
     settle(deps.statfs('/')),
-    settle(deps.execProbe('systemctl', ['is-active', ...UNITS.map((u) => u.unit)], SYSTEMCTL_TIMEOUT_MS)),
+    settle(deps.execProbe('systemctl', ['is-active', ...units.map((u) => u.unit)], SYSTEMCTL_TIMEOUT_MS)),
     deps.farmConfigured() ? settle(deps.farmFetch('/farm/status', undefined, { timeoutMs: FARM_STATUS_TIMEOUT_MS })) : null,
   ])
 
@@ -236,7 +309,7 @@ export async function collectOnce(deps = defaultDeps) {
   const farm = farmStatusOf(farmRaw)
   // horizon-farm is a Type=oneshot launcher that starts farmd in tmux, so its
   // systemd state says nothing about farmd: that row follows /farm/status.
-  const services = parseIsActive(probe?.stdout).map((s) =>
+  const services = parseIsActive(probe?.stdout, units).map((s) =>
     s.unit === 'horizon-farm' ? { ...s, state: farm.status, up: farm.status === 'running' } : s,
   )
   const checksRaw = farmRaw?.checks || {}
@@ -311,6 +384,7 @@ export async function collectOnce(deps = defaultDeps) {
   capacity.pm.waiting = pmWaiting
   capacity.checks.waiting = checksWaiting
   const checkHolders = checkHoldersOf(checksRaw.holders)
+  const zombies = zombiesOf(farmRaw?.zombies)
 
   // Recent: deploys that went live, farm (re)starts and this server's own boot, last 24 h.
   const sinceMs = now - RECENT_WINDOW_MS
@@ -340,6 +414,7 @@ export async function collectOnce(deps = defaultDeps) {
     running,
     waiting,
     checkHolders,
+    zombies,
     box,
     services,
     recent,
@@ -387,6 +462,13 @@ export function toPublic(snapshot) {
     running: (s.running || []).map(pubRow),
     waiting: (s.waiting || []).map(pubRow),
     checkHolders: (s.checkHolders || []).map(pubHolder),
+    zombies: s.zombies
+      ? {
+          count: num(s.zombies.count) ?? 0,
+          parents: (s.zombies.parents || []).slice(0, MAX_ZOMBIE_PARENTS).map((p) => ({ ppid: num(p?.ppid), count: num(p?.count) })),
+          at: str(s.zombies.at, 40),
+        }
+      : null,
     box: {
       load: Array.isArray(box.load) ? box.load.slice(0, 3).map(num) : null,
       vcpus: num(box.vcpus),

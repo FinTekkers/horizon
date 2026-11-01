@@ -47,6 +47,9 @@ FAKE_CLAUDE = Path(__file__).resolve().parent / "fake_claude"
 # Every item id starts with this, so its sessions are easy to look for on
 # the host's tmux server (they must never be there).
 PREFIX = "RS"
+# HZ-654: a fresh boot's demo seed creates the `Unlinked items` project (id 1),
+# so the fixture project takes an id clear of it.
+PROJECT = 101
 # The authored table, every row: domain.py's views leave server rows out.
 ALL_STEPS = json.loads((REPO_ROOT / "domain" / "steps.json").read_text())["steps"]
 
@@ -190,24 +193,25 @@ class Instance:
     def add_item(self, item_id: str, kind: str, cursor: int):
         self.sql(
             "INSERT INTO work_item (id, title, priority, desc, metric, guardrails, cursor, repo, project_id, kind)"
-            " VALUES (?, ?, 'Medium', 'outcome', 'metric', 'guardrails', ?, ?, 1, ?)",
+            " VALUES (?, ?, 'Medium', 'outcome', 'metric', 'guardrails', ?, ?, ?, ?)",
             item_id,
             f"restart survival {item_id}",
             cursor,
             REPO,
+            PROJECT,
             kind,
         )
 
     def seed(self) -> dict:
         """Builds the schema, empties the demo seed, adds the project and the
         farm/pm items, and returns RESTART_SURVIVAL as the server reads it."""
-        script = """
-const { db } = await import('./src/db.js')
+        script = f"""
+const {{ db }} = await import('./src/db.js')
 const store = await import('./src/store.js')
-const { RESTART_SURVIVAL } = await import('./src/deployDrain.js')
+const {{ RESTART_SURVIVAL }} = await import('./src/deployDrain.js')
 store.purgeDemoItems()
-db.prepare("INSERT INTO project (id, name, enabled) VALUES (1, 'Restart test', 1)").run()
-db.prepare("INSERT INTO setting (key, value) VALUES ('active_project_id', '1'), ('farm_project_id', '1')").run()
+db.prepare("INSERT INTO project (id, name, enabled) VALUES ({PROJECT}, 'Restart test', 1)").run()
+db.prepare("INSERT INTO setting (key, value) VALUES ('active_project_id', '{PROJECT}'), ('farm_project_id', '{PROJECT}')").run()
 console.log(JSON.stringify(RESTART_SURVIVAL))
 """
         table = json.loads(_node(script, self.server_env).strip().splitlines()[-1])
@@ -293,7 +297,7 @@ console.log(JSON.stringify(RESTART_SURVIVAL))
             f"{self.farm_url}/steps/run",
             json={
                 "run_id": run_id,
-                "project": {"id": 1, "name": "Restart test"},
+                "project": {"id": PROJECT, "name": "Restart test"},
                 "item": {"id": item_id, "kind": CASES["job"][1], "repo": REPO},
                 "step": {"index": index, "label": ALL_STEPS[index]["label"]},
                 "plan_artifact": artifact,

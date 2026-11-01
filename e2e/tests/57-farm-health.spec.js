@@ -7,18 +7,16 @@
 
 import { test, expect } from '../fixtures/test-base.js'
 
+// HZ-595: the rows come from the seeded deploy targets (horizon and its
+// horizon-farm extra service, ui-service; market-data-inputs has no service),
+// then the box units. Each unit appears once.
 const SERVICES = [
   'horizon-server',
   'horizon-farm',
+  'fintekkers-ui',
   'nginx',
   'postgresql',
-  'fintekkers-ui',
-  'ledger',
-  'valuation',
-  'broker',
-  'price',
   'whatsapp-bridge',
-  'shoreward-contact',
   'earlyoom',
 ]
 

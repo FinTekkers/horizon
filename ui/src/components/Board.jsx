@@ -334,6 +334,9 @@ export default function Board({
   isGateBusy = gateActionBusy,
   planProgress = [],
   onOpenPlan,
+  // HZ-661: a member's own active project, named in the header. The owner's
+  // board passes none and is unchanged.
+  activeProjectName = null,
 }) {
   const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
   const view = useSyncExternalStore(boardNarrowing.subscribe, boardNarrowing.getBoardView)
@@ -383,10 +386,10 @@ export default function Board({
   const chips = activeChips(view, activeFilterKeys)
   const removeChip = (key) => {
     const patch = chipPatch(key)
-    if (patch?.hide) boardFilters.setActiveFilters([...activeFilterKeys, patch.hide])
+    if (patch?.hide) boardFilters.toggleFilter(patch.hide)
     else if (patch?.view) boardNarrowing.setBoardView(patch.view)
   }
-  // Back to the defaults: every hide filter on, nothing narrowed.
+  // Back to the defaults: every default-on hide filter on, nothing narrowed.
   const clearAll = () => {
     boardFilters.setActiveFilters(DEFAULT_ACTIVE_FILTERS)
     boardNarrowing.clearBoardView()
@@ -410,6 +413,7 @@ export default function Board({
     <div className="board">
       <div className="board__head">
         <div className="board__title">Work in flight</div>
+        {activeProjectName && <div className="board__project">{activeProjectName}</div>}
         <div className="board__meta">
           {plan == null ? `${activeCount} items across the lifecycle` : `${activeCount} items from ${planKindLabel(plan.kind)} ${plan.id}`}
         </div>

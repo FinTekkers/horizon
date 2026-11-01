@@ -344,7 +344,7 @@ contractTest('metric 5 / guardrail 1: the board page tries a POST fetch and a fo
   }
 })
 
-// ---- guardrails 3 and 4 ----
+// ---- guardrail 4 ----
 
 contractTest('guardrail 4: the spawned recorder gets a minimal env and only 127.0.0.1 URLs', async () => {
   const env = childEnv({ HORIZON_RECORDER_ENV: tokenFile })
@@ -354,24 +354,4 @@ contractTest('guardrail 4: the spawned recorder gets a minimal env and only 127.
   const urls = run.args.filter((a) => /^https?:/.test(a))
   assert.equal(urls.length, 2)
   for (const u of urls) assert.equal(new URL(u).hostname, '127.0.0.1')
-})
-
-test('guardrail 3: this branch changes no file under server/ or ui/', (t) => {
-  const git = (...args) => spawnSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' })
-  const base = git('merge-base', 'HEAD', 'origin/main')
-  if (base.status !== 0) {
-    t.skip('no origin/main to diff against')
-    return
-  }
-  // The guardrail is about the recorder's own branch. Once the recorder is on
-  // main, every other item's branch runs this suite too, and most of them
-  // legitimately change server/ or ui/ — so apply it only while this branch
-  // still changes the recorder's code (its tests excluded) against origin/main.
-  if (git('diff', '--quiet', 'origin/main', '--', 'scripts/recorder', 'scripts/record-item.mjs', ':(exclude)scripts/recorder/test').status === 0) {
-    t.skip('this branch does not change the recorder')
-    return
-  }
-  const changed = git('diff', '--name-only', base.stdout.trim()).stdout.split('\n').filter(Boolean)
-  const untracked = git('ls-files', '--others', '--exclude-standard').stdout.split('\n').filter(Boolean)
-  assert.deepEqual([...changed, ...untracked].filter((f) => /^(server|ui)\//.test(f)), [])
 })

@@ -16,6 +16,7 @@
 
 import { readFileSync } from 'node:fs'
 import { db } from './db.js'
+import { hasNoProject } from './membership.js'
 import { msOf as parseSqlTime } from './sqlTime.js'
 import { REASON } from '../../domain/js/reasons.js'
 import {
@@ -128,7 +129,11 @@ function windowFor(range, now) {
 const selectProjects = db.prepare('SELECT id, name FROM project ORDER BY name, id')
 
 function projectsFor(project) {
-  const all = selectProjects.all().map((row) => ({ id: String(row.id), name: row.name }))
+  // HZ-654: `Unlinked items` holds the items with no project, which are in none.
+  const all = selectProjects
+    .all()
+    .filter((row) => !hasNoProject(db, row.id))
+    .map((row) => ({ id: String(row.id), name: row.name }))
   return project === 'all' ? all : all.filter((row) => row.id === project)
 }
 

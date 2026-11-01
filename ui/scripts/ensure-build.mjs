@@ -1,9 +1,17 @@
-// HZ-622: builds ui/dist once per tree and reuses it. The e2e webServer
-// (e2e/playwright.config.js), spec 53's serve.sh and the screenshot slot's
-// serve.sh all used to run their own identical root-base `npm run build`
-// (about 1.8s each on an idle host, plus npm's start-up). Now they call this
-// script. The first one builds, and every later caller with the same key
-// reuses that build.
+// HZ-622: builds the local root-base UI once per tree and reuses it. The e2e
+// webServer (e2e/playwright.config.js), the screenshot slot's serve.sh and the
+// walkthrough recorder's serve-walkthrough.sh used to run their own identical
+// root-base `npm run build` (about 1.8s each on an idle host, plus npm's
+// start-up). Now they call this script. The first one builds, and every later
+// caller with the same key reuses that build.
+//
+// HZ-671: the build goes to ui/dist-local, never ui/dist. ui/dist is the
+// production build: in the deploy checkout (/opt/horizon) nginx serves it with
+// HORIZON_BASE=/horizon/, so a local root-base build there blanked the live
+// site. Only `npm run build`, deploy-horizon.sh and verify-base-build.mjs write
+// ui/dist. This script never reads, renames or deletes anything in it, nor the
+// HZ-622 leftovers beside it (ui/.build.lock, ui/.dist-tmp-*, ui/.dist-old-*).
+// The callers serve the build with `vite preview --outDir dist-local`.
 //
 // The key is a sha256 over every file under ui/ (except build output and
 // node_modules, which package-lock.json stands for), every file under domain/
@@ -13,19 +21,17 @@
 // dev/preview proxy reads it, and e2e sets a per-run port, so keying on it
 // would make every caller miss.
 //
-// Why the key lives INSIDE ui/dist (ui/dist/.build-key) and not beside it:
-// anything else that writes ui/dist wipes it. That covers verify-base-build.mjs
-// (rmSync before its /horizon/ build), deploy-horizon.sh and any manual
-// `npm run build` (Vite's emptyOutDir removes dotfiles too). So no key can
-// outlive the build it describes. A build is promoted with one rename that
-// carries the key with it.
+// Why the key lives INSIDE ui/dist-local (ui/dist-local/.build-key) and not
+// beside it: a build is promoted with one rename that carries the key with it,
+// so no key can outlive the build it describes, and only this script writes
+// ui/dist-local.
 //
 // A failed or interrupted build is never reused. It builds into
-// ui/.dist-tmp-<pid>, writes the key only after vite exits 0, and only then
-// swaps the dir into ui/dist. A lock (ui/.build.lock, holding the builder's
-// pid) keeps a second caller from building at the same time. The second caller
-// waits, then re-reads the key. A lock whose pid is dead is stale and is
-// removed.
+// ui/.dist-local-tmp-<pid>, writes the key only after vite exits 0, and only
+// then swaps the dir into ui/dist-local. A lock (ui/.dist-local.lock, holding
+// the builder's pid) keeps a second caller from building at the same time. The
+// second caller waits, then re-reads the key. A lock whose pid is dead is stale
+// and is removed.
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -47,20 +53,27 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const KEY_FILE = '.build-key'
-export const LOCK_FILE = '.build.lock'
-const TMP_PREFIX = '.dist-tmp-'
-const OLD_PREFIX = '.dist-old-'
+export const OUT_DIR = 'dist-local'
+export const LOCK_FILE = '.dist-local.lock'
+const TMP_PREFIX = '.dist-local-tmp-'
+const OLD_PREFIX = '.dist-local-old-'
+// HZ-622's names, from before HZ-671 moved the build out of ui/dist. Left
+// alone on disk, and kept out of the key so they never cause a miss.
+const LEGACY_LOCK_FILE = '.build.lock'
+const LEGACY_PREFIXES = ['.dist-tmp-', '.dist-old-']
 const DEFAULT_LOCK_WAIT_MS = 120_000
 const LOCK_POLL_MS = 200
 // A lock file with no pid yet (its writer died between open and write) counts
 // as stale once it is this old.
 const EMPTY_LOCK_STALE_MS = 10_000
-const EXCLUDED_DIRS = new Set(['node_modules', 'dist', 'coverage'])
+// dist is the production build: rebuilding it must not change this key.
+const EXCLUDED_DIRS = new Set(['node_modules', 'dist', OUT_DIR, 'coverage'])
 const ENV_NOT_IN_BUILD = ['VITE_PROXY_TARGET']
 
 function isExcluded(name, isDir) {
   if (isDir && EXCLUDED_DIRS.has(name)) return true
   if (name.startsWith(TMP_PREFIX) || name.startsWith(OLD_PREFIX) || name === LOCK_FILE) return true
+  if (LEGACY_PREFIXES.some((prefix) => name.startsWith(prefix)) || name === LEGACY_LOCK_FILE) return true
   // Vite bundles its config to a temp file beside it while it runs.
   return /\.timestamp-[^/]*\.mjs$/.test(name)
 }
@@ -182,7 +195,7 @@ async function acquireLock(lockPath, { lockWaitMs, log }) {
         continue
       }
       if (reportedHolder !== held.pid) {
-        log(`ensure-build: waiting for pid ${held.pid ?? 'unknown'} to finish building ui/dist`)
+        log(`ensure-build: waiting for pid ${held.pid ?? 'unknown'} to finish building ui/${OUT_DIR}`)
         reportedHolder = held.pid
       }
     }
@@ -203,9 +216,11 @@ function releaseLock(lockPath) {
 
 // Leftovers of a builder that was killed mid-run. They are never promoted, and
 // the key ignores them; this only reclaims the disk. Called under the lock.
+// Only this script's own names match: HZ-622's .dist-tmp-*/.dist-old-* are
+// left alone.
 function removeDeadLeftovers(uiDir) {
   for (const name of readdirSync(uiDir)) {
-    const m = /^\.dist-(?:tmp|old)-(\d+)$/.exec(name)
+    const m = /^\.dist-local-(?:tmp|old)-(\d+)$/.exec(name)
     if (m && (Number(m[1]) === process.pid || !pidAlive(Number(m[1])))) {
       rmSync(path.join(uiDir, name), { recursive: true, force: true })
     }
@@ -237,12 +252,12 @@ export async function ensureBuild({
   lockWaitMs = DEFAULT_LOCK_WAIT_MS,
   onTmpDir = () => {},
 }) {
-  const distDir = path.join(uiDir, 'dist')
+  const distDir = path.join(uiDir, OUT_DIR)
   const lockPath = path.join(uiDir, LOCK_FILE)
   const { key, inputs } = computeKey({ uiDir, domainDir, env })
   const reuse = () => {
     if (readKey(distDir) !== key) return false
-    log(`ensure-build: reusing ui/dist (key ${key.slice(0, 12)})`)
+    log(`ensure-build: reusing ui/${OUT_DIR} (key ${key.slice(0, 12)})`)
     return true
   }
   if (reuse()) return { built: false, key }
@@ -254,7 +269,7 @@ export async function ensureBuild({
     // A concurrent caller may have built this key while we waited.
     if (reuse()) return { built: false, key }
     removeDeadLeftovers(uiDir)
-    log(`ensure-build: building ui/dist (key ${key.slice(0, 12)})`)
+    log(`ensure-build: building ui/${OUT_DIR} (key ${key.slice(0, 12)})`)
     onTmpDir(tmpDir)
     try {
       await build(tmpDir, buildEnv(env))

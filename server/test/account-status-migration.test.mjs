@@ -75,6 +75,15 @@ function oldSchemaDb() {
   full.exec('ALTER TABLE user DROP COLUMN company')
   // HZ-634's owner-email marker, likewise.
   full.exec('ALTER TABLE user DROP COLUMN owner_notified_at')
+  // HZ-641's access_ended_at, likewise.
+  full.exec('ALTER TABLE user DROP COLUMN access_ended_at')
+  // HZ-654's membership columns and table, likewise, with the setting that
+  // marks that migration done.
+  for (const column of ['role', 'active_project_id', 'disabled_at', 'credentials_valid_after']) {
+    full.exec(`ALTER TABLE user DROP COLUMN ${column}`)
+  }
+  full.exec('DROP TABLE project_member')
+  full.exec("DELETE FROM setting WHERE key = 'membership_v1'")
   full.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('HZ-1', 'An item', 'Medium', 3)").run()
   full.prepare("INSERT INTO event (item_id, who, text, color, initials) VALUES ('HZ-1', 'You', 'history', '#000', 'YO')").run()
   full.close()

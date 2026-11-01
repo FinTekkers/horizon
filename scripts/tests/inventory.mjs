@@ -30,6 +30,7 @@ import { tmpdir } from 'node:os'
 import { join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { OUT_DIR as UI_LOCAL_BUILD_DIR } from '../../ui/scripts/ensure-build.mjs'
 import { INVENTORY_COLUMNS, encodeRanges, parseCsv, stableJson, toCsv } from './format.mjs'
 
 export { INVENTORY_COLUMNS }
@@ -212,11 +213,11 @@ export function collectUiCoverage(root, file) {
 }
 
 // The fixture (e2e/fixtures/test-base.js) writes one JSON file per test:
-// { spec, routes, js: [{ url, functions }] }. Its JS is the production bundle
-// under ui/dist; v8-to-istanbul maps it to ui/src through the sourcemap the
-// build writes when HORIZON_E2E_COVERAGE_DIR is set. v8-to-istanbul is
-// installed only by scripts/tests/package.json (npm run tests:inventory), so it
-// is imported here, never at the top: the server suite imports this module.
+// { spec, routes, js: [{ url, functions }] }. Its JS is the bundle the e2e
+// webServer builds with ensure-build.mjs under ui/dist-local (HZ-671);
+// v8-to-istanbul maps it to ui/src through the sourcemap the build writes
+// when HORIZON_E2E_COVERAGE_DIR is set. v8-to-istanbul is installed only by
+// scripts/tests/package.json (npm run tests:inventory), so it is imported here, never at the top: the server suite imports this module.
 export function collectE2eCoverage(root, spec) {
   return inScratch(async (scratch) => {
     const e2eDir = join(root, 'e2e')
@@ -232,7 +233,7 @@ export function collectE2eCoverage(root, spec) {
       const dump = JSON.parse(readFileSync(join(dumps, name), 'utf8'))
       for (const route of dump.routes ?? []) units[route] = '1'
       for (const { url, functions } of dump.js ?? []) {
-        const bundle = join(root, 'ui/dist', new URL(url).pathname)
+        const bundle = join(root, 'ui', UI_LOCAL_BUILD_DIR, new URL(url).pathname)
         if (!existsSync(bundle) || !existsSync(`${bundle}.map`)) continue
         const converter = v8toIstanbul(bundle, 0, {
           source: readFileSync(bundle, 'utf8'),
