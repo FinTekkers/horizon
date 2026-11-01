@@ -73,6 +73,23 @@ test('with test hooks on, the app boots and every route, /api/test/* and HEAD in
   assert.equal(byKey.get('GET /api/items'), 'filtered')
   assert.equal(byKey.get('GET /api/stream'), 'filtered')
   assert.equal(byKey.get('GET /api/items/:id/stream'), 'member:item')
+
+  // HZ-657: the item and run reads are member-scoped (the writes beside them
+  // are HZ-658's, pinned in the next test).
+  for (const url of [
+    '/api/items/:id/artifacts/:stepIndex',
+    '/api/items/:id/artifacts/:stepIndex/:attempt',
+    '/api/items/:id/steps/:stepIndex/output',
+    '/api/items/:id/job',
+    '/api/items/:id/job/log',
+    '/api/items/:id/plan-draft',
+    '/api/items/:id/screenshots',
+    '/api/items/:id/screenshots/:screen/:kind',
+  ]) {
+    assert.equal(byKey.get(`GET ${url}`), 'member:item', url)
+  }
+  assert.equal(byKey.get('GET /api/runs/:runId/log'), 'member:run')
+  assert.equal(byKey.get('GET /api/runs/:runId/log/view'), 'member:run')
   await app.close()
 })
 

@@ -120,8 +120,9 @@ export function projectForScope(scope, request) {
       break
     }
     case 'member:run': {
-      const runId = ownString(request.params, 'runId')
-      projectId = runId == null || !/^\d+$/.test(runId) ? null : (selectRunProject.get(Number(runId))?.project_id ?? null)
+      // The run routes' params schema has already coerced runId to an integer.
+      const runId = ownId(request.params, 'runId')
+      projectId = runId == null ? null : (selectRunProject.get(runId)?.project_id ?? null)
       break
     }
     case 'member:project': {

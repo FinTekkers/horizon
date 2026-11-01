@@ -85,6 +85,11 @@ test('member:run resolves the run’s item to its project', async () => {
   assert.deepEqual(await run('member:run', { params: { runId: String(betaRun) } }), NOT_FOUND)
   assert.deepEqual(await run('member:run', { params: { runId: '999999' } }), NOT_FOUND)
   assert.deepEqual(await run('member:run', { params: { runId: 'abc' } }), NOT_FOUND)
+  // HZ-657: the run routes' params schema coerces runId to an integer first.
+  assert.equal((await run('member:run', { params: { runId: alphaRun } })).passed, true)
+  assert.deepEqual(await run('member:run', { params: { runId: betaRun } }), NOT_FOUND)
+  assert.deepEqual(await run('member:run', { params: { runId: -1 } }), NOT_FOUND)
+  assert.deepEqual(await run('member:run', { params: { runId: 1.5 } }), NOT_FOUND)
 })
 
 test('member:project admits a member of that project id only', async () => {
