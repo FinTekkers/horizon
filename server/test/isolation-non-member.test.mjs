@@ -64,12 +64,15 @@ const { STEPS } = await import('../../domain/js/lifecycle.js')
 assert.equal(config.SCREENSHOT_LOGIN_KEY, '')
 assert.equal(config.TEST_HOOKS_ENABLED, true)
 
-// The farm answers every call; GitHub and anything else off this host is down,
-// so no test reaches the network.
+// The farm answers every call, but never comes up: a POST /api/projects starts
+// it (ensureFarm), and a farm that never says running or error keeps that
+// start polling every 3 s, holding the process open long after the tests.
+// GitHub and anything else off this host is down, so no test reaches the network.
 const realFetch = globalThis.fetch
 globalThis.fetch = async (url, opts) => {
-  const { hostname } = new URL(String(url))
+  const { hostname, pathname } = new URL(String(url))
   if (hostname === '127.0.0.1') return realFetch(url, opts)
+  if (hostname === 'farm.test' && pathname === '/farm/status') return Response.json({ status: 'error', error: 'no farm in this test' })
   if (hostname === 'farm.test') return Response.json({ ok: true, content: '', next_offset: 0 })
   return Response.json({ message: 'unreachable in this test' }, { status: 503 })
 }
