@@ -12,3 +12,9 @@ export function loginFixtureUser(auth, config, opts = {}) {
   const token = auth.createSession(user.id)
   return { user, pin, cookie: `${config.SESSION_COOKIE_NAME}=${token}` }
 }
+
+// HZ-664: a real personal API token for `user`, as an Authorization header.
+export function loginFixtureToken(auth, user, name = 'fixture token') {
+  const { id, token } = auth.createApiToken(user.id, name)
+  return { id, raw: token, headers: { authorization: `Bearer ${token}` } }
+}
