@@ -26,6 +26,8 @@ vi.mock('./api', () => ({
   getSync: () => ({ connected: false }),
   getProjects: () => projects,
   getActiveProjectId: () => null,
+  // HZ-661: no board frame yet, so the first-project screen stays off.
+  hasSnapshot: () => false,
   getFarm: () => null,
   getDurationEstimates: () => null,
   getDeployBlock: () => null,

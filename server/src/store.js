@@ -798,7 +798,12 @@ export function createProject(name, { isolation = 'internal', memberId = null } 
     const projectId = db
       .prepare('INSERT INTO project (name, enabled, isolation) VALUES (?, ?, ?)')
       .run(name, first ? 1 : 0, isolation).lastInsertRowid
-    if (memberId != null) db.prepare('INSERT OR IGNORE INTO project_member (project_id, user_id) VALUES (?, ?)').run(projectId, memberId)
+    // HZ-661: a member's new project is also their active one — always a
+    // project they were just made a member of, never any other id.
+    if (memberId != null) {
+      db.prepare('INSERT OR IGNORE INTO project_member (project_id, user_id) VALUES (?, ?)').run(projectId, memberId)
+      db.prepare('UPDATE user SET active_project_id = ? WHERE id = ?').run(projectId, memberId)
+    }
     return projectId
   })()
   if (first) {

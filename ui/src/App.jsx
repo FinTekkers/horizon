@@ -15,6 +15,7 @@ import AdminPage from './components/AdminPage'
 import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import FarmHealthPage from './components/FarmHealthPage'
 import NewItemModal from './components/NewItemModal'
+import FirstProjectScreen from './components/FirstProjectScreen'
 import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
@@ -260,6 +261,10 @@ function AuthenticatedApp({ user, onLogout }) {
   // HZ-547: each Plan's filed items, summed by the server.
   const planProgress = api.getPlanProgress()
   const activeProject = projects.find((p) => p.id === activeProjectId) || null
+  // HZ-661: a non-owner in no project — new, or just removed from their last
+  // one — sets one up instead of seeing an empty board. Never the owner, and
+  // never before the first board frame, when `projects` is not loaded yet.
+  const needsFirstProject = !isAdmin && api.hasSnapshot() && projects.length === 0
   // HZ-208: the project filter is view state only. It is re-validated on every
   // render, so a project disabled live (over SSE) while selected falls back to
   // 'All projects' instead of hiding everything.
@@ -539,7 +544,9 @@ function AuthenticatedApp({ user, onLogout }) {
         </div>
       )}
 
-      {view === 'board' && (
+      {view === 'board' && needsFirstProject && <FirstProjectScreen onCreate={api.createProject} />}
+
+      {view === 'board' && !needsFirstProject && (
         <Board
           items={visibleItems}
           projects={projects}
@@ -554,6 +561,7 @@ function AuthenticatedApp({ user, onLogout }) {
           isGateBusy={isGateBusy}
           planProgress={planProgress}
           onOpenPlan={openPlanOnBoard}
+          activeProjectName={isAdmin ? null : (activeProject?.name ?? null)}
         />
       )}
 

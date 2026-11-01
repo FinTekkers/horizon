@@ -21,6 +21,7 @@ export const {
   revokeApiToken,
   getProjects,
   getActiveProjectId,
+  hasSnapshot,
   getFarm,
   getDurationEstimates,
   getDeployBlock,

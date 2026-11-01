@@ -914,3 +914,27 @@ test('getProductivity GETs /admin/productivity with range and project in the que
   expect(fetchSpy).toHaveBeenCalledTimes(1)
   expect(fetchSpy.mock.calls[0][0]).toBe(`${serverApi.API_BASE}/admin/productivity?range=7d&project=a%26b`)
 })
+
+// ---- HZ-661: a member's active project and repo can clear live ----
+
+test('activeProjectId and repoUrl follow the stream: null clears them, a missing key keeps them', async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('no fetch expected'))))
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  expect(serverApi.hasSnapshot()).toBe(false)
+  const source = MockEventSource.instances.at(-1)
+  source.dispatch('snapshot', { items: [], projects: [{ id: 3, name: 'Acme' }], activeProjectId: 3, repoUrl: 'https://github.com/acme/web' })
+  expect(serverApi.hasSnapshot()).toBe(true)
+  expect(serverApi.getActiveProjectId()).toBe(3)
+  const issue = { issue: 9 }
+  expect(serverApi.issueUrl(issue)).toBe('https://github.com/acme/web/issues/9')
+  // A delta about something else keeps both.
+  source.dispatch('delta', { upserts: [], removed: [], top: { farm: { status: 'running' } } })
+  expect(serverApi.getActiveProjectId()).toBe(3)
+  expect(serverApi.issueUrl(issue)).toBe('https://github.com/acme/web/issues/9')
+  // Removed from the project: the server's nulls replace them, no reload.
+  source.dispatch('delta', { upserts: [], removed: [], top: { projects: [], activeProjectId: null, repoUrl: null } })
+  expect(serverApi.getActiveProjectId()).toBeNull()
+  expect(serverApi.getProjects()).toEqual([])
+  expect(serverApi.issueUrl(issue)).toBeNull()
+})

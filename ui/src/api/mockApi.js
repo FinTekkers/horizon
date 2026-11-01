@@ -171,6 +171,11 @@ export function getActiveProjectId() {
   return null
 }
 
+// The mock board is local, so it is always loaded (HZ-661).
+export function hasSnapshot() {
+  return true
+}
+
 export function getFarm() {
   return { status: 'running' }
 }

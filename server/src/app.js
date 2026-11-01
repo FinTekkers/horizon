@@ -282,9 +282,11 @@ export function streamClientCount() {
 // HZ-656: `viewer` is access.viewerFor(request): null (the owner, and every
 // internal caller) is the board above, unchanged; { projectIds } is a member's
 // view of it (boardView.js). Either way the board itself is built one way.
-export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true, viewer = null } = {}) {
+// HZ-661: `userId` is whose user.active_project_id a member's view shows; the
+// owner's board ignores it.
+export function snapshot({ scope = 'active', estimates = true, checks = true, stepOutputs = true, plans = true, viewer = null, userId = null } = {}) {
   const { board, parents } = buildBoard({ scope, estimates, checks, stepOutputs, plans })
-  return viewer ? memberView(board, viewer, parents) : board
+  return viewer ? memberView(board, viewer, parents, userId) : board
 }
 
 // The owner's board, plus the spawn parents its planProgress was summed from,
@@ -307,8 +309,11 @@ function buildBoard({ scope = 'active', estimates = true, checks = true, stepOut
   return { board, parents }
 }
 
-function memberView(board, viewer, parents) {
-  return viewSnapshot(board, viewer, { itemVisible: store.viewerItemFilter(viewer), parents })
+// HZ-661: read here, not put on the viewer — the viewer shape is shared with
+// the item filters and the route guard, and only the board needs it.
+function memberView(board, viewer, parents, userId) {
+  const activeProjectId = typeof userId === 'string' ? store.getUserActiveProject(userId) : null
+  return viewSnapshot(board, viewer, { itemVisible: store.viewerItemFilter(viewer), parents, activeProjectId })
 }
 
 // Human gates are human-only: every account gets its own auto-generated gate
@@ -515,7 +520,7 @@ function flushBoard() {
     }
   }
   for (const { res, tab, viewer } of members) {
-    const { delta, baseline } = diffSnapshot(tab.baseline, memberView(board, viewer, parents))
+    const { delta, baseline } = diffSnapshot(tab.baseline, memberView(board, viewer, parents, tab.userId))
     tab.baseline = baseline
     if (delta) res.write(`event: delta\ndata: ${JSON.stringify(delta)}\n\n`)
   }
@@ -785,13 +790,13 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       // HZ-656: the guard's `filtered` viewer — unset for the owner.
       const viewer = request.viewer ?? null
       if (request.query.v !== '2') {
-        reply.raw.write(`retry: ${LEGACY_STREAM_RETRY_MS}\ndata: ${JSON.stringify(snapshot({ scope: 'enabled', viewer }))}\n\n`)
+        reply.raw.write(`retry: ${LEGACY_STREAM_RETRY_MS}\ndata: ${JSON.stringify(snapshot({ scope: 'enabled', viewer, userId: request.user.id }))}\n\n`)
         reply.raw.end()
         return
       }
       // Written now, never through the batch timer: a (re)connecting tab gets
       // the whole current board straight away.
-      const current = snapshot({ scope: 'enabled', stepOutputs: false, viewer })
+      const current = snapshot({ scope: 'enabled', stepOutputs: false, viewer, userId: request.user.id })
       reply.raw.write(`event: snapshot\ndata: ${JSON.stringify(current)}\n\n`)
       // The first owner tab seeds the owners' baseline. With owner tabs already
       // connected it is kept: any change since it is pending in the next flush,
@@ -854,7 +859,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       },
     },
     // HZ-656: request.viewer is the guard's — unset for the owner.
-    (request) => snapshot({ scope: 'enabled', stepOutputs: request.query.v !== '2', viewer: request.viewer ?? null }),
+    (request) => snapshot({ scope: 'enabled', stepOutputs: request.query.v !== '2', viewer: request.viewer ?? null, userId: request.user.id }),
   )
 
   // HZ-318: the open item's stepOutputs, the field the board feed leaves off —
@@ -3611,10 +3616,10 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       if (project.id === activeId) {
         return { ok: true, alreadyActive: true }
       }
-      if (owner) {
-        setSetting('active_project_id', String(project.id))
-        broadcast()
-      }
+      if (owner) setSetting('active_project_id', String(project.id))
+      // HZ-661: a member's board shows their own active project, so their
+      // switch needs a frame too. Every other tab's view is unchanged.
+      broadcast()
       return { ok: true, restarting: false }
     },
   )

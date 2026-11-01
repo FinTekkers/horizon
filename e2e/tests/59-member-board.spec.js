@@ -1,7 +1,8 @@
 // HZ-656: a non-owner's board, in the browser. A project member sees their
 // project's items and not another project's; removed from the project, its
 // item leaves the open board on the next live frame, with no reload, and stays
-// gone after one. A user in no project gets an empty board that still works.
+// gone after one. HZ-661: a user in no project — never in one, or just removed
+// from their last — gets "Set up your first project" instead of the board.
 //
 // Each member browses in a context of their own, signed in by a session row
 // seeded here; the suite's owner session (storageState) makes the change that
@@ -66,7 +67,8 @@ test("a member sees only their project's item, and loses it live when removed fr
     await expect(page.getByText(A_TITLE)).toBeHidden({ timeout: 2000 })
 
     await page.reload()
-    await expect(page.locator('.board__title')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Set up your first project' })).toBeVisible()
+    await expect(page.locator('.board__title')).toHaveCount(0)
     await expect(page.getByText(A_TITLE)).toHaveCount(0)
     await expect(page.getByText(B_TITLE)).toHaveCount(0)
     expect(errors).toEqual([])
@@ -75,14 +77,13 @@ test("a member sees only their project's item, and loses it live when removed fr
   }
 })
 
-test('a user in no project gets an empty board with no page error, and the new-item form still opens', async ({ browser }) => {
+test('a user in no project gets the first-project screen, not an empty board, with no page error', async ({ browser }) => {
   const { context, page, errors } = await memberPage(browser, nobody)
   try {
     await page.goto('/')
-    await expect(page.locator('.board__title')).toHaveText('Work in flight')
+    await expect(page.getByRole('heading', { name: 'Set up your first project' })).toBeVisible()
+    await expect(page.locator('.board__title')).toHaveCount(0)
     await expect(page.locator('.card')).toHaveCount(0)
-    await page.getByRole('button', { name: '+ New work item' }).click()
-    await expect(page.getByPlaceholder(/One line naming the work/)).toBeVisible()
     expect(errors).toEqual([])
   } finally {
     await context.close()
