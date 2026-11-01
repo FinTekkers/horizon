@@ -80,7 +80,10 @@ const userEvents = (id) => db.prepare('SELECT kind, who FROM user_event WHERE us
 test('reconcileGoogleUsers disables a google-auth row not on the allowlist: the row and its session stay, the session is refused', () => {
   const { user } = auth.createUser({ email: 'evicted@example.com', name: 'Evicted', authMethod: 'google', googleSub: 'sub-evicted' })
   const token = auth.createSession(user.id)
-  assert.ok(auth.getSessionUser(token), 'sanity: the session works before reconciliation')
+  // Counted, not resolved: since HZ-635 getSessionUser itself refuses (and
+  // deletes) this unpaid, non-allowlisted session, which would hide whether
+  // reconcile did the work.
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM session WHERE user_id = ?').get(user.id).n, 1, 'sanity: the session exists before reconciliation')
 
   assert.equal(reconcileCounted(), 1)
 
@@ -142,3 +145,19 @@ test('reconcileGoogleUsers writes nothing at all when no google-auth row changes
   assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes, 'zero rows written, user_event included')
   assert.deepEqual(tableCounts(), before)
 })
+
+// HZ-635: a paid account is the second way in. A non-allowlisted sign-up row
+// (HZ-633) that linked Google keeps its sessions while it is paid.
+for (const status of ['active', 'cancelling']) {
+  test(`reconcileGoogleUsers keeps the sessions of a non-allowlisted ${status} user`, () => {
+    const user = auth.createSignupUser({ email: `paid-${status}@example.com`, name: 'Paid', company: 'Acme' })
+    auth.setAccountStatus(user.id, status, 'test')
+    db.prepare('UPDATE user SET google_sub = ? WHERE id = ?').run(`sub-paid-${status}`, user.id)
+    const token = auth.createSession(user.id)
+
+    reconcileGoogleUsers(db)
+
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM session WHERE user_id = ?').get(user.id).n, 1)
+    assert.equal(auth.getSessionUser(token).id, user.id)
+  })
+}

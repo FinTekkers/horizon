@@ -700,6 +700,18 @@ command works for a gRPC target whose rollback failed):
 infra/host/deploy-horizon.sh "$(cat ~/.horizon/horizon/last-good-tag | cut -d: -f1 | sed 's#refs/tags/##')"
 ```
 
+**Before rolling Horizon back past HZ-635, copy the database aside.** An
+older build only lets `ALLOWED_LOGIN_EMAILS` sign in with Google, so paying
+customers lose access. Its boot-time `reconcileGoogleUsers` also acts on every
+`google`-auth row that is not on the list, paid or not. A build from HZ-654 on
+disables the row, and its sessions stay refused after a later re-enable. A
+build from before HZ-654 deletes the row, which can wipe a paid user and what
+they own. Copy the database first:
+
+```
+sqlite3 /opt/horizon/server/data/horizon.db ".backup '/opt/horizon/server/data/horizon.db.pre-rollback'"
+```
+
 To have a manual run drain running checks first (below), as a webhook deploy
 does, give it the drain URL and the farm secret:
 

@@ -105,7 +105,8 @@ test('a user removed from the allowlist keeps its row and gets disabled_at; its 
 
   const sessions = sessionCount(user.id)
   const offList = await withAllowlist(['back@example.com'], () => googleSignIn(profile))
-  assert.equal(offList.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+  // HZ-635: every not-allowlisted-or-unpaid refusal shares this one code.
+  assert.equal(offList.location, `${config.UI_URL}/?error=subscription_inactive`)
   assert.equal(offList.session, undefined)
 
   // Still disabled while the address is back on the list but not yet reconciled.

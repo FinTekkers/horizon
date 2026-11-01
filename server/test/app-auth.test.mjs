@@ -28,6 +28,8 @@ process.env.ALLOWED_LOGIN_EMAILS = [
   'single-use@example.com',
   'pending-new@example.com',
   'pending-returning@example.com',
+  'allowlisted-fresh@example.com',
+  'allowlisted-cancelled@example.com',
 ].join(',')
 delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
@@ -259,10 +261,10 @@ test('google/callback with a valid state but a failed code exchange redirects wi
 //
 // HZ-36: the allowlist gate at the route now checks emailVerified BEFORE
 // findOrCreateGoogleUser is ever called, so an unverified claim is rejected
-// with the coarser, non-enumerating ?error=google_login_not_allowed rather
+// with the coarser, non-enumerating ?error=subscription_inactive rather
 // than reaching auth.js's own unverified-linking check (still exercised
 // directly, at the unit level, in auth.test.mjs).
-test('google/callback with an unverified email match redirects with ?error=google_login_not_allowed and does not link', async () => {
+test('google/callback with an unverified email match redirects with ?error=subscription_inactive and does not link', async () => {
   const { user: passwordUser } = auth.createUser({
     email: 'unverified-target@example.com',
     name: 'Unverified Target',
@@ -285,7 +287,7 @@ test('google/callback with an unverified email match redirects with ?error=googl
       headers: { cookie: `oauth_state=${stateCookie.value}` },
     })
     assert.equal(res.statusCode, 302)
-    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=subscription_inactive`)
     assert.equal(res.cookies.find((c) => c.name === config.SESSION_COOKIE_NAME), undefined, 'no session must start')
   } finally {
     googleAuth.exchangeCodeForProfile = realExchange
@@ -610,7 +612,7 @@ test('google/callback: an unverified-but-allowlisted claim and a verified-but-no
 
   assert.equal(unverifiedAllowlisted.statusCode, verifiedNotAllowlisted.statusCode)
   assert.equal(unverifiedAllowlisted.headers.location, verifiedNotAllowlisted.headers.location)
-  assert.equal(unverifiedAllowlisted.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+  assert.equal(unverifiedAllowlisted.headers.location, `${config.UI_URL}/?error=subscription_inactive`)
   assert.equal(auth.findUserByGoogleSub('google-parity-unverified'), null)
   assert.equal(auth.findUserByGoogleSub('google-parity-not-allowlisted'), null)
 })
@@ -626,7 +628,7 @@ test('deny-by-default: with ALLOWED_LOGIN_EMAILS empty, every Google login is re
       emailVerified: true,
     })
     assert.equal(res.statusCode, 302)
-    assert.equal(res.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+    assert.equal(res.headers.location, `${config.UI_URL}/?error=subscription_inactive`)
     assert.equal(auth.findUserByGoogleSub('google-deny-default'), null)
 
     const passwordLogin = await app.inject({
@@ -669,7 +671,7 @@ test('a password account previously linked to a google_sub is blocked at the rou
     emailVerified: true,
   })
   assert.equal(res.statusCode, 302)
-  assert.equal(res.headers.location, `${config.UI_URL}/?error=google_login_not_allowed`)
+  assert.equal(res.headers.location, `${config.UI_URL}/?error=subscription_inactive`)
   // The route rejection doesn't touch existing rows — that's reconcileGoogleUsers's
   // job at boot (see loginAllowlist.test.mjs), a separate concern from login-time gating.
   assert.equal(
@@ -680,8 +682,8 @@ test('a password account previously linked to a google_sub is blocked at the rou
 
 // ---- account status (HZ-632) ----
 // /api/auth/me reports the stored account_status and nothing else about the
-// user changes. No sign-in path gates on the status yet, so a pending_payment
-// user signs in exactly as before.
+// user changes. An allowlisted email signs in whatever its status (HZ-635), so
+// a pending_payment invitee signs in exactly as before.
 
 async function googleSignIn(profile) {
   const res = await googleAttempt(profile)
@@ -752,4 +754,156 @@ test('a returning Google user moved to pending_payment signs in again as the sam
   assert.equal(me.statusCode, 200)
   assert.equal(me.json().user.id, id)
   assert.equal(me.json().user.account_status, 'pending_payment')
+})
+
+// ---- paid accounts sign in with Google (HZ-635) ----
+// A paid customer's row comes from the shoreward.ai sign-up (HZ-633:
+// 'password' auth, google_sub NULL) and HZ-634's webhook sets its status. The
+// first Google sign-in links the sub through the adopt path.
+
+const REFUSED = `${config.UI_URL}/?error=subscription_inactive`
+
+function paidSignup(email, status) {
+  const user = auth.createSignupUser({ email, name: 'Paid Person', company: 'Acme' })
+  if (status !== 'pending_payment') assert.equal(auth.setAccountStatus(user.id, status, 'test').ok, true)
+  return user
+}
+
+const sessionsOf = (userId) => db.prepare('SELECT COUNT(*) AS n FROM session WHERE user_id = ?').get(userId).n
+
+// Records every outbound fetch, so a test can prove sign-in never calls Stripe.
+async function withFetchSpy(run) {
+  const realFetch = globalThis.fetch
+  const urls = []
+  globalThis.fetch = (input, init) => {
+    urls.push(String(input?.url ?? input))
+    return realFetch(input, init)
+  }
+  try {
+    await run()
+  } finally {
+    globalThis.fetch = realFetch
+  }
+  assert.deepEqual(urls.filter((url) => url.includes('stripe.com')), [], 'no Stripe API call')
+}
+
+test('google/callback: allowlisted, active and cancelling users get a working session; pending_payment, past_due and cancelled are refused', async () => {
+  await withFetchSpy(async () => {
+    const allowed = [
+      { email: 'allowlisted-fresh@example.com', status: null }, // allowlisted, no row yet
+      { email: 'paid-active@example.com', status: 'active' },
+      { email: 'paid-cancelling@example.com', status: 'cancelling' },
+    ]
+    for (const { email, status } of allowed) {
+      if (status) paidSignup(email, status)
+      const res = await googleAttempt({ sub: `google-${email}`, email, name: 'Paid Person', emailVerified: true })
+      assert.equal(res.headers.location, config.UI_URL, `${email} signs in`)
+      const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: cookieFrom(res) } })
+      assert.equal(me.statusCode, 200, `${email}'s cookie works`)
+      assert.equal(me.json().user.email, email)
+    }
+    for (const status of ['pending_payment', 'past_due', 'cancelled']) {
+      const email = `paid-${status}@example.com`
+      const user = paidSignup(email, status)
+      const res = await googleAttempt({ sub: `google-${email}`, email, name: 'Paid Person', emailVerified: true })
+      assert.equal(res.statusCode, 302)
+      assert.equal(res.headers.location, REFUSED, `${status} is refused`)
+      assert.equal(cookieFrom(res), null, 'no session cookie')
+      assert.equal(sessionsOf(user.id), 0, 'no session row')
+      assert.equal(db.prepare('SELECT google_sub FROM user WHERE id = ?').get(user.id).google_sub, null, 'not linked')
+    }
+  })
+})
+
+test('google/callback: a status that lapses between the pre-check and findOrCreateGoogleUser still redirects to subscription_inactive', async () => {
+  const email = 'paid-race@example.com'
+  const user = paidSignup(email, 'active')
+  // The route reads emailVerified once in googleLoginAllowed, then again in
+  // findOrCreateGoogleUser; the status lapses on that second read.
+  let reads = 0
+  const profile = { sub: 'google-paid-race', email, name: 'Paid Person' }
+  Object.defineProperty(profile, 'emailVerified', {
+    enumerable: true,
+    get() {
+      reads += 1
+      if (reads === 2) auth.setAccountStatus(user.id, 'past_due', 'test')
+      return true
+    },
+  })
+  const res = await googleAttempt(profile)
+  assert.ok(reads >= 2, 'both gates ran')
+  assert.equal(res.headers.location, REFUSED, 'not google_link_blocked')
+  assert.equal(sessionsOf(user.id), 0)
+})
+
+test('google/callback: an unknown account_status is refused, and a profile with no row is refused and writes no row', async () => {
+  const email = 'paid-bogus@example.com'
+  const user = paidSignup(email, 'pending_payment')
+  // The CHECK on account_status forbids this value; a row that holds one
+  // anyway must still fail closed.
+  db.pragma('ignore_check_constraints = ON')
+  try {
+    db.prepare("UPDATE user SET account_status = 'bogus' WHERE id = ?").run(user.id)
+  } finally {
+    db.pragma('ignore_check_constraints = OFF')
+  }
+  const bogus = await googleAttempt({ sub: 'google-paid-bogus', email, name: 'Paid Person', emailVerified: true })
+  assert.equal(bogus.headers.location, REFUSED)
+  assert.equal(sessionsOf(user.id), 0)
+
+  const usersBefore = db.prepare('SELECT COUNT(*) AS n FROM user').get().n
+  const nobody = await googleAttempt({ sub: 'google-no-row', email: 'no-row@example.com', name: 'Nobody', emailVerified: true })
+  assert.equal(nobody.headers.location, REFUSED)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM user').get().n, usersBefore, 'no row written')
+  assert.equal(auth.findUserByEmailCI('no-row@example.com'), null)
+})
+
+test('google/callback adopts a paid sign-up row: google_sub is linked and account_status stays active', async () => {
+  const email = 'paid-adopt@example.com'
+  const user = paidSignup(email, 'active')
+  await withFetchSpy(async () => {
+    const res = await googleAttempt({ sub: 'google-paid-adopt', email, name: 'Paid Person', emailVerified: true })
+    assert.equal(res.headers.location, config.UI_URL)
+    const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: cookieFrom(res) } })
+    assert.equal(me.json().user.id, user.id, 'the sign-up row, not a new one')
+  })
+  const row = db.prepare('SELECT google_sub, account_status FROM user WHERE id = ?').get(user.id)
+  assert.equal(row.google_sub, 'google-paid-adopt')
+  assert.equal(row.account_status, 'active')
+})
+
+test('an allowlisted email that is cancelled still signs in with Google and keeps its sessions through reconcile', async () => {
+  const { reconcileGoogleUsers } = await import('../src/loginAllowlist.js')
+  const email = 'allowlisted-cancelled@example.com'
+  const cookie = await googleSignIn({ sub: 'google-allowlisted-cancelled', email, name: 'Single Use', emailVerified: true })
+  const { id } = (await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie } })).json().user
+  auth.setAccountStatus(id, 'cancelled', 'test')
+
+  const again = await googleSignIn({ sub: 'google-allowlisted-cancelled', email, name: 'Single Use', emailVerified: true })
+  reconcileGoogleUsers(db)
+  assert.equal(sessionsOf(id), 2)
+  for (const c of [cookie, again]) {
+    const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: c } })
+    assert.equal(me.statusCode, 200)
+  }
+})
+
+test('password sign-in is unchanged: the non-allowlisted ADMIN_EMAIL row with a cancelled status still logs in', async () => {
+  config.ALLOWED_LOGIN_EMAILS.delete(config.ADMIN_EMAIL)
+  const admin = auth.findUserByEmail(config.ADMIN_EMAIL)
+  try {
+    auth.setAccountStatus(admin.id, 'cancelled', 'test')
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { email: config.ADMIN_EMAIL, password: config.ADMIN_PASSWORD },
+    })
+    assert.equal(login.statusCode, 200)
+    const me = await app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: cookieFrom(login) } })
+    assert.equal(me.statusCode, 200)
+    assert.equal(me.json().user.email, config.ADMIN_EMAIL)
+  } finally {
+    auth.setAccountStatus(admin.id, 'active', 'test')
+    config.ALLOWED_LOGIN_EMAILS.add(config.ADMIN_EMAIL)
+  }
 })

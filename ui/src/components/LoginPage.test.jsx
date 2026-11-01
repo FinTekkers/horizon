@@ -66,3 +66,12 @@ test('stripping ?error= preserves other query params', () => {
   render(<LoginPage onLoggedIn={noop} />)
   expect(window.location.search).toBe('?foo=bar')
 })
+
+// HZ-635: an unpaid or lapsed Google sign-in is told why, and where to pay.
+test('?error=subscription_inactive renders the payment message and a link to sign up', () => {
+  window.history.replaceState({}, '', '/?error=subscription_inactive')
+  render(<LoginPage onLoggedIn={noop} />)
+  const banner = document.querySelector('.gh-error')
+  expect(banner.textContent).toContain("Your Horizon subscription isn't active. Finish payment or contact us.")
+  expect(banner.querySelector('a[href="https://shoreward.ai/signup.html"]')).toBeTruthy()
+})

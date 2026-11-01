@@ -11,7 +11,7 @@
 import crypto from 'node:crypto'
 import { db } from './db.js'
 import { ADMIN_EMAIL, ADMIN_EMAILS, ADMIN_PASSWORD, SESSION_TTL_DAYS } from './config.js'
-import { isAllowedEmail } from './loginAllowlist.js'
+import { isAllowedEmail, isEntitled, isGoogleGated } from './loginAllowlist.js'
 import { sqlTime } from './sqlTime.js'
 
 function hashSecret(plain) {
@@ -61,7 +61,8 @@ export const ACCOUNT_STATUSES = Object.freeze(['pending_payment', 'active', 'pas
 // reads the old value, updates the row and writes a user_event audit row in one
 // transaction. Returns { ok, from, to }, { ok, from, to, unchanged } for a
 // same-value write (no audit row), or { error } with 'invalid_status',
-// 'invalid_who' or 'not_found'. Sign-in does not read the status yet.
+// 'invalid_who' or 'not_found'. Google sign-in and every request read it
+// through loginAllowlist.isEntitled (HZ-635); nothing there writes it.
 // HZ-641: a change to 'cancelled' also stores access_ended_at (accessEndedAt,
 // in sqlTime form, else now), and any other change clears it, so a reactivated
 // user is never purged. A repeated 'cancelled' is unchanged and keeps the
@@ -164,12 +165,13 @@ function timestampMs(value) {
   return Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(text) ? text : `${text.replace(' ', 'T')}Z`)
 }
 
-// The user row a credential issued at `createdAt` may act as, or null.
-function credentialUser(userId, createdAt) {
+// The raw user row a credential issued at `createdAt` may act as, or null.
+// Raw, not toPublicUser, so callers can also check entitlement (HZ-635).
+function credentialRow(userId, createdAt) {
   const row = db.prepare('SELECT * FROM user WHERE id = ?').get(userId)
   if (!row || row.disabled_at != null) return null
   if (row.credentials_valid_after != null && !(timestampMs(createdAt) >= timestampMs(row.credentials_valid_after))) return null
-  return toPublicUser(row)
+  return row
 }
 
 function touchLastLogin(id) {
@@ -201,17 +203,19 @@ export class GoogleLinkBlockedError extends Error {}
 // left alone too; this fix links one existing row per email, it never
 // re-links or merges rows.
 //
-// Gated on the login allowlist first (HZ-36): the HTTP route already checks
-// this before calling us, but this is a second, independent gate so any
-// other caller (a script, an admin tool, a future route) can't reach a
+// Gated first (HZ-36, HZ-635) by googleLoginAllowed below: the HTTP route
+// already checks it before calling us, but this is a second, independent gate
+// so any other caller (a script, an admin tool, a future route) can't reach a
 // Google identity — new, linked, or returning — without going through it
 // too. Re-checked even for a RETURNING sub, so removing an address from the
-// allowlist blocks a previously-linked account's very next login, not just
-// new ones.
+// allowlist, or a lapsed payment, blocks a previously-linked account's very
+// next login, not just new ones. Only an allowlisted email ever gets a new
+// row: a paid customer already has one from sign-up (HZ-633), and that row is
+// linked through the adopt path above. account_status is never written here.
 //
 // HZ-654: a disabled account (returning, or matched by email) is refused too.
 export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
-  if (!emailVerified || !isAllowedEmail(email)) throw new GoogleLinkBlockedError('not_allowed')
+  if (!googleLoginAllowed({ sub, email, emailVerified })) throw new GoogleLinkBlockedError('not_allowed')
   const existing = findUserByGoogleSub(sub)
   if (existing) {
     if (isDisabled(existing.id)) throw new GoogleLinkBlockedError('disabled')
@@ -227,9 +231,30 @@ export function findOrCreateGoogleUser({ sub, email, name, emailVerified }) {
     db.prepare("UPDATE user SET google_sub = ?, last_login_at = datetime('now') WHERE id = ?").run(sub, sameEmail.id)
     return findUserById(sameEmail.id)
   }
+  if (!isAllowedEmail(email)) throw new GoogleLinkBlockedError('not_allowed')
   // HZ-655: a new allowlisted team login is an owner, as every login was
   // before roles; an adopted sign-up row above keeps its own role.
   return createUser({ email, name, authMethod: 'google', googleSub: sub, role: 'owner' }).user
+}
+
+// The row a Google profile would sign in to: by sub, then by email
+// (case-insensitively), the same order findOrCreateGoogleUser uses.
+function googleAccountRow({ sub, email }) {
+  return (
+    db.prepare('SELECT * FROM user WHERE google_sub = ?').get(sub) ??
+    db.prepare('SELECT * FROM user WHERE lower(email) = lower(?)').get(email) ??
+    null
+  )
+}
+
+// Whether this Google profile may sign in (HZ-635): a verified email that is
+// allowlisted, or whose existing row is paid ('active' or 'cancelling'). Reads
+// only; a refused profile never creates or touches a row.
+export function googleLoginAllowed({ sub, email, emailVerified }) {
+  if (!emailVerified) return false
+  if (isAllowedEmail(email)) return true
+  const row = googleAccountRow({ sub, email })
+  return Boolean(row) && isEntitled({ email, accountStatus: row.account_status })
 }
 
 // The hardcoded credential path: verifies against ADMIN_EMAIL/ADMIN_PASSWORD
@@ -283,7 +308,22 @@ export function getSessionUser(token) {
     db.prepare('DELETE FROM session WHERE id = ?').run(session.id)
     return null
   }
-  return credentialUser(session.user_id, session.created_at)
+  const row = credentialRow(session.user_id, session.created_at)
+  if (!row) return null
+  if (refusedAccess(row)) {
+    // A lookup with a write: a Google user who is no longer entitled (lapsed
+    // payment, off the allowlist) loses every session on their next request,
+    // so access ends without a restart or a reconcile (HZ-635).
+    db.prepare('DELETE FROM session WHERE user_id = ?').run(row.id)
+    return null
+  }
+  return toPublicUser(row)
+}
+
+// A Google-gated row (loginAllowlist.isGoogleGated) that is neither allowlisted
+// nor paid. Password-only rows and the ADMIN_EMAIL row are never refused.
+function refusedAccess(row) {
+  return isGoogleGated(row) && !isEntitled({ email: row.email, accountStatus: row.account_status })
 }
 
 export function deleteSession(token) {
@@ -353,7 +393,8 @@ export function revokeApiToken(userId, id) {
 
 // Resolves a raw bearer value to { user, tokenId, tokenName }, or null when it
 // is malformed, unknown, revoked, expired, or its user no longer exists, is
-// disabled, or was disabled after the token was created (HZ-654).
+// disabled, was disabled after the token was created (HZ-654), or is no longer
+// entitled (HZ-635).
 export function getTokenAuth(raw) {
   if (typeof raw !== 'string' || !API_TOKEN_SHAPE.test(raw)) return null
   const hash = sha256(raw)
@@ -366,8 +407,12 @@ export function getTokenAuth(raw) {
   if (row.revoked_at) return null
   const now = Date.now()
   if (new Date(row.expires_at).getTime() <= now) return null
-  const user = credentialUser(row.user_id, row.created_at)
-  if (!user) return null
+  // A token whose Google user is no longer entitled is refused, not revoked:
+  // unlike a session it was created deliberately, so it works again once the
+  // user pays again (HZ-635).
+  const userAccount = credentialRow(row.user_id, row.created_at)
+  if (!userAccount || refusedAccess(userAccount)) return null
+  const user = toPublicUser(userAccount)
   // Throttled in SQL rather than in memory: at most one write per token a minute.
   db.prepare(
     'UPDATE api_token SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)',
