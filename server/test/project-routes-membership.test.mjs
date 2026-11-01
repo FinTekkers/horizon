@@ -79,6 +79,9 @@ const P3 = store.createProject('Gamma', { isolation: 'tenant', memberId: userA.u
 // C's own project: proves C's PIN is real, so the "with a PIN" sweep means something.
 const CP = store.createProject('C own', { isolation: 'tenant', memberId: userC.user.id }).id
 db.prepare('INSERT INTO project_member (project_id, user_id) VALUES (?, ?)').run(P1, userB.user.id)
+// HZ-661: createProject made each member's last new project their active one;
+// A starts with none, so metric 5's first Activate is a real switch.
+store.setUserActiveProject(userA.user.id, null)
 const SLUG = rulesKey('project', 'Alpha')
 assert.equal(SLUG, 'alpha')
 

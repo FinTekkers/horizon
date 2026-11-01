@@ -601,6 +601,7 @@ button { font-family: var(--font-sans); }
 .board__head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px; }
 .board__title { font: 700 22px var(--font-sans); letter-spacing: -0.4px; }
 .board__meta { font: 500 13px var(--font-sans); color: var(--muted); }
+.board__project { font: 700 13px var(--font-sans); color: var(--primary-ink); }
 /* HZ-80: which filters are currently narrowing the board, always visible in
    the header — never behind a menu — so nothing looks silently lost. */
 .board__hidden-note {
@@ -1415,6 +1416,21 @@ button { font-family: var(--font-sans); }
   text-decoration: none; box-sizing: border-box;
 }
 .login__google:hover { border-color: var(--primary); color: var(--primary-ink); }
+
+/* ---- first project (HZ-661): a non-owner in no project, in place of the board ---- */
+.first-project { display: flex; justify-content: center; padding: 64px 24px; }
+.first-project__card {
+  width: 100%; max-width: 440px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 18px; padding: 32px 30px; box-shadow: 0 12px 40px rgba(var(--shadow-rgb), 0.10);
+}
+.first-project__title { margin: 0; font: 800 22px var(--font-sans); color: var(--deep); }
+.first-project__lede { margin: 10px 0 4px; font: 500 14px var(--font-sans); color: var(--muted); line-height: 1.5; }
+.first-project__submit {
+  width: 100%; margin-top: 18px; border: none; cursor: pointer; border-radius: 10px;
+  padding: 11px 16px; font: 700 14px var(--font-sans); color: #fff; background: var(--primary);
+}
+.first-project__submit:hover { background: var(--primary-hover); }
+.first-project__submit:disabled { opacity: 0.6; cursor: default; }
 
 /* Public legal pages (/privacy, /terms) and the links to them. */
 .legal { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 28px 16px 40px; }

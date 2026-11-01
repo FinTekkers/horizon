@@ -49,22 +49,27 @@ function memberItem(item, visible) {
 }
 
 // `board`: a snapshot() built with no viewer. `viewer`: { projectIds }.
+// `activeProjectId`: the member's own user.active_project_id (HZ-661), never
+// the board's global one — kept only while they are still a member of it, so
+// a stale id after a removal is null, not another project.
 // `itemVisible`: store.viewerItemFilter(viewer), the same predicate
 // listItems({ viewer }) applies, so a member's first frame and every later
 // delta agree on which items they see. `parents`: store.spawnParents(),
 // needed only when the board carries planProgress.
-export function viewSnapshot(board, viewer, { itemVisible, parents = null }) {
+export function viewSnapshot(board, viewer, { itemVisible, parents = null, activeProjectId = null }) {
   const shown = board.items.filter(itemVisible)
   const visible = new Set(shown.map((item) => item.id))
   const items = shown.map((item) => memberItem(item, visible))
   const projects = board.projects
     .filter((project) => !project.unlinked && viewer.projectIds.has(project.id))
     .map(memberProject)
-  const active = board.activeProjectId != null && viewer.projectIds.has(board.activeProjectId)
+  const active = activeProjectId != null && viewer.projectIds.has(activeProjectId)
   const view = {
-    repoUrl: active ? board.repoUrl : null,
+    // board.repoUrl is the global active project's repo: shown only when that
+    // is the member's own active project too.
+    repoUrl: active && activeProjectId === board.activeProjectId ? board.repoUrl : null,
     projects,
-    activeProjectId: active ? board.activeProjectId : null,
+    activeProjectId: active ? activeProjectId : null,
     items,
   }
   if (Object.hasOwn(board, 'durationEstimates')) view.durationEstimates = board.durationEstimates
