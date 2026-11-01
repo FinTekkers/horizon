@@ -30,6 +30,12 @@ function pick(source, keys) {
   return out
 }
 
+// A member's copy of one listProjects() row. HZ-659: GET /api/projects uses it
+// too, so a member's project list and board agree field for field.
+export function memberProject(project) {
+  return { ...pick(project, PROJECT_FIELDS), repos: project.repos.map((repo) => pick(repo, REPO_FIELDS)) }
+}
+
 // A copy of `item` whose links to other items name only `visible` ids.
 function memberItem(item, visible) {
   const seen = (ref) => visible.has(ref.id)
@@ -53,7 +59,7 @@ export function viewSnapshot(board, viewer, { itemVisible, parents = null }) {
   const items = shown.map((item) => memberItem(item, visible))
   const projects = board.projects
     .filter((project) => !project.unlinked && viewer.projectIds.has(project.id))
-    .map((project) => ({ ...pick(project, PROJECT_FIELDS), repos: project.repos.map((repo) => pick(repo, REPO_FIELDS)) }))
+    .map(memberProject)
   const active = board.activeProjectId != null && viewer.projectIds.has(board.activeProjectId)
   const view = {
     repoUrl: active ? board.repoUrl : null,

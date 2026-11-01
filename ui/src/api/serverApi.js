@@ -628,8 +628,27 @@ export function addRepoToProject(projectId, repo) {
   return postJson(`/projects/${projectId}/repos`, { repo })
 }
 
-export function disconnectRepo(projectId, repo) {
-  return postJson(`/projects/${projectId}/repos/disconnect`, { repo })
+// HZ-659: the projects the signed-in user belongs to (every project for the
+// owner).
+export function listProjects() {
+  return getJson('/projects')
+}
+
+// HZ-659: gate-PIN protected like fixRepoWebhook — the PIN goes only in the
+// x-human-key header, never cached or put in the URL.
+export async function disconnectRepo(projectId, repo, pin) {
+  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/disconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
+    body: JSON.stringify({ repo }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
 }
 
 // HZ-244: each connected repo's GitHub webhook status, read live by the server.
