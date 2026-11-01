@@ -787,6 +787,9 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       })
+      // HZ-664: Node drops every write to a HEAD response, so without this the
+      // HEAD route Fastify adds never sends its headers and hangs.
+      reply.raw.flushHeaders()
       // HZ-656: the guard's `filtered` viewer — unset for the owner.
       const viewer = request.viewer ?? null
       if (request.query.v !== '2') {
@@ -896,6 +899,7 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
       })
+      reply.raw.flushHeaders() // HZ-664: as /api/stream, for its HEAD route
       const frame = itemStreamFrame(id, stepOutputs)
       reply.raw.write(frame)
       // With connections already open, `sent` stays as it is: a change pending
