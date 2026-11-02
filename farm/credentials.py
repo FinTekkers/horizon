@@ -23,6 +23,7 @@ a tenant session's env — but only to farmd's 0600 spool, and never log one.
 """
 
 import os
+import stat
 
 GATE_APPROVING = frozenset({"FARM_SHARED_SECRET", "WA_APPROVAL_SECRET"})
 
@@ -90,11 +91,58 @@ class TenantEnvError(Exception):
     """str() names a field only — never a value."""
 
 
-def resolve_token_ref(ref: str, environ: dict[str, str] | None = None) -> str:
-    """The value of `$NAME` in farmd's own environment. Raises TenantEnvError
-    when the ref is not a `$NAME` or the name is unset or empty. Never falls
+# HZ-697: where a tenant's own token file lives — the server writes it, mode
+# 0600, owned by the farm user. The path in a `file:` ref must be exactly this
+# directory plus the project's own id.
+TENANT_TOKEN_DIR = "/etc/horizon/tenant-tokens"
+FILE_REF_PREFIX = f"file:{TENANT_TOKEN_DIR}/"
+
+
+def _read_tenant_token_file(ref: str, project_id, token_root: str | None) -> str:
+    """The token in a tenant's `file:` ref. Refuses an id that is not this
+    project's, a symlink, a non-regular file, a mode other than 0600 and a
+    file not owned by this process's uid. `token_root` is a test seam that
+    stands in for TENANT_TOKEN_DIR; the ref itself must still name the
+    canonical directory."""
+    suffix = ref[len(FILE_REF_PREFIX) :]
+    if not (suffix.isascii() and suffix.isdigit() and not suffix.startswith("0") and len(suffix) <= 10):
+        raise TenantEnvError("github_token_ref file path is not a tenant token path")
+    if isinstance(project_id, bool) or not isinstance(project_id, int) or str(project_id) != suffix:
+        raise TenantEnvError("github_token_ref file is not this project's")
+    path = os.path.join(TENANT_TOKEN_DIR if token_root is None else token_root, suffix)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise TenantEnvError("github_token_ref file is missing or not a regular file") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise TenantEnvError("github_token_ref file is missing or not a regular file")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise TenantEnvError("github_token_ref file must be mode 0600")
+        if info.st_uid != os.getuid():
+            raise TenantEnvError("github_token_ref file must be owned by the farm user")
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = None
+            value = handle.read().strip()
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if not value:
+        raise TenantEnvError("github_token_ref is unset or empty")
+    return value
+
+
+def resolve_token_ref(
+    ref: str, environ: dict[str, str] | None = None, *, project_id=None, token_root: str | None = None
+) -> str:
+    """The value of `$NAME` in farmd's own environment, or (HZ-697) the
+    contents of a `file:` ref's token file for project `project_id`. Raises
+    TenantEnvError when the ref is neither, or does not resolve. Never falls
     back to GITHUB_TOKEN."""
     source = os.environ if environ is None else environ
+    if isinstance(ref, str) and ref.startswith(FILE_REF_PREFIX):
+        return _read_tenant_token_file(ref, project_id, token_root)
     if not isinstance(ref, str) or not ref.startswith("$") or len(ref) < 2:
         raise TenantEnvError("github_token_ref is not a $NAME reference")
     value = source.get(ref[1:], "")
@@ -103,12 +151,14 @@ def resolve_token_ref(ref: str, environ: dict[str, str] | None = None) -> str:
     return value
 
 
-def tenant_session_env(project: dict, *, home: str, environ: dict[str, str] | None = None) -> dict[str, str]:
+def tenant_session_env(
+    project: dict, *, home: str, environ: dict[str, str] | None = None, token_root: str | None = None
+) -> dict[str, str]:
     """The whole environment of a tenant session, built from empty: the
     TENANT_FORWARD names farmd holds, HOME and FARM_HOME under the run user's
     home, and GITHUB_TOKEN / GH_TOKEN set to this project's own token."""
     source = os.environ if environ is None else environ
-    token = resolve_token_ref(project.get("githubTokenRef"), source)
+    token = resolve_token_ref(project.get("githubTokenRef"), source, project_id=project.get("id"), token_root=token_root)
     env = {name: source[name] for name in sorted(TENANT_FORWARD) if name in source}
     env["HOME"] = home
     env["FARM_HOME"] = f"{home}/.horizon-farm"

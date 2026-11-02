@@ -4,6 +4,17 @@
     { "id": "no-project", "project": null, "refusal": null },
     { "id": "internal", "project": { "isolation": "internal", "githubTokenRef": null, "runUser": null }, "refusal": null },
     { "id": "tenant-complete", "project": { "isolation": "tenant", "githubTokenRef": "$ACME_GITHUB_TOKEN", "runUser": "acme" }, "refusal": null },
+    { "id": "tenant-file-ref", "project": { "isolation": "tenant", "githubTokenRef": "file:/etc/horizon/tenant-tokens/42", "runUser": "hz-p42" }, "refusal": null },
+    {
+      "id": "tenant-file-ref-wrong-dir",
+      "project": { "isolation": "tenant", "githubTokenRef": "file:/etc/horizon/server.env", "runUser": "hz-p42" },
+      "refusal": "tenant project needs github_token_ref before the farm runs it"
+    },
+    {
+      "id": "tenant-file-ref-not-an-id",
+      "project": { "isolation": "tenant", "githubTokenRef": "file:/etc/horizon/tenant-tokens/../42", "runUser": "hz-p42" },
+      "refusal": "tenant project needs github_token_ref before the farm runs it"
+    },
     {
       "id": "tenant-missing-ref",
       "project": { "isolation": "tenant", "githubTokenRef": null, "runUser": "acme" },

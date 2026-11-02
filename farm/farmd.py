@@ -1145,7 +1145,8 @@ def _knowledge_loop() -> None:
 # `project` dict. The same rule as server/src/projectIsolation.js; both run
 # domain/fixtures/isolation-cases.json, so the two cannot drift.
 ISOLATIONS = ("internal", "tenant")
-TOKEN_REF_RE = re.compile(r"^\$[A-Z_][A-Z0-9_]*$")
+# HZ-697: either a $NAME or a tenant's own `file:` ref (projectIsolation.js).
+TOKEN_REF_RE = re.compile(r"^(\$[A-Z_][A-Z0-9_]*|file:/etc/horizon/tenant-tokens/[1-9][0-9]{0,9})$")
 RUN_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
 
@@ -1182,9 +1183,9 @@ def _isolation_refusal(project) -> str | None:
 
 
 def _log_isolation_refusal(run_id, project: dict, reason: str) -> None:
-    """The farm log line for a refused tenant task. It names the $NAME
-    reference only — never os.environ's value for it, and never a ref that
-    is not a $NAME (which could be a pasted token)."""
+    """The farm log line for a refused tenant task. It names the $NAME or
+    `file:` reference only — never the value it resolves to, and never a ref
+    of neither form (which could be a pasted token)."""
     ref = project.get("githubTokenRef") if isinstance(project, dict) else None
     shown = ref if isinstance(ref, str) and TOKEN_REF_RE.match(ref) else ("invalid" if ref else "none")
     print(f"farmd: refused run {run_id}: {reason} (token ref {shown})", flush=True)
@@ -1212,7 +1213,7 @@ def _tenant_launch_refusal(task: dict) -> str | None:
         return None
     project = task["project"]
     try:
-        credentials.resolve_token_ref(project.get("githubTokenRef"))
+        credentials.resolve_token_ref(project.get("githubTokenRef"), project_id=project.get("id"))
     except credentials.TenantEnvError:
         return "tenant project needs a resolvable github_token_ref"
     try:
