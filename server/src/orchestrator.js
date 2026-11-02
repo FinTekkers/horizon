@@ -948,7 +948,9 @@ async function runConflictResolution(id, item, actor) {
 function projectPayload(projectId) {
   const project = db.prepare('SELECT * FROM project WHERE id = ?').get(projectId)
   const repos = db.prepare('SELECT repo, prefix FROM project_repo WHERE project_id = ?').all(projectId)
-  return { project: { id: project.id, name: project.name }, repos, token: getToken() }
+  // HZ-697: no tenant token goes to the farm — for a tenant project farmd
+  // resolves the project's own github_token_ref itself.
+  return { project: { id: project.id, name: project.name }, repos, token: project.isolation === 'tenant' ? null : getToken() }
 }
 
 async function waitForFarmRunning() {

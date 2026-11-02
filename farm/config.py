@@ -246,7 +246,8 @@ FARM_WA_CHOICE_TTL_S = int(os.environ.get("FARM_WA_CHOICE_TTL_S", "600"))
 # projects sharing a run user still cannot read each other's file.
 TENANT_ENV_ROOT = Path(os.environ.get("FARM_TENANT_ENV_ROOT", "/etc/horizon/tenants"))
 # The one command the farm user may sudo to as a run user. Fixed, never read
-# from the environment: infra/host/horizon-deploy.sudoers names this path.
+# from the environment: infra/host/horizon-tenant.sudoers (HZ-697) names this
+# path, run as any member of hz-tenants.
 TENANT_ENTRY = "/usr/local/libexec/horizon/tenant-entry"
 
 

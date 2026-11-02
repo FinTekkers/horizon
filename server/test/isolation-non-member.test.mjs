@@ -206,6 +206,8 @@ const READ_CASES = {
   'GET /api/definitions': { expect: '404', url: '/api/definitions', owner: 200 },
   'GET /api/definitions/:kind/:name': { expect: '404', url: `/api/definitions/${ROLE.kind}/${ROLE.name}`, owner: 200 },
   'GET /api/projects/:id/repos/webhooks': { expect: '404', url: `/api/projects/${A}/repos/webhooks`, owner: 200 },
+  // HZ-697: not_a_tenant_project — ISO Alpha is the owner's internal project.
+  'GET /api/tenant/projects/:id/repos/checks': { expect: '404', url: `/api/tenant/projects/${A}/repos/checks?repo=${encodeURIComponent(REPO_A)}`, owner: 404 },
   'GET /api/sync/status': { expect: '404', url: '/api/sync/status', owner: 200 },
   // member:*
   'GET /api/definitions/effective': { expect: '404', url: '/api/definitions/effective?project=ISO%20Alpha', owner: 200 },
@@ -293,6 +295,9 @@ const WRITE_CASES = {
   'POST /api/projects/:id/definitions-enabled': { expect: '404', url: `/api/projects/${A}/definitions-enabled`, body: { enabled: false }, owner: 200 },
   'POST /api/projects/:id/enabled': { expect: '404', url: `/api/projects/${B}/enabled`, body: { enabled: true }, owner: 200 },
   'PUT /api/projects/:id/repos/checks': { expect: '404', url: `/api/projects/${A}/repos/checks`, body: { repo: REPO_A, test: 'npm test' }, owner: 200 },
+  // HZ-697: not_a_tenant_project — ISO Alpha is the owner's internal project.
+  'POST /api/tenant/projects/:id/repos': { expect: '404', url: `/api/tenant/projects/${A}/repos`, body: { repo: 'iso-org/new-app', token: `github_pat_${'i'.repeat(40)}` }, owner: 404 },
+  'PUT /api/tenant/projects/:id/repos/checks': { expect: '404', url: `/api/tenant/projects/${A}/repos/checks`, body: { repo: REPO_A, test: 'npm test' }, owner: 404 },
   'PUT /api/projects/:id/repos/marks': { expect: '404', url: `/api/projects/${A}/repos/marks`, body: { repo: REPO_A, noDeploy: true }, owner: 200 },
   'PUT /api/projects/:id/step-providers/:stepIndex': { expect: '404', url: `/api/projects/${A}/step-providers/0`, body: { provider: 'default' }, owner: 200 },
   // 409 validation_in_progress: the owner's walk holds the slot, as a real run spawns the farm's checks.

@@ -1,0 +1,42 @@
+#!/bin/bash
+# HZ-697: creates a tenant project's run user, hz-p<project id>. Installed
+# root-owned, mode 0755, at /usr/local/libexec/horizon/horizon-provision-run-user
+# by install-tenant-host.sh. The server runs it after a tenant member's repo
+# connect, through the one sudoers rule in horizon-tenant.sudoers:
+#
+#   sudo -n /usr/local/libexec/horizon/horizon-provision-run-user <project id>
+#
+# It takes exactly one argument, a positive integer of at most ten digits, and
+# refuses anything else. Idempotent: an existing hz-p<id> that is already a
+# nologin user whose only group is hz-tenants is left as it is, and any other
+# existing hz-p<id> is refused, never changed. It never sets a password,
+# never grants a login shell, never adds a supplementary group and never
+# touches sudoers. The home is 0700, so no other run user can read it.
+set -euo pipefail
+
+GROUP=hz-tenants
+NOLOGIN=/usr/sbin/nologin
+
+refuse() {
+  echo "horizon-provision-run-user: refused: $1" >&2
+  exit 2
+}
+
+[ "$#" -eq 1 ] || refuse "expects exactly one project id"
+[[ "$1" =~ ^[1-9][0-9]{0,9}$ ]] || refuse "the project id must be a positive integer"
+[ "$(id -u)" = 0 ] || refuse "must run as root"
+
+user="hz-p$1"
+home="/home/$user"
+
+groupadd -f "$GROUP"
+if entry="$(getent passwd "$user")"; then
+  [ "$(printf '%s' "$entry" | cut -d: -f7)" = "$NOLOGIN" ] || refuse "existing $user has a login shell"
+  [ "$(printf '%s' "$entry" | cut -d: -f6)" = "$home" ] || refuse "existing $user has another home"
+  [ "$(id -Gn "$user")" = "$GROUP" ] || refuse "existing $user has groups other than $GROUP"
+else
+  useradd --system --create-home --home-dir "$home" --shell "$NOLOGIN" --gid "$GROUP" "$user"
+fi
+chown "$user:$GROUP" "$home"
+chmod 700 "$home"
+echo "horizon-provision-run-user: ok $user"

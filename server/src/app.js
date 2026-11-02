@@ -40,6 +40,8 @@ import { getActiveProjectId, getRepoUrl, setSetting, getToken } from './settings
 import * as auth from './auth.js'
 import * as access from './access.js'
 import { RUN_USER_RE, TOKEN_REF_RE } from './projectIsolation.js'
+import * as tenantTokens from './tenantTokens.js'
+import { checkTenantToken } from './tokenCheck.js'
 import * as billing from './billing.js'
 import * as stripeWebhook from './stripeWebhook.js'
 import * as ownerMail from './ownerMail.js'
@@ -645,7 +647,19 @@ export const PRIORITY_PROPERTY = { type: 'string', enum: PRIORITIES, default: DE
 // `memberProjects` likewise (HZ-656): a stand-in for access.memberProjectIds,
 // used by the route guard and by this app's live feeds on every flush, so a
 // test can make the membership lookup throw. Production passes nothing.
-export function buildApp({ logger = true, onRoute = null, stripe = null, mailer = null, resolveProject = null, memberProjects = null } = {}) {
+//
+// `provisionRunUser` likewise (HZ-697): a stand-in for
+// tenantTokens.provisionRunUser, so tests never run sudo. Production passes
+// nothing.
+export function buildApp({
+  logger = true,
+  onRoute = null,
+  stripe = null,
+  mailer = null,
+  resolveProject = null,
+  memberProjects = null,
+  provisionRunUser = tenantTokens.provisionRunUser,
+} = {}) {
   const fastify = Fastify({ logger })
 
   if (onRoute) fastify.addHook('onRoute', onRoute)
@@ -4088,6 +4102,185 @@ export function buildApp({ logger = true, onRoute = null, stripe = null, mailer 
       if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
       broadcast()
       return { ok: true, repo, checks: result.checks }
+    },
+  )
+
+  // ---- HZ-697: a tenant member connects their own repo, and sets its checks ----
+  // `member:project`, so anyone but the project's members (and the owner) gets
+  // the guard's 404 and the handler never runs. A project that is not a
+  // tenant project is a 404 too — told only to its own members. Writes need a
+  // browser session plus the gate PIN, checked before anything is read.
+  //
+  // The token is checked against GitHub before anything is written, and is
+  // never logged, stored in the DB or echoed — the 400 for a malformed one
+  // names the field and pattern only. It lands in tenantTokens' 0600 file,
+  // whose path comes from the project id alone.
+  const TENANT_NOT_FOUND = { error: 'not_a_tenant_project' }
+  // Charset and length only: tokenCheck refuses a classic token by its
+  // prefix with a message that says why, and the published schema carries no
+  // token-shaped value.
+  const TENANT_TOKEN_SCHEMA = { type: 'string', minLength: 20, maxLength: 300, pattern: '^[A-Za-z0-9_]+$' }
+  const TENANT_CONNECT_CONFLICT = {
+    repo_already_connected: 'That repository is already connected',
+    tenant_project_has_repo: 'This project already has a repository',
+  }
+  const isTenantProject = (id) => db.prepare('SELECT isolation FROM project WHERE id = ?').get(id)?.isolation === 'tenant'
+
+  fastify.post(
+    '/api/tenant/projects/:id/repos',
+    {
+      config: { scope: 'member:project' },
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['repo', 'token'],
+          // Fastify strips unknown keys under additionalProperties: false;
+          // propertyNames runs first, so an extra key is a 400 instead.
+          propertyNames: { enum: ['repo', 'token'] },
+          additionalProperties: false,
+          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 }, token: TENANT_TOKEN_SCHEMA },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 500: ERROR_OBJECT, 502: ERROR_OBJECT },
+      },
+    },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const projectId = request.params.id
+      if (!isTenantProject(projectId)) return reply.code(404).send(TENANT_NOT_FOUND)
+      const parsed = github.parseRepo(request.body.repo)
+      if (!parsed) return reply.code(400).send({ error: 'Repository must be owner/name or a github.com URL' })
+      const conflict = (repo) => {
+        const refusal = store.tenantConnectRefusal(projectId, repo)
+        return refusal ? reply.code(409).send({ error: refusal, message: TENANT_CONNECT_CONFLICT[refusal] }) : null
+      }
+      if (conflict(parsed)) return
+      const check = await checkTenantToken(parsed, request.body.token)
+      if (!check.ok) {
+        const { error, message, permission } = check
+        return reply.code(check.status).send({ error, message, ...(permission ? { permission } : {}) })
+      }
+      const repo = check.fullName
+      if (conflict(repo)) return
+
+      try {
+        tenantTokens.writeTenantToken(projectId, request.body.token)
+      } catch (err) {
+        request.log.error({ projectId, reason: err.message }, 'tenant token file not written')
+        return reply.code(500).send({ error: 'token_store_failed' })
+      }
+      // From here on, any failure removes the token file again.
+      let result
+      try {
+        await provisionRunUser(projectId)
+      } catch {
+        tenantTokens.removeTenantToken(projectId)
+        request.log.warn({ projectId }, 'tenant run user not provisioned')
+        return reply.code(502).send({ error: 'run_user_provision_failed' })
+      }
+      try {
+        result = store.setTenantConnection(projectId, repo, actorOf(request))
+      } catch (err) {
+        tenantTokens.removeTenantToken(projectId)
+        throw err
+      }
+      if (result.error) {
+        tenantTokens.removeTenantToken(projectId)
+        if (result.error === 'project_not_found') return reply.code(404).send(TENANT_NOT_FOUND)
+        return reply.code(409).send({ error: result.error, message: TENANT_CONNECT_CONFLICT[result.error] })
+      }
+
+      store.setDefaultBranch(repo, check.defaultBranch)
+      await github.pollRepo(repo, request.log).catch(() => {})
+      const webhook = await webhooks.ensure(repo).catch(() => ({ status: 'error', lastResponseCode: null, reason: null }))
+      orchestrator.kickProjectItems(projectId)
+      broadcast()
+      return {
+        ok: true,
+        repo,
+        prefix: result.prefix,
+        defaultBranch: store.getDefaultBranch(repo)?.branch ?? null,
+        githubTokenRef: result.githubTokenRef,
+        runUser: result.runUser,
+        webhook,
+      }
+    },
+  )
+
+  // The member's own check commands: install, test and e2e only. lint and
+  // screenshots stay as Admin set them — a save here carries them over.
+  const TENANT_CHECK_SLOTS = ['install', 'test', 'e2e']
+  const tenantChecks = (checks) => Object.fromEntries(TENANT_CHECK_SLOTS.map((slot) => [slot, checks[slot] ?? null]))
+  const TENANT_REPO_GONE = { error: 'That repository is not connected to this project' }
+
+  fastify.get(
+    '/api/tenant/projects/:id/repos/checks',
+    {
+      config: { scope: 'member:project' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        querystring: {
+          type: 'object',
+          required: ['repo'],
+          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
+        },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!isTenantProject(request.params.id)) return reply.code(404).send(TENANT_NOT_FOUND)
+      const checks = store.getRepoChecksForProject(request.params.id, request.query.repo)
+      if (!checks) return reply.code(404).send(TENANT_REPO_GONE)
+      return { repo: request.query.repo, checks: tenantChecks(checks) }
+    },
+  )
+
+  fastify.put(
+    '/api/tenant/projects/:id/repos/checks',
+    {
+      config: { scope: 'member:project' },
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['repo'],
+          propertyNames: { enum: ['repo', ...TENANT_CHECK_SLOTS] },
+          additionalProperties: false,
+          properties: {
+            repo: { type: 'string', minLength: 1, maxLength: 300 },
+            install: CHECK_COMMAND_SCHEMA,
+            test: CHECK_COMMAND_SCHEMA,
+            e2e: CHECK_COMMAND_SCHEMA,
+          },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const projectId = request.params.id
+      if (!isTenantProject(projectId)) return reply.code(404).send(TENANT_NOT_FOUND)
+      const { repo, ...sent } = request.body
+      const stored = store.getRepoChecksForProject(projectId, repo)
+      if (!stored) return reply.code(404).send(TENANT_REPO_GONE)
+      const result = store.setRepoCheckCommands(projectId, repo, { ...stored, ...tenantChecks(sent) })
+      if (result.error) return reply.code(404).send(TENANT_REPO_GONE)
+      broadcast()
+      return { ok: true, repo, checks: tenantChecks(result.checks) }
     },
   )
 

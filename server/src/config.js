@@ -57,6 +57,9 @@
 //   OWNER_NOTIFY_EMAIL     recipient of that email (default GMAIL_USER)
 //   ACCOUNT_PURGE          "on" arms the daily purge of cancelled customers' data (HZ-641).
 //                          Unset/anything else means it never runs
+//   HORIZON_TENANT_TOKEN_ROOT  where a tenant's own token file is written (HZ-697; default
+//                          /etc/horizon/tenant-tokens). Tests only: the stored file: ref
+//                          always names the default path
 
 import { ITEM_KINDS, agentStepIndexes, isServerStep } from '../../domain/js/lifecycle.js'
 
@@ -388,3 +391,8 @@ export const TEST_HOOKS_ENABLED = process.env.HORIZON_TEST_HOOKS === '1'
 // test_env_file as X-Horizon-Test-Env-SCREENSHOT-LOGIN-KEY. Read raw here; the
 // one TEST_HOOKS_ENABLED guard lives in testEnvUser() (testEnvLogin.js).
 export const SCREENSHOT_LOGIN_KEY = process.env.SCREENSHOT_LOGIN_KEY || ''
+
+// HZ-697: the directory a tenant repo connect writes `<project id>` into,
+// mode 0600. The stored `file:` ref always names /etc/horizon/tenant-tokens;
+// only tests point this elsewhere, so no test touches /etc/horizon.
+export const TENANT_TOKEN_ROOT = process.env.HORIZON_TENANT_TOKEN_ROOT || '/etc/horizon/tenant-tokens'

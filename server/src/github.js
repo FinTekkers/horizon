@@ -9,6 +9,7 @@ import crypto from 'node:crypto'
 import { db } from './db.js'
 import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
+import { isTenantRepo, tokenForRepo } from './tenantTokens.js'
 import { POLL_INTERVAL_MS, UI_URL } from './config.js'
 import { ACCEPT_GATE_INDEX, endIndex, itemKindOf } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
@@ -176,7 +177,7 @@ async function ensureLaneLabel(repo, token, lane) {
 // which also owns the name format ensurePriorityLabel writes — so the label we
 // create and the label we recognise as stale cannot drift apart.
 export async function setPriorityLabel(item, priority) {
-  const token = getToken()
+  const token = repoToken(item.repo)
   const name = await ensurePriorityLabel(item.repo, token, priority)
   if (!name) throw new Error('could not ensure the priority label exists')
   const current = await gh(`/repos/${item.repo}/issues/${item.issue}/labels`)
@@ -239,7 +240,7 @@ export async function createIssue(
   repo,
   { title, outcome, metric, guardrails, priority, kind = 'change', lane = null, bodySuffix = '', autopilotOff = false },
 ) {
-  const token = getToken()
+  const token = repoToken(repo)
   let kindLabel = null
   if (kind !== 'change') {
     kindLabel = await ensureKindLabel(repo, token, kind)
@@ -282,12 +283,27 @@ export async function createIssue(
 // changes to the same branch naming scheme; everything downstream (the
 // "Accept the code" gate reviewing a PR) stays identical.
 
+// HZ-697: every caller's path is /repos/{owner}/{name}/…, built from the repo
+// it acts on, so that prefix is the repo whose token the call uses (a tenant
+// repo's own, never the owner's). Any other path keeps the global token.
+const REPO_PATH_RE = /^\/repos\/([^/?#]+\/[^/?#]+)/
+
 async function gh(path, options = {}) {
+  const repo = REPO_PATH_RE.exec(path)?.[1] ?? null
   const res = await fetch(`https://api.github.com${path}`, {
     ...options,
-    headers: { ...ghHeaders(getToken()), ...(options.headers || {}) },
+    headers: { ...ghHeaders(repo ? repoToken(repo) : getToken()), ...(options.headers || {}) },
   })
   return res
+}
+
+// HZ-697: the token for `repo` (tenantTokens.tokenForRepo). A tenant repo
+// with no resolvable token of its own throws, naming the repo only — the call
+// is never made with the owner's token, or with none.
+function repoToken(repo) {
+  const token = tokenForRepo(repo)
+  if (token == null && isTenantRepo(repo)) throw new Error(`no GitHub token for tenant repo ${repo}`)
+  return token
 }
 
 export async function createMockPr(item) {
@@ -544,7 +560,7 @@ async function fetchCommitFiles(repo, commitSha) {
 export async function fetchScreenshotSnapshot(repo, item) {
   const key = `${repo}#${item.id}`
   if (cannedSnapshotsForTest) return cannedSnapshotsForTest.has(key) ? cannedSnapshotsForTest.get(key) : null
-  if (!getToken()) return null
+  if (!tokenForRepo(repo)) return null
   const refRes = await gh(`/repos/${repo}/git/ref/${encodeURIComponent(`heads/${artifactsRef(item)}`)}`)
   if (refRes.status === 404) return null
   if (!refRes.ok) throw new Error(`could not read ${artifactsRef(item)} (GitHub returned ${refRes.status})`)
@@ -1317,7 +1333,14 @@ export async function pollComments(repo, log) {
   const url =
     `https://api.github.com/repos/${repo}/issues/comments` +
     `?sort=updated&direction=asc&per_page=100&since=${encodeURIComponent(since)}`
-  const res = await fetch(url, { headers: ghHeaders(getToken()) })
+  let token
+  try {
+    token = repoToken(repo)
+  } catch (err) {
+    log?.warn(`GitHub comment poll skipped: ${err.message}`)
+    return { changed: 0, error: 'no GitHub token for this repo' }
+  }
+  const res = await fetch(url, { headers: ghHeaders(token) })
   if (!res.ok) {
     log?.warn(`GitHub comment poll failed for ${repo}: ${res.status}`)
     return { changed: 0, error: `GitHub returned ${res.status}` }
@@ -1336,7 +1359,15 @@ export async function pollComments(repo, log) {
 
 export async function pollRepo(repo, log) {
   const url = `https://api.github.com/repos/${repo}/issues?state=all&sort=updated&direction=desc&per_page=100`
-  const headers = ghHeaders(getToken())
+  let token
+  try {
+    token = repoToken(repo)
+  } catch (err) {
+    log?.warn(`GitHub poll skipped: ${err.message}`)
+    lastByRepo[repo] = { at: new Date().toISOString(), status: null, changed: 0, error: 'no GitHub token for this repo' }
+    return lastByRepo[repo]
+  }
+  const headers = ghHeaders(token)
   const etag = getCursor.get(`issues:${repo}`)?.etag
   if (etag) headers['If-None-Match'] = etag
 

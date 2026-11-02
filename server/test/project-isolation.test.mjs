@@ -176,6 +176,19 @@ test('PUT .../isolation with a non-$NAME ref is 400, stores nothing and echoes n
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM project_event').get().n, events)
 })
 
+// HZ-697: the `file:` form is set only by a tenant's own repo connect — the
+// Admin route still refuses it, even naming this project's own path.
+test('PUT .../isolation with a file: ref is 400 and stores nothing — Admin cannot set one', async () => {
+  const before = projectRow(tenantProject.id)
+  const events = db.prepare('SELECT COUNT(*) AS n FROM project_event').get().n
+  for (const githubTokenRef of [`file:/etc/horizon/tenant-tokens/${tenantProject.id}`, 'file:/etc/horizon/server.env']) {
+    const res = await putIsolation(tenantProject.id, owner, { githubTokenRef })
+    assert.equal(res.statusCode, 400, githubTokenRef)
+  }
+  assert.deepEqual(projectRow(tenantProject.id), before)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM project_event').get().n, events)
+})
+
 // ---- metric 4: only the owner sets the fields ----
 
 test('a member, by session or API token and with a valid PIN, is refused and the row is unchanged', async () => {
