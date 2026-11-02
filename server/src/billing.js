@@ -89,6 +89,8 @@ export async function createCheckoutSession(stripe, input) {
     customer,
     client_reference_id: profile.id,
     return_url: SIGNUP_RETURN_URL,
+    allow_promotion_codes: true,
+    payment_method_collection: 'if_required',
   })
   return { clientSecret: session.client_secret, publishableKey }
 }
