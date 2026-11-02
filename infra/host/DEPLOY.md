@@ -681,6 +681,120 @@ Tested by `infra/host/test/horizon-provision-run-user.test.sh`. Rollback:
 `sudo rm /etc/sudoers.d/horizon-tenant`, then per tenant
 `sudo userdel -r hz-p<id>` and `sudo rm /etc/horizon/tenant-tokens/<id>`.
 
+## 2m. farmd under systemd (HZ-714)
+
+**Rollback warning first.** Once the new unit is installed, rolling back the
+**code alone is not safe**: the old `run.sh` reads `prepare` as its tmux mode
+and starts a second farmd on `:4100` next to the one systemd starts. Roll back
+both together:
+
+```bash
+# 1. Revert the release (re-run the target's script with the previous tag).
+# 2. Put the old unit back, then reload and restart.
+git -C /opt/horizon show <prev-tag>:infra/host/horizon-farm.service | sudo tee /etc/systemd/system/horizon-farm.service >/dev/null
+sudo systemctl daemon-reload && sudo systemctl restart horizon-farm
+```
+
+Agent sessions survive either direction (`KillMode=process`).
+
+**What changes.** `infra/host/horizon-farm.service` runs farmd itself
+(`Type=simple`, the venv's `python -m farm.farmd`), not a tmux session started
+by `farm/run.sh`:
+
+- Every setting in `/etc/horizon/farm.env` reaches farmd through
+  `EnvironmentFile=`. `run.sh` used to copy only `FARM_*`, `WA_*`, `CLAUDE_*`
+  and `HORIZON_URL`, so a name like `PARVATI_GITHUB_TOKEN` never arrived.
+- No setting is on a command line. `run.sh` used to put those values on
+  `tmux new-session`'s argv, and the tmux server keeps the argv of the client
+  that started it — readable by any local user, tenant run users included.
+  farmd now starts the tmux server itself at boot with a value-free command
+  (`tmux start-server ; set-option -g exit-empty off`).
+- farmd's output goes to the journal: `journalctl -fu horizon-farm`. There is
+  no `farm-daemon` session to attach to any more.
+- `ExecStartPre=/opt/horizon/farm/run.sh prepare` does the venv, pip and the
+  capture worker's `npm ci` (hence `TimeoutStartSec=600`), and stops a
+  `farm-daemon` session left by the old unit. `Restart=on-failure` restarts a
+  crashed farmd after 5 s.
+- `./farm/run.sh fg` still runs farmd by hand. `./farm/run.sh` with no
+  argument is the old tmux mode, kept only so a release restarted under the
+  old unit still works; it prints a deprecation line.
+
+Still open, for a follow-up item: an agent session's own `tmux new-session`
+line and its pane's `env K=V …` line still carry `agent_env()` values for the
+moment they run, and the tmux server still inherits farmd's whole environment
+(as it did under the old unit), which `_env_prefix()` then filters per pane.
+
+### Install (the owner, or someone with the owner's OK, at a quiet time)
+
+```bash
+# 1. farm.env must read the same under EnvironmentFile: no `export`, no
+#    `$` expansion. Prints line numbers and names only; expect no output.
+sudo grep -nE '^[[:space:]]*export |\$' /etc/horizon/farm.env | cut -d= -f1
+sudo stat -c '%a %U' /etc/horizon/farm.env    # expect 600 ubuntu
+
+# 2. Stop under the old unit: its ExecStop ends farm-daemon; agent sessions live on.
+sudo systemctl stop horizon-farm
+
+# 3. Install the new unit and start it.
+sudo install -m 644 /opt/horizon/infra/host/horizon-farm.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl start horizon-farm
+```
+
+If step 2 is skipped, `run.sh prepare` still ends the old `farm-daemon`
+session before farmd binds `:4100`.
+
+### Verify (success metrics 4 and 5)
+
+```bash
+# farmd holds every farm.env name. Prints the name only.
+sudo cat /proc/"$(systemctl show -p MainPID --value horizon-farm)"/environ | tr '\0' '\n' | cut -d= -f1 | grep -x PARVATI_GITHUB_TOKEN
+
+# No farm.env value (8+ chars) on any process's command line. Prints names
+# only; expect no output once step 4 below has replaced the old tmux server.
+sudo bash -c 'args="$(ps -eo args)"; while IFS="=" read -r name value; do
+  case "$name" in "" | \#* | \;*) continue ;; esac
+  q="$(printf "\047")"; value="${value%[\"$q]}"; value="${value#[\"$q]}"
+  [ "${#value}" -ge 8 ] && grep -qF -- "$value" <<<"$args" && echo "on a command line: $name"
+done </etc/horizon/farm.env'
+
+# farmd's start-up lines, live.
+journalctl -fu horizon-farm
+```
+
+Then restart `horizon-farm` while a `farm-run-*` session runs: the session
+keeps running and the journal shows `farmd: adopted …` for it.
+
+### 4. Replace the old tmux server, then rotate the exposed secrets
+
+The tmux server the old unit started still holds `CLAUDE_CODE_OAUTH_TOKEN`,
+`FARM_SHARED_SECRET` and `WA_APPROVAL_SECRET` on its argv, until it exits.
+`tmux kill-server` ends **every** session on it — step agents, jobs, the
+concierge — so do it only when none is live:
+
+```bash
+tmux ls -F '#{session_name}' | grep -E '^farm-(run|job|pm|concierge)-'
+# Expect no output. A farm-concierge-* session may be acceptable to lose:
+# farmd relaunches it when FARM_WA_ENABLED=1.
+tmux kill-server
+sudo systemctl restart horizon-farm    # farmd starts a clean server
+```
+
+Then rotate the three secrets (they were readable by any local user) and
+restart what reads them:
+
+- `CLAUDE_CODE_OAUTH_TOKEN`: a new token (`claude setup-token`) in
+  `/etc/horizon/farm.env`.
+- `FARM_SHARED_SECRET`: one new value in both `/etc/horizon/server.env` and
+  `/etc/horizon/farm.env`.
+- `WA_APPROVAL_SECRET`: one new value in `server.env`, `farm.env` and the
+  bridge's env (§2b, §2d).
+
+Then restart `horizon-server`, `horizon-farm` and the bridge.
+
+Tested by `infra/host/test/horizon-farm-service.test.sh` (the unit and
+`run.sh`) and `farm/tests/test_farmd_systemd_start.py` (farmd's output and
+the tmux server's argv).
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must
