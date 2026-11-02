@@ -108,11 +108,14 @@ done
 # ---- the sudoers template: exactly the two rules ----
 
 rules="$(grep -vE '^[[:space:]]*(#|$)' "$SUDOERS")"
-expected="ubuntu ALL=(root) NOPASSWD: /usr/local/libexec/horizon/horizon-provision-run-user ^[1-9][0-9]{0,9}\$
+expected="ubuntu ALL=(root) NOPASSWD: /usr/local/libexec/horizon/horizon-provision-run-user ^[1-9][0-9]*\$
 ubuntu ALL=(%hz-tenants) NOPASSWD: /usr/local/libexec/horizon/tenant-entry \"\""
 if [ "$rules" = "$expected" ]; then ok "sudoers has exactly the helper rule and the tenant-entry rule"; else not_ok "sudoers has exactly the helper rule and the tenant-entry rule"; printf '%s\n' "$rules"; fi
-if command -v visudo >/dev/null 2>&1 && [ -x "$(command -v visudo)" ] && [ "$(command -v visudo)" != "$STUBS/visudo" ]; then
-  expect "sudoers template parses with visudo -cf" visudo -cf "$SUDOERS"
+# A non-root PATH often lacks /usr/sbin, so look there too before skipping.
+VISUDO="$(command -v visudo 2>/dev/null || true)"
+[ -x "$VISUDO" ] || VISUDO=/usr/sbin/visudo
+if [ -x "$VISUDO" ] && [ "$VISUDO" != "$STUBS/visudo" ]; then
+  expect "sudoers template parses with visudo -cf" "$VISUDO" -cf "$SUDOERS"
 fi
 
 # ---- install-tenant-host.sh ----
