@@ -1,0 +1,10 @@
+# Template for /etc/sudoers.d/horizon-tenant (HZ-697), installed by
+# install-tenant-host.sh after `visudo -cf`. Exactly two rules, for the farm
+# user that runs both horizon-server and horizon-farm:
+#   1. the server may create a tenant's run user through the root helper, with
+#      exactly one numeric project id (regex arguments need sudo >= 1.9.10);
+#   2. the farm may run tenant-entry, with no arguments, as any member of
+#      hz-tenants — the primary group the helper gives every hz-p<id> user.
+# Nothing else: no shell, no other command, no other run-as user.
+ubuntu ALL=(root) NOPASSWD: /usr/local/libexec/horizon/horizon-provision-run-user ^[1-9][0-9]{0,9}$
+ubuntu ALL=(%hz-tenants) NOPASSWD: /usr/local/libexec/horizon/tenant-entry ""

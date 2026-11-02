@@ -432,3 +432,73 @@ def test_unlaunched_tenant_spool_is_removed_by_cancel_and_pause(farm, root, fake
     res = client.post("/steps/cancel", json={"run_id": 66313, "reason": reason})
     assert res.json()["removed"] is True
     assert not spool.exists()
+
+
+# ---- HZ-697: a tenant's own `file:` token ref ----
+
+FILE_TOKEN = "github_pat_tenant-file-token-value-0009"
+
+
+def tenant_token_file(root, project_id, *, mode=0o600, text=FILE_TOKEN):
+    path = root / str(project_id)
+    path.write_text(text + "\n")
+    os.chmod(path, mode)
+    return path
+
+
+def file_ref(project_id):
+    return f"{credentials.FILE_REF_PREFIX}{project_id}"
+
+
+def test_a_file_ref_resolves_to_its_own_projects_0600_file(tmp_path):
+    tenant_token_file(tmp_path, 42)
+    assert credentials.resolve_token_ref(file_ref(42), {}, project_id=42, token_root=str(tmp_path)) == FILE_TOKEN
+    env = credentials.tenant_session_env(
+        {"id": 42, "githubTokenRef": file_ref(42), "runUser": "hz-p42"}, home="/home/hz-p42", environ={}, token_root=str(tmp_path)
+    )
+    assert env["GITHUB_TOKEN"] == env["GH_TOKEN"] == FILE_TOKEN
+
+
+def refused(ref, project_id, root):
+    with pytest.raises(credentials.TenantEnvError) as exc:
+        credentials.resolve_token_ref(ref, {"GITHUB_TOKEN": SHARED_TOKEN}, project_id=project_id, token_root=str(root))
+    assert FILE_TOKEN not in str(exc.value) and SHARED_TOKEN not in str(exc.value)
+    return str(exc.value)
+
+
+def test_a_file_ref_naming_another_projects_id_is_refused(tmp_path):
+    tenant_token_file(tmp_path, 42)
+    tenant_token_file(tmp_path, 43)
+    assert "this project's" in refused(file_ref(42), 43, tmp_path)
+    assert "this project's" in refused(file_ref(42), None, tmp_path)
+
+
+@pytest.mark.parametrize("ref", ["file:/etc/horizon/server.env", "file:/etc/horizon/tenant-tokens/../42", "file:/etc/horizon/tenant-tokens/042"])
+def test_a_file_ref_outside_the_tenant_token_path_is_refused(tmp_path, ref):
+    tenant_token_file(tmp_path, 42)
+    refused(ref, 42, tmp_path)
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o640, 0o400, 0o660])
+def test_a_token_file_not_mode_0600_is_refused(tmp_path, mode):
+    tenant_token_file(tmp_path, 42, mode=mode)
+    assert "0600" in refused(file_ref(42), 42, tmp_path)
+
+
+def test_a_token_file_owned_by_another_uid_is_refused(tmp_path, monkeypatch):
+    tenant_token_file(tmp_path, 42)
+    other_uid = os.getuid() + 1
+    monkeypatch.setattr(credentials.os, "getuid", lambda: other_uid)
+    assert "farm user" in refused(file_ref(42), 42, tmp_path)
+
+
+def test_a_symlinked_or_missing_token_file_is_refused(tmp_path):
+    real = tenant_token_file(tmp_path, 7)
+    (tmp_path / "42").symlink_to(real)
+    refused(file_ref(42), 42, tmp_path)
+    refused(file_ref(43), 43, tmp_path)
+
+
+def test_an_empty_token_file_is_refused(tmp_path):
+    tenant_token_file(tmp_path, 42, text="  ")
+    refused(file_ref(42), 42, tmp_path)

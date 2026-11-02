@@ -940,6 +940,11 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   db.exec('ALTER TABLE project ADD COLUMN definitions_enabled INTEGER NOT NULL DEFAULT 1 CHECK (definitions_enabled IN (0, 1))')
 }
 
+// HZ-697: LEGACY is the CHECK HZ-662 shipped; the rebuild below swaps it.
+const LEGACY_TOKEN_REF_CHECK = "CHECK (github_token_ref IS NULL OR github_token_ref GLOB '$[A-Z_]*')"
+const TOKEN_REF_CHECK =
+  "CHECK (github_token_ref IS NULL OR github_token_ref GLOB '$[A-Z_]*' OR github_token_ref GLOB 'file:/etc/horizon/tenant-tokens/[1-9]*')"
+
 // HZ-662: a project's isolation (server/src/projectIsolation.js). Additive:
 // every existing project reads 'internal' and runs exactly as before. A tenant
 // project's github_token_ref is a $NAME reference, never a token value — the
@@ -951,9 +956,52 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
     db.exec("ALTER TABLE project ADD COLUMN isolation TEXT NOT NULL DEFAULT 'internal' CHECK (isolation IN ('internal','tenant'))")
   }
   if (!projectColumns.has('github_token_ref')) {
-    db.exec("ALTER TABLE project ADD COLUMN github_token_ref TEXT CHECK (github_token_ref IS NULL OR github_token_ref GLOB '$[A-Z_]*')")
+    db.exec(`ALTER TABLE project ADD COLUMN github_token_ref TEXT ${TOKEN_REF_CHECK}`)
   }
   if (!projectColumns.has('run_user')) db.exec('ALTER TABLE project ADD COLUMN run_user TEXT')
+}
+
+// HZ-697: the token-ref CHECK also allows the `file:` form a tenant's own repo
+// connect sets (projectIsolation.js FILE_TOKEN_REF_RE). A project table whose
+// stored DDL still holds the HZ-662 CHECK is rebuilt once, by the same 12-step
+// procedure as work_item above: only that CHECK changes, every row and index
+// is copied, foreign keys are off for the rebuild, and a bad shape or a new
+// foreign-key violation throws, rolls back and stops the boot.
+{
+  const projectSql = () => db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'project'").get().sql
+  const stored = projectSql()
+  if (stored.includes(LEGACY_TOKEN_REF_CHECK)) {
+    if (stored.split(LEGACY_TOKEN_REF_CHECK).length !== 2) throw new Error('db: expected one github_token_ref CHECK on project')
+    const head = /^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?["`]?project["`]?\s*\(/i
+    if (!head.test(stored)) throw new Error('db: unexpected project DDL — will not rebuild it')
+    const ddl = stored.replace(head, 'CREATE TABLE project_v2 (').replace(LEGACY_TOKEN_REF_CHECK, TOKEN_REF_CHECK)
+    const indexes = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'project' AND sql IS NOT NULL")
+      .all()
+      .map((row) => row.sql)
+    const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'project'").get()?.seq ?? null
+    const violations = () => db.pragma('foreign_key_check').length
+    const before = violations()
+    db.pragma('foreign_keys = OFF')
+    try {
+      db.transaction(() => {
+        db.exec(ddl)
+        const columns = (table) => db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('${table}')`).get().n
+        if (columns('project_v2') !== columns('project')) throw new Error('db: project rebuild changed the column count')
+        db.exec(`
+          INSERT INTO project_v2 SELECT * FROM project;
+          DROP TABLE project;
+          ALTER TABLE project_v2 RENAME TO project;
+        `)
+        for (const sql of indexes) db.exec(sql)
+        // AUTOINCREMENT's high-water mark, so a deleted top id is never reused.
+        if (seq != null) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'project'").run(seq)
+        if (violations() > before) throw new Error('db: project rebuild left a foreign-key violation')
+      })()
+    } finally {
+      db.pragma('foreign_keys = ON')
+    }
+  }
 }
 
 // HZ-537: one row per project and knowledge doc — a PDF a project persona

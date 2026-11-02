@@ -222,7 +222,8 @@ test('check defaults: a connected repo answers available:false with all-null def
 
 // ---- guardrail 2: one writer, and it is the PIN-gated route ----
 
-test('setRepoCheckCommands is called from exactly one place in server/src: the PIN-gated PUT handler', () => {
+// HZ-697: the tenant settings route is the second writer, gated the same way.
+test('setRepoCheckCommands is called from exactly two places in server/src: the PIN-gated PUT handlers', () => {
   const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'src')
   const callers = []
   for (const file of readdirSync(srcDir).filter((f) => f.endsWith('.js'))) {
@@ -233,13 +234,17 @@ test('setRepoCheckCommands is called from exactly one place in server/src: the P
       }
     })
   }
-  assert.equal(callers.length, 1, JSON.stringify(callers))
-  assert.equal(callers[0].file, 'app.js')
+  assert.equal(callers.length, 2, JSON.stringify(callers))
   const app = readFileSync(join(srcDir, 'app.js'), 'utf8').split('\n')
-  const handler = app.slice(0, callers[0].line + 1).join('\n')
-  const route = handler.lastIndexOf("'/api/projects/:id/repos/checks'")
-  assert.ok(route > 0, 'the caller sits after the PUT route registration')
-  assert.match(handler.slice(route), /if \(!humanAuthorized\(request, reply\)\) return/)
+  const routes = ["'/api/projects/:id/repos/checks'", "'/api/tenant/projects/:id/repos/checks'"]
+  callers.forEach((caller, i) => {
+    assert.equal(caller.file, 'app.js')
+    const handler = app.slice(0, caller.line + 1).join('\n')
+    const route = handler.lastIndexOf(routes[i])
+    assert.ok(route > 0, `caller ${i} sits after the ${routes[i]} registration`)
+    assert.ok(handler.slice(route).startsWith(routes[i]) && !handler.slice(route).includes('fastify.get('), `caller ${i} is in a write handler`)
+    assert.match(handler.slice(route), /if \(!humanAuthorized\(request, reply\)\) return/)
+  })
   // No other column write anywhere in server/src.
   for (const file of readdirSync(srcDir).filter((f) => f.endsWith('.js'))) {
     const writes = readFileSync(join(srcDir, file), 'utf8').match(/SET check_install/g) || []

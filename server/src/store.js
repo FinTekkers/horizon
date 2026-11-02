@@ -50,7 +50,7 @@ import { kindFromLabels, laneFromLabels } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL, autopilotOffFromLabels } from './autopilotOffLabel.js'
 import { getActiveProjectId, setSetting } from './settings.js'
 import { ensureUnlinkedProject, hasNoProject, unlinkedProjectId } from './membership.js'
-import { RUN_USER_RE, TOKEN_REF_RE, isolationFields, isolationRefusal } from './projectIsolation.js'
+import { RUN_USER_RE, TOKEN_REF_RE, isolationFields, isolationRefusal, tenantRunUser, tenantTokenRef } from './projectIsolation.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
@@ -565,9 +565,10 @@ export function getRepoCheckCommands(repoFullName) {
   return CHECK_SLOTS.some((slot) => slot !== SCREENSHOTS_SLOT && checks[slot] != null) ? checks : null
 }
 
-// The ONLY writer of the check columns, and its only caller is the
-// PIN-gated Admin route in app.js: no agent, step or farm path may change the
-// commands that judge its own work. Each string is stored exactly as entered;
+// The ONLY writer of the check columns. Its callers are the PIN-gated,
+// session-only routes in app.js — Admin's and (HZ-697) a tenant member's
+// settings route: no agent, step or farm path may change the commands that
+// judge its own work. Each string is stored exactly as entered;
 // empty or whitespace-only becomes NULL (the same rule as the farm's).
 export function setRepoCheckCommands(projectId, repoFullName, checks) {
   const row = db.prepare('SELECT id FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
@@ -581,6 +582,13 @@ export function setRepoCheckCommands(projectId, repoFullName, checks) {
   ).run(...values, row.id)
   notify()
   return { ok: true, checks: Object.fromEntries(CHECK_SLOTS.map((slot, i) => [slot, values[i]])) }
+}
+
+// HZ-697: the stored slots of `repoFullName` in project `projectId`, or null
+// when the repo is not this project's.
+export function getRepoChecksForProject(projectId, repoFullName) {
+  const row = db.prepare('SELECT * FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+  return row ? repoChecks(row) : null
 }
 
 // ---- per-repo test-login env file (HZ-494) ----
@@ -1017,6 +1025,54 @@ export function addRepoToProject(projectId, repoFullName) {
   purgeDemoItems()
   notify()
   return { ok: true, repo: repoFullName, prefix }
+}
+
+// HZ-697: why a tenant project cannot connect `repoFullName`, or null. One
+// repo per tenant project, and a repo already connected anywhere — in any
+// letter case — is refused. The connect route asks before it writes the token
+// file; setTenantConnection asks again inside its transaction.
+export function tenantConnectRefusal(projectId, repoFullName) {
+  if (db.prepare('SELECT 1 FROM project_repo WHERE repo = ? COLLATE NOCASE').get(repoFullName)) return 'repo_already_connected'
+  if (db.prepare('SELECT 1 FROM project_repo WHERE project_id = ?').get(projectId)) return 'tenant_project_has_repo'
+  return null
+}
+
+// HZ-697: a tenant member's own repo connect, in one transaction — the repo
+// row, github_token_ref set to the project's `file:` ref (derived from its id,
+// never from input) and run_user hz-p<id>. Each changed field writes one
+// project_event row naming the reference only. The only writer of a `file:`
+// ref; setProjectIsolation (Admin) still accepts $NAME refs only.
+export function setTenantConnection(projectId, repoFullName, who) {
+  const ref = tenantTokenRef(projectId)
+  const runUser = tenantRunUser(projectId)
+  const result = db.transaction(() => {
+    const row = selectProjectIsolation.get(projectId)
+    if (!row || row.isolation !== 'tenant') return { error: 'project_not_found' }
+    const refusal = tenantConnectRefusal(projectId, repoFullName)
+    if (refusal) return { error: refusal }
+    const prefix = generatePrefix(repoFullName)
+    db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(projectId, repoFullName, prefix)
+    for (const [column, value] of [
+      ['github_token_ref', ref],
+      ['run_user', runUser],
+    ]) {
+      if (row[column] === value) continue
+      db.prepare(`UPDATE project SET ${column} = ? WHERE id = ?`).run(value, projectId)
+      db.prepare('INSERT INTO project_event (project_id, kind, old_value, new_value, who) VALUES (?, ?, ?, ?, ?)').run(
+        projectId,
+        column,
+        row[column],
+        value,
+        who,
+      )
+    }
+    return { ok: true, repo: repoFullName, prefix, githubTokenRef: ref, runUser }
+  })()
+  if (result.ok) {
+    purgeDemoItems()
+    notify()
+  }
+  return result
 }
 
 // Disconnecting stops sync for the repo (existing items keep their history;

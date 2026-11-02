@@ -15,8 +15,8 @@
 // other URL is never written to.
 
 import { WEBHOOK_SECRET, WEBHOOK_URL } from './config.js'
-import { getToken } from './settings.js'
 import { ghHeaders } from './github.js'
+import { isTenantRepo, tokenForRepo } from './tenantTokens.js'
 
 // Sorted, so a hook's events compare as a set by joining.
 export const HOOK_EVENTS = ['issue_comment', 'issues', 'pull_request', 'release', 'repository']
@@ -60,6 +60,15 @@ const status = (s, lastResponseCode = null, reason = null) => ({ status: s, last
 
 const githubError = (httpStatus) => ({ ...status('error', null, httpStatus ? 'github_error' : 'github_unreachable'), httpStatus: httpStatus ?? null })
 
+// HZ-697: a tenant repo's calls use its own token (tenantTokens.js); with
+// none, no call is made at all — never one with the owner's token.
+const noToken = () => status('error', null, 'token_unavailable')
+
+function repoToken(repo) {
+  const token = tokenForRepo(repo)
+  return token == null && isTenantRepo(repo) ? null : { token }
+}
+
 const lastCode = (hook) => (Number.isInteger(hook?.last_response?.code) ? hook.last_response.code : null)
 
 function matches(hook, wanted) {
@@ -82,9 +91,11 @@ function isForeignHorizonHook(hook) {
 // One read-only GET. Returns the public Status plus, internally, the id of our
 // own mismatched hook so fix() can PATCH it.
 async function classify(repo) {
+  const auth = repoToken(repo)
+  if (!auth) return { result: noToken() }
   let res
   try {
-    res = await fetch(`https://api.github.com/repos/${repo}/hooks?per_page=100`, { headers: ghHeaders(getToken()) })
+    res = await fetch(`https://api.github.com/repos/${repo}/hooks?per_page=100`, { headers: ghHeaders(auth.token) })
   } catch {
     return { result: githubError(null) }
   }
@@ -117,12 +128,14 @@ function writeRefusal() {
   return null
 }
 
-async function write(method, path) {
+async function write(method, repo, suffix) {
+  const auth = repoToken(repo)
+  if (!auth) return noToken()
   let res
   try {
-    res = await fetch(`https://api.github.com/repos/${path}`, {
+    res = await fetch(`https://api.github.com/repos/${repo}/${suffix}`, {
       method,
-      headers: { ...ghHeaders(getToken()), 'Content-Type': 'application/json' },
+      headers: { ...ghHeaders(auth.token), 'Content-Type': 'application/json' },
       body: JSON.stringify(hookBody()),
     })
   } catch {
@@ -140,7 +153,7 @@ export async function ensure(repo) {
   if (refused) return refused
   const { result } = await classify(repo)
   if (result.status !== 'missing') return result
-  return (await write('POST', `${repo}/hooks`)) || status('ok', null, 'created')
+  return (await write('POST', repo, 'hooks')) || status('ok', null, 'created')
 }
 
 // PIN-gated Fix webhook: POST when missing (or only a foreign-host hook
@@ -153,9 +166,9 @@ export async function fix(repo) {
   const legacy = result.status === 'ok' && result.reason === 'legacy_events'
   if ((result.status === 'ok' && !legacy) || result.status === 'error') return { action: 'none', ...result }
   if ((result.status === 'mismatched' || legacy) && hookId != null) {
-    const failed = await write('PATCH', `${repo}/hooks/${encodeURIComponent(hookId)}`)
+    const failed = await write('PATCH', repo, `hooks/${encodeURIComponent(hookId)}`)
     return failed ? { action: 'none', ...failed } : { action: 'repaired', ...status('ok', result.lastResponseCode) }
   }
-  const failed = await write('POST', `${repo}/hooks`)
+  const failed = await write('POST', repo, 'hooks')
   return failed ? { action: 'none', ...failed } : { action: 'created', ...status('ok') }
 }

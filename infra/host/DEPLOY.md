@@ -636,6 +636,51 @@ To cut over to the restored copy (owner's call; the server is down meanwhile):
 `sudo systemctl disable --now horizon-db-backup.timer`. Existing copies in
 `nightly/` stay. Tested by `infra/host/test/horizon-db-backup.test.sh`.
 
+## 2l. Tenant self-serve repo connect (HZ-697)
+
+A tenant project's member connects their own repo with their own
+fine-grained token (`POST /api/tenant/projects/:id/repos`). The server writes
+the token to `/etc/horizon/tenant-tokens/<project id>`, mode `0600`, owned by
+`ubuntu`, and runs a root helper that creates run user `hz-p<project id>`.
+`infra/host/install-tenant-host.sh` installs everything that needs root:
+
+```bash
+sudo -V | head -1   # must be 1.9.10 or later: the helper's rule uses a regex argument
+sudo bash infra/host/install-tenant-host.sh
+```
+
+It checks `infra/host/horizon-tenant.sudoers` with `visudo -cf` first, creates
+the `hz-tenants` group, installs `horizon-provision-run-user` root-owned `0755`
+in `/usr/local/libexec/horizon/`, creates `/etc/horizon/tenant-tokens` as
+`ubuntu`, `0700`, and installs the two sudoers rules to
+`/etc/sudoers.d/horizon-tenant` (`0440`):
+
+- `ubuntu` may run the helper as root with exactly one numeric project id;
+- `ubuntu` may run `tenant-entry`, with no arguments, as any member of
+  `hz-tenants` — the primary group of every `hz-p<id>` user.
+
+On sudo older than 1.9.10, replace the regex with the plain path
+(`… NOPASSWD: /usr/local/libexec/horizon/horizon-provision-run-user`); the
+helper refuses anything but one positive integer itself. `tenant-entry` is
+installed as in HZ-663. Until the install runs, a connect answers
+`502 run_user_provision_failed` and saves nothing.
+
+Also confirm the run users cannot read the server's or farm's environment:
+`stat -c '%a %U' /etc/horizon/server.env /etc/horizon/farm.env` must print
+`600 ubuntu` for each (the on-box check is HZ-703's).
+
+Before the first deploy of this change, list tenant projects whose ref is a
+`$NAME` held only in `farm.env`: their server GitHub calls now use the
+project's own token and fail closed without it.
+
+```bash
+sqlite3 /opt/horizon/server/data/horizon.db "SELECT id, github_token_ref FROM project WHERE isolation = 'tenant'"
+```
+
+Tested by `infra/host/test/horizon-provision-run-user.test.sh`. Rollback:
+`sudo rm /etc/sudoers.d/horizon-tenant`, then per tenant
+`sudo userdel -r hz-p<id>` and `sudo rm /etc/horizon/tenant-tokens/<id>`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

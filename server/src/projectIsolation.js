@@ -27,6 +27,12 @@ export function tenantTokenRef(projectId) {
   return `file:${TENANT_TOKEN_DIR}/${projectId}`
 }
 
+// The run user a tenant's own repo connect provisions for `projectId`.
+export function tenantRunUser(projectId) {
+  tenantTokenRef(projectId)
+  return `hz-p${projectId}`
+}
+
 // Either form of reference — never a value.
 export function isTokenRef(ref) {
   return typeof ref === 'string' && (TOKEN_REF_RE.test(ref) || FILE_TOKEN_REF_RE.test(ref))
