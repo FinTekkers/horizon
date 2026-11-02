@@ -69,6 +69,8 @@ test('a valid sign-up returns the client secret and publishable key, and creates
     customer: 'cus_fake1',
     client_reference_id: user.id,
     return_url: 'https://shoreward.ai/welcome.html?session_id={CHECKOUT_SESSION_ID}',
+    allow_promotion_codes: true,
+    payment_method_collection: 'if_required',
   })
   assert.equal(SIGNUP_RETURN_URL, 'https://shoreward.ai/welcome.html?session_id={CHECKOUT_SESSION_ID}')
 
