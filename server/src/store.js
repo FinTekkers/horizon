@@ -523,8 +523,9 @@ export function listProjects({ checks = true, viewer = null } = {}) {
         ...(checks
           ? {
               checks: repoChecks(r),
-              // HZ-750: the slots opted into a fix round's targeted run.
-              targeted: repoTargeted(r),
+              // HZ-750: the slots opted into a fix round's targeted run —
+              // absent when none, so a repo that never opted in reads as before.
+              ...optedInField(r),
               marks: repoMarks(r),
               defaultBranch: r.default_branch ?? null,
               // HZ-494: the path only — the server never opens the file.
@@ -588,6 +589,11 @@ function repoTargeted(row) {
     parsed = null
   }
   return targetedList(parsed, repoChecks(row))
+}
+
+function optedInField(row) {
+  const targeted = repoTargeted(row)
+  return targeted.length ? { targeted } : {}
 }
 
 // What the farm is sent beside check_commands: the opted-in slots, or [].
