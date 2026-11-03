@@ -751,10 +751,11 @@ sudo cat /proc/"$(systemctl show -p MainPID --value horizon-farm)"/environ | tr 
 
 # No farm.env value (8+ chars) on any process's command line. Prints names
 # only; expect no output once step 4 below has replaced the old tmux server.
+# Matched with the bash builtin, so no value is ever a command's argument.
 sudo bash -c 'args="$(ps -eo args)"; while IFS="=" read -r name value; do
   case "$name" in "" | \#* | \;*) continue ;; esac
   q="$(printf "\047")"; value="${value%[\"$q]}"; value="${value#[\"$q]}"
-  [ "${#value}" -ge 8 ] && grep -qF -- "$value" <<<"$args" && echo "on a command line: $name"
+  [ "${#value}" -ge 8 ] && [[ $args == *"$value"* ]] && echo "on a command line: $name"
 done </etc/horizon/farm.env'
 
 # farmd's start-up lines, live.

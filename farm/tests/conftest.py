@@ -51,6 +51,14 @@ RUN_TMP = tempfile.mkdtemp(prefix=f"horizon-run-{os.getpid()}-", dir=_REAL_TMP)
 os.environ["TMPDIR"] = RUN_TMP
 tempfile.tempdir = RUN_TMP
 TEST_FARM_HOME = tempfile.mkdtemp(prefix="horizon-farm-test-")
+# HZ-716: tmux session names are shared across a whole tmux server, and the
+# host's default server is where the live farm's sessions live. From here on
+# every tmux this process or its children start — module and session fixtures
+# included, before any per-test fixture runs — gets the suite's own server.
+# HOST_ENV above still reaches the host's, for the leak guard's read-only diff.
+SUITE_TMUX_TMPDIR = tempfile.mkdtemp(prefix="hz-tmux-suite-")
+os.environ["TMUX_TMPDIR"] = SUITE_TMUX_TMPDIR
+os.environ.pop("TMUX", None)
 
 # The manual real-bridge run (test_e2e_whatsapp.py, FARM_WA_E2E=1) needs the
 # vars its docstring tells the operator to set; every other run keeps none.
@@ -213,6 +221,19 @@ def pytest_sessionfinish(session, exitstatus):
     """HZ-238: TEST_FARM_HOME is the suite's own dir — remove it before the
     tmp leak guard lists the sandbox it lives in."""
     shutil.rmtree(TEST_FARM_HOME, ignore_errors=True)
+    _stop_private_tmux(SUITE_TMUX_TMPDIR)
+
+
+def _stop_private_tmux(socket_dir: str) -> None:
+    """HZ-714/716: stops the tmux server under `socket_dir`, if one started,
+    and removes the dir. A farmd's ensure_server() sets exit-empty off, so a
+    private server would outlive its last session. Always through its own
+    socket path (`-S`), never through TMUX_TMPDIR lookup, so only that server
+    can go — never the host's default one."""
+    private_socket = Path(socket_dir) / f"tmux-{os.getuid()}" / "default"
+    if private_socket.exists() and shutil.which("tmux"):
+        subprocess.run(["tmux", "-S", str(private_socket), "kill-server"], capture_output=True, timeout=15)
+    shutil.rmtree(socket_dir, ignore_errors=True)
 
 
 def pytest_unconfigure(config):
@@ -235,36 +256,44 @@ def host_tmux_env():
 def fake_tmux(request, monkeypatch):
     """The FakeTmux every test runs against, emptied first.
 
-    A test marked real_tmux gets the real _tmux instead — but pointed at a
-    throwaway tmux server (its own TMUX_TMPDIR, TMUX unset), so even a direct
-    `subprocess.run(["tmux", ...])` in the test body never touches the host's
-    server. Afterwards it kills, by exact name, the sessions left on that
-    private server; it never matches a pattern. HZ-714: a farmd's
-    ensure_server() sets exit-empty off, so the private server would outlive
-    its last session — it is then stopped through its own socket path
-    (`-S`), never through TMUX_TMPDIR lookup, so only that server can go.
+    HZ-716: every test — not only real_tmux ones — runs against a throwaway
+    tmux server (its own TMUX_TMPDIR, TMUX unset), so even a direct
+    `subprocess.run(["tmux", ...])` in a test body, or a script it spawns,
+    never touches the host's server. Afterwards that server is stopped and
+    its dir removed (_stop_private_tmux).
+
+    A test marked real_tmux gets the real _tmux instead of FakeTmux, and its
+    sessions left on that private server are killed by exact name first; it
+    never matches a pattern.
     """
     FAKE_TMUX.reset()
-    if request.node.get_closest_marker("real_tmux") is None:
-        yield FAKE_TMUX
-        return
     # Short and in the run's sandbox: a tmux socket path
     # ($TMUX_TMPDIR/tmux-<uid>/default) must fit in ~108 bytes, which a pytest
     # tmp_path can exceed.
     socket_dir = tempfile.mkdtemp(prefix="hz-tmux-", dir=tempfile.gettempdir())
     monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
     monkeypatch.delenv("TMUX", raising=False)
-    monkeypatch.setattr(tmux_mgr, "_tmux", REAL_TMUX)
+    real = request.node.get_closest_marker("real_tmux") is not None
+    if real:
+        monkeypatch.setattr(tmux_mgr, "_tmux", REAL_TMUX)
     try:
-        yield None
+        yield None if real else FAKE_TMUX
     finally:
-        if shutil.which("tmux"):
+        if real and shutil.which("tmux"):
             for name in REAL_TMUX("list-sessions", "-F", "#{session_name}").stdout.splitlines():
                 REAL_TMUX("kill-session", "-t", f"={name}")
-            private_socket = Path(socket_dir) / f"tmux-{os.getuid()}" / "default"
-            if private_socket.exists():
-                subprocess.run(["tmux", "-S", str(private_socket), "kill-server"], capture_output=True, timeout=15)
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        _stop_private_tmux(socket_dir)
+
+
+@pytest.fixture(autouse=True)
+def no_live_farm(monkeypatch):
+    """HZ-716: run_checks() notes the host's live farmd before and after
+    (farm/live_farm.py). The suite calls run_checks() many times; none of
+    those may read the real farmd, so there is none here. Tests of that check
+    patch main_pid themselves."""
+    from farm import live_farm
+
+    monkeypatch.setattr(live_farm, "main_pid", lambda: None)
 
 
 @pytest.fixture(autouse=True)

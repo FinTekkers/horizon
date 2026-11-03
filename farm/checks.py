@@ -37,6 +37,7 @@ assertion, the failure would repeat, so it is not rerun (see _rerun_verdict()).
 """
 
 import contextlib
+import functools
 import json
 import os
 import re
@@ -57,6 +58,7 @@ from . import (
     check_slots,
     config,
     dep_cache,
+    live_farm,
     login_env,
     run_reaper,
     screenshot_runner,
@@ -1725,7 +1727,7 @@ def _check_slot_or_fail(*, log, **kwargs):
         raise CheckFailure(message, reason="timed_out", headline=message) from exc
 
 
-def run_checks(
+def _run_checks_unguarded(
     ws: Path,
     log=print,
     *,
@@ -2216,3 +2218,29 @@ def run_checks(
             "every check runner is missing on this host — no green to push behind", reason="none_ran"
         )
     return f"{ran} repo check(s) passed"
+
+
+@functools.wraps(_run_checks_unguarded)
+def run_checks(ws: Path, log=print, **kwargs) -> str:
+    """HZ-716: _run_checks_unguarded(), with the live farmd noted before and
+    after (farm/live_farm.py). When the checks killed or replaced it, the run
+    fails with live_farm.TOUCHED — also when it failed or timed out anyway, so
+    that failure is what the item shows. Skipped in a nested run: the outer
+    run is watching."""
+    before = None if os.environ.get(check_slots.IN_CHECKS_ENV) else live_farm.identity()
+    since = time.time()
+    try:
+        result = _run_checks_unguarded(ws, log, **kwargs)
+    except Exception as exc:
+        _raise_if_live_farm_touched(before, since, log, cause=exc)
+        raise
+    _raise_if_live_farm_touched(before, since, log)
+    return result
+
+
+def _raise_if_live_farm_touched(before, since: float, log, cause: BaseException | None = None) -> None:
+    message = live_farm.touched(before, since, log)
+    if message is None:
+        return
+    log(f"checks: {message} — failing the check")
+    raise CheckFailure(f"{HEADLINE_PREFIX}{message}", command="live farm", tail=message, headline=message) from cause

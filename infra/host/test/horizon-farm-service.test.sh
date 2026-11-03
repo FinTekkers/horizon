@@ -118,8 +118,11 @@ sed -e "s|/etc/horizon/farm.env|$FARM_ENV|g" -e "s|/opt/horizon|$OPT|g" "$UNIT" 
 directive() { sed -n "s/^$1=//p" "$LOCAL_UNIT"; }
 
 # farm_env: the environment systemd gives the unit's commands.
+# HZ-716: plus a private TMUX_TMPDIR, so that if a stub ever goes missing a
+# real tmux still lands on a throwaway server, never the host's.
 farm_env() {
   printf 'PATH=%s\n' "$STUBS:/usr/bin:/bin"
+  printf 'TMUX_TMPDIR=%s\n' "${TMUX_TMPDIR:-$WORK/tmux}"
   read_env_file "$(directive EnvironmentFile)"
   directive Environment
 }
