@@ -121,8 +121,8 @@ holds a live Google session:
 ### Making it
 
 `--init-profile` makes the directory (mode 700), writes the marker and opens
-plain Chromium (the same binary the recorder uses, with no automation flags)
-on `https://shoreward.ai/horizon/`. It needs a **visible window**, and the
+plain Chromium (the same binary the recorder uses, with no automation flags
+and no sandbox) on `https://shoreward.ai/horizon/`. It needs a **visible window**, and the
 EC2 host has no display. Use one of these:
 
 - **On the host, through a virtual display and VNC** (recommended: the
@@ -139,6 +139,12 @@ EC2 host has no display. Use one of these:
   cookies decrypt on the host. **A profile made on macOS (or Windows) will not
   work on the Linux host**: its cookies are encrypted with that machine's
   keychain.
+
+The window shows Chromium's "You are using an
+unsupported command-line flag: --no-sandbox" notice. The flag is there
+because AppArmor on the Horizon box blocks Chromium's sandbox ("No usable sandbox!"), so without it
+Chromium exits at once. The filming runs go without the sandbox too
+(Playwright's default). The notice is harmless: close it or leave it.
 
 In the window: open a new tab, sign in at `accounts.google.com` to the
 Google account used for Parvati, then close the window. (Horizon itself only
