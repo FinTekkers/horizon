@@ -1,13 +1,17 @@
 {
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".topbar__avatar, a.login__google", "timeoutMs": 30000},
+    {"action": "click", "selector": ".topbar__avatar"},
+    {"action": "click", "selector": "button.usermenu__item:has-text(\"Sign out\")"},
+    {"action": "waitFor", "selector": "a.login__google", "timeoutMs": 30000}
+  ],
   "actions": [
     {"action": "caption", "text": "Sign in with Google", "ms": 3500},
     {"action": "goto", "path": "/horizon/"},
     {"action": "waitFor", "selector": "a.login__google", "timeoutMs": 30000},
     {"action": "pause", "ms": 1500},
     {"action": "click", "selector": "a.login__google"},
-    {"action": "waitUntil", "selector": "[data-identifier]", "timeoutMs": 120000},
-    {"action": "pause", "ms": 1500},
-    {"action": "click", "selector": "[data-identifier]"},
     {"action": "waitUntil", "selector": ".first-project, .board", "timeoutMs": 300000},
     {"action": "pause", "ms": 3000}
   ]

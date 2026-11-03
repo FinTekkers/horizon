@@ -140,9 +140,10 @@ test('HZ-698 metric 4: no Shoreward scene has a sign-in step or a literal promot
   }
   const a3 = await loadScenario('A3', SCENE_DIR)
   assert.ok(a3.actions.some((a) => a.action === 'typeEnv' && a.env === 'SHOREWARD_PROMO_CODE' && CODE_FIELD_RE.test(a.selector)), 'A3 has no typeEnv of SHOREWARD_PROMO_CODE into the code field')
-  // A5 clicks its way through Google's account chooser and types nothing.
+  // A5 clicks Sign in with Google and types nothing: Google signs the saved
+  // profile straight in, with no account chooser.
   const a5 = await loadScenario('A5', SCENE_DIR)
-  assert.ok(a5.actions.some((a) => a.action === 'click' && a.selector === '[data-identifier]'))
+  assert.ok(a5.actions.some((a) => a.action === 'click' && a.selector === 'a.login__google'))
   assert.ok(!a5.actions.some((a) => a.action === 'type' || a.action === 'typeEnv'))
   // Control: the scan flags each banned kind, and passes the allowed ones.
   assert.deepEqual(shorewardFindings({
