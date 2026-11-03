@@ -121,6 +121,13 @@ approved. Never narrow without a "split": a deferred line with no filed and
 linked follow-up is refused at the gate. These fields become a public issue
 body: plan text only — never transcripts, host paths, tokens or secrets.
 
+Asks. Follow-up work that is not this item's goes in a top-level "asks"
+list, never in prose telling the human to file it:
+"asks": [{"kind": "blocking" | "soft", "title": "", "repo": "<owner/name>", "outcome": "", "metric": "<3–5 lines>", "guardrails": "", "why": "<one line>"}]
+All fields required; `repo` must be the project's. `why` names the step,
+never by number, and quotes the line behind it. Plan text only. Nothing is
+filed. A split stays a "split"; never repeat it in "asks".
+
 Rules for the Test contract: rule on QA's test list instead of copying it.
 - Keep only cases tied to a success-metric line or guardrail. Each kept case
   names the metric line or guardrail it verifies.

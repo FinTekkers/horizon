@@ -435,6 +435,37 @@ Measure it on an idle host with
 It clones the repo into a throwaway `FARM_HOME` under pytest's `tmp_path` and
 never touches `~/.horizon-farm`.
 
+## The `asks` field (HZ-728)
+
+A step that finds follow-up or prerequisite work returns it as data, not as
+prose telling the human to file something. Its reply may carry a top-level
+`asks` list next to `artifact_md`. Each ask is a complete draft item:
+
+```json
+{"kind": "blocking", "title": "…", "repo": "owner/name", "outcome": "…",
+ "metric": "1. …\n2. …\n3. …", "guardrails": "1. …",
+ "why": "Architecture review: 'the quoted artifact line'"}
+```
+
+- `kind` is `blocking` or `soft`. `metric` has 3–5 non-blank lines. `why` is
+  one line naming the step by its name, never by number.
+- `repo` must be connected to the item's project.
+- Ask text may become a public issue body later: plan text only. An ask
+  carrying a host path or a token is refused.
+- The farm passes `asks` through untouched (`step_agent._reply_asks`) on every
+  reply path: the generic agent steps (Architecture review, Assess, Impact
+  review, …), both passes of the automated review (code pass first) and the PM
+  steps (`pm_steps.finish`). Anything but a list is dropped.
+- The server validates each ask (`server/src/asks.js`) and stores the valid
+  ones in the `ask` table, linked to the item and the step run. A refused ask
+  never fails the run: the artifact gains a `## Asks` section naming the field
+  that failed, and the item gets one event per refusal.
+- A PM `split` is unchanged and still filed at its gate. The server also
+  records it as an ask of kind `split`. Never repeat a split in `asks`.
+- A re-run of the same step supersedes that step's earlier open asks.
+- Nothing is filed and no gate changes: the item page lists the open asks,
+  read-only. Design: ADR 0001, `docs/adr/0001-agent-asks.md`.
+
 ## Tests
 
 ```

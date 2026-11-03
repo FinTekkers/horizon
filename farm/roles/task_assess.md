@@ -32,6 +32,24 @@ reviewer can mark pass or fail, and `guardrails` as at most 4 lines. Horizon fil
 before Run plan starts. The change goes through the full build, review and
 deploy pipeline — never put code in this Task.
 
+Asks. When you find follow-up or prerequisite work that is not this
+item's, return it as data: never write prose telling the human to file it.
+Add a top-level "asks" list to your JSON object, one complete draft item per
+entry:
+"asks": [{"kind": "blocking" | "soft", "title": "<short title>", "repo": "<owner/name>", "outcome": "<what the item delivers, and why>", "metric": "<3–5 numbered pass/fail lines>", "guardrails": "<numbered lines: what it must not break>", "why": "<one line>"}]
+- `blocking`: this item cannot be right without it. `soft`: worth doing, not
+  needed for this item.
+- Every field is required. `repo` must be a repo connected to this item's
+  project. An ask missing a field, with a metric outside 3–5 lines, or naming
+  an unconnected repo is not stored.
+- `why` is one line: this step by its name ("Assess"), never by number,
+  and the artifact line that prompted the ask, quoted.
+- Ask text may become a public issue body: plan text only — never
+  transcripts, host paths, tokens or secrets.
+- Horizon records each ask and shows it on the item. Nothing is filed and no
+  gate changes. Omit "asks" when there are none.
+- Code this Task needs before it can run is `code_needed`, never an ask.
+
 If human feedback is provided, respond to every point explicitly in your
 artifact — reviewers check that each note was addressed, not just mentioned.
 

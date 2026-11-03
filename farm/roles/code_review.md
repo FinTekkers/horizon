@@ -42,12 +42,32 @@ Scope — what may block:
   divergence from the approved plan that changes behaviour.
 - Everything else is a **note**: encapsulation, duplication, naming, comment
   style, dead code, structure you would have done differently. Notes never
-  fail the review. A note can say "consider a follow-up item".
+  fail the review. Work that belongs in another item is an ask (see Asks
+  below), not a note.
 - Set `verdict` to "fail" only when at least one finding is **block**. Every
   block finding names the guardrail, the defect's concrete failure (input →
   wrong result), or the plan line it diverges from.
 - On a re-review, judge the new diff the same way. Do not block on an issue
   that was in code an earlier review passed, unless it is a real defect.
+
+Asks. When you find follow-up or prerequisite work that is not this
+item's, return it as data: never write prose telling the human to file it.
+Add a top-level "asks" list to your JSON object, one complete draft item per
+entry:
+"asks": [{"kind": "blocking" | "soft", "title": "<short title>", "repo": "<owner/name>", "outcome": "<what the item delivers, and why>", "metric": "<3–5 numbered pass/fail lines>", "guardrails": "<numbered lines: what it must not break>", "why": "<one line>"}]
+- `blocking`: this item cannot be right without it. `soft`: worth doing, not
+  needed for this item.
+- Every field is required. `repo` must be a repo connected to this item's
+  project. An ask missing a field, with a metric outside 3–5 lines, or naming
+  an unconnected repo is not stored.
+- `why` is one line: this step by its name ("Automated review (code + QA)"), never by number,
+  and the artifact line that prompted the ask, quoted.
+- Ask text may become a public issue body: plan text only — never
+  transcripts, host paths, tokens or secrets.
+- Horizon records each ask and shows it on the item. Nothing is filed and no
+  gate changes. Omit "asks" when there are none.
+- An ask never changes your verdict. A finding that must block stays a
+  **block** finding.
 
 ## Delta review
 

@@ -518,14 +518,19 @@ def stamp_dropped_lines(summary: str, field: str, before, after) -> str:
     return summary[: SUMMARY_MAX_CHARS - len(stamp)] + stamp
 
 
-def finish(task: dict, summary: str, patch: dict, artifact: str | None, notes: list[str], split=None) -> dict:
+def finish(
+    task: dict, summary: str, patch: dict, artifact: str | None, notes: list[str], split=None, asks=None
+) -> dict:
     """The PM step's outcome from a validated reply: the feedback stamp, the
     parser notes and the HZ-345 dropped-line stamp. Returns {"summary",
     "patch", "artifacts"?} for step_agent.main() to report.
 
     HZ-685: `split` is the reply's raw `split`. Only the summary step's, and
     only an object, rides through to the server (server/src/split.js), which
-    files the follow-up when Review before execution is approved."""
+    files the follow-up when Review before execution is approved.
+
+    HZ-728: `asks` is the reply's `asks` list. Any PM step's rides through;
+    the server (server/src/asks.js) validates and stores each ask."""
     # Script-stamped feedback trail, same as the ephemeral agents.
     feedback = task.get("feedback") or []
     if feedback:
@@ -549,4 +554,6 @@ def finish(task: dict, summary: str, patch: dict, artifact: str | None, notes: l
         outcome["artifacts"] = {"artifact_md": artifact}
     if task["step"]["label"] == SPLIT_STEP_LABEL and isinstance(split, dict):
         outcome.setdefault("artifacts", {})["split"] = split
+    if isinstance(asks, list) and asks:
+        outcome.setdefault("artifacts", {})["asks"] = asks
     return outcome

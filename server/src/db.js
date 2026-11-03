@@ -1497,6 +1497,30 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_item_split_source ON item_split(source_item_id);
 `)
 
+// HZ-728: a step's follow-up and prerequisite work as structured drafts
+// (server/src/asks.js), linked to the item and the step run. A PM split is
+// recorded here too, as kind 'split', linked to its item_split row. Additive
+// only. `status` has no CHECK so later items can add states without a table
+// rebuild; item_split_id has no FK because recordProposedSplit may delete
+// that row.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ask (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id       TEXT NOT NULL REFERENCES work_item(id),
+    step_run_id   INTEGER NOT NULL REFERENCES step_run(id),
+    step_index    INTEGER NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('blocking','soft','split')),
+    status        TEXT NOT NULL DEFAULT 'open',
+    draft_json    TEXT NOT NULL,
+    why           TEXT NOT NULL,
+    item_split_id INTEGER,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_ask_item_status ON ask(item_id, status);
+  CREATE INDEX IF NOT EXISTS idx_ask_item_step ON ask(item_id, step_index);
+`)
+
 // HZ-379: items one parent filed for itself (server/src/spawn.js) — a Task's
 // Assess asking for code today, a list of items from one idea later. One row
 // per item to file: seq is its place in the request's list, and

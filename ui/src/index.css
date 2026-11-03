@@ -797,6 +797,19 @@ button { font-family: var(--font-sans); }
 .dep-detail__section--spawned { background: var(--primary-bg); }
 .dep-detail__label--spawned { color: var(--primary-ink); }
 .dep-detail__closed { color: var(--success-ink); font-weight: 700; }
+/* HZ-728: drafted follow-up and prerequisite items, read-only. */
+.asks-panel { margin-top: 14px; border-radius: 14px; padding: 12px 16px; background: var(--primary-bg); }
+.asks-panel__label {
+  font: 700 11px var(--font-sans); letter-spacing: 1px; text-transform: uppercase;
+  margin-bottom: 6px; color: var(--primary-ink);
+}
+.asks-panel__list { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
+.asks-panel__ask + .asks-panel__ask { margin-top: 6px; }
+.asks-panel__kind { font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+.asks-panel__kind--blocking { color: var(--danger-ink); }
+.asks-panel__title { font-weight: 700; overflow-wrap: anywhere; }
+.asks-panel__why { color: var(--muted-strong); overflow-wrap: anywhere; }
+.asks-panel__step { font-weight: 700; }
 .dep-detail__list { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
 .dep-detail__abandoned { color: var(--danger-ink); font-weight: 700; }
 /* The id carries the navigation; theme tokens only, so it stays legible in both themes. */

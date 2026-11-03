@@ -35,6 +35,7 @@ import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
 import { metricLines } from '../../../domain/js/goldenCases.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
+import AsksPanel from './AsksPanel'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
@@ -1210,6 +1211,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
           </div>
         </div>
         <DependencyBadge key={item.id} item={item} onRemove={onRemoveDependency} />
+        {item.asks?.length > 0 && <AsksPanel item={item} />}
       </div>
 
       <div className={`tracker__body${activityMin ? ' tracker__body--activity-min' : ''}`}>

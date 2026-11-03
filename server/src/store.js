@@ -55,6 +55,7 @@ import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
+import { openAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 
@@ -2178,6 +2179,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     forwardedReview: forwardedReview(row),
     ...dependencies,
     ...spawnFields(row.id),
+    // HZ-728: open asks — drafted follow-up and prerequisite items — read-only.
+    asks: openAsks(row.id),
     ruleBlock: ruleBlock && ruleBlockView(row.id, ruleBlock, dependencies.blockedBy),
     // HZ-422: every model this step may run on is usage-limited until `until`.
     usageWait: usageWaitView(row),

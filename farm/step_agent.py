@@ -353,6 +353,18 @@ def _spawn_field(kind: str, label: str) -> str | None:
     return field if isinstance(field, str) and field else None
 
 
+def _reply_asks(*replies) -> list:
+    """HZ-728: every ask the replies sent, in order. A reply's `asks` rides
+    through untouched when it is a list; the server (server/src/asks.js)
+    validates each ask and stores it. Any other shape is dropped here."""
+    return [
+        ask
+        for reply in replies
+        if isinstance(reply, dict) and isinstance(reply.get("asks"), list)
+        for ask in reply["asks"]
+    ]
+
+
 def _is_pm_step(label: str, kind: str = "change") -> bool:
     """HZ-371: whether this step is the PM kind, from domain/steps.json's
     runsIn — the same field farmd's PM lane is chosen by. An unknown label is
@@ -2661,16 +2673,20 @@ def _execute_pm(task: dict) -> dict:
         log("invalid reply; retrying once")
         return call(f"{prompt}\n\n{retry_prompt}")["result"]
 
-    # HZ-685: the reply that validated, for its optional `split`.
+    # HZ-685: the reply that validated, for its optional `split`. HZ-728: and
+    # its `asks`.
     accepted: dict = {}
 
     def validate(parsed):
         result = pm_steps.validate_within_budget(parsed, label, item)
         accepted["split"] = parsed.get("split") if isinstance(parsed, dict) else None
+        accepted["asks"] = _reply_asks(parsed)
         return result
 
     (summary, patch, artifact), notes = parse_agent_reply(reply["result"], retry_once, validate=validate)
-    outcome = pm_steps.finish(task, summary, patch, artifact, notes, split=accepted.get("split"))
+    outcome = pm_steps.finish(
+        task, summary, patch, artifact, notes, split=accepted.get("split"), asks=accepted.get("asks")
+    )
     # HZ-370: step_run.provider is recorded from artifacts.provider, so a
     # reply with no artifact still gets an artifacts dict to carry it.
     if produced.get("provider"):
@@ -3420,6 +3436,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             "verdict": verdict,
             **review_extra,
         }
+        # HZ-728: both passes' asks, code pass first.
+        if asks := _reply_asks(code_parsed, qa_parsed):
+            review_artifacts["asks"] = asks
         if shas := pushed_head(ws, item["repo"]):
             review_artifacts["source_shas"] = shas
         # HZ-369: what ran, from the code pass (the QA pass matched it above).
@@ -3627,6 +3646,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # gate 5 is approved; any other step's or shape's `split` is dropped.
     if label == SPLIT_STEP_LABEL and isinstance(parsed.get("split"), dict):
         result.setdefault("artifacts", {})["split"] = parsed["split"]
+    # HZ-728: any step's `asks` (architecture review, the Task steps, …).
+    if asks := _reply_asks(parsed):
+        result.setdefault("artifacts", {})["asks"] = asks
     # HZ-379: a step whose row names a `spawnsOn` field passes that field
     # through untouched; the server (server/src/spawn.js) validates it and
     # files the item. Any other step's, or a non-object, is dropped.
