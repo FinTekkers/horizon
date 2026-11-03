@@ -373,6 +373,12 @@ function AuthenticatedApp({ user, onLogout }) {
     setView('tracker')
     setApprovalsOpen(false)
   }
+  // The account menu and, for an admin, the item page's farm banner (HZ-717).
+  const openFarmHealth = () => {
+    navigate('/farm-health')
+    setView('farm-health')
+    setApprovalsOpen(false)
+  }
   // HZ-547: the "From Plan" chip and pill — the board, filtered to that Plan.
   const openPlanOnBoard = (id) => {
     boardNarrowing.setBoardView({ plan: id })
@@ -519,11 +525,7 @@ function AuthenticatedApp({ user, onLogout }) {
           setView('definitions')
           setApprovalsOpen(false)
         }}
-        onOpenFarmHealth={() => {
-          navigate('/farm-health')
-          setView('farm-health')
-          setApprovalsOpen(false)
-        }}
+        onOpenFarmHealth={openFarmHealth}
         farmHealthState={farmHealth.data?.state ?? null}
       />
 
@@ -588,6 +590,8 @@ function AuthenticatedApp({ user, onLogout }) {
       {view === 'tracker' && selected && (
         <Tracker
           item={selected}
+          farmUnreachable={farm?.reachable === false}
+          onOpenFarmHealth={isAdmin ? openFarmHealth : null}
           projects={projects}
           knownItemIds={knownItemIds}
           deployBlock={deployBlock}

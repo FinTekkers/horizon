@@ -1017,7 +1017,24 @@ function FromPlanPill({ planId, planProgress, onOpenPlan }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule }) {
+// HZ-717: the server's snapshot says it can't reach the farm. Its signal is
+// learned from the farm calls the server already makes, separately from Farm
+// health's own probe, so the two can briefly disagree — that is deliberate.
+// No Farm health link for a non-admin: that page is admin-only.
+function FarmUnreachableBanner({ onOpenFarmHealth }) {
+  return (
+    <div className="pause-banner pause-banner--farm" role="status">
+      <div className="pause-banner__title">The farm isn't reachable, so agent steps can't start or report back.</div>
+      {onOpenFarmHealth && (
+        <button type="button" className="pause-banner__link" onClick={onOpenFarmHealth}>
+          Farm health
+        </button>
+      )}
+    </div>
+  )
+}
+
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, farmUnreachable = false, onOpenFarmHealth = null }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1134,6 +1151,8 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
             )}
           </div>
         )}
+        {/* HZ-717: fixed text only — never the farm's error, URL or host. */}
+        {!abandoned && !closed && farmUnreachable && <FarmUnreachableBanner onOpenFarmHealth={onOpenFarmHealth} />}
         {!abandoned && item.paused && <PauseBanner key={`pause-banner-${item.id}`} item={item} />}
         {/* HZ-422: the server builds the text, so every client shows the same time. */}
         {!abandoned && !item.paused && item.usageWait && (

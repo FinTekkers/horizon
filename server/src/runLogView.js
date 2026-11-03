@@ -7,6 +7,8 @@
 export const POLL_MS = 2000
 export const LOG_KEEP_CHARS = 20_000
 export const TIMEOUT_MS = 3 * 60 * 1000
+// HZ-717: fixed text only — never the farm's own error, URL or host.
+export const FARM_DOWN_TEXT = 'Can’t reach the farm. Retrying…'
 
 export function appendLog(buffer, content) {
   return (buffer + content).slice(-LOG_KEEP_CHARS)
@@ -27,6 +29,7 @@ function clientMain() {
   var offset = 0
   var startedAt = Date.now()
   var stopped = false
+  var farmDown = false
 
   function render() {
     logEl.textContent = buffer || 'Waiting for output…'
@@ -41,13 +44,25 @@ function clientMain() {
     return fetch(url)
       .then(function (res) {
         if (!res.ok) {
-          var err = new Error('log fetch failed')
-          err.status = res.status
-          throw err
+          return res
+            .json()
+            .catch(function () {
+              return {}
+            })
+            .then(function (body) {
+              var err = new Error('log fetch failed')
+              err.status = res.status
+              err.code = body && body.error
+              throw err
+            })
         }
         return res.json()
       })
       .then(function (data) {
+        if (farmDown) {
+          farmDown = false
+          setStatus('')
+        }
         offset = data.next_offset
         if (data.content) {
           buffer = appendLog(buffer, data.content)
@@ -81,6 +96,11 @@ function clientMain() {
           setStatus('This run’s output is no longer available.')
           return
         }
+        // The server can't reach the farm: say so, and keep polling.
+        if (err && err.status === 503 && err.code === 'farm unavailable') {
+          farmDown = true
+          setStatus(FARM_DOWN_TEXT)
+        }
         // Transient (farm restarting, network blip): keep polling.
         setTimeout(poll, POLL_MS)
       })
@@ -102,6 +122,7 @@ export function clientScript() {
     `var POLL_MS = ${POLL_MS};`,
     `var LOG_KEEP_CHARS = ${LOG_KEEP_CHARS};`,
     `var TIMEOUT_MS = ${TIMEOUT_MS};`,
+    `var FARM_DOWN_TEXT = ${JSON.stringify(FARM_DOWN_TEXT)};`,
     `var appendLog = ${appendLog.toString()};`,
     `var timedOut = ${timedOut.toString()};`,
     `(${clientMain.toString()})();`,

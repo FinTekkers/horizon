@@ -551,11 +551,37 @@ export function missingRequiredInputs(step, rows, budgeted, kind = 'change') {
 
 let farm = { status: 'running', since: new Date().toISOString(), runStates: {} }
 
+// HZ-717: whether the last farm call got an answer. Kept outside `farm`
+// because startRealFarm() replaces that object wholesale. It is learned only
+// from calls the server already makes (run-state polls, dispatch, the log
+// tail) — never from a poll of its own — so it can lag while nothing calls the
+// farm. Deliberately separate from Farm health's own probe (farmHealth.js):
+// the two may briefly disagree, and that is fine for a display-only signal.
+let farmReachable = true
+
+function markFarmReachable(next) {
+  if (farmReachable === next) return
+  farmReachable = next
+  notifyChange()
+}
+
+// A network-level failure, as fetch reports it (and farmHttpRequest fakes it).
+// Any other TypeError is a bug or a bad FARM_URL, not an outage.
+function isFarmNetworkFailure(err) {
+  return err?.name === 'TypeError' && err.message === 'fetch failed'
+}
+
 export function getFarmState() {
-  // runStates is an internal cache for store.js (via registerRunStateProvider),
-  // not part of the farm's own status — keep it out of this public snapshot.
-  const { runStates, ...publicState } = farm
-  return { ...publicState, activeProjectId: getActiveProjectId() }
+  // An allowlist: runStates is an internal cache for store.js (via
+  // registerRunStateProvider), and farm.error is the raw farm error text —
+  // neither belongs in the snapshot the browser sees (HZ-717).
+  return {
+    status: farm.status,
+    since: farm.since,
+    projectId: farm.projectId ?? null,
+    activeProjectId: getActiveProjectId(),
+    reachable: farmReachable,
+  }
 }
 
 // ---- queued vs running (HZ-54) ----
@@ -598,6 +624,12 @@ export function pollRunStates() {
 export function setRunStateForTest(runId, state, reason = null) {
   farm.runStates = { ...farm.runStates, [String(runId)]: { state, reason } }
   notifyChange()
+}
+
+// e2e only (HZ-717), same wiring: the suite has no farm, so this is how a spec
+// shows the item page's "farm isn't reachable" banner and clears it again.
+export function setFarmReachableForTest(reachable) {
+  markFarmReachable(reachable)
 }
 
 // e2e only (HZ-154), same wiring and same reasoning as the hook above: the
@@ -711,11 +743,15 @@ export async function farmFetch(path, body, { timeoutMs = DEFAULT_FARM_FETCH_TIM
       ? await fetch(url, { ...init, signal: controller.signal })
       : await farmHttpRequest(url, { ...init, timeoutMs })
   } catch (err) {
+    // A timeout means slow, not down: it leaves the reachable flag alone.
     if (err.name === 'AbortError') throw new Error(`farm request to ${path} timed out after ${timeoutMs}ms`)
+    if (isFarmNetworkFailure(err)) markFarmReachable(false)
     throw err
   } finally {
     clearTimeout(timer)
   }
+  // Any HTTP reply, a refusal included, means the farm answered.
+  markFarmReachable(true)
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `farm returned ${res.status} for ${path}`)
@@ -733,7 +769,14 @@ export async function farmFetch(path, body, { timeoutMs = DEFAULT_FARM_FETCH_TIM
 // pass the farm's own status (200/404) through; throws when the farm itself
 // is unreachable.
 export async function fetchRunLog(runId, offset = 0) {
-  const res = await fetch(`${FARM_URL}/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
+  let res
+  try {
+    res = await fetch(`${FARM_URL}/runs/${runId}/log?offset=${encodeURIComponent(offset)}`)
+  } catch (err) {
+    if (isFarmNetworkFailure(err)) markFarmReachable(false)
+    throw err
+  }
+  markFarmReachable(true)
   const data = await res.json().catch(() => ({}))
   return { status: res.status, data }
 }
