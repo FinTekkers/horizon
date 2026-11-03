@@ -228,6 +228,19 @@ export async function addRepoToProject() {
   throw new Error('Projects are not available in mock mode')
 }
 
+// HZ-703: a member's own repository and check commands need the server.
+export async function connectTenantRepo() {
+  throw new Error('Projects are not available in mock mode')
+}
+
+export async function getTenantChecks() {
+  throw new Error('Projects are not available in mock mode')
+}
+
+export async function saveTenantChecks() {
+  throw new Error('Projects are not available in mock mode')
+}
+
 export async function listProjects() {
   return { projects: [] }
 }

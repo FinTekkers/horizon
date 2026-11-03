@@ -16,10 +16,19 @@ import AgentDefinitionsPage from './components/AgentDefinitionsPage'
 import FarmHealthPage from './components/FarmHealthPage'
 import NewItemModal from './components/NewItemModal'
 import FirstProjectScreen from './components/FirstProjectScreen'
+import ConnectRepoCard from './components/ConnectRepoCard'
+import { needsRepo } from './components/connectRepo'
 import AddDependencyDialog from './components/AddDependencyDialog'
 import LoginPage from './components/LoginPage'
 import LegalPage, { LEGAL_DOCS } from './components/LegalPage'
-import { ADMIN_HOME, MEMBER_ADMIN_SECTION, adminPath, isOwnerOnlySection, parseAdminPath } from './components/admin/adminRoutes'
+import {
+  ADMIN_HOME,
+  MEMBER_ADMIN_SECTION,
+  adminPath,
+  isMemberOnlySection,
+  isOwnerOnlySection,
+  parseAdminPath,
+} from './components/admin/adminRoutes'
 import { gateActionBusy } from './domain/gateAction'
 import { queuedToMerge } from './domain/status'
 import { validPlanId } from './domain/narrowing'
@@ -265,6 +274,15 @@ function AuthenticatedApp({ user, onLogout }) {
   // one — sets one up instead of seeing an empty board. Never the owner, and
   // never before the first board frame, when `projects` is not loaded yet.
   const needsFirstProject = !isAdmin && api.hasSnapshot() && projects.length === 0
+  // HZ-703: then a member connects that project's repository on the
+  // "Connect your repository" card, in place of the empty board. Its result
+  // is kept here, for the project it connected, so the connected view stays
+  // up after the board frame that adds the repository, until it is dismissed.
+  const [repoConnected, setRepoConnected] = useState(null)
+  const repoMissing = needsRepo(activeProject, isAdmin, items)
+  const connectedResult =
+    repoConnected && activeProject && repoConnected.projectId === activeProject.id ? repoConnected.result : null
+  const showConnectCard = repoMissing || connectedResult !== null
   // HZ-208: the project filter is view state only. It is re-validated on every
   // render, so a project disabled live (over SSE) while selected falls back to
   // 'All projects' instead of hiding everything.
@@ -428,6 +446,14 @@ function AuthenticatedApp({ user, onLogout }) {
     setAdminRoute({ ...ADMIN_HOME, section: MEMBER_ADMIN_SECTION })
   }, [view, adminRoute, isAdmin])
 
+  // HZ-703: the owner's /admin/<member-only section> shows Admin's first
+  // section, and its URL becomes /admin.
+  useEffect(() => {
+    if (view !== 'admin' || !isAdmin || !isMemberOnlySection(adminRoute.section)) return
+    window.history.replaceState(window.history.state, '', `${PREFIX}/admin`)
+    setAdminRoute(ADMIN_HOME)
+  }, [view, adminRoute, isAdmin])
+
   // While the board is shown its URL names the chosen Plan, so a reload or a
   // shared link keeps it, and clearing the chip drops it.
   useEffect(() => {
@@ -564,6 +590,21 @@ function AuthenticatedApp({ user, onLogout }) {
           planProgress={planProgress}
           onOpenPlan={openPlanOnBoard}
           activeProjectName={isAdmin ? null : (activeProject?.name ?? null)}
+          newItemBlocked={repoMissing ? 'Connect a repository first' : null}
+          emptyState={
+            showConnectCard ? (
+              <ConnectRepoCard
+                key={activeProject.id}
+                project={activeProject}
+                result={connectedResult}
+                onConnect={api.connectTenantRepo}
+                onConnected={(result) => setRepoConnected({ projectId: activeProject.id, result })}
+                settingsHref={`${PREFIX}/admin/checks`}
+                onOpenSettings={() => openAdmin('/admin/checks')}
+                onDone={() => setRepoConnected(null)}
+              />
+            ) : null
+          }
         />
       )}
 
@@ -575,6 +616,7 @@ function AuthenticatedApp({ user, onLogout }) {
           route={adminRoute}
           onNavigate={openAdmin}
           isOwner={isAdmin}
+          activeProject={activeProject}
         />
       )}
 

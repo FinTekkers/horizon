@@ -382,13 +382,13 @@ export async function savePlanDraft(id, baseVersion, doc) {
 // empty — nothing is sent; Error('network') when no answer came; else
 // Error(<error code>) with `status` on a non-2xx. Never retries on its own
 // beyond gatePost's single 401 re-prompt.
-async function gateAction(path, body) {
+async function gateAction(path, body, method = 'POST') {
   // promptForPin stores the PIN it gets, so gatePost reads it back from
   // storage and does not prompt a second time.
   if (!gatePin() && !promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')) {
     throw new Error('pin_needed')
   }
-  const res = await gatePost(path, body)
+  const res = await gatePost(path, body, method)
   if (!res) throw new Error('network')
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -637,6 +637,42 @@ export function createProject(name) {
 
 export function addRepoToProject(projectId, repo) {
   return postJson(`/projects/${projectId}/repos`, { repo })
+}
+
+// ---- a member's own repository (HZ-703, over HZ-697's tenant API) ----
+
+// Connects the member's tenant project to `repo` with a fine-grained GitHub
+// token. The token goes only in this request's body: it is never logged,
+// stored or put in a URL here. Resolves to { repo, defaultBranch, runUser,
+// webhook, ... }. Rejects like gateAction (Error('pin_needed'), 'network' or
+// the error code with `status`), plus `code`, the server's own `serverMessage`
+// to show as is (null when it sent none) and the missing `permission`.
+export async function connectTenantRepo(projectId, repo, token) {
+  if (!gatePin() && !promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')) {
+    throw new Error('pin_needed')
+  }
+  const res = await gatePost(`/tenant/projects/${encodeURIComponent(projectId)}/repos`, { repo, token })
+  if (!res) throw new Error('network')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    err.code = data.error ?? null
+    err.serverMessage = typeof data.message === 'string' ? data.message : null
+    err.permission = data.permission ?? null
+    throw err
+  }
+  return data
+}
+
+// { repo, checks: { install, test, e2e } } for the member's connected repo.
+export function getTenantChecks(projectId, repo) {
+  return getJson(`/tenant/projects/${encodeURIComponent(projectId)}/repos/checks?repo=${encodeURIComponent(repo)}`)
+}
+
+// Saves install, test and e2e (null clears one). A gate action, like Admin's.
+export function saveTenantChecks(projectId, repo, { install, test, e2e }) {
+  return gateAction(`/tenant/projects/${encodeURIComponent(projectId)}/repos/checks`, { repo, install, test, e2e }, 'PUT')
 }
 
 // HZ-659: the projects the signed-in user belongs to (every project for the

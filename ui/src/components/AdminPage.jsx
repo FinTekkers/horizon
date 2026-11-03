@@ -2,10 +2,18 @@ import { useEffect, useState } from 'react'
 import { getDeployTargets, getCheckFlakes } from '../api'
 import { BackIcon } from './icons'
 import AdminNav from './admin/AdminNav'
-import { ADMIN_HOME, MEMBER_ADMIN_SECTION, adminPath, isOwnerOnlySection, visibleSections } from './admin/adminRoutes'
+import {
+  ADMIN_HOME,
+  MEMBER_ADMIN_SECTION,
+  adminPath,
+  isMemberOnlySection,
+  isOwnerOnlySection,
+  visibleSections,
+} from './admin/adminRoutes'
 import { AccountSection, GitHubSection } from './admin/AccessSections'
 import { DeployTargetsSection, FlakyTestsSection } from './admin/DeliverySections'
 import { ProjectsSection } from './admin/ProjectsSection'
+import TenantChecksSection from './admin/TenantChecksSection'
 
 // HZ-564: Admin is one section at a time, picked from the grouped list on the
 // left. App owns the route (parsePath reads `/admin/<section>`); this shell
@@ -13,7 +21,9 @@ import { ProjectsSection } from './admin/ProjectsSection'
 // (isOwner false) gets only the sections visibleSections allows — an
 // owner-only section is never rendered, and its owner-only reads never sent.
 // App passes isOwner; the server's 404 on those routes is the real check.
-export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, onNavigate, isOwner = true }) {
+// HZ-703: a member's own check commands are for `activeProject`; the owner
+// never gets that section.
+export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, onNavigate, isOwner = true, activeProject = null }) {
   const [deployTargetsVersion, setDeployTargetsVersion] = useState(0)
   const [deployTargets, setDeployTargets] = useState({ targets: null, error: null })
 
@@ -35,7 +45,13 @@ export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, 
       .catch((err) => setCheckFlakes({ data: null, error: err.message }))
   }, [isOwner])
 
-  const section = isOwner || !isOwnerOnlySection(route.section) ? route.section : MEMBER_ADMIN_SECTION
+  const section = isOwner
+    ? isMemberOnlySection(route.section)
+      ? ADMIN_HOME.section
+      : route.section
+    : isOwnerOnlySection(route.section)
+      ? MEMBER_ADMIN_SECTION
+      : route.section
   const flakyCount = (checkFlakes.data?.repos || []).reduce((n, r) => n + (r.tests?.length || 0), 0)
   const badges = {
     projects: { value: projects.length },
@@ -73,6 +89,7 @@ export default function AdminPage({ sync, projects, onBack, route = ADMIN_HOME, 
           {section === 'flaky' && <FlakyTestsSection data={checkFlakes.data} error={checkFlakes.error} />}
           {section === 'github' && <GitHubSection sync={sync} />}
           {section === 'account' && <AccountSection />}
+          {section === 'checks' && <TenantChecksSection project={activeProject} />}
         </main>
       </div>
     </div>
