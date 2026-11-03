@@ -6,7 +6,6 @@ import { PROD_VIEWPORT, launchProfile } from './browser.mjs'
 import { RecorderError } from './errors.mjs'
 import { checkProfile } from './profile.mjs'
 import { LIVE_PORT, parseLoopback } from './walkthrough-guard.mjs'
-import { maskValuesScript } from './walkthrough-page.mjs'
 import { ENV_ALLOWLIST, firstLine, loadScenario, recordScene } from './walkthrough.mjs'
 
 // HZ-698: production mode. Plays the Shoreward video's scenes (one JSON file
@@ -162,7 +161,9 @@ export async function runProduction({ ids, baseUrl, profile, outDir, headed = fa
             noteSoon(`${label} launch: chromium (saved profile${headed ? ', headed' : ''})`)
             const context = await launchProfile(profileDir, { headed, videoDir })
             defer(() => context.close())
-            await context.addInitScript(maskValuesScript(scene.values))
+            // No mask: inside Stripe's checkout frame it made Checkout refuse the
+            // promo code (A3), so production takes are filmed raw and the email,
+            // promo code and token are blurred in the edit.
             // The page made at launch is dropped, so the video starts at a
             // measured time, as in walkthrough mode.
             const blank = context.pages()

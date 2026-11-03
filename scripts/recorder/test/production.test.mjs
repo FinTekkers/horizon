@@ -328,22 +328,18 @@ contractTest('guardrail 2: no request carries the login header, and the promo co
   assert.match(run.log, /scene M1 step 2 typeEnv #promo from SHOREWARD_PROMO_CODE/)
 })
 
-contractTest('guardrail 2: the mask covers #promo before the first keypress, and frames taken mid-typing are black over it', async () => {
+contractTest('guardrail 2: production takes are filmed raw: no mask over #promo, before or during typing', async () => {
   const { stub: s, run } = await typed()
   assertExitedCleanly(run)
   const keys = s.log.filter((r) => r.path.startsWith('/production/beacon/first-key-')).map((r) => r.path)
-  assert.deepEqual(keys, ['/production/beacon/first-key-covered'])
+  assert.deepEqual(keys, ['/production/beacon/first-key-bare'])
   const mp4 = path.join(run.out, 'M1.mp4')
   const t0 = lineAt(run.log, /^scene M1 step 0 /).at
   const typingAt = (lineAt(run.log, /^scene M1 step 2 /).at - t0) / 1000
   const typingSec = (PROMO.length * 200) / 1000
   const field = { x: 100, y: 300, width: 400, height: 40 }
-  for (const t of [typingAt + 0.4, typingAt + typingSec / 2, typingAt + typingSec - 0.2]) {
-    const frame = frameAt(mp4, t)
-    const { off, pixels } = offPixels(frame, field, [0, 0, 0], 24)
-    assert.equal(off, 0, `#promo at ${t.toFixed(2)} s: ${off} of ${pixels} pixels are not mask fill`)
-    assert.ok(offPixels(frame, { x: 0, y: 0, width: 1920, height: 80 }, [0, 0, 0], 24).off > 0, 'the whole frame is mask fill')
-  }
+  const { off } = offPixels(frameAt(mp4, typingAt + typingSec / 2), field, [0, 0, 0], 24)
+  assert.ok(off > 0, '#promo is solid mask fill mid-typing')
 })
 
 function frameAt(mp4, sec) {

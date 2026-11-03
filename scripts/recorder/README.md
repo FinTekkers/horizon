@@ -98,6 +98,11 @@ becomes one real-time 1920×1080 `<out>/<scene>.mp4`. Every run also appends a
 timestamped line per step to `<out>/run.log`. `--out` defaults to
 `recordings/shoreward-<YYYYMMDD-HHMMSS>/`, which is gitignored.
 
+Production takes are filmed **unmasked**: the recorder's mask, running inside
+Stripe's checkout frame, made Checkout refuse the promo code (A3). The tenant
+email, promo code, GitHub token (A7) and gate PIN are blurred in the edit, so
+keep the raw MP4s on the box and never share them as they are.
+
 Production mode starts no server and runs no build, so it never touches
 `ui/dist`. It sends no test-login header and never reads
 `SCREENSHOT_LOGIN_KEY`. The only base URLs it accepts are
@@ -224,7 +229,7 @@ dir and in `--out`.
 **First take checks the selectors.** A1–A5 drive the shoreward.ai homepage
 (its code is in `FinTekkers/shoreward`), Stripe's embedded checkout and
 Google, so their selectors are best guesses until the first headed take. A7 uses
-the tenant's connect card; the token is typed masked and scrubbed from the log. B7 opens the tenant's live site with `gotoSite` and clicks the header's new Neighbourhoods link; GitHub Pages republishes it a minute or so after the merge, so B7 waits up to 15 minutes, reloading. Fixes are JSON-only.
+the tenant's connect card; the token is scrubbed from the log. B7 opens the tenant's live site with `gotoSite` and clicks the header's new Neighbourhoods link; GitHub Pages republishes it a minute or so after the merge, so B7 waits up to 15 minutes, reloading. Fixes are JSON-only.
 
 ## Scenario actions
 
@@ -235,8 +240,8 @@ Besides `goto`, `click`, `type`, `waitFor`, `pause` and `caption`:
   `waitUntil` is for gates, runs and deploys.
 - `typeEnv` `{ selector, env, delayMs }`: types an allowlisted environment
   variable (`SHOREWARD_PROMO_CODE`, `SHOREWARD_TENANT_EMAIL`, `PARVATI_GITHUB_TOKEN` for A7's connect card). The field is
-  masked before the first key, and the value is masked wherever the page
-  shows it. A scene whose variable is unset fails before a browser starts.
+  scrubbed from the log. A scene whose variable is unset fails before a
+  browser starts.
 - `resume` `{}`: opens the page the previous scene of the same run ended on.
 - `followLink` `{ selector }`: opens the link's href in the filmed tab, same origin only. "View full artifact ↗" links open a new tab, which is never filmed, so B2, B5, C3 and C6 use this to show the plan, the review, the run plan and the report.
 - `gotoSite` `{ url }`: opens a page of the tenant's live site, under `SITE_URL_PREFIXES` in `walkthrough.mjs` only (B7).
