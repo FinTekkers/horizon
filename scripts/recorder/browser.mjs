@@ -22,8 +22,10 @@ export const PROD_VIEWPORT = { width: 1920, height: 1080 }
 // The saved --profile, opened with the same Chromium binary --init-profile
 // signed in with (channel 'chromium', not the headless shell), so its
 // cookies decrypt. recordVideo films each page into videoDir; tracing stays
-// off. --enable-automation is dropped so the browser looks like the one the
-// owner signed in with.
+// off. --enable-automation is dropped and AutomationControlled disabled so
+// the browser looks like the one the owner signed in with: with
+// navigator.webdriver true, Stripe Checkout answers "This code is invalid"
+// to a typed promotion code (scene A3) that a person's browser redeems.
 export function launchProfile(dir, { headed = false, videoDir }) {
   return chromium.launchPersistentContext(dir, {
     channel: 'chromium',
@@ -32,6 +34,7 @@ export function launchProfile(dir, { headed = false, videoDir }) {
     deviceScaleFactor: DEVICE_SCALE_FACTOR,
     recordVideo: { dir: videoDir, size: PROD_VIEWPORT },
     ignoreDefaultArgs: ['--enable-automation'],
+    args: ['--disable-blink-features=AutomationControlled'],
   })
 }
 
