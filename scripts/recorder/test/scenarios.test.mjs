@@ -4,10 +4,12 @@
 // (scripts/recorder/README.md).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { EMAIL_RE } from '../browser.mjs'
-import { WALKTHROUGH_DIR, expectedMs, loadScenario } from '../walkthrough.mjs'
+import { SCENES, SCENE_DIR } from '../production.mjs'
+import { ENV_ALLOWLIST, WALKTHROUGH_DIR, expectedMs, loadScenario } from '../walkthrough.mjs'
 
 const NAMES = ['setup', 'create-work']
 // A scenario never fills, clicks or opens a login or PIN field.
@@ -84,4 +86,98 @@ test('metric 5: no action fills or clicks a PIN or login field, or opens a login
     { action: 'goto', path: '/login' },
     { action: 'type', selector: '#note', text: 'fine', delayMs: 0 },
   ]), ['0 type', '1 type', '2 click', '3 goto'])
+})
+
+// ---- HZ-698: the Shoreward scenes (walkthroughs/shoreward/) ----
+
+// The one sign-in and literal-code scan for the Shoreward scenes (the
+// LOGIN_FIELD_RE check above stays as it is for setup and create-work).
+// A sign-in step enters a credential: any type or typeEnv into a password,
+// Google identifier, login, PIN or one-time-code field; a literal type into
+// an email field (a typeEnv from SHOREWARD_TENANT_EMAIL is the sign-up
+// form's address, read at run time); or a goto to a sign-in path. Clicks are
+// not sign-in steps: A5 clicks Horizon's Sign in button and the saved
+// account's tile, and types nothing. A literal code is a type into a promo,
+// coupon or code field, or typed text shaped like a code (5+ capitals or
+// digits). typeEnv names outside ENV_ALLOWLIST never load.
+const SIGN_IN_FIELD_RE = /password|passwd|identifier|login|pin|otp|one.?time|sign.?in/i
+const EMAIL_FIELD_RE = /email/i
+const SIGN_IN_PATH_RE = /login|sign.?in|oauth|accounts\.google/i
+const CODE_FIELD_RE = /promo|coupon|code/i
+const CODE_TEXT_RE = /^[A-Z0-9]{5,}$/
+
+function shorewardFindings({ setup = [], actions }) {
+  const list = [...setup.map((a, i) => [`setup ${i}`, a]), ...actions.map((a, i) => [`step ${i}`, a])]
+  return list.flatMap(([at, a]) => {
+    const out = []
+    const typing = a.action === 'type' || a.action === 'typeEnv'
+    if (typing && SIGN_IN_FIELD_RE.test(a.selector)) out.push(`${at} sign-in`)
+    if (a.action === 'type' && EMAIL_FIELD_RE.test(a.selector)) out.push(`${at} sign-in`)
+    if (a.action === 'typeEnv' && !ENV_ALLOWLIST.includes(a.env)) out.push(`${at} sign-in`)
+    if (a.action === 'goto' && SIGN_IN_PATH_RE.test(a.path)) out.push(`${at} sign-in`)
+    if (a.action === 'type' && (CODE_FIELD_RE.test(a.selector) || CODE_TEXT_RE.test(a.text))) out.push(`${at} code`)
+    return out
+  })
+}
+
+test('HZ-698 metric 3: walkthroughs/shoreward/ holds exactly A1-A7, B1-B7 and C1-C7, and each passes the recorder schema', async () => {
+  const files = readdirSync(SCENE_DIR).sort()
+  assert.deepEqual(files, [...SCENES].sort().map((id) => `${id}.json`))
+  assert.equal(SCENES.length, 21)
+  for (const id of SCENES) {
+    const scene = await loadScenario(id, SCENE_DIR)
+    assert.equal(scene.name, id)
+    assert.ok(scene.actions.length > 0, id)
+    assert.equal(scene.actions[0].action, 'caption', `${id} doesn't open with a caption card`)
+  }
+})
+
+test('HZ-698 metric 4: no Shoreward scene has a sign-in step or a literal promotion code, and A3 types the code from SHOREWARD_PROMO_CODE', async () => {
+  for (const id of SCENES) {
+    assert.deepEqual(shorewardFindings(await loadScenario(id, SCENE_DIR)), [], id)
+    const raw = JSON.parse(readFileSync(path.join(SCENE_DIR, `${id}.json`), 'utf8'))
+    assert.equal(strings(raw).filter((s) => EMAIL_RE.test(s)).length, 0, `${id} holds an address`)
+  }
+  const a3 = await loadScenario('A3', SCENE_DIR)
+  assert.ok(a3.actions.some((a) => a.action === 'typeEnv' && a.env === 'SHOREWARD_PROMO_CODE' && CODE_FIELD_RE.test(a.selector)), 'A3 has no typeEnv of SHOREWARD_PROMO_CODE into the code field')
+  // A5 clicks its way through Google's account chooser and types nothing.
+  const a5 = await loadScenario('A5', SCENE_DIR)
+  assert.ok(a5.actions.some((a) => a.action === 'click' && a.selector === '[data-identifier]'))
+  assert.ok(!a5.actions.some((a) => a.action === 'type' || a.action === 'typeEnv'))
+  // Control: the scan flags each banned kind, and passes the allowed ones.
+  assert.deepEqual(shorewardFindings({
+    setup: [{ action: 'type', selector: 'input[type=password]', text: 'x', delayMs: 0 }],
+    actions: [
+      { action: 'typeEnv', selector: '#identifierId', env: 'SHOREWARD_TENANT_EMAIL', delayMs: 0 },
+      { action: 'type', selector: 'input[name="email"]', text: 'parvati', delayMs: 0 },
+      { action: 'typeEnv', selector: '#note', env: 'GOOGLE_PASSWORD', delayMs: 0 },
+      { action: 'goto', path: '/horizon/api/auth/google/login' },
+      { action: 'type', selector: '#promotionCode', text: 'half off', delayMs: 0 },
+      { action: 'type', selector: '#note', text: 'LAUNCH50', delayMs: 0 },
+      { action: 'type', selector: '[aria-label="Gate PIN"]', text: '1234', delayMs: 0 },
+      { action: 'click', selector: '[data-identifier]' },
+      { action: 'click', selector: 'button:has-text("Sign in")' },
+      { action: 'typeEnv', selector: '#promotionCode', env: 'SHOREWARD_PROMO_CODE', delayMs: 0 },
+      { action: 'typeEnv', selector: 'input[name="email"]', env: 'SHOREWARD_TENANT_EMAIL', delayMs: 0 },
+      { action: 'type', selector: '#title', text: 'Open-house times', delayMs: 0 },
+    ],
+  }), ['setup 0 sign-in', 'step 0 sign-in', 'step 1 sign-in', 'step 2 sign-in', 'step 3 sign-in', 'step 4 code', 'step 5 code', 'step 6 sign-in'])
+})
+
+test('HZ-698: every class the Horizon-side scenes (A6, A7, B, C) select on is a class in ui/src', async () => {
+  const uiSrc = fileURLToPath(new URL('../../../ui/src/', import.meta.url))
+  const source = readdirSync(uiSrc, { recursive: true })
+    .filter((f) => /\.jsx?$/.test(f) && !/\.test\./.test(f))
+    .map((f) => readFileSync(path.join(uiSrc, f), 'utf8'))
+    .join('\n')
+  for (const id of SCENES.filter((s) => s === 'A6' || s === 'A7' || /^[BC]/.test(s))) {
+    const { setup, actions } = await loadScenario(id, SCENE_DIR)
+    for (const a of [...setup, ...actions]) {
+      if (!a.selector) continue
+      // Class names outside quoted text.
+      for (const [, cls] of a.selector.replace(/"[^"]*"/g, '').matchAll(/\.([A-Za-z][\w-]*)/g)) {
+        assert.ok(new RegExp(`["'\`\\s]${cls}(?![\\w-])`).test(source), `${id}: .${cls} is not a class in ui/src`)
+      }
+    }
+  }
 })

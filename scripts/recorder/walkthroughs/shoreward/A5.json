@@ -1,0 +1,14 @@
+{
+  "actions": [
+    {"action": "caption", "text": "Sign in with Google", "ms": 3500},
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": "button:has-text(\"Sign in\")", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1500},
+    {"action": "click", "selector": "button:has-text(\"Sign in\")"},
+    {"action": "waitUntil", "selector": "[data-identifier]", "timeoutMs": 120000},
+    {"action": "pause", "ms": 1500},
+    {"action": "click", "selector": "[data-identifier]"},
+    {"action": "waitUntil", "selector": ".first-project, .board", "timeoutMs": 300000},
+    {"action": "pause", "ms": 3000}
+  ]
+}

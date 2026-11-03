@@ -87,3 +87,155 @@ metric into the new-item form, creates the item and opens it.
 PIN and email fields, and any email address on screen, are masked in every
 frame. Scenario files hold no address and never fill a login or PIN field
 (`scripts/recorder/test/scenarios.test.mjs` checks both).
+
+# Recording on production (HZ-698)
+
+`node scripts/record-item.mjs --production https://shoreward.ai` films the
+Shoreward video's Chapter A, B and C scenes on the real site, signed in as
+the **Parvati Real Estate** tenant. Each scene is one file in
+`scripts/recorder/walkthroughs/shoreward/` (`A1.json` … `C7.json`) and
+becomes one real-time 1920×1080 `<out>/<scene>.mp4`. Every run also appends a
+timestamped line per step to `<out>/run.log`. `--out` defaults to
+`recordings/shoreward-<YYYYMMDD-HHMMSS>/`, which is gitignored.
+
+Production mode starts no server and runs no build, so it never touches
+`ui/dist`. It sends no test-login header and never reads
+`SCREENSHOT_LOGIN_KEY`. The only base URLs it accepts are
+`https://shoreward.ai` and loopback URLs for local tests (never port 3001).
+
+## The saved profile
+
+Google blocks scripted sign-ins, so the owner signs in **once, by hand**, in
+a saved Chromium profile, and every scene reuses that session. The profile
+holds a live Google session:
+
+- keep it **outside the repo**, e.g. `~/parvati.profile`. The recorder
+  refuses a path inside the repo, a personal Chrome or Chromium profile
+  (`~/.config/google-chrome` and the like), a directory others can read, and
+  any directory without the `.parvati-profile` marker that `--init-profile`
+  writes. `*.profile/` is gitignored as a second layer;
+- never commit, copy, upload or log it. The recorder never prints its path;
+- only ever sign in to **Parvati's** Google account in it, never the owner's
+  own.
+
+### Making it
+
+`--init-profile` makes the directory (mode 700), writes the marker and opens
+plain Chromium (the same binary the recorder uses, with no automation flags)
+on `https://shoreward.ai/horizon/`. It needs a **visible window**, and the
+EC2 host has no display. Use one of these:
+
+- **On the host, through a virtual display and VNC** (recommended: the
+  profile is made where it is used). Install `xvfb` and `x11vnc` once, then:
+
+  ```sh
+  Xvfb :99 -screen 0 1920x1080x24 &
+  x11vnc -display :99 -localhost -nopw &   # reach it over: ssh -L 5900:localhost:5900 <host>
+  DISPLAY=:99 node scripts/record-item.mjs --init-profile ~/parvati.profile
+  ```
+
+- **On a Linux desktop**, then copy the directory to the host with
+  `rsync -a` (keep it mode 700). Both use `--password-store=basic`, so the
+  cookies decrypt on the host. **A profile made on macOS (or Windows) will not
+  work on the Linux host**: its cookies are encrypted with that machine's
+  keychain.
+
+In the window: open a new tab, sign in at `accounts.google.com` to the
+Google account used for Parvati, then close the window. (Horizon itself only
+lets Parvati sign in after payment, which Chapter A films.) Once Chapter A has
+made the tenant, run `--init-profile` again on the same directory and, signed
+in to Horizon, approve one gate by hand: the gate PIN prompt saves the PIN in
+the profile, so Chapter B and C's approvals don't ask for it. The recorder
+never types a PIN.
+
+If Google later asks to sign in again, the scene fails with `Google asked
+for a sign-in` and you run `--init-profile` again.
+
+## Recording
+
+1. Load the secrets into this shell. `SHOREWARD_PROMO_CODE` (A3) and
+   `SHOREWARD_TENANT_EMAIL` (A2, A3's sign-up form) live in the root-only
+   `/etc/horizon/recorder.env`. The recorder reads only the environment,
+   never that file:
+
+   ```sh
+   set -a; source <(sudo cat /etc/horizon/recorder.env); set +a
+   ```
+
+2. Record one scene, a list or a whole chapter:
+
+   ```sh
+   node scripts/record-item.mjs --production https://shoreward.ai --profile ~/parvati.profile --scene A1
+   node scripts/record-item.mjs --production https://shoreward.ai --profile ~/parvati.profile --chapter A
+   ```
+
+   A chapter runs its scenes in order, one browser launch each, and stops at
+   the first failure (later scenes build on earlier ones). Exit 0 means every
+   MP4 was written. A failed scene leaves no MP4 and logs
+   `scene <id> FAILED: <reason>` to `run.log` and stderr.
+
+3. Check each video:
+
+   ```sh
+   ffprobe -v error -show_entries stream=width,height:format=duration -of default=nw=1 <out>/A1.mp4
+   ```
+
+   It should say `width=1920`, `height=1080`, and a duration close to the
+   `scene A1 ok <ms> ms` line in `run.log`.
+
+If Google re-asks for a sign-in in the headless browser even with a fresh
+profile, record headed on the virtual display: add `--headed` and run under
+`xvfb-run -s '-screen 0 1920x1080x24'`.
+
+## The scenes
+
+| Scene | Shows | Needs |
+| --- | --- | --- |
+| A1 | The shoreward.ai homepage | |
+| A2 | Get access: the sign-up form, then the checkout | `SHOREWARD_TENANT_EMAIL` |
+| A3 | Paying with the promotion code (setup refills the form off camera) | both variables |
+| A4 | The welcome page | runs right after A3 in the same run (`resume`) |
+| A5 | Google sign-in: clicks the saved account in Google's chooser | the saved profile |
+| A6 | "Set up your first project" | |
+| A7 | Connecting the repo | see below |
+| B1–B7 | Set the goal, plan, approve the plan, execute, test and review, approve the change, deploy and show the live site | the item from B1 |
+| C1–C7 | A Task: define, approve & prioritize, assess and run plan, approve the run, execute, verify & report, review & close | the task from C1 |
+
+Chapter A is a **real sign-up**. A2–A5 create the Parvati tenant once; a
+re-take of A3–A5 needs a fresh tenant or an owner reset. A3 and A4 must run
+in one invocation (`--chapter A`, or `--scene A3,A4`): A4 reopens the page A3
+ended on, which is held in memory only and never logged.
+
+Each B and C scene after the first opens its item from the board in
+unfilmed `setup` steps, so each can be re-run on its own. The long scenes
+(B2, B4, B5, B7, C3, C5, C6) use `waitUntil`, which keeps filming for up to
+2 hours, reloads the page every minute and logs `still waiting …` each
+minute. A scene that may wait over 30 minutes needs 5 GB free in the temp
+dir and in `--out`.
+
+**First take checks the selectors.** A1–A5 drive the shoreward.ai homepage
+(its code is in `FinTekkers/shoreward`), Stripe's embedded checkout and
+Google, so their selectors are best guesses until the first headed take. A7
+uses the admin Projects page's repo box, and its repo name
+(`parvati-real-estate/website`) is a placeholder to set to the real repo;
+HZ-697 added the tenant API but no tenant screen yet. B7's "live site" is the
+deploy step's output link. Fixes are JSON-only.
+
+## Scenario actions
+
+Besides `goto`, `click`, `type`, `waitFor`, `pause` and `caption`:
+
+- `waitUntil` `{ selector, timeoutMs (≤ 4 h), reloadEveryMs? (≥ 30 s) }`: a
+  long real wait. `waitFor` is for a screen a click away (10 s by default);
+  `waitUntil` is for gates, runs and deploys.
+- `typeEnv` `{ selector, env, delayMs }`: types an allowlisted environment
+  variable (`SHOREWARD_PROMO_CODE`, `SHOREWARD_TENANT_EMAIL`). The field is
+  masked before the first key, and the value is masked wherever the page
+  shows it. A scene whose variable is unset fails before a browser starts.
+- `resume` `{}`: opens the page the previous scene of the same run ended on.
+- A top-level `setup` list plays before filming starts.
+
+`scripts/recorder/test/scenarios.test.mjs` checks every scene file: no
+address, no literal code, and no sign-in step (no typing into a password,
+identifier, login, PIN or one-time-code field, no literal into an email
+field, no goto to a sign-in path; clicks are allowed).

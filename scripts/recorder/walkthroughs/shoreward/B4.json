@@ -1,0 +1,13 @@
+{
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Open-house times on every listing\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Open-house times on every listing\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
+  ],
+  "actions": [
+    {"action": "caption", "text": "An agent builds the change", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has-text(\"Specialist agent implements\") :text(\"Completed\")", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 4000}
+  ]
+}

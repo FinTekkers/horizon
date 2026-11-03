@@ -1,0 +1,19 @@
+{
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Refresh the alt text on listing photos\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Refresh the alt text on listing photos\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
+  ],
+  "actions": [
+    {"action": "caption", "text": "Approve and prioritize the task", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has-text(\"Approve & prioritize\") .btn-gate-approve", "timeoutMs": 3600000, "reloadEveryMs": 30000},
+    {"action": "pause", "ms": 2500},
+    {"action": "click", "selector": ".step:has-text(\"Approve & prioritize\") .btn-gate-approve"},
+    {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "waitFor", "selector": ".step:has-text(\"Assess\") :text(\"In progress\")", "timeoutMs": 60000},
+    {"action": "pause", "ms": 3000}
+  ]
+}

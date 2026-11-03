@@ -4,6 +4,8 @@ import { parseArgs } from 'node:util'
 import { captureFrame, launch, openBoard, renderCard, shootSite, showsLogin } from './browser.mjs'
 import { encode } from './encode.mjs'
 import { RecorderError } from './errors.mjs'
+import { PRODUCTION_URL, checkBaseUrl, listScenes, runProduction } from './production.mjs'
+import { initProfile } from './profile.mjs'
 import { buildTimeline } from './timeline.mjs'
 import { readToken } from './token.mjs'
 import { runWalkthrough } from './walkthrough.mjs'
@@ -43,6 +45,24 @@ reaches the board's origin only. Exit 0 when the MP4 is written, else 1.
 SCREENSHOT_LOGIN_KEY from the environment logs the board in (sent to the
 board's origin only). scripts/recorder/README.md has the throwaway board
 (scripts/recorder/serve-walkthrough.sh) and the steps for each chapter.
+
+Production mode (HZ-698):
+  node scripts/record-item.mjs --production <url> --profile <dir> (--scene <id> | --chapter <A|B|C>) [--out <dir>] [--headed]
+  node scripts/record-item.mjs --init-profile <dir> [--production <url>]
+
+Plays scripts/recorder/walkthroughs/shoreward/<id>.json (A1-A7, B1-B7, C1-C7)
+on the real site as the Parvati Real Estate tenant, and films each scene to
+<out>/<id>.mp4 at 1920x1080 in real time, with a timestamped <out>/run.log.
+  --production    https://shoreward.ai (or a loopback URL, never port 3001)
+  --profile       the saved browser profile made by --init-profile: outside
+                  the repo, mode 700, never the owner's own Chrome profile
+  --chapter       every scene of one chapter in order; stops at the first failure
+  --out           output directory (default ./recordings/shoreward-<time>)
+  --headed        a visible browser (e.g. under xvfb-run) if Google re-asks
+  --init-profile  makes the profile and opens Chromium for the one sign-in by hand
+typeEnv steps read SHOREWARD_PROMO_CODE / SHOREWARD_TENANT_EMAIL from the
+environment; a scene needing an unset one fails before a browser starts.
+Exit 0 when every MP4 is written, else 1.
 `
 
 const DEFAULT_BOARD = 'https://shoreward.ai/horizon'
@@ -54,7 +74,19 @@ export async function run(argv, env = process.env, log = (line) => process.stdou
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { site: { type: 'string' }, out: { type: 'string' }, board: { type: 'string' }, walkthrough: { type: 'string' }, help: { type: 'boolean', short: 'h' } },
+      options: {
+        site: { type: 'string' },
+        out: { type: 'string' },
+        board: { type: 'string' },
+        walkthrough: { type: 'string' },
+        production: { type: 'string' },
+        scene: { type: 'string' },
+        chapter: { type: 'string' },
+        profile: { type: 'string' },
+        'init-profile': { type: 'string' },
+        headed: { type: 'boolean' },
+        help: { type: 'boolean', short: 'h' },
+      },
     })
   } catch (err) {
     throw new RecorderError(`${err.message}\n\n${USAGE}`)
@@ -64,6 +96,21 @@ export async function run(argv, env = process.env, log = (line) => process.stdou
     log(USAGE)
     return
   }
+  const productionOnly = ['scene', 'chapter', 'profile', 'headed'].filter((k) => values[k] !== undefined)
+  if (values['init-profile'] !== undefined) {
+    if (positionals.length || [...productionOnly, 'walkthrough', 'board', 'site', 'out'].some((k) => values[k] !== undefined)) throw new RecorderError(`--init-profile takes only --production\n\n${USAGE}`)
+    await initProfile(values['init-profile'], { baseUrl: checkBaseUrl(values.production ?? PRODUCTION_URL), log })
+    return
+  }
+  if (values.production !== undefined) {
+    if (positionals.length || ['walkthrough', 'board', 'site'].some((k) => values[k] !== undefined)) throw new RecorderError(`--production takes no item id, --walkthrough, --board or --site\n\n${USAGE}`)
+    const ids = await listScenes({ scene: values.scene, chapter: values.chapter, dir: env.RECORDER_SCENE_DIR || undefined })
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
+    const outDir = path.resolve(values.out || path.join('recordings', `shoreward-${stamp}`))
+    await runProduction({ ids, baseUrl: values.production, profile: values.profile, outDir, headed: values.headed === true, env, log })
+    return
+  }
+  if (productionOnly.length) throw new RecorderError(`--${productionOnly[0]} needs --production\n\n${USAGE}`)
   if (values.walkthrough !== undefined) {
     if (positionals.length || values.site !== undefined) throw new RecorderError(`--walkthrough takes no item id and no --site\n\n${USAGE}`)
     const name = values.walkthrough
