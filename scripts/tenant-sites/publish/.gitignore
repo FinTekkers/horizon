@@ -1,0 +1,2 @@
+# publish.mjs writes the report and screenshots here by default (--out).
+.out/
