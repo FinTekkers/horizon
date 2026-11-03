@@ -15,6 +15,10 @@ e2e/blob-report/
 e2e/__screenshots__/
 # HZ-518: node scripts/record-item.mjs writes here by default (--out).
 recordings/
+# HZ-698: the recorder's saved browser profile holds a live Google session.
+# It belongs outside the repo (the recorder refuses one inside); this is a
+# second layer.
+*.profile/
 # HZ-622: ui/scripts/ensure-build.mjs's temp build dirs and lock.
 ui/.dist-tmp-*/
 ui/.dist-old-*/

@@ -1,0 +1,13 @@
+{
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Refresh the alt text on listing photos\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Refresh the alt text on listing photos\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
+  ],
+  "actions": [
+    {"action": "caption", "text": "The agents assess it and plan the run", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has-text(\"Approve the run\") .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 4000}
+  ]
+}

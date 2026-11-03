@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Stub production</title></head>
+<!-- HZ-698: production mode's 1920×1080 stub page. Every box the tests
+     measure is absolutely positioned. #late appears 4 s after load; the page
+     tells the stub when (a /production/beacon/ request), and, on the first
+     key typed into #promo, whether the recorder's mask already covered it. -->
+<body style="margin:0;width:1920px;height:1080px;background:#f4f5f7;font-family:sans-serif;overflow:hidden">
+  <div id="banner" style="position:absolute;left:0;top:0;width:1920px;height:80px;background:#2a7de1"></div>
+  <input id="promo" type="text" aria-label="Promotion code" style="position:absolute;left:100px;top:300px;width:400px;height:40px;box-sizing:border-box;font-size:22px">
+  <p id="late" style="position:absolute;left:100px;top:500px;margin:0;font-size:20px;display:none">Your gate is ready</p>
+  <script>
+    const beacon = (what) => fetch(`/production/beacon/${what}`)
+    setTimeout(() => { document.getElementById('late').style.display = 'block'; beacon('revealed') }, 4000)
+    const promo = document.getElementById('promo')
+    promo.addEventListener('keydown', () => {
+      const r = promo.getBoundingClientRect()
+      const layer = document.getElementById('hz-wt-mask')
+      const boxes = layer ? [...layer.children].map((c) => c.getBoundingClientRect()) : []
+      const covered = boxes.some((b) => b.left <= r.left && b.top <= r.top && b.right >= r.right && b.bottom >= r.bottom)
+      beacon(`first-key-${covered && promo.value === '' ? 'covered' : 'bare'}`)
+    }, { once: true })
+  </script>
+</body>
+</html>

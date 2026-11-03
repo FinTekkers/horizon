@@ -1,0 +1,20 @@
+{
+  "actions": [
+    {"action": "caption", "text": "Get access", "ms": 3500},
+    {"action": "goto", "path": "/"},
+    {"action": "waitFor", "selector": "a:has-text(\"Get access\"), button:has-text(\"Get access\")", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1500},
+    {"action": "click", "selector": "a:has-text(\"Get access\"), button:has-text(\"Get access\")"},
+    {"action": "waitFor", "selector": "input[name=\"name\"]", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1000},
+    {"action": "type", "selector": "input[name=\"name\"]", "text": "Parvati", "delayMs": 90},
+    {"action": "pause", "ms": 400},
+    {"action": "type", "selector": "input[name=\"company\"]", "text": "Parvati Real Estate", "delayMs": 70},
+    {"action": "pause", "ms": 400},
+    {"action": "typeEnv", "selector": "input[name=\"email\"]", "env": "SHOREWARD_TENANT_EMAIL", "delayMs": 70},
+    {"action": "pause", "ms": 1200},
+    {"action": "click", "selector": "form button[type=\"submit\"]"},
+    {"action": "waitUntil", "selector": "iframe[name=\"embedded-checkout\"]", "timeoutMs": 120000},
+    {"action": "pause", "ms": 4000}
+  ]
+}

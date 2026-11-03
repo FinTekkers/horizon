@@ -1,0 +1,19 @@
+{
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Open-house times on every listing\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Open-house times on every listing\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
+  ],
+  "actions": [
+    {"action": "caption", "text": "The agents plan the work", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has-text(\"Approve the high-level design\") .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 2000},
+    {"action": "click", "selector": ".step:has-text(\"Approve the high-level design\") .btn-gate-approve"},
+    {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "waitUntil", "selector": ".step:has-text(\"Review before execution\") .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 4000}
+  ]
+}

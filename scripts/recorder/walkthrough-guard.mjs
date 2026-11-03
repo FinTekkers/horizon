@@ -35,11 +35,18 @@ function refuse(reason) {
   throw new RecorderError(`walkthrough refused --board: ${reason}`)
 }
 
-function loopbackPort(url, what) {
+// The port of a URL that passes LOOPBACK_URL, or null (no match, or a port
+// outside 1-65535). HZ-698's --production check uses it too.
+export function parseLoopback(url) {
   const m = typeof url === 'string' ? LOOPBACK_URL.exec(url) : null
-  if (!m) refuse(`${what} must be http://127.0.0.1:<port> or http://localhost:<port> (a local throwaway Horizon)`)
-  const port = Number(m[2])
-  if (port < 1 || port > 65535) refuse(`${what} has no valid port`)
+  const port = m ? Number(m[2]) : 0
+  return port >= 1 && port <= 65535 ? port : null
+}
+
+function loopbackPort(url, what) {
+  if (typeof url !== 'string' || !LOOPBACK_URL.test(url)) refuse(`${what} must be http://127.0.0.1:<port> or http://localhost:<port> (a local throwaway Horizon)`)
+  const port = parseLoopback(url)
+  if (port === null) refuse(`${what} has no valid port`)
   if (port === LIVE_PORT) refuse(`${what} is on port ${LIVE_PORT}, the live horizon-server`)
   return port
 }

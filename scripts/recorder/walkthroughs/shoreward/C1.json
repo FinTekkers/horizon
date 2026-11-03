@@ -1,0 +1,25 @@
+{
+  "actions": [
+    {"action": "caption", "text": "Chapter C: Running a task", "ms": 3500},
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": "button.btn-new", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1500},
+    {"action": "click", "selector": "button.btn-new"},
+    {"action": "waitFor", "selector": "[placeholder^=\"One line naming the work\"]"},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": ".kind-card:has-text(\"Task\")"},
+    {"action": "pause", "ms": 800},
+    {"action": "type", "selector": "[placeholder^=\"One line naming the work\"]", "text": "Refresh the alt text on listing photos", "delayMs": 60},
+    {"action": "pause", "ms": 400},
+    {"action": "type", "selector": "[placeholder^=\"e.g. Risk managers\"]", "text": "Every listing photo has alt text that describes the room", "delayMs": 40},
+    {"action": "pause", "ms": 400},
+    {"action": "type", "selector": "[placeholder^=\"e.g. Limit breaches\"]", "text": "An accessibility scan finds no listing photo without alt text", "delayMs": 40},
+    {"action": "pause", "ms": 1200},
+    {"action": "click", "selector": "button.composer__submit:has-text(\"Create work item\")"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Refresh the alt text on listing photos\")", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1000},
+    {"action": "click", "selector": ".card:has-text(\"Refresh the alt text on listing photos\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000},
+    {"action": "pause", "ms": 3000}
+  ]
+}

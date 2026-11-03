@@ -1,0 +1,19 @@
+{
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Open-house times on every listing\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Open-house times on every listing\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
+  ],
+  "actions": [
+    {"action": "caption", "text": "Approve the change", "ms": 3500},
+    {"action": "waitFor", "selector": ".step:has-text(\"Accept the code\") .btn-gate-approve", "timeoutMs": 30000},
+    {"action": "pause", "ms": 2500},
+    {"action": "click", "selector": ".step:has-text(\"Accept the code\") .btn-gate-approve"},
+    {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "waitFor", "selector": ".step:has-text(\"Deploy the changes\") :text(\"In progress\")", "timeoutMs": 60000},
+    {"action": "pause", "ms": 3000}
+  ]
+}

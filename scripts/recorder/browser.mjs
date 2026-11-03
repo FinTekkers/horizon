@@ -16,6 +16,25 @@ export function launch() {
   return chromium.launch({ headless: true })
 }
 
+// HZ-698: production mode films a real site at full HD.
+export const PROD_VIEWPORT = { width: 1920, height: 1080 }
+
+// The saved --profile, opened with the same Chromium binary --init-profile
+// signed in with (channel 'chromium', not the headless shell), so its
+// cookies decrypt. recordVideo films each page into videoDir; tracing stays
+// off. --enable-automation is dropped so the browser looks like the one the
+// owner signed in with.
+export function launchProfile(dir, { headed = false, videoDir }) {
+  return chromium.launchPersistentContext(dir, {
+    channel: 'chromium',
+    headless: !headed,
+    viewport: PROD_VIEWPORT,
+    deviceScaleFactor: DEVICE_SCALE_FACTOR,
+    recordVideo: { dir: videoDir, size: PROD_VIEWPORT },
+    ignoreDefaultArgs: ['--enable-automation'],
+  })
+}
+
 // Opens <boardUrl>/<itemId> read-only. Every non-GET request, to any origin,
 // is aborted, so no gate click, form or POST ever leaves the browser. GETs to
 // the board's origin carry the Bearer token (EventSource included, since the

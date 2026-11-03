@@ -1,0 +1,28 @@
+{
+  "actions": [
+    {"action": "caption", "text": "Chapter B: From goal to live site", "ms": 3500},
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": "button.btn-new", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1500},
+    {"action": "click", "selector": "button.btn-new"},
+    {"action": "waitFor", "selector": "[placeholder^=\"One line naming the work\"]"},
+    {"action": "pause", "ms": 800},
+    {"action": "type", "selector": "[placeholder^=\"One line naming the work\"]", "text": "Open-house times on every listing", "delayMs": 60},
+    {"action": "pause", "ms": 400},
+    {"action": "type", "selector": "[placeholder^=\"e.g. Risk managers\"]", "text": "Buyers see the next open-house time on every listing page", "delayMs": 40},
+    {"action": "pause", "ms": 400},
+    {"action": "type", "selector": "[placeholder^=\"e.g. Limit breaches\"]", "text": "Every active listing shows its next open-house time", "delayMs": 40},
+    {"action": "pause", "ms": 1200},
+    {"action": "click", "selector": "button.composer__submit:has-text(\"Create work item\")"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Open-house times on every listing\")", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1000},
+    {"action": "click", "selector": ".card:has-text(\"Open-house times on every listing\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000},
+    {"action": "pause", "ms": 2000},
+    {"action": "click", "selector": ".step:has-text(\"Approve & prioritize this work\") .btn-gate-approve"},
+    {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "pause", "ms": 3000}
+  ]
+}

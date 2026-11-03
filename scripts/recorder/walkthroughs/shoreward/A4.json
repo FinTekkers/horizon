@@ -1,0 +1,8 @@
+{
+  "actions": [
+    {"action": "caption", "text": "Welcome to Shoreward", "ms": 3500},
+    {"action": "resume"},
+    {"action": "waitFor", "selector": "body:has-text(\"Welcome\")", "timeoutMs": 30000},
+    {"action": "pause", "ms": 6000}
+  ]
+}

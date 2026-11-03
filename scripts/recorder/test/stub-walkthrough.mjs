@@ -21,13 +21,20 @@ if (process.argv[1] === SELF) {
   const pages = {
     '/': readFileSync(new URL(`./fixtures/${root}.html`, import.meta.url), 'utf8'),
     '/egress': readFileSync(new URL('./fixtures/egress.html', import.meta.url), 'utf8'),
+    // HZ-698: production mode's page, and a page that shows #signed-in only
+    // when /production/set-session's cookie came back (a saved profile).
+    '/production': readFileSync(new URL('./fixtures/production.html', import.meta.url), 'utf8'),
   }
+  const session = (req) => /(^|;\s*)hz698_session=1(;|$)/.test(req.headers.cookie || '')
   const expectKey = process.env.STUB_EXPECT_KEY || ''
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://stub')
     const keyed = expectKey !== '' && req.headers[TEST_ENV_LOGIN_HEADER] === expectKey
-    process.stdout.write(`${JSON.stringify({ method: req.method, path: url.pathname, ...(expectKey && { key: keyed }) })}\n`)
-    if (req.method === 'GET' && url.pathname === '/api/auth/me') res.writeHead(keyed ? 200 : 401, { 'content-type': 'application/json' }).end(keyed ? '{"user":{"name":"admin"}}' : '{"error":"login required"}')
+    process.stdout.write(`${JSON.stringify({ method: req.method, path: url.pathname, at: Date.now(), ...(expectKey && { key: keyed }) })}\n`)
+    if (req.method === 'GET' && url.pathname === '/production/set-session') res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'hz698_session=1; Max-Age=3600; Path=/; HttpOnly' }).end('<!doctype html><title>session</title><p id="set">set</p>')
+    else if (req.method === 'GET' && url.pathname === '/production/session') res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>session</title>${session(req) ? '<p id="signed-in">signed in</p>' : '<p id="signed-out">signed out</p>'}`)
+    else if (url.pathname.startsWith('/production/beacon/')) res.writeHead(204).end()
+    else if (req.method === 'GET' && url.pathname === '/api/auth/me') res.writeHead(keyed ? 200 : 401, { 'content-type': 'application/json' }).end(keyed ? '{"user":{"name":"admin"}}' : '{"error":"login required"}')
     else if (req.method === 'GET' && Object.hasOwn(pages, url.pathname)) res.writeHead(200, { 'content-type': 'text/html' }).end(pages[url.pathname])
     else res.writeHead(404).end()
   })

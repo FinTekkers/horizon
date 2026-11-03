@@ -30,14 +30,15 @@ export async function encode(entries, outDir, outFile) {
 // A walkthrough's recordVideo .webm, cut to [startSec, startSec + durationSec]
 // and encoded like encode() does. ffmpeg writes <outFile>.part, which is only
 // renamed once it is whole, so a failed encode never leaves a playable file.
-export async function encodeVideo(webmFile, outFile, { startSec, durationSec }) {
+// `size` is the canvas: HZ-698's production mode films at 1920:1080.
+export async function encodeVideo(webmFile, outFile, { startSec, durationSec, size = '1280:720' }) {
   const part = `${outFile}.part`
   try {
     await run('ffmpeg', [
       '-hide_banner', '-loglevel', 'error', '-y',
       '-i', webmFile,
       '-ss', startSec.toFixed(3), '-t', durationSec.toFixed(3),
-      '-vf', 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=0x0b1020,fps=30,format=yuv420p',
+      '-vf', `scale=${size}:force_original_aspect_ratio=decrease,pad=${size}:(ow-iw)/2:(oh-ih)/2:color=0x0b1020,fps=30,format=yuv420p`,
       '-c:v', 'libx264', '-movflags', '+faststart', '-f', 'mp4',
       part,
     ])

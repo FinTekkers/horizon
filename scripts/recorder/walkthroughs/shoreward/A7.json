@@ -1,0 +1,13 @@
+{
+  "actions": [
+    {"action": "caption", "text": "Connect your repo", "ms": 3500},
+    {"action": "goto", "path": "/horizon/admin/projects"},
+    {"action": "waitFor", "selector": ".project-block", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1500},
+    {"action": "type", "selector": "input[placeholder=\"Add a repo: owner/name or URL\"]", "text": "parvati-real-estate/website", "delayMs": 80},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": ".project-block__add button.composer__cancel"},
+    {"action": "waitFor", "selector": ".repo-row", "timeoutMs": 60000},
+    {"action": "pause", "ms": 3000}
+  ]
+}
