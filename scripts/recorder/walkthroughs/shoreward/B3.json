@@ -1,19 +1,19 @@
 {
   "setup": [
     {"action": "goto", "path": "/horizon/"},
-    {"action": "waitFor", "selector": ".card:has-text(\"Open-house times on every listing\")", "timeoutMs": 30000},
-    {"action": "click", "selector": ".card:has-text(\"Open-house times on every listing\")"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Add a Neighbourhoods page\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Add a Neighbourhoods page\")"},
     {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
   ],
   "actions": [
     {"action": "caption", "text": "Approve the plan", "ms": 3500},
-    {"action": "waitFor", "selector": ".step:has-text(\"Review before execution\") .btn-gate-approve", "timeoutMs": 30000},
+    {"action": "waitFor", "selector": ".step:has(.step-card__label:text-is(\"Review before execution\")) .btn-gate-approve", "timeoutMs": 30000},
     {"action": "pause", "ms": 2500},
-    {"action": "click", "selector": ".step:has-text(\"Review before execution\") .btn-gate-approve"},
+    {"action": "click", "selector": ".step:has(.step-card__label:text-is(\"Review before execution\")) .btn-gate-approve"},
     {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
     {"action": "pause", "ms": 800},
     {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
-    {"action": "waitFor", "selector": ".step:has-text(\"Specialist agent implements\") :text(\"In progress\")", "timeoutMs": 60000},
+    {"action": "waitFor", "selector": ".step:has(.step-card__label:text-is(\"Specialist agent implements\")) :text(\"In progress\")", "timeoutMs": 60000},
     {"action": "pause", "ms": 3000}
   ]
 }

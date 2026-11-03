@@ -196,15 +196,17 @@ profile, record headed on the virtual display: add `--headed` and run under
 | A3 | Paying with the promotion code (setup refills the form off camera) | both variables |
 | A4 | The welcome page | runs right after A3 in the same run (`resume`) |
 | A5 | Google sign-in: clicks the saved account in Google's chooser | the saved profile |
-| A6 | "Set up your first project" | |
-| A7 | Connecting the repo | see below |
-| B1–B7 | Set the goal, plan, approve the plan, execute, test and review, approve the change, deploy and show the live site | the item from B1 |
-| C1–C7 | A Task: define, approve & prioritize, assess and run plan, approve the run, execute, verify & report, review & close | the task from C1 |
+| A6 | "Set up your first project": names the project Parvati Real Estate | |
+| A7 | Connecting the repo on the "Connect your repository" card (HZ-703), then setting the Test command to `npm test` and returning to the board | `PARVATI_GITHUB_TOKEN`; `parvati-site` already published |
+| B1–B7 | The first item, "Add a Neighbourhoods page": set the goal, plan (B2 ends on the plan), approve the plan, execute, test and review (B5 ends on the review), approve the change, then the live site's new page | the item from B1; `parvati-site` marked **No deploy** (below) |
+| C1–C7 | The first Task, "Find comparable sales for an Upper West Side co-op": define, approve & prioritize, assess and run plan (C3 ends on the run plan), approve the run, execute, verify & report (C6 ends on the 20 ranked sales), review & close | the task from C1 |
 
 Chapter A is a **real sign-up**. A2–A5 create the Parvati tenant once; a
 re-take of A3–A5 needs a fresh tenant or an owner reset. A3 and A4 must run
 in one invocation (`--chapter A`, or `--scene A3,A4`): A4 reopens the page A3
 ended on, which is held in memory only and never logged.
+
+**Before Chapter B**, the owner marks `ParvatiRealEstate/parvati-site` as **No deploy** in Admin › Projects. GitHub Pages publishes the site from `main` by itself, and Horizon refuses the Deploy step for a repo with neither a deploy target nor that mark; with it, Deploy completes at once and the item moves to Review the work & close.
 
 Each B and C scene after the first opens its item from the board in
 unfilmed `setup` steps, so each can be re-run on its own. The long scenes
@@ -215,11 +217,8 @@ dir and in `--out`.
 
 **First take checks the selectors.** A1–A5 drive the shoreward.ai homepage
 (its code is in `FinTekkers/shoreward`), Stripe's embedded checkout and
-Google, so their selectors are best guesses until the first headed take. A7
-uses the admin Projects page's repo box, and its repo name
-(`parvati-real-estate/website`) is a placeholder to set to the real repo;
-HZ-697 added the tenant API but no tenant screen yet. B7's "live site" is the
-deploy step's output link. Fixes are JSON-only.
+Google, so their selectors are best guesses until the first headed take. A7 uses
+the tenant's connect card; the token is typed masked and scrubbed from the log. B7 opens the tenant's live site with `gotoSite` and clicks the header's new Neighbourhoods link; GitHub Pages republishes it a minute or so after the merge, so B7 waits up to 15 minutes, reloading. Fixes are JSON-only.
 
 ## Scenario actions
 
@@ -229,10 +228,12 @@ Besides `goto`, `click`, `type`, `waitFor`, `pause` and `caption`:
   long real wait. `waitFor` is for a screen a click away (10 s by default);
   `waitUntil` is for gates, runs and deploys.
 - `typeEnv` `{ selector, env, delayMs }`: types an allowlisted environment
-  variable (`SHOREWARD_PROMO_CODE`, `SHOREWARD_TENANT_EMAIL`). The field is
+  variable (`SHOREWARD_PROMO_CODE`, `SHOREWARD_TENANT_EMAIL`, `PARVATI_GITHUB_TOKEN` for A7's connect card). The field is
   masked before the first key, and the value is masked wherever the page
   shows it. A scene whose variable is unset fails before a browser starts.
 - `resume` `{}`: opens the page the previous scene of the same run ended on.
+- `followLink` `{ selector }`: opens the link's href in the filmed tab, same origin only. "View full artifact ↗" links open a new tab, which is never filmed, so B2, B5, C3 and C6 use this to show the plan, the review, the run plan and the report.
+- `gotoSite` `{ url }`: opens a page of the tenant's live site, under `SITE_URL_PREFIXES` in `walkthrough.mjs` only (B7).
 - A top-level `setup` list plays before filming starts.
 
 `scripts/recorder/test/scenarios.test.mjs` checks every scene file: no

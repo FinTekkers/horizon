@@ -31,13 +31,20 @@ const STRING = (v) => typeof v === 'string' && v.length > 0
 const MS = (v) => Number.isInteger(v) && v >= 0
 // HZ-698: the only environment variables a typeEnv step may type. Their
 // values are read at run time and never written to a file, log or frame.
-export const ENV_ALLOWLIST = ['SHOREWARD_PROMO_CODE', 'SHOREWARD_TENANT_EMAIL']
+export const ENV_ALLOWLIST = ['SHOREWARD_PROMO_CODE', 'SHOREWARD_TENANT_EMAIL', 'PARVATI_GITHUB_TOKEN']
+// The only sites outside the board a scene may open with gotoSite: the
+// tenant's own live site, so a scene can show a deployed change (B7).
+export const SITE_URL_PREFIXES = ['https://parvatirealestate.github.io/parvati-site/']
 // waitFor is for a screen that is a click away (10 s by default); waitUntil
 // is for real waits of minutes or hours, logged as they go, up to 4 h.
 export const WAIT_UNTIL_MAX_MS = 4 * 60 * 60 * 1000
 // Each action's fields and their checks. A field marked optional may be absent.
 const ACTIONS = {
   goto: { path: (v) => STRING(v) && v.startsWith('/') && !v.startsWith('//') },
+  // Opens a link's same-origin href in the filmed tab (a "View full artifact ↗"
+  // link opens a new tab, which is never filmed).
+  followLink: { selector: STRING },
+  gotoSite: { url: (v) => STRING(v) && SITE_URL_PREFIXES.some((p) => v.startsWith(p)) && !/[?#@]/.test(v) },
   click: { selector: STRING },
   type: { selector: STRING, text: STRING, delayMs: MS },
   waitFor: { selector: STRING, timeoutMs: { optional: true, check: (v) => MS(v) && v > 0 } },
