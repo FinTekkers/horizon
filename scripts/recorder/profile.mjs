@@ -67,6 +67,8 @@ export async function checkProfile(dir, { repoRoot = REPO_ROOT, home = homedir()
 // plain Chromium on <baseUrl>/horizon/ for the one sign-in by hand. The
 // browser gets no automation flags, so Google lets a person sign in, and
 // the same password store as Playwright, so the cookies decrypt later.
+// The sandbox is off: AppArmor on the Horizon box blocks Chromium's sandbox
+// ("No usable sandbox!"), and Playwright's filming runs go without it too.
 // Resolves when the owner closes the window. `executablePath` is injectable
 // so the tests run without a display.
 export async function initProfile(dir, { baseUrl, log, repoRoot = REPO_ROOT, home = homedir(), executablePath = chromium.executablePath() }) {
@@ -86,6 +88,7 @@ export async function initProfile(dir, { baseUrl, log, repoRoot = REPO_ROOT, hom
     '--use-mock-keychain',
     '--no-first-run',
     '--no-default-browser-check',
+    '--no-sandbox',
     `${baseUrl}/horizon/`,
   ]
   const code = await new Promise((resolve, reject) => {

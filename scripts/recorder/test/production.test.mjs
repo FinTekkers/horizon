@@ -242,6 +242,8 @@ test('guardrail 1: --init-profile makes a 0700 dir with the marker and opens Chr
   const argv = readFileSync(argvFile, 'utf8').trim().split('\n')
   assert.ok(argv.includes(`--user-data-dir=${realpathSync(dir)}`), argv.join(' '))
   assert.ok(argv.includes('--password-store=basic'), argv.join(' '))
+  assert.ok(argv.includes('--no-first-run'), argv.join(' '))
+  assert.ok(argv.includes('--no-sandbox'), argv.join(' '))
   assert.ok(!argv.some((a) => a.includes('enable-automation')), argv.join(' '))
   assert.equal(argv.at(-1), 'http://127.0.0.1:5490/horizon/')
   assert.ok(!lines.join('\n').includes(dir), 'the log names the profile path')
@@ -250,6 +252,18 @@ test('guardrail 1: --init-profile makes a 0700 dir with the marker and opens Chr
   const other = mkdtempSync(path.join(work, 'other-'))
   writeFileSync(path.join(other, 'Cookies'), '')
   await assert.rejects(initProfile(other, { baseUrl: 'http://127.0.0.1:5490', log: () => {}, executablePath: fake }), /new or empty directory/)
+})
+
+test('guardrail 1: the README\'s "Making it" section explains the --no-sandbox notice', () => {
+  const readme = readFileSync(path.join(REPO_ROOT, 'scripts/recorder/README.md'), 'utf8')
+  const start = readme.indexOf('### Making it\n')
+  assert.ok(start >= 0, 'no "### Making it" section')
+  const rest = readme.slice(start + '### Making it\n'.length)
+  const end = rest.search(/^#{1,3} /m)
+  const section = end < 0 ? rest : rest.slice(0, end)
+  for (const words of ['unsupported command-line flag', '--no-sandbox', 'AppArmor']) {
+    assert.ok(section.includes(words), `"Making it" doesn't mention ${words}`)
+  }
 })
 
 contractTest('guardrail 3: a --profile in the repo, without the marker, under ~/.config/google-chrome or with mode 0755 is refused before any browser, without naming the path', async () => {
