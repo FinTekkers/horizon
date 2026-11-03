@@ -523,6 +523,8 @@ export function listProjects({ checks = true, viewer = null } = {}) {
         ...(checks
           ? {
               checks: repoChecks(r),
+              // HZ-750: the slots opted into a fix round's targeted run.
+              targeted: repoTargeted(r),
               marks: repoMarks(r),
               defaultBranch: r.default_branch ?? null,
               // HZ-494: the path only — the server never opens the file.
@@ -566,23 +568,55 @@ export function getRepoCheckCommands(repoFullName) {
   return CHECK_SLOTS.some((slot) => slot !== SCREENSHOTS_SLOT && checks[slot] != null) ? checks : null
 }
 
+// HZ-750: the slots a repo may opt into a fix round's targeted run — the
+// ones that name tests. The farm sends their failed tests in
+// HORIZON_FAILED_TESTS; how the command uses them is the repo's business.
+export const TARGETABLE_SLOTS = ['test', 'e2e']
+
+function targetedList(value, checks) {
+  const list = Array.isArray(value) ? value : []
+  return TARGETABLE_SLOTS.filter((slot) => list.includes(slot) && checks[slot] != null)
+}
+
+// The opted-in slots of a repo row: only those that still have a command.
+// A malformed stored value is none.
+function repoTargeted(row) {
+  let parsed = null
+  try {
+    parsed = row.check_targeted ? JSON.parse(row.check_targeted) : null
+  } catch {
+    parsed = null
+  }
+  return targetedList(parsed, repoChecks(row))
+}
+
+// What the farm is sent beside check_commands: the opted-in slots, or [].
+export function getRepoTargetedSlots(repoFullName) {
+  const row = repoFullName ? findRepo(repoFullName) : null
+  return row ? repoTargeted(row) : []
+}
+
 // The ONLY writer of the check columns. Its callers are the PIN-gated,
 // session-only routes in app.js — Admin's and (HZ-697) a tenant member's
 // settings route: no agent, step or farm path may change the commands that
 // judge its own work. Each string is stored exactly as entered;
 // empty or whitespace-only becomes NULL (the same rule as the farm's).
-export function setRepoCheckCommands(projectId, repoFullName, checks) {
-  const row = db.prepare('SELECT id FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+// HZ-750: `targeted` (an array of slots) replaces the opt-in list; undefined
+// keeps the stored one. A slot with no command is dropped.
+export function setRepoCheckCommands(projectId, repoFullName, checks, targeted) {
+  const row = db.prepare('SELECT * FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
   if (!row) return { error: 'not_found' }
   const values = CHECK_SLOTS.map((slot) => {
     const value = checks?.[slot]
     return typeof value === 'string' && value.trim() ? value : null
   })
+  const stored = Object.fromEntries(CHECK_SLOTS.map((slot, i) => [slot, values[i]]))
+  const optedIn = targetedList(targeted === undefined ? repoTargeted(row) : targeted, stored)
   db.prepare(
-    'UPDATE project_repo SET check_install = ?, check_test = ?, check_lint = ?, check_e2e = ?, check_screenshots = ? WHERE id = ?',
-  ).run(...values, row.id)
+    'UPDATE project_repo SET check_install = ?, check_test = ?, check_lint = ?, check_e2e = ?, check_screenshots = ?, check_targeted = ? WHERE id = ?',
+  ).run(...values, optedIn.length ? JSON.stringify(optedIn) : null, row.id)
   notify()
-  return { ok: true, checks: Object.fromEntries(CHECK_SLOTS.map((slot, i) => [slot, values[i]])) }
+  return { ok: true, checks: stored, targeted: optedIn }
 }
 
 // HZ-697: the stored slots of `repoFullName` in project `projectId`, or null
@@ -590,6 +624,12 @@ export function setRepoCheckCommands(projectId, repoFullName, checks) {
 export function getRepoChecksForProject(projectId, repoFullName) {
   const row = db.prepare('SELECT * FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
   return row ? repoChecks(row) : null
+}
+
+// HZ-750: the opted-in slots of that repo, or null when it is not this project's.
+export function getRepoTargetedForProject(projectId, repoFullName) {
+  const row = db.prepare('SELECT * FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+  return row ? repoTargeted(row) : null
 }
 
 // ---- per-repo test-login env file (HZ-494) ----

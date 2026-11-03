@@ -631,6 +631,12 @@ def screenshots_failure_lines(manifest: dict, shots: list) -> list[str]:
 # as before HZ-327. Any other value, or unset, reruns.
 RERUN_ENV = "FARM_CHECK_RERUN"
 TEST_REPORT_DIR_ENV = "HORIZON_TEST_REPORT_DIR"
+# HZ-750: last round's failing tests, one `file` or `file:line` per line, for
+# an opted-in slot's targeted run (farm/targeted_checks.py). Data for the
+# repo's own script, never runner arguments and never in the command line.
+# Set only through child_env: config.CHECK_SUBPROCESS_SCRUB drops any
+# inherited value, and login_env refuses it as a HORIZON_ name.
+FAILED_TESTS_ENV = "HORIZON_FAILED_TESTS"
 # Every field is cut below the server's limits (server/src/checkFlakes.js), so
 # a long output can never get the step result that carries it refused.
 FLAKE_OUTPUT_MAX_CHARS = 4000
@@ -895,6 +901,22 @@ def _duration_ms(value: str | None) -> int | None:
         return None
 
 
+# HZ-750: a <testcase> line attribute above this is not a source line.
+_LINE_MAX = 10**7
+
+
+def _case_line(value: str | None, file: str | None) -> int | None:
+    """The 1-based source line a report gives a test case, or None. pytest's
+    is 0-based, so a .py file's line is dropped rather than shifted."""
+    if value is None or not file or file.endswith(".py"):
+        return None
+    try:
+        line = int(value)
+    except ValueError:
+        return None
+    return line if 1 <= line <= _LINE_MAX else None
+
+
 def parse_junit(path: Path, ws: Path) -> list[dict]:
     """One row per <testcase> in a JUnit XML file. Raises ET.ParseError (or
     OSError) for a file that is not a readable report."""
@@ -918,6 +940,9 @@ def parse_junit(path: Path, ws: Path) -> list[dict]:
                         # HZ-590: pytest's default xunit2 report has no file,
                         # only the dotted classname. Stripped like failure_kind.
                         "classname": child.get("classname") or None,
+                        # HZ-750: for a targeted run's FAILED_TESTS_ENV only.
+                        # Stripped like failure_kind.
+                        "line": _case_line(child.get("line"), case_file),
                         "status": _case_status(child),
                         "duration_ms": _duration_ms(child.get("time")),
                         # HZ-589: for _rerun_verdict() only. _test_rows()
@@ -1029,7 +1054,7 @@ def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], lo
 
 
 # parse_junit() keys that are farm-side evidence only, never stored.
-_UNSTORED_KEYS = ("failure_kind", "classname")
+_UNSTORED_KEYS = ("failure_kind", "classname", "line")
 
 
 def _test_rows(
@@ -1752,6 +1777,8 @@ def _run_checks_unguarded(
     capture_screenshots: bool = False,
     always_rerun: bool = False,
     slot_policy: check_slots.SlotPolicy | None = None,
+    only_slot: str | None = None,
+    check_scope: str = "full",
 ) -> str:
     """Returns a short human-readable note; raises CheckFailure on failure.
 
@@ -1856,6 +1883,15 @@ def _run_checks_unguarded(
     always_rerun=True (HZ-590: farm/base_check.py's run on the default
     branch) reruns a failed command even when HZ-589 would skip it: a test
     that fails there must fail twice before an item pauses on it.
+
+    only_slot (HZ-750: a fix round's targeted run) runs that Admin slot's
+    commands alone: no install, no other slot, no branch run and no
+    screenshot capture. Install is safe to skip because the workspace keeps
+    last round's, and a fix that changed a dependency manifest never gets a
+    targeted run (farm/targeted_checks.py). Its failing tests reach the
+    commands through child_env's FAILED_TESTS_ENV only. check_scope
+    ("full" or "targeted") labels the metrics record, beside the run's
+    duration_s and, for a targeted run, targeted_tests.
     """
     screenshots, screenshots_note, screenshots_cfg = _screenshots_preflight(ws, log)
     _set_screenshots_notes(summary_notes, [screenshots_note])
@@ -1865,6 +1901,15 @@ def _run_checks_unguarded(
             log(f"checks: {SCREENSHOTS_SLOT} slot — saved command lines are ignored; the farm's runner captures")
         configured = {slot: value for slot, value in configured.items() if slot != SCREENSHOTS_SLOT}
     commands, install_at, labels = _resolve_labelled(ws, configured, log)
+    if only_slot is not None:
+        kept = [i for i, label in enumerate(labels) if label and label[0] == only_slot]
+        if not kept:
+            message = f"no {only_slot} slot command to run for a targeted run"
+            log(f"checks: {message}")
+            raise CheckFailure(message, reason="none_ran")
+        commands, labels, install_at = [commands[i] for i in kept], [labels[i] for i in kept], None
+        branch_gate, capture_screenshots = False, False
+        log(f"checks: targeted run — the {only_slot} slot only, {len(commands)} command(s)")
     if not commands:
         shown_repo = repo or "this repo"
         if checks_waiver in CHECKS_WAIVERS:
@@ -1911,9 +1956,14 @@ def _run_checks_unguarded(
             if slot_policy.on_held is not None:
                 slot_policy.on_held(hold)
         timeout_s = int(os.environ.get("FARM_CHECK_TIMEOUT_S", "600"))
-        record = check_metrics.new_record(run_id=run_id, item_id=item_id, caller=caller, slot=hold, repo=repo)
+        record = check_metrics.new_record(
+            run_id=run_id, item_id=item_id, caller=caller, slot=hold, repo=repo, scope=check_scope
+        )
+        run_started = time.monotonic()
         record[SCREENSHOTS_SLOT] = screenshots
         env = {**_check_env(), **(child_env or {})}
+        if only_slot is not None:
+            record["targeted_tests"] = len(env.get(FAILED_TESTS_ENV, "").splitlines())
         # HZ-569: every process the commands start carries this run's tag and
         # is reaped when the run leaves the slot — pass, fail, timeout or
         # crash. Runs after the outcome is final and never changes it.
@@ -2165,6 +2215,7 @@ def _run_checks_unguarded(
             measured = [x for x in mem_samples if x is not None]
             record["mem_available_low_kb"] = min(measured) if measured else None
             record["load_end"] = check_metrics.load_average()
+            record["duration_s"] = round(time.monotonic() - run_started, 1)
             check_metrics.append_record(record, log=log)
             if test_runs is not None:
                 test_runs.append(check_run)

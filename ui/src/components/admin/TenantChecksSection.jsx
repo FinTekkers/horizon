@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { getTenantChecks, saveTenantChecks } from '../../api'
+import { TARGETABLE_SLOTS, TargetedBox, targetedToSend } from './RepoSettings'
 
 const SLOTS = [
   { key: 'install', label: 'Install', placeholder: 'npm ci' },
@@ -17,6 +18,8 @@ export default function TenantChecksSection({ project }) {
   const repo = project?.repos?.[0]?.repo ?? null
   const projectId = project?.id ?? null
   const [values, setValues] = useState(EMPTY)
+  // HZ-750: the slots opted into a fix round's targeted run.
+  const [targeted, setTargeted] = useState([])
   const [load, setLoad] = useState({ loading: true, error: null })
   const [save, setSave] = useState({ busy: false, error: null, saved: false })
 
@@ -29,6 +32,7 @@ export default function TenantChecksSection({ project }) {
         if (!live) return
         const checks = data.checks || {}
         setValues(Object.fromEntries(SLOTS.map(({ key }) => [key, checks[key] ?? ''])))
+        setTargeted(data.targeted ?? [])
         setLoad({ loading: false, error: null })
       })
       .catch((err) => live && setLoad({ loading: false, error: err.message }))
@@ -42,7 +46,8 @@ export default function TenantChecksSection({ project }) {
     if (save.busy) return
     setSave({ busy: true, error: null, saved: false })
     try {
-      await saveTenantChecks(projectId, repo, values)
+      const result = await saveTenantChecks(projectId, repo, { ...values, targeted: targetedToSend(targeted, values) })
+      setTargeted(result?.targeted ?? [])
       setSave({ busy: false, error: null, saved: true })
     } catch (err) {
       const error = err.message === 'pin_needed' ? 'Your gate PIN is needed to save. Find it in Your PIN and API tokens.' : err.message
@@ -73,20 +78,34 @@ export default function TenantChecksSection({ project }) {
             For <strong>{repo}</strong>.
           </div>
           {SLOTS.map(({ key, label, placeholder }) => (
-            <label className="field" key={key}>
-              <span className="field__label">{label}</span>
-              <textarea
-                className="field__input"
-                placeholder={placeholder}
-                rows={Math.max(1, values[key].split('\n').length)}
-                maxLength={2000}
-                value={values[key]}
-                onChange={(e) => {
-                  setSave((s) => ({ ...s, saved: false }))
-                  setValues({ ...values, [key]: e.target.value })
-                }}
-              />
-            </label>
+            <Fragment key={key}>
+              <label className="field">
+                <span className="field__label">{label}</span>
+                <textarea
+                  className="field__input"
+                  placeholder={placeholder}
+                  rows={Math.max(1, values[key].split('\n').length)}
+                  maxLength={2000}
+                  value={values[key]}
+                  onChange={(e) => {
+                    setSave((s) => ({ ...s, saved: false }))
+                    setValues({ ...values, [key]: e.target.value })
+                  }}
+                />
+              </label>
+              {TARGETABLE_SLOTS.includes(key) && (
+                <TargetedBox
+                  slotLabel={label}
+                  repo={repo}
+                  command={values[key]}
+                  checked={targeted.includes(key)}
+                  onChange={(on) => {
+                    setSave((s) => ({ ...s, saved: false }))
+                    setTargeted(on ? [...targeted, key] : targeted.filter((slot) => slot !== key))
+                  }}
+                />
+              )}
+            </Fragment>
           ))}
           {save.error && (
             <div className="gh-error" role="alert">

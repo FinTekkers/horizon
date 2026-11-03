@@ -65,6 +65,7 @@ import {
   isProjectEnabled,
   setProjectEnabled as writeProjectEnabled,
   getRepoCheckCommands,
+  getRepoTargetedSlots,
   getRepoTestEnvFile,
   getRepoConfig,
   getPlanScope,
@@ -2008,11 +2009,16 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
 // HZ-304: then the farm's checks fail by name, unless checks_waiver rides too.
 // HZ-494: the repo's test-login env file path rides beside them, whenever set
 // — on implement, deploy and conflict-resolve alike. Never its values.
+// HZ-750: targeted_slots rides beside check_commands when the owner opted a
+// slot into a fix round's targeted run; absent otherwise.
 export function checkCommandsField(item) {
   const testEnvFile = getRepoTestEnvFile(item.repo)
   const envField = testEnvFile ? { test_env_file: testEnvFile } : {}
   const checkCommands = getRepoCheckCommands(item.repo)
-  if (checkCommands) return { check_commands: checkCommands, ...envField }
+  if (checkCommands) {
+    const targeted = getRepoTargetedSlots(item.repo)
+    return { check_commands: checkCommands, ...(targeted.length ? { targeted_slots: targeted } : {}), ...envField }
+  }
   const waiver = checksWaiverFor(item)
   return { ...(waiver ? { checks_waiver: waiver } : {}), ...envField }
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { saveRepoChecks, saveRepoMarks, saveRepoTestEnvFile, getRepoCheckDefaults } from '../../api'
 
 const CHECK_SLOTS = [
@@ -13,6 +13,35 @@ const CHECK_SLOTS = [
 
 const savedChecks = (repoConn) =>
   Object.fromEntries(CHECK_SLOTS.map(({ key }) => [key, repoConn.checks?.[key] ?? '']))
+
+// HZ-750: the slots a repo may opt into a fix round's targeted run, which
+// re-runs only last round's failed tests (in HORIZON_FAILED_TESTS) first.
+export const TARGETABLE_SLOTS = ['test', 'e2e']
+export const TARGETED_LABEL = 'On a fix round, re-run only the failed tests first'
+
+// One opt-in box under a test slot's command. Disabled, and shown unticked,
+// while the slot has no command: the server drops such a slot anyway.
+export function TargetedBox({ slotLabel, repo, command, checked, onChange }) {
+  const hasCommand = !!command.trim()
+  return (
+    <label className="field" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <input
+        type="checkbox"
+        aria-label={`${slotLabel}: ${TARGETED_LABEL} (${repo})`}
+        checked={hasCommand && checked}
+        disabled={!hasCommand}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="field__label" style={{ margin: 0 }}>
+        {TARGETED_LABEL}
+      </span>
+    </label>
+  )
+}
+
+// The opted-in slots to send: only those with a command, in slot order.
+export const targetedToSend = (targeted, values) =>
+  TARGETABLE_SLOTS.filter((slot) => targeted.includes(slot) && values[slot]?.trim())
 
 // HZ-304: a repo's 'no checks' or 'no deploy' mark. Every flip asks for the
 // gate PIN, exactly like ProjectEnabledToggle: the PIN lives in this form's
@@ -121,6 +150,7 @@ export function RepoMarks({ projectId, repoConn }) {
 export function RepoChecks({ projectId, repoConn }) {
   const [open, setOpen] = useState(false)
   const [values, setValues] = useState(() => savedChecks(repoConn))
+  const [targeted, setTargeted] = useState(() => repoConn.targeted ?? [])
   const [defaults, setDefaults] = useState(null)
   const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
@@ -133,7 +163,10 @@ export function RepoChecks({ projectId, repoConn }) {
         .then((result) => setDefaults(result.defaults || {}))
         .catch(() => setDefaults({}))
     }
-    if (!open) setValues(savedChecks(repoConn))
+    if (!open) {
+      setValues(savedChecks(repoConn))
+      setTargeted(repoConn.targeted ?? [])
+    }
     setOpen(!open)
   }
 
@@ -144,8 +177,9 @@ export function RepoChecks({ projectId, repoConn }) {
     setError(null)
     setSaved(false)
     try {
-      const result = await saveRepoChecks(projectId, repoConn.repo, values, pin)
+      const result = await saveRepoChecks(projectId, repoConn.repo, values, pin, targetedToSend(targeted, values))
       setValues(Object.fromEntries(CHECK_SLOTS.map(({ key }) => [key, result.checks?.[key] ?? ''])))
+      setTargeted(result.targeted ?? [])
       setSaved(true)
     } catch (err) {
       setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
@@ -172,22 +206,42 @@ export function RepoChecks({ projectId, repoConn }) {
             commands.
           </div>
           {CHECK_SLOTS.map(({ key, label }) => (
-            <label className="field" key={key}>
-              <span className="field__label">{label}</span>
-              <textarea
-                className="field__input"
-                aria-label={`${label} command for ${repoConn.repo}`}
-                placeholder={defaults?.[key] || ''}
-                rows={Math.max(1, values[key].split('\n').length)}
-                maxLength={2000}
-                value={values[key]}
-                onChange={(e) => {
-                  setSaved(false)
-                  setValues({ ...values, [key]: e.target.value })
-                }}
-              />
-            </label>
+            <Fragment key={key}>
+              <label className="field">
+                <span className="field__label">{label}</span>
+                <textarea
+                  className="field__input"
+                  aria-label={`${label} command for ${repoConn.repo}`}
+                  placeholder={defaults?.[key] || ''}
+                  rows={Math.max(1, values[key].split('\n').length)}
+                  maxLength={2000}
+                  value={values[key]}
+                  onChange={(e) => {
+                    setSaved(false)
+                    setValues({ ...values, [key]: e.target.value })
+                  }}
+                />
+              </label>
+              {TARGETABLE_SLOTS.includes(key) && (
+                <TargetedBox
+                  slotLabel={label}
+                  repo={repoConn.repo}
+                  command={values[key]}
+                  checked={targeted.includes(key)}
+                  onChange={(on) => {
+                    setSaved(false)
+                    setTargeted(on ? [...targeted, key] : targeted.filter((slot) => slot !== key))
+                  }}
+                />
+              )}
+            </Fragment>
           ))}
+          <div className="gh-note">
+            {TARGETED_LABEL}: on a fix round the farm runs that slot alone first, with last round's failed tests in{' '}
+            <code>HORIZON_FAILED_TESTS</code> (one <code>file</code> or <code>file:line</code> per line). If they still
+            fail, the next fix starts at once; if they pass, every check runs as usual. Tick it only once the slot's
+            command reads that variable.
+          </div>
           <div className="project-block__add">
             <input
               className="field__input"
