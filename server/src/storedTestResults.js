@@ -20,11 +20,11 @@ export const STORED_RESULTS_WAIT_MS = Number(process.env.STORED_RESULTS_WAIT_MS 
 const STORED_RESULTS_POLL_MS = 200
 
 const latestImplementRun = db.prepare(
-  `SELECT id, started_at, ended_at FROM step_run
+  `SELECT id, started_at, ended_at, test_runs_expected AS expected FROM step_run
     WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1`,
 )
 const selectRows = db.prepare(
-  `SELECT run_label, command, attempt, exit_code, suite, file, test, status FROM test_result
+  `SELECT id, check_run, commit_sha, run_label, command, attempt, exit_code, suite, file, test, status FROM test_result
     WHERE item_id = ? AND run_id = ? AND source = 'implement' ORDER BY id`,
 )
 const hasRows = db.prepare(`SELECT 1 FROM test_result WHERE item_id = ? AND run_id = ? AND source = 'implement' LIMIT 1`)
@@ -32,6 +32,11 @@ const hasRows = db.prepare(`SELECT 1 FROM test_result WHERE item_id = ? AND run_
 // its per-test rows are on their way.
 const checksPassedDuring = db.prepare(
   `SELECT 1 FROM check_pass WHERE item_id = ? AND source = 'implement' AND recorded_at >= ? LIMIT 1`,
+)
+// HZ-751: the sha implement checked and pushed — the newest pass it recorded
+// during the run. A pass is only recorded when a round passed.
+const pushedShaDuring = db.prepare(
+  `SELECT sha FROM check_pass WHERE item_id = ? AND source = 'implement' AND recorded_at >= ? ORDER BY id DESC LIMIT 1`,
 )
 
 export function latestImplementRunId(itemId) {
@@ -43,6 +48,139 @@ export function storedResultsFor(itemId, runId) {
   if (runId == null) return out
   for (const row of selectRows.all(itemId, runId)) (row.run_label === 'branch' ? out.branch : out.main).push(row)
   return out
+}
+
+// ---- the final check round (HZ-751) ----
+// Every fix round of one implement run stores its rows under the same run_id,
+// each round with its own check_run and commit_sha. Review judges only the
+// final round, the one the pushed commit was checked with; earlier rounds are
+// history, never a current failure. Rows are only read and filtered here.
+
+// command -> { exit, failed } for one check run. Each command's last attempt
+// decides: it failed on a fail row or an exit that is not 0 or was not
+// recorded — latestBranchRunFailed's rule (store.js).
+function commandOutcomes(rows) {
+  const last = new Map()
+  for (const r of rows) {
+    const seen = last.get(r.command)
+    if (!seen || r.attempt > seen.attempt) last.set(r.command, { attempt: r.attempt, exit: r.exit_code, failed: false })
+  }
+  for (const r of rows) {
+    const o = last.get(r.command)
+    if (r.attempt === o.attempt && (r.status === 'fail' || r.exit_code == null || r.exit_code !== 0)) o.failed = true
+  }
+  return last
+}
+
+// Earlier check runs of the run, oldest first: one entry per failed command,
+// or one per run that passed. `final` is the final round's outcomes, keyed
+// "label command".
+function historyOf(rows, current, final, state) {
+  const runs = new Map()
+  for (const r of rows) {
+    if (current.has(r.check_run)) continue
+    if (!runs.has(r.check_run)) runs.set(r.check_run, { label: r.run_label === 'branch' ? 'branch' : 'main', sha: r.commit_sha, rows: [] })
+    runs.get(r.check_run).rows.push(r)
+  }
+  const history = []
+  for (const [checkRun, run] of runs) {
+    const outcomes = commandOutcomes(run.rows)
+    const failed = [...outcomes].filter(([, o]) => o.failed)
+    if (failed.length === 0) {
+      history.push({ checkRun, label: run.label, sha: run.sha, command: null, exit: null, outcome: `all ${outcomes.size} command(s) passed` })
+      continue
+    }
+    for (const [command, o] of failed) {
+      const now = final.get(`${run.label} ${command}`)
+      const outcome = !now
+        ? 'not run in the final round'
+        : now.failed
+          ? 'still failing'
+          : state === 'green'
+            ? 'fixed in a later round'
+            : 'passed in the final round'
+      history.push({ checkRun, label: run.label, sha: run.sha, command, exit: o.exit, outcome })
+    }
+  }
+  return history
+}
+
+// The final round of `rows` (one implement run's, in id order):
+//   main      the check_run of the run's newest main row
+//   branch    the check_run of its newest branch row, only if that run came
+//             after the final main round and checked the same commit
+//   state     'none'      no rows, and the run expected none (no checks)
+//             'missing'   no main round was stored
+//             'red'       a final-round command failed
+//             'other_sha' it passed, but not at the sha implement pushed
+//                         (or implement recorded no pushed sha in the run)
+//             'green'     it passed at the pushed sha
+//   regressionRan  every main command this run ran in any round has a
+//             recorded exit in the final round
+function roundOf(rows, pushedSha, expected) {
+  const mains = rows.filter((r) => r.run_label !== 'branch')
+  const branches = rows.filter((r) => r.run_label === 'branch')
+  const lastMain = mains.at(-1)
+  if (!lastMain) {
+    const state = rows.length === 0 && !expected ? 'none' : 'missing'
+    return { state, sha: null, pushedSha, main: [], branch: [], history: historyOf(rows, new Set(), new Map(), state), regressionRan: false }
+  }
+  const main = mains.filter((r) => r.check_run === lastMain.check_run)
+  const lastBranch = branches.at(-1)
+  let branch = []
+  if (lastBranch && lastBranch.commit_sha === lastMain.commit_sha) {
+    const run = branches.filter((r) => r.check_run === lastBranch.check_run)
+    if (run[0].id > lastMain.id) branch = run
+  }
+  const mainOutcomes = commandOutcomes(main)
+  const final = new Map()
+  for (const [command, o] of mainOutcomes) final.set(`main ${command}`, o)
+  for (const [command, o] of commandOutcomes(branch)) final.set(`branch ${command}`, o)
+  const sha = lastMain.commit_sha
+  let state = 'green'
+  if ([...final.values()].some((o) => o.failed)) state = 'red'
+  else if (!sha || sha !== pushedSha) state = 'other_sha'
+  const current = new Set([lastMain.check_run, ...(branch.length > 0 ? [lastBranch.check_run] : [])])
+  const regressionRan = [...new Set(mains.map((r) => r.command))].every((c) => mainOutcomes.get(c)?.exit != null)
+  return { state, sha, pushedSha, main, branch, history: historyOf(rows, current, final, state), regressionRan }
+}
+
+const implementRunById = db.prepare(`SELECT id, started_at, test_runs_expected AS expected FROM step_run WHERE id = ?`)
+
+// The final check round of implement run `runId` (see roundOf). May throw.
+export function finalCheckRound(itemId, runId) {
+  const run = runId == null ? null : implementRunById.get(runId)
+  if (!run) return roundOf([], null, false)
+  const pushedSha = pushedShaDuring.get(itemId, run.started_at)?.sha ?? null
+  return roundOf(selectRows.all(itemId, run.id), pushedSha, run.expected > 0)
+}
+
+const short = (sha) => (sha ? `\`${sha.slice(0, 12)}\`` : 'an unrecorded commit')
+
+// The round's state in plain words. Every state but green and none ends
+// "this is a check failure": the server fails review on it (reviewCheckGate).
+export function finalRoundText(round, runId) {
+  switch (round.state) {
+    case 'none':
+      return 'No check round was stored for this run, and none was expected: no checks ran.'
+    case 'green':
+      return `The final check round passed at ${short(round.sha)}, the commit implement pushed. Judge the checks on this round only.`
+    case 'red': {
+      const failed = []
+      for (const [label, rows] of [['main', round.main], ['branch', round.branch]]) {
+        for (const [command, o] of commandOutcomes(rows)) {
+          if (o.failed) failed.push(`${label} \`${command}\` ${o.exit == null ? 'exit status not recorded' : `exit ${o.exit}`}`)
+        }
+      }
+      return `The final check round at ${short(round.sha)} failed: ${failed.join('; ')} — this is a check failure.`
+    }
+    case 'other_sha':
+      return round.pushedSha
+        ? `The final check round passed at ${short(round.sha)}, but implement pushed ${short(round.pushedSha)}: no final round at the pushed sha — this is a check failure.`
+        : `The final check round passed at ${short(round.sha)}, but implement recorded no checked-and-pushed commit during this run (its check pass was refused, or has been pruned): no final round at the pushed sha — this is a check failure.`
+    default:
+      return `No final check round was stored for implement run #${runId}: no final round at the pushed sha — this is a check failure.`
+  }
 }
 
 // Synchronous, so a dispatch with nothing to wait for stays synchronous: the
@@ -121,10 +259,12 @@ const name = (r) => `${r.suite ? `${r.suite} › ` : ''}${r.test}${r.file ? ` ($
 function renderSection(label, rows, budget) {
   const count = (status) => rows.filter((r) => r.status === status).length
   const head = [`### ${label}`, `Totals: ${count('pass')} passed, ${count('fail')} failed, ${count('skip')} skipped.`]
+  // HZ-751: each command's last attempt is shown, marked (rerun) if it was
+  // the farm's rerun.
   const commands = new Map()
   for (const r of rows) {
-    const key = `${r.attempt} ${r.command}`
-    if (!commands.has(key) || commands.get(key).exit_code == null) commands.set(key, r)
+    const seen = commands.get(r.command)
+    if (!seen || r.attempt > seen.attempt || (r.attempt === seen.attempt && seen.exit_code == null)) commands.set(r.command, r)
   }
   head.push('Commands:')
   for (const c of commands.values()) {
@@ -158,30 +298,55 @@ function renderSection(label, rows, budget) {
   return lines.join('\n')
 }
 
-export function renderStoredResults({ main, branch }, runId, { lost = false } = {}) {
+const HISTORY_MAX_LINES = 10
+
+function renderHistory(history) {
+  if (history.length === 0) return null
+  const lines = [
+    '### History (earlier fix rounds)',
+    'Earlier check rounds of this run, superseded by the final round. They are history, not current evidence: never judge a current failure from them.',
+  ]
+  for (const h of history.slice(0, HISTORY_MAX_LINES)) {
+    const what = h.command == null ? h.outcome : `\`${h.command}\` ${h.exit == null ? 'exit status not recorded' : `exit ${h.exit}`} — ${h.outcome}`
+    lines.push(`- ${h.label} round at ${short(h.sha)}: ${what}`)
+  }
+  if (history.length > HISTORY_MAX_LINES) lines.push(`… ${history.length - HISTORY_MAX_LINES} more earlier entr(ies) not listed.`)
+  return lines.join('\n')
+}
+
+// `round` is finalCheckRound's: only its rows are current evidence.
+export function renderStoredResults(round, runId, { lost = false } = {}) {
   if (lost) {
     return [
       `## ${STORED_RESULTS_INPUT_LABEL}`,
       `The farm's test results for the implement step's run #${runId} were ${RESULTS_LOST_TEXT}: the farm could not deliver them before the server restarted, and none were stored. This is not evidence of a pass or a fail.`,
     ].join('\n\n')
   }
+  const { main, branch } = round
   const intro = [
     `## ${STORED_RESULTS_INPUT_LABEL}`,
     runId == null
       ? 'No finished implement run was found for this item.'
       : `What the farm stored for the implement step's run #${runId}. This is the only evidence of which tests ran and how they ended; test-output files in the worktree (test-results/, build/test-results/, playwright-report/) are not.`,
-    "`main` is the repo's configured check commands. `branch` is this item's own changed scripts/checks/, run after main's. Both decide pass or fail: a failure in either fails the check.",
+    "`main` is the repo's configured check commands. `branch` is this item's own changed scripts/checks/, run after main's. Both decide pass or fail: a failure in either fails the check. Only the final check round below is current; earlier fix rounds are listed under History.",
   ].join('\n\n')
-  const room = STORED_RESULTS_MAX_CHARS - intro.length - 200
-  const sections = []
+  const finalRound = [
+    '### Final check round',
+    finalRoundText(round, runId),
+    ...(round.state === 'none' ? [] : [`Horizon sets regression_tests_run from this round: ${round.regressionRan ? 'true' : 'false'}.`]),
+  ].join('\n')
+  const history = renderHistory(round.history)
+  const room = STORED_RESULTS_MAX_CHARS - intro.length - finalRound.length - (history?.length ?? 0) - 200
+  const sections = [finalRound]
   sections.push(
     main.length > 0 ? renderSection('main', main, branch.length > 0 ? Math.floor(room / 2) : room) : '### main\nNo per-test results were stored for this run.',
   )
   sections.push(
     branch.length > 0
       ? renderSection('branch', branch, Math.floor(room / 2))
-      : '### branch\nNo branch run was recorded: this item changed no configured `scripts/checks/` script.',
+      : '### branch\nNo branch run was recorded in the final round: this item changed no configured `scripts/checks/` script, or its branch run checked another commit.',
   )
+  if (history) sections.push(history)
   return [intro, ...sections].join('\n\n').slice(0, STORED_RESULTS_MAX_CHARS)
 }
 
@@ -191,11 +356,37 @@ export function buildStoredResultsInput(itemId) {
   try {
     const runId = latestImplementRunId(itemId)
     const lost = runId != null && storedResultsUpload(itemId).state === 'lost'
-    return { label: STORED_RESULTS_INPUT_LABEL, content: renderStoredResults(storedResultsFor(itemId, runId), runId, { lost }) }
+    return { label: STORED_RESULTS_INPUT_LABEL, content: renderStoredResults(finalCheckRound(itemId, runId), runId, { lost }) }
   } catch (err) {
     return {
       label: STORED_RESULTS_INPUT_LABEL,
       content: `## ${STORED_RESULTS_INPUT_LABEL}\n\nThe stored test results could not be read (${err.message}). There is no test evidence for this review.`,
+    }
+  }
+}
+
+// HZ-751: what review's verdict must say about the checks, from the final
+// round of the item's latest implement run. null when that run had no checks
+// (state 'none'): the reviewers' own values stand. Otherwise
+// { state, regressionTestsRun, failure }, failure being null only for a green
+// round. Never throws: a read error fails closed.
+export function reviewCheckGate(itemId) {
+  try {
+    const runId = latestImplementRunId(itemId)
+    if (runId == null) return null
+    const round = finalCheckRound(itemId, runId)
+    if (round.state === 'none') return null
+    return {
+      state: round.state,
+      regressionTestsRun: round.regressionRan,
+      failure: round.state === 'green' ? null : `Checks: ${finalRoundText(round, runId)}`,
+    }
+  } catch (err) {
+    console.warn(`[stored results] could not read ${itemId}'s final check round: ${err.message}`)
+    return {
+      state: 'missing',
+      regressionTestsRun: false,
+      failure: `Checks: the final check round could not be read (${err.message}) — this is a check failure.`,
     }
   }
 }

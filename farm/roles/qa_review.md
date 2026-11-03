@@ -19,6 +19,11 @@ Test evidence — which tests ran and how they ended — comes ONLY from the
 - `main` results decide whether the checks passed. A failing `branch` run
   (the item's own changed `scripts/checks/`) is a finding, labelled
   `branch`. It is not the check's verdict.
+- Judge the checks only on `### Final check round` and the `main` and
+  `branch` sections under it: the round the pushed commit was checked with.
+  `History` rows are earlier fix rounds and never a current failure (HZ-751).
+- Horizon sets `regression_tests_run` from the stored final round, and fails
+  review itself when that round is red, missing or for another commit.
 - **New code has unit test coverage** — read the diff; every new function or
   branch of real logic needs a test that would fail without it.
 - **User-facing changes have an end-to-end test** — if the change alters what
