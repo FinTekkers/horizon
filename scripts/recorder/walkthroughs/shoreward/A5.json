@@ -2,9 +2,9 @@
   "actions": [
     {"action": "caption", "text": "Sign in with Google", "ms": 3500},
     {"action": "goto", "path": "/horizon/"},
-    {"action": "waitFor", "selector": "button:has-text(\"Sign in\")", "timeoutMs": 30000},
+    {"action": "waitFor", "selector": "a.login__google", "timeoutMs": 30000},
     {"action": "pause", "ms": 1500},
-    {"action": "click", "selector": "button:has-text(\"Sign in\")"},
+    {"action": "click", "selector": "a.login__google"},
     {"action": "waitUntil", "selector": "[data-identifier]", "timeoutMs": 120000},
     {"action": "pause", "ms": 1500},
     {"action": "click", "selector": "[data-identifier]"},
