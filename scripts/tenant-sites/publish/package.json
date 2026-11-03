@@ -1,0 +1,12 @@
+{
+  "name": "horizon-tenant-sites-publish",
+  "private": true,
+  "type": "module",
+  "description": "HZ-718: publish ../parvati-site/ as-is to ParvatiRealEstate/parvati-site on GitHub Pages. Its own package so playwright (screenshots only) stays out of the site and the root. Tests live in ../test/ and need no install.",
+  "scripts": {
+    "publish-site": "node publish.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}
