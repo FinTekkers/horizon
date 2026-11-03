@@ -7,8 +7,8 @@ farmd executes exactly one step when asked.
 ## Running (local dev)
 
 ```
-./farm/run.sh            # creates farm/.venv (python3.13) on first run,
-                         # starts farmd in tmux session `farm-daemon` on :4100
+./farm/run.sh fg         # creates farm/.venv (python3.13) on first run,
+                         # then runs farmd in the foreground on :4100
 FARM_URL=http://localhost:4100 npm run dev   # in server/ — enables real agents
 ```
 
@@ -16,7 +16,10 @@ With `FARM_URL` unset the server uses the built-in mock agents (demo mode).
 
 ## What runs where
 
-- `farm-daemon` tmux session — farmd (FastAPI, port 4100)
+- farmd (FastAPI, port 4100) — in prod the `horizon-farm` systemd service
+  (HZ-714; logs: `journalctl -fu horizon-farm`), by hand `./farm/run.sh fg`.
+  A `farm-daemon` tmux session is the legacy layout (`./farm/run.sh` with no
+  argument), kept only until the new unit is installed
 - `farm-run-<item>-s<step>-a<attempt>` tmux sessions — one per step, PM
   steps included (HZ-212), each logging to `~/.horizon-farm/logs/<session>.log`
 - `farm-concierge-_shared` tmux session — the one WhatsApp concierge for
@@ -212,7 +215,8 @@ deliberately out of this item's scope. The server-side `WA_APPROVER_JIDS`
 check is the part that holds regardless: a forged call still has to come from
 an allowlisted number.
 
-3. Restart farmd (`./farm/run.sh`); the concierge appears as
+3. Restart farmd (`sudo systemctl restart horizon-farm` in prod,
+   `./farm/run.sh fg` by hand); the concierge appears as
    `farm-concierge-_shared` and its log lands in
    `~/.horizon-farm/logs/concierge-_shared.log`. One session serves every
    enabled project (HZ-209): a message naming an item key (`HZ-12`, `US-12`)
@@ -448,4 +452,5 @@ run that pushes a branch to a local bare "origin". Server-side tests:
 Agent/step failure → step_run closed (`FAILED: …` in output), item paused
 with an explanatory event; resume the item to retry. Farm unreachable at
 dispatch → same. Farm down at boot → farm status `error` in the UI snapshot;
-agents don't run until it's back (`./farm/run.sh` again).
+agents don't run until it's back (`sudo systemctl restart horizon-farm`, or
+`./farm/run.sh fg` by hand).

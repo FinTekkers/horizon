@@ -167,7 +167,7 @@ class FakeTmux:
         elif cmd == "list-sessions":
             out = "".join(f"{name}\n" for name in sorted(self.sessions))
             code = 0 if self.sessions else 1  # real tmux: "no server running"
-        elif cmd == "pipe-pane":
+        elif cmd in ("pipe-pane", "start-server"):
             pass
         elif cmd == "list-panes":
             target = self._flag(args, "-t").removeprefix("=")
@@ -239,7 +239,10 @@ def fake_tmux(request, monkeypatch):
     throwaway tmux server (its own TMUX_TMPDIR, TMUX unset), so even a direct
     `subprocess.run(["tmux", ...])` in the test body never touches the host's
     server. Afterwards it kills, by exact name, the sessions left on that
-    private server; it never runs kill-server and never matches a pattern.
+    private server; it never matches a pattern. HZ-714: a farmd's
+    ensure_server() sets exit-empty off, so the private server would outlive
+    its last session — it is then stopped through its own socket path
+    (`-S`), never through TMUX_TMPDIR lookup, so only that server can go.
     """
     FAKE_TMUX.reset()
     if request.node.get_closest_marker("real_tmux") is None:
@@ -258,6 +261,9 @@ def fake_tmux(request, monkeypatch):
         if shutil.which("tmux"):
             for name in REAL_TMUX("list-sessions", "-F", "#{session_name}").stdout.splitlines():
                 REAL_TMUX("kill-session", "-t", f"={name}")
+            private_socket = Path(socket_dir) / f"tmux-{os.getuid()}" / "default"
+            if private_socket.exists():
+                subprocess.run(["tmux", "-S", str(private_socket), "kill-server"], capture_output=True, timeout=15)
         shutil.rmtree(socket_dir, ignore_errors=True)
 
 

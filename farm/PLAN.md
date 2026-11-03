@@ -31,7 +31,8 @@ ui/  ── SSE/REST ──  server/ (Node, port 3001)          farm/ (Python, p
 
 ### farmd (Python daemon, `farm/`)
 
-FastAPI app on `localhost:4100`, run under tmux itself (`farm-daemon` session).
+FastAPI app on `localhost:4100`, run by systemd (`horizon-farm.service`, HZ-714;
+it used to run in a `farm-daemon` tmux session).
 
 Endpoints:
 - `POST /farm/start {project, repos[]}` — tear down any existing sessions,
@@ -50,7 +51,7 @@ Endpoints:
   re-run as attempt N+1.
 
 Tmux layout (observable by attaching at any time):
-- `farm-daemon` — farmd itself
+- `farm-daemon` — legacy: farmd itself, before HZ-714 moved it under systemd
 - `farm-pm-<project>` — the long-running PM agent loop
 - `farm-run-<item>-<step>-<attempt>` — one per ephemeral step, auto-removed
   after completion (output piped to `~/.horizon-farm/logs/` first)

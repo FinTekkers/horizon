@@ -1,7 +1,9 @@
 """Thin tmux wrapper — sessions are the unit of agent isolation/observability.
 
 Session naming:
-  farm-daemon              farmd itself (started by run.sh)
+  farm-daemon              legacy: farmd under the old oneshot unit (run.sh
+                           with no argument). HZ-714: farmd now runs under
+                           systemd (horizon-farm.service), not in tmux
   farm-pm-<project>        legacy long-lived PM agent (retired by HZ-212;
                            farmd kills one at boot, never launches one)
   farm-concierge-_shared   the one WhatsApp concierge for every enabled
@@ -23,6 +25,28 @@ def _tmux(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=15)
 
 
+def ensure_server() -> None:
+    """HZ-714: start the tmux server with a command line that holds no value.
+
+    A tmux server keeps the argv of the client that started it, readable by
+    any local user in `ps`. Under systemd nothing starts the server before
+    farmd, so without this the first agent session's `new-session` — its
+    `env K=V …` line included — would become the server's argv for good.
+    `exit-empty off` keeps this empty server alive until that session exists.
+    On a server that is already running it only sets the option.
+
+    The server still inherits farmd's whole environment (every farm.env name),
+    exactly as it did when run.sh's tmux client started it; _env_prefix()
+    decides what a pane keeps. Scrubbing the server's environment is a
+    follow-up item, not part of this one.
+
+    A failure is printed, not raised: farmd's API must still come up, and the
+    same tmux fault fails every new_session loudly anyway."""
+    result = _tmux("start-server", ";", "set-option", "-g", "exit-empty", "off")
+    if result.returncode != 0:
+        print(f"farmd: WARNING tmux start-server failed: {result.stderr.strip()}", flush=True)
+
+
 def session_exists(name: str) -> bool:
     return _tmux("has-session", "-t", f"={name}").returncode == 0
 
@@ -32,7 +56,7 @@ def session_exists(name: str) -> bool:
 # so a step agent with Bash held FARM_SHARED_SECRET — the only thing guarding
 # approve-via-whatsapp — and could approve its own gate with one curl.
 #
-# farmd itself is started by run.sh, not through this module, so it keeps
+# farmd itself is started by systemd, not through this module, so it keeps
 # everything it needs and its calls to /api/farm/* are unaffected.
 #
 # The list lives in farm/credentials.py because the tmux boundary is not the
@@ -114,7 +138,7 @@ def _env_prefix(session_name: str) -> str:
     denylist above decides, this line enforces.
 
     The same argument applies to AGENT_NEVER_NEEDS for a different reason:
-    farmd is started by run.sh from /etc/horizon/farm.env, so it is exactly
+    farmd is started by systemd from /etc/horizon/farm.env, so it is exactly
     the process that holds FARM_MAX_EPHEMERAL, and it is usually the one that
     starts the tmux server. Omitting the name from `pairs` alone would leave
     the session inheriting it from there.
