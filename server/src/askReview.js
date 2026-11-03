@@ -283,6 +283,8 @@ export async function reviewOne(ask, { now = Date.now, review = requestReview } 
   const rules = servedRulesFor(project?.name ?? '', draft.repo)
   const input = buildReviewInput(ask, draft, { provider, model, project: project?.name, overlap, rules })
   if (input.refused) return wait(input.refused)
+  // Read before the claim clears it: a 503 with the same reason is 'waiting'.
+  const previousReason = selectReview.get(ask.id)?.wait_reason ?? null
   if (claim.run(authorProvider, provider, model, JSON.stringify(input.body), ask.id).changes !== 1) return 'skipped'
 
   let reply
@@ -290,8 +292,11 @@ export async function reviewOne(ask, { now = Date.now, review = requestReview } 
     reply = await review(input.body)
   } catch (err) {
     if (err?.status === 503) {
-      release.run(noteUnavailable(err, provider, model, now()), ask.id)
-      return 'awaiting'
+      // The same reason as last time changes nothing anyone sees, so it does
+      // not notify — otherwise each 503 would re-trigger the sweep at once.
+      const reason = noteUnavailable(err, provider, model, now())
+      release.run(reason, ask.id)
+      return reason === previousReason ? 'waiting' : 'awaiting'
     }
     // A run may have started, so it is not retried: an ask gets one review.
     const why = clip(`the review failed: ${oneLine(err?.message || err)}`)
@@ -300,8 +305,10 @@ export async function reviewOne(ask, { now = Date.now, review = requestReview } 
   }
   const repos = item?.project_id != null ? selectRepos.all(item.project_id).map((r) => r.repo) : []
   const checked = checkVerdict(reply, { provider, repos, matchIds: overlap.matches.map((m) => m.id), ask })
-  // The farm's fail-closed reply: no real verdict came back.
-  const status = reply && typeof reply === 'object' && reply.unusable === true ? 'failed' : 'done'
+  // The farm's fail-closed reply, or a reply from the wrong provider: no real
+  // verdict came back.
+  const usable = reply && typeof reply === 'object' && reply.unusable !== true && reply.provider === provider
+  const status = usable ? 'done' : 'failed'
   finish.run(
     status,
     checked.verdict,

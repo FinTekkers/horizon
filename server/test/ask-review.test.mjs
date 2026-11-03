@@ -268,6 +268,25 @@ test('a farmd 503 — not authenticated, or a usage limit hit mid-call — sends
   retire(askId)
 })
 
+test('a repeated farmd 503 does not re-trigger the sweep: the change-driven loop settles after a bounded number of calls', async () => {
+  const f = farm(() => {
+    throw Object.assign(new Error('provider not authenticated: muse is logged out'), { status: 503, code: 'provider not authenticated' })
+  })
+  const { askId } = seedAsk({ provider: 'claude' })
+  const handle = askReview.init({ warn: () => {}, error: () => {} }, { review: f.review })
+  try {
+    await tick(300)
+    const settled = f.callsFor(askId).length
+    assert.ok(settled >= 1 && settled <= 2, `the 503 was retried ${settled} times`)
+    await tick(300)
+    assert.equal(f.callsFor(askId).length, settled, 'no further calls until the timed re-sweep')
+    assert.equal(reviewRow(askId).status, 'awaiting')
+  } finally {
+    handle.stop()
+    retire(askId)
+  }
+})
+
 // ---- metric line 3: verdicts stored and shown; nothing else changes ----
 
 function snapshotOf(itemId) {
@@ -356,6 +375,7 @@ test('the farm’s fail-closed reply is stored as failed, not as a reviewer verd
   await askReview.reviewAsks({ review: f.review })
   assert.equal(shown(unusable.itemId, unusable.askId).review.status, 'failed')
   const review = shown(mismatch.itemId, mismatch.askId).review
+  assert.equal(review.status, 'failed', 'a reply from the wrong provider is a farm fault, not a reviewer verdict')
   assert.equal(review.verdict, 'escalate')
   assert.match(review.reasons[0], /ran on claude, not Muse/)
 })
