@@ -144,6 +144,7 @@
         "title": "alpha plan"
       },
       "spawned": [],
+      "asks": [],
       "ruleBlock": null,
       "usageWait": null,
       "isolationRefusal": null,
@@ -220,6 +221,7 @@
         "title": "bravo secret plan"
       },
       "spawned": [],
+      "asks": [],
       "ruleBlock": null,
       "usageWait": null,
       "isolationRefusal": null,
@@ -287,6 +289,7 @@
           "abandoned": false
         }
       ],
+      "asks": [],
       "ruleBlock": null,
       "usageWait": null,
       "isolationRefusal": null,
@@ -347,6 +350,7 @@
       "dependents": [],
       "spawnedBy": null,
       "spawned": [],
+      "asks": [],
       "ruleBlock": null,
       "usageWait": null,
       "isolationRefusal": null,
@@ -414,6 +418,7 @@
           "abandoned": false
         }
       ],
+      "asks": [],
       "ruleBlock": null,
       "usageWait": null,
       "isolationRefusal": null,
@@ -474,6 +479,7 @@
       "dependents": [],
       "spawnedBy": null,
       "spawned": [],
+      "asks": [],
       "ruleBlock": null,
       "usageWait": null,
       "isolationRefusal": null,
@@ -534,6 +540,7 @@
       "dependents": [],
       "spawnedBy": null,
       "spawned": [],
+      "asks": [],
       "ruleBlock": null,
       "usageWait": null,
       "isolationRefusal": null,

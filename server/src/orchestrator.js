@@ -128,6 +128,7 @@ import { findTargetByRepo } from './deployTargets.js'
 import { deploySkipArtifact, deploySkipReason } from './deploySkip.js'
 import { servedRulesFor } from './rulesStore.js'
 import { DIGEST_STEP_INDEX, OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
+import { ingestAsks, recordSplitAsk } from './asks.js'
 import { awaitsSpawnedCode, hasSpawned, linkSpawned, requestKeyFor, spawnItems, spawnRuleOf, spawnedCodeLive, validateSpawnSpec } from './spawn.js'
 import { recordFlakes } from './checkFlakes.js'
 import { NON_AGENT, cleanUsage, recordRunUsage } from './stepUsage.js'
@@ -2957,6 +2958,27 @@ function emitStepEnded(id) {
   })
 }
 
+// HZ-728: the reply's `asks` (and a split proposeSplit left 'proposed') are
+// stored as ask rows (server/src/asks.js). A refused ask never fails the run:
+// the artifact's `## Asks` section and one event name the step and the field.
+// Nothing is filed and no gate changes.
+function recordAsks(item, runId, stepIndex, rawAsks, artifactMd, proposedSplit = null) {
+  if (proposedSplit) recordSplitAsk(item, runId, stepIndex, proposedSplit.split, proposedSplit.id)
+  const repos = listRepos()
+    .filter((r) => item.project_id != null && r.project_id === item.project_id)
+    .map((r) => r.repo)
+  const result = ingestAsks(item, runId, stepIndex, rawAsks, artifactMd, { repos })
+  for (const r of result.refused) {
+    addEvent(item.id, {
+      who: 'Horizon',
+      text: `did not store an ask from “${r.step}”: ${r.ask} — \`${r.field}\` ${r.message}`,
+      color: '#DFA200',
+      initials: 'HZ',
+    })
+  }
+  return result.artifactMd
+}
+
 export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
@@ -3066,6 +3088,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
       delta = { deltaFiles: report.deltaFiles, previousFindings }
     }
     const reviewedSha = typeof artifacts.reviewed_sha === 'string' && artifacts.reviewed_sha.trim() ? artifacts.reviewed_sha.trim() : null
+    artifactMd = recordAsks(item, runId, run.step_index, artifacts.asks, artifactMd)
     finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false, {
       reviewedSha,
       delta,
@@ -3109,8 +3132,12 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // is a `## Blockers` bullet, never a failed run. HZ-685: the summary step's
   // same-repo follow-up the same way, filed when Review before execution is
   // approved.
+  // HZ-728: the split left 'proposed' is recorded as a 'split' ask below.
+  let proposedSplit = null
   if (run.step_index === OPTIONS_STEP_INDEX || run.step_index === DIGEST_STEP_INDEX) {
-    artifactMd = proposeSplit(item, runId, run.step_index, artifacts?.split, artifactMd)
+    const proposal = proposeSplit(item, runId, run.step_index, artifacts?.split, artifactMd)
+    artifactMd = proposal.artifactMd
+    proposedSplit = proposal.proposed
   }
 
   // HZ-448: the Draft items reply's plan_draft is checked with the server's
@@ -3153,6 +3180,9 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     const linked = linkSpawned(id, spawnKey)
     if (linked.error) return failFarmRun(runId, `could not wait for the item it filed: ${linked.error}`)
   }
+
+  // HZ-728: after the last await, so a run gone stale stores no asks.
+  artifactMd = recordAsks(item, runId, run.step_index, artifacts?.asks, artifactMd, proposedSplit)
 
   // HZ-378: Verify & report judges the job, so its artifact carries the QA
   // verdict plus the job's own result — the summary and redacted log the

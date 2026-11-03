@@ -145,6 +145,16 @@ the farm; every farm-bound HTTP call goes through it.
 | Farm | `farm/` | Python process, spawns tmux sessions | Server (HTTP, both directions) |
 | Infra | `infra/host/` | shell scripts + systemd units | the host itself |
 
+**Asks (HZ-728).** A step's drafted follow-up and prerequisite items
+(the reply's `asks`, see `farm/README.md`) live in the `ask` table
+(`server/src/db.js`), one row per ask, linked to the item and the step run. A
+PM split is recorded there too, as kind `split`, beside its `item_split` row.
+`server/src/asks.js` validates and stores them; it depends only on `db.js` and
+leaf modules, and `orchestrator.completeFarmRun` calls it for each step. The
+item snapshot's `asks` field (`store.itemView`) lists the open ones, and
+`ui/src/components/AsksPanel.jsx` shows them on the item page, read-only.
+Design: ADR 0001, `docs/adr/0001-agent-asks.md`.
+
 For the lifecycle those layers cooperate to run, see
 [`docs/workflow.md`](workflow.md); for which process actually executes each
 step and how provider selection works, see

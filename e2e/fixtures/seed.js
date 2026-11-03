@@ -155,6 +155,17 @@ export function insertSpawn(db, { parentId, childId, requestKey = 'step:0:0', se
   ).run(parentId, requestKey, seq, kind, childId)
 }
 
+// HZ-728: one ask row (server/src/asks.js) as ingest leaves it: a drafted
+// follow-up item linked to the item and the step run that sent it.
+export function insertAsk(
+  db,
+  { itemId, stepRunId, stepIndex, kind = 'soft', status = 'open', title, repo = 'FinTekkers/horizon', outcome = 'Outcome.', metric = '1. a\n2. b\n3. c', guardrails = '1. None.', why },
+) {
+  return db
+    .prepare('INSERT INTO ask (item_id, step_run_id, step_index, kind, status, draft_json, why) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(itemId, stepRunId, stepIndex, kind, status, JSON.stringify({ title, repo, outcome, metric, guardrails }), why).lastInsertRowid
+}
+
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
 // Writing the hash directly (instead of through Admin's "Regenerate my PIN")
 // keeps the plaintext out of the browser's localStorage, so the next gate

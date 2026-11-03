@@ -28,6 +28,7 @@ import * as store from './store.js'
 import * as github from './github.js'
 import { UI_URL } from './config.js'
 import { redact } from './caretakerRules.js'
+import { HOST_PATH } from './planText.js'
 import { isAbandoned, isClosed, requiredStepIndex } from '../../domain/js/lifecycle.js'
 import { fieldByName } from '../../domain/js/fields.js'
 import { DESIGN_GATE_INDEX, EXECUTION_GATE_INDEX, FILING_GATES } from './narrowing.js'
@@ -61,7 +62,7 @@ const selectLatestPlanRun = db.prepare(
 const inflight = new Set()
 
 // Upstream issue bodies carry plan text only: secrets and host paths go.
-export const HOST_PATH = /(?:\/home|\/Users|\/root)\/[^\s`'")\]]*/g
+export { HOST_PATH }
 function clean(text, cap) {
   return redact(String(text), { oneLine: false }).replace(HOST_PATH, '[host path removed]').trim().slice(0, cap)
 }
@@ -115,8 +116,11 @@ export function validateSplit(item, raw) {
 // an issue an earlier attempt already created.
 // HZ-685: `ownRepo` (the summary step) limits all of that to the item's own
 // repo's row; a row for any other repo is left exactly as it is.
+// HZ-728: returns the id of the row left 'proposed' for this split — read
+// back by repo after the UPDATE-or-INSERT, so either branch answers — or null
+// when nothing is proposed (no split, or its repo's row is already 'filed').
 export function recordProposedSplit(itemId, runId, split, { ownRepo = null } = {}) {
-  db.transaction(() => {
+  return db.transaction(() => {
     for (const row of selectRows.all(itemId)) {
       if (row.status === 'filed' || inflight.has(row.id)) continue
       if (ownRepo != null && row.target_repo.toLowerCase() !== ownRepo.toLowerCase()) continue
@@ -137,6 +141,8 @@ export function recordProposedSplit(itemId, runId, split, { ownRepo = null } = {
         "INSERT INTO item_split (source_item_id, target_repo, status, payload_json, plan_run_id) VALUES (?, ?, 'proposed', ?, ?)",
       ).run(itemId, split.repo, JSON.stringify(split), runId)
     }
+    if (!split) return null
+    return selectRows.all(itemId).find((r) => r.target_repo === split.repo && r.status === 'proposed')?.id ?? null
   })()
 }
 
@@ -189,6 +195,8 @@ export function addBlocker(artifactMd, bullet) {
 // The one plan-time entry point: validate, record, render. Returns the
 // artifact the next gate shows. At the summary step only a same-repo split is
 // taken, and only the item's own-repo row is touched (HZ-685).
+// HZ-728: also returns `proposed` — { id, split } for the row this call left
+// 'proposed', or null (no split, refused, or already filed).
 export function proposeSplit(item, runId, stepIndex, raw, artifactMd) {
   const digest = stepIndex === DIGEST_STEP_INDEX
   const opts = digest ? { ownRepo: item.repo || '' } : {}
@@ -196,19 +204,22 @@ export function proposeSplit(item, runId, stepIndex, raw, artifactMd) {
   const result = validateSplit(item, raw)
   if (!result) {
     recordProposedSplit(item.id, runId, null, opts)
-    return artifactMd
+    return { artifactMd, proposed: null }
   }
   if (!result.refused && digest && !result.split.sameRepo) {
     result.refused = `\`${result.split.repo}\` is another repo — at this step a split may only file a follow-up on this item’s own repo. Nothing will be filed.`
   }
   if (result.refused) {
     recordProposedSplit(item.id, runId, null, opts)
-    return addBlocker(artifactMd, result.refused)
+    return { artifactMd: addBlocker(artifactMd, result.refused), proposed: null }
   }
   // A 'filed' row for this repo is left as it is; the call still drops
   // proposals for other repos (at the options step).
-  recordProposedSplit(item.id, runId, result.split, opts)
-  return [artifactMd, renderSplitSection(result.split, result.filed, gateLabel)].filter(Boolean).join('\n\n')
+  const proposedId = recordProposedSplit(item.id, runId, result.split, opts)
+  return {
+    artifactMd: [artifactMd, renderSplitSection(result.split, result.filed, gateLabel)].filter(Boolean).join('\n\n'),
+    proposed: proposedId == null ? null : { id: proposedId, split: result.split },
+  }
 }
 
 // ---- approval time ----
