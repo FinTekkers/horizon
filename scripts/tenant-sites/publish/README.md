@@ -28,7 +28,8 @@ node scripts/tenant-sites/publish/publish.mjs              # publishes, verifies
    account) the token belongs to a different account.
 2. Prints the planned writes, and any remote file the new tree leaves out.
    `--dry-run` stops here.
-3. Creates the repo once if it is missing (`auto_init`). An existing repo is
+3. Creates the repo once if it is missing, empty (no `auto_init` or
+   template, so GitHub makes no commit of its own). An existing repo is
    reused. An empty repo gets its first file through one contents `PUT`.
 4. Uploads the changed blobs, then one tree (no `base_tree`, so it equals the
    folder exactly), one commit on top of the head, and a fast-forward ref
@@ -37,8 +38,19 @@ node scripts/tenant-sites/publish/publish.mjs              # publishes, verifies
 6. Waits up to 10 minutes for Pages to build that commit and serve the
    folder's `index.html` byte for byte.
 7. Takes desktop (1280×800) and mobile (390×844) screenshots and writes
-   `publish-report.json`: owner, visibility, repo URL, Pages URL, served SHA and
-   screenshot paths. It holds no login, name, email or token.
+   `publish-report.json`: owner, visibility, repo URL, Pages URL, served SHA,
+   screenshot paths, and `commits`: each pushed commit's `sha`, `author` and
+   `committer`. It holds no login, name, email or token of the token's owner.
+
+## Who the commits are by
+
+Every commit (the first-file `PUT` and each `git/commits` call) sets both
+`author` and `committer` to `Parvati Real Estate <site@parvati-realestate.example>`
+(`lib/identity.mjs`, HZ-725). It is a constant: never read from `GET /user`,
+git config or the environment, so GitHub never falls back to the token
+owner's name. A commit call without it is refused before it is sent. If
+GitHub's reply shows any other author or committer, the run stops before the
+ref update and writes no report.
 
 Nothing is ever deleted, recreated or force-pushed. A file removed from the
 folder drops out of the next commit; git history keeps it. A failed run

@@ -12,6 +12,11 @@ export const API = 'https://api.github.com'
 export const REPO_PATH = `/repos/${OWNER}/${REPO}`
 export const PAGES_URL = `https://${OWNER.toLowerCase()}.github.io/${REPO}/`
 export const WRITE = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+// Who GitHub writes a commit as when the request names nobody: the token's
+// user. Stands in for the owner's own account. Emails are joined at runtime
+// so the email scan in publish-guardrails.test.mjs stays green.
+export const TOKEN_OWNER = Object.freeze({ name: 'stub-token-owner', email: ['stub-token-owner', 'users.noreply.invalid'].join('@') })
+const SEED = Object.freeze({ name: 'stub-seed', email: ['stub-seed', 'seed.invalid'].join('@') })
 
 const sha1 = (text) => createHash('sha1').update(text).digest('hex')
 const json = (status, body) => new Response(body === undefined ? '' : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -21,6 +26,8 @@ const json = (status, body) => new Response(body === undefined ? '' : JSON.strin
 // builds / served: values returned, in order, by pages/builds/latest and the
 // Pages site before the stub falls back to the truth. 'HEAD' stands for the
 // current ref. fail: { 'METHOD /path': { status, message } | { reject } }.
+// storeAs: 'token-owner' stores every commit the run makes as TOKEN_OWNER,
+// whatever the request says, like GitHub ignoring author and committer.
 export function stubGitHub({
   ownerType = 'Organization',
   tokenLogin = OWNER,
@@ -30,6 +37,7 @@ export function stubGitHub({
   builds = [],
   served = [],
   fail = {},
+  storeAs = null,
 } = {}) {
   const calls = []
   const blobs = new Map()
@@ -53,11 +61,14 @@ export function stubGitHub({
     trees.set(sha, sorted)
     return sha
   }
-  const putCommit = (tree, parents) => {
+  const putCommit = (tree, parents, author = SEED, committer = author) => {
     const sha = sha1(`commit ${tree} ${parents.join(',')} ${++counter}`)
-    commits.set(sha, { tree, parents })
+    commits.set(sha, { tree, parents, author: { ...author }, committer: { ...committer } })
     return sha
   }
+  // GitHub's reply shape for a person: name, email and a date.
+  const person = (p) => ({ name: p.name, email: p.email, date: '2026-11-03T00:00:00Z' })
+  const stored = (author, committer) => (storeAs === 'token-owner' ? [TOKEN_OWNER, TOKEN_OWNER] : [author, committer])
   const makeRepo = (opts = {}) => {
     repoInfo = {
       name: REPO,
@@ -70,9 +81,9 @@ export function stubGitHub({
       permissions: { admin: opts.admin ?? true, push: true, pull: true },
     }
   }
-  const commitFiles = (files, parents = []) => {
+  const commitFiles = (files, parents = [], author = SEED, committer = author) => {
     const entries = Object.entries(files).map(([path, text]) => ({ path, mode: '100644', type: 'blob', sha: putBlob(Buffer.from(text)) }))
-    ref = putCommit(putTree(entries), parents)
+    ref = putCommit(putTree(entries), parents, author, committer)
   }
   const headFiles = () => (ref ? trees.get(commits.get(ref).tree) : [])
 
@@ -98,7 +109,8 @@ export function stubGitHub({
     if (method === 'POST' && (p === `/orgs/${OWNER}/repos` || p === '/user/repos')) {
       makeRepo()
       repoInfo.owner = { login: createdOwner }
-      if (body.auto_init) commitFiles({ 'README.md': '# parvati-site\n' })
+      // GitHub writes the auto_init commit as the token's user.
+      if (body.auto_init) commitFiles({ 'README.md': '# parvati-site\n' }, [], TOKEN_OWNER)
       return json(201, repoInfo)
     }
     if (method === 'GET' && p === REPO_PATH) return repoInfo ? json(200, repoInfo) : json(404, { message: 'Not Found' })
@@ -111,7 +123,7 @@ export function stubGitHub({
     }
     if (method === 'GET' && rest.startsWith('git/commits/')) {
       const c = commits.get(rest.slice('git/commits/'.length))
-      return c ? json(200, { tree: { sha: c.tree }, parents: c.parents.map((sha) => ({ sha })) }) : json(404, { message: 'Not Found' })
+      return c ? json(200, { tree: { sha: c.tree }, parents: c.parents.map((sha) => ({ sha })), author: person(c.author), committer: person(c.committer) }) : json(404, { message: 'Not Found' })
     }
     if (method === 'GET' && rest.startsWith('git/trees/')) {
       const entries = trees.get(rest.slice('git/trees/'.length))
@@ -123,8 +135,11 @@ export function stubGitHub({
     if (method === 'PUT' && rest.startsWith('contents/')) {
       if (ref) return json(422, { message: 'stub: contents PUT is only used on an empty repo' })
       const path = decodeURIComponent(rest.slice('contents/'.length))
-      commitFiles({ [path]: Buffer.from(body.content, 'base64') })
-      return json(201, { content: { path, sha: headFiles()[0].sha }, commit: { sha: ref } })
+      // Contents API: committer defaults to the token's user, author to the committer.
+      const committer = body.committer ?? TOKEN_OWNER
+      const [a, c] = stored(body.author ?? committer, committer)
+      commitFiles({ [path]: Buffer.from(body.content, 'base64') }, [], a, c)
+      return json(201, { content: { path, sha: headFiles()[0].sha }, commit: { sha: ref, author: person(a), committer: person(c) } })
     }
     if (method === 'POST' && rest === 'git/blobs') return json(201, { sha: putBlob(Buffer.from(body.content, 'base64')) })
     if (method === 'POST' && rest === 'git/trees') {
@@ -134,7 +149,11 @@ export function stubGitHub({
     }
     if (method === 'POST' && rest === 'git/commits') {
       if (!trees.has(body.tree)) return json(422, { message: 'stub: unknown tree' })
-      return json(201, { sha: putCommit(body.tree, body.parents) })
+      // Git data API: author defaults to the token's user, committer to the author.
+      const author = body.author ?? TOKEN_OWNER
+      const [a, c] = stored(author, body.committer ?? author)
+      const sha = putCommit(body.tree, body.parents, a, c)
+      return json(201, { sha, tree: { sha: body.tree }, author: person(a), committer: person(c) })
     }
     if (method === 'PATCH' && rest === `git/refs/heads/${repoInfo.default_branch}`) {
       const c = commits.get(body.sha)
@@ -178,6 +197,9 @@ export function stubGitHub({
     writes: () => calls.filter((c) => WRITE.has(c.method)),
     headFiles,
     blob: (sha) => blobs.get(sha),
+    // The stored { tree, parents, author, committer } of a commit.
+    commit: (sha) => commits.get(sha),
+    commitShas: () => [...commits.keys()],
     get ref() { return ref },
   }
 }

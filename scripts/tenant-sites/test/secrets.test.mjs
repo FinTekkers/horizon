@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
+import { IDENTITY } from '../publish/lib/identity.mjs'
 
 const ROOT = path.resolve(import.meta.dirname, '..')
 
@@ -33,7 +34,9 @@ test('no token, Stripe value or email address in any file, and only 555-01xx pho
   assert.ok(files.includes(path.join('parvati-site', 'data', 'sales.csv')), 'the scan covers sales.csv')
   assert.ok(files.length >= 15, `scan saw only ${files.length} files`)
   for (const file of files) {
-    const text = readFileSync(path.join(ROOT, file), 'utf8')
+    // HZ-725: the fixed commit identity's address is the one allowed, stripped
+    // as that exact string so any other address still fails.
+    const text = readFileSync(path.join(ROOT, file), 'utf8').split(IDENTITY.email).join('')
     for (const shape of SECRET_SHAPES) assert.doesNotMatch(text, shape, `${file} matches ${shape}`)
     assert.doesNotMatch(text, EMAIL, `${file} has an email address`)
     for (const [phone] of text.matchAll(PHONE)) assert.match(phone, /555[ .-]01\d\d$/, `${file} has phone ${phone}`)

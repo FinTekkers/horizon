@@ -7,6 +7,8 @@
 // Run as the Parvati account: the token comes from PARVATI_GITHUB_TOKEN and
 // nowhere else. Re-runs are safe: an existing repo is reused, an unchanged
 // folder makes no commit, and nothing is ever deleted or force-pushed.
+// Every commit is written as Parvati Real Estate (lib/identity.mjs), never as
+// the token's owner (HZ-725).
 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +16,7 @@ import { parseArgs } from 'node:util'
 import { PublishError, redact } from './lib/errors.mjs'
 import { listSiteFiles } from './lib/files.mjs'
 import { CREATE_PATHS, OWNER, REPO, REPO_PATH, createGitHub, fetchServed, sameLogin } from './lib/github.mjs'
+import { IDENTITY_LINE } from './lib/identity.mjs'
 import { buildReport, writeReport } from './lib/report.mjs'
 import { captureScreens } from './lib/screens.mjs'
 
@@ -86,7 +89,7 @@ export function planWrites(state, files) {
     writes.push({ method: 'POST', path: Object.hasOwn(CREATE_PATHS, state.ownerType) ? CREATE_PATHS[state.ownerType] : `(${OWNER} has unexpected account type ${state.ownerType})`, why: `create public repo ${OWNER}/${REPO}` })
   } else if (!state.head) {
     const first = files[0]
-    writes.push({ method: 'PUT', path: `${REPO_PATH}/contents/${first.path}`, why: `first file of the empty repo: ${first.path}` })
+    writes.push({ method: 'PUT', path: `${REPO_PATH}/contents/${first.path}`, why: `first file of the empty repo: ${first.path}, as ${IDENTITY_LINE}` })
     remote = new Map([[first.path, { mode: '100644', sha: first.blobSha }]])
   }
   if (!sameFiles(files, remote)) {
@@ -97,7 +100,7 @@ export function planWrites(state, files) {
       writes.push({ method: 'POST', path: `${REPO_PATH}/git/blobs`, why: `blob for ${f.path}` })
     }
     writes.push({ method: 'POST', path: `${REPO_PATH}/git/trees`, why: `tree of ${files.length} files` })
-    writes.push({ method: 'POST', path: `${REPO_PATH}/git/commits`, why: 'commit on top of the current head' })
+    writes.push({ method: 'POST', path: `${REPO_PATH}/git/commits`, why: `commit on top of the current head, as ${IDENTITY_LINE}` })
     writes.push({ method: 'PATCH', path: `${REPO_PATH}/git/refs/heads/${state.branch}`, why: `fast-forward ${state.branch} (force: false)` })
   }
   if (!state.pages) writes.push({ method: 'POST', path: `${REPO_PATH}/pages`, why: `turn on GitHub Pages from ${state.branch} /` })
@@ -204,8 +207,10 @@ export async function main(argv, {
     }
 
     let { head, remote } = state
+    const pushed = []
     if (!head) {
       const put = await gh.putFirstFile(files[0], state.branch)
+      pushed.push(put.commit)
       head = put.commit.sha
       remote = new Map([[files[0].path, { mode: '100644', sha: put.content.sha }]])
     }
@@ -221,8 +226,9 @@ export async function main(argv, {
       }
       const tree = await gh.createTree(files.map((f) => ({ path: f.path, mode: f.mode, type: 'blob', sha: f.blobSha })))
       const commit = await gh.createCommit(`Publish ${REPO} (${files.length} files)`, tree, head)
-      await gh.updateRef(state.branch, commit)
-      head = commit
+      await gh.updateRef(state.branch, commit.sha)
+      pushed.push(commit)
+      head = commit.sha
       committed = true
       say(`Pushed ${head} to ${state.branch}.`)
     } else {
@@ -248,6 +254,7 @@ export async function main(argv, {
       servedSha: head,
       created,
       committed,
+      commits: pushed,
       fileCount: files.length,
       screenshots: shots,
       publishedAt: new Date().toISOString(),
