@@ -1452,6 +1452,82 @@ button { font-family: var(--font-sans); }
 .first-project__submit:hover { background: var(--primary-hover); }
 .first-project__submit:disabled { opacity: 0.6; cursor: default; }
 
+/* HZ-703: "Connect your repository" — the first-project card's look, in place
+   of a member's empty board until their project has a repository. The
+   lifecycle column heads sit dimmed below it. Existing tokens only. */
+.board__connect { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 8px 0 24px; }
+.board__connect-cols { width: 100%; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; opacity: 0.5; }
+.board__connect-col {
+  min-width: 0; padding: 12px 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border);
+  font: 800 13px var(--font-sans); color: var(--deep); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.btn-new:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-new:disabled:hover { background: var(--primary); }
+.connect-repo {
+  width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 18px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
+  padding: 30px 30px 28px; box-shadow: 0 12px 40px rgba(var(--shadow-rgb), 0.10);
+  font-family: var(--font-sans); color: var(--ink); overflow-wrap: anywhere;
+}
+.connect-repo__title { margin: 0; font: 800 22px var(--font-sans); color: var(--deep); }
+.connect-repo__lede { margin: -10px 0 0; font: 500 14px/1.55 var(--font-sans); color: var(--text-secondary); }
+.connect-repo__step { display: flex; flex-direction: column; gap: 10px; }
+.connect-repo__step--box { padding: 16px; border-radius: 12px; background: var(--surface-alt); border: 1px solid var(--border); }
+.connect-repo__step-head { display: flex; align-items: baseline; gap: 10px; }
+.connect-repo__step-num { font: 800 12px var(--font-sans); color: var(--primary-ink); }
+.connect-repo__step-title { font: 700 14px var(--font-sans); color: var(--deep); }
+.connect-repo__text { margin: 0; font: 400 13px/1.5 var(--font-sans); color: var(--text-secondary); }
+.connect-repo__chips { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.connect-repo__chip {
+  padding: 3px 9px; border-radius: 999px; background: var(--primary-bg); color: var(--primary-ink);
+  font: 600 12px var(--font-sans);
+}
+.connect-repo__token-link, .connect-repo__secondary {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 14px;
+  border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface);
+  font: 700 14px var(--font-sans); color: var(--primary-ink); text-decoration: none; cursor: pointer;
+}
+.connect-repo__token-link:hover, .connect-repo__secondary:hover { color: var(--primary-hover); border-color: var(--hover-border); }
+.connect-repo__label { margin-top: 4px; font: 700 13px var(--font-sans); color: var(--deep); }
+.connect-repo__input {
+  width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 10px;
+  font: 400 14px var(--font-mono); color: var(--ink); background: var(--surface); outline: none;
+}
+.connect-repo__input:focus { border-color: var(--primary); }
+.connect-repo__hint { margin-top: -4px; font: 500 12px var(--font-sans); color: var(--muted-strong); }
+.connect-repo__alert {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 10px;
+  background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); color: var(--danger-ink);
+}
+.connect-repo__alert strong { font: 700 14px var(--font-sans); }
+.connect-repo__alert span { font: 500 13px var(--font-sans); color: var(--text-secondary); }
+.connect-repo__submit {
+  min-height: 46px; margin-top: 4px; border: 0; border-radius: 10px; cursor: pointer;
+  background: var(--primary); color: #fff; font: 700 14px var(--font-sans);
+}
+.connect-repo__submit:hover { background: var(--primary-hover); }
+.connect-repo__submit:disabled { opacity: 0.6; cursor: default; }
+.connect-repo__results { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.connect-repo__result { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: var(--success-bg); }
+.connect-repo__result--warn { background: var(--warning-bg); }
+.connect-repo__result-icon { flex: none; margin-top: 1px; }
+.connect-repo__result-icon circle { fill: var(--success); }
+.connect-repo__result-icon path { stroke: #fff; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.connect-repo__result--warn .connect-repo__result-icon circle { fill: var(--warning); }
+.connect-repo__result--warn .connect-repo__result-icon path { stroke: var(--on-warning); }
+.connect-repo__result-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.connect-repo__result-text strong { font: 700 14px var(--font-sans); color: var(--success-ink); }
+.connect-repo__result--warn .connect-repo__result-text strong { color: var(--warning-ink); }
+.connect-repo__result-text span { font: 500 13px var(--font-sans); color: var(--text-secondary); }
+.connect-repo__actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.connect-repo__primary {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 16px; border-radius: 10px;
+  background: var(--primary); color: #fff; font: 700 14px var(--font-sans); text-decoration: none;
+}
+.connect-repo__primary:hover { background: var(--primary-hover); }
+.connect-repo__secondary { align-self: auto; min-height: 44px; padding: 0 16px; }
+.connect-repo a:focus-visible, .connect-repo button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
 /* Public legal pages (/privacy, /terms) and the links to them. */
 .legal { min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 28px 16px 40px; }
 .legal__header { width: 100%; max-width: 760px; margin-bottom: 18px; }
@@ -1655,6 +1731,12 @@ button { font-family: var(--font-sans); }
 
   /* HZ-509: a screenshot row's baseline, new and diff stack. */
   .shots__images { grid-template-columns: minmax(0, 1fr); }
+
+  /* HZ-703: the phone artboard — the card alone, full width; no column heads. */
+  .board__connect { padding-top: 0; }
+  .board__connect-cols { display: none; }
+  .connect-repo { padding: 24px 18px 22px; }
+  .connect-repo__token-link, .connect-repo__secondary { min-height: 44px; }
 }
 
 /* HZ-462: the shared table style — a Plan's Inventory tables, Admin's flaky

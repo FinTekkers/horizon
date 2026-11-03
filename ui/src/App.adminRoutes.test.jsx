@@ -180,6 +180,8 @@ test.each([
 
 // ---- HZ-660 metric 5: a member's Admin page renders none of the owner-only sections ----
 
+// HZ-703: Account, and the member's own project check commands.
+const MEMBER_SECTIONS = ["Your project's check commands", 'Your PIN and API tokens']
 const navLabels = () => [...document.querySelectorAll('.admin-nav__label')].map((el) => el.textContent)
 
 test('a member cold-loading /admin/deploys lands on /admin/account, sees only Account and reads no owner-only route', async () => {
@@ -189,7 +191,7 @@ test('a member cold-loading /admin/deploys lands on /admin/account, sees only Ac
   render(<App />)
   expect(await heading('Personal API tokens')).toBeTruthy()
   await waitFor(() => expect(window.location.pathname).toBe('/admin/account'))
-  expect(navLabels()).toEqual(['Your PIN and API tokens'])
+  expect(navLabels()).toEqual(MEMBER_SECTIONS)
   expect(navButton('Your PIN and API tokens').getAttribute('aria-current')).toBe('page')
   expect(screen.queryByRole('heading', { name: 'Deploy targets' })).toBeNull()
   expect(screen.queryByRole('heading', { name: 'Projects' })).toBeNull()
@@ -216,7 +218,7 @@ test('a member opening Admin from the menu, or an owner-only section by popstate
   window.dispatchEvent(new PopStateEvent('popstate'))
   await waitFor(() => expect(window.location.pathname).toBe('/admin/account'))
   expect(screen.queryByRole('heading', { name: 'GitHub access' })).toBeNull()
-  expect(navLabels()).toEqual(['Your PIN and API tokens'])
+  expect(navLabels()).toEqual(MEMBER_SECTIONS)
 })
 
 test('the owner cold-loading /admin/deploys stays there and sees all five sections', async () => {

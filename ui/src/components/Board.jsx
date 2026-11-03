@@ -337,6 +337,11 @@ export default function Board({
   // HZ-661: a member's own active project, named in the header. The owner's
   // board passes none and is unchanged.
   activeProjectName = null,
+  // HZ-703: a member's project with no repository yet. `emptyState` stands in
+  // for the empty board, over its dimmed column heads, and `newItemBlocked`
+  // (the reason, as the button's title) disables + New work item.
+  emptyState = null,
+  newItemBlocked = null,
 }) {
   const activeFilterKeys = useSyncExternalStore(boardFilters.subscribe, boardFilters.getActiveFilters)
   const view = useSyncExternalStore(boardNarrowing.subscribe, boardNarrowing.getBoardView)
@@ -441,7 +446,7 @@ export default function Board({
             )
           })}
         </div>
-        <button className="btn-new" onClick={onNewItem}>
+        <button className="btn-new" onClick={onNewItem} disabled={!!newItemBlocked} title={newItemBlocked || undefined}>
           + New work item
         </button>
       </div>
@@ -533,7 +538,20 @@ export default function Board({
         )}
       </div>
 
-      {items.length === 0 && <div className="board__empty">No work items yet.</div>}
+      {emptyState && (
+        <div className="board__connect">
+          {emptyState}
+          <div className="board__connect-cols" aria-hidden="true">
+            {PHASES.map((name) => (
+              <div key={name} className="board__connect-col">
+                {name}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!emptyState && items.length === 0 && <div className="board__empty">No work items yet.</div>}
 
       {items.length > 0 && pool.length === 0 && (
         <div className="board__empty">
@@ -562,11 +580,11 @@ export default function Board({
         </div>
       )}
 
-      {narrowed.length > 0 && phone && (
+      {!emptyState && narrowed.length > 0 && phone && (
         <PhaseTabs counts={cols.map((c) => c.activeCount)} active={phonePhase} onSelect={setPhonePhase} />
       )}
 
-      {narrowed.length > 0 && (
+      {!emptyState && narrowed.length > 0 && (
         <div className={phone ? 'board__cols board__cols--phone' : 'board__cols'}>
           {(phone ? [cols[phonePhase]] : cols).map(({ name, p, colItems, activeCount: colActiveCount }) => {
             return (

@@ -5,7 +5,9 @@
 
 // The left-hand list, in the design's order. `keywords` feed "Find a setting".
 // HZ-660: `ownerOnly` sections read owner-only routes, so a member never sees
-// them — only Account, which reads their own PIN and tokens.
+// them — only Account, which reads their own PIN and tokens. HZ-703:
+// `memberOnly` sections are a member's own project settings, over the tenant
+// API; the owner sets those in Projects and never sees them.
 export const ADMIN_SECTIONS = [
   {
     key: 'projects',
@@ -31,6 +33,13 @@ export const ADMIN_SECTIONS = [
       'default branch',
       'connect',
     ],
+  },
+  {
+    key: 'checks',
+    memberOnly: true,
+    group: 'Projects',
+    label: "Your project's check commands",
+    keywords: ['check commands', 'install', 'test', 'e2e', 'repository', 'repo'],
   },
   {
     key: 'deploys',
@@ -70,12 +79,17 @@ export const MEMBER_ADMIN_SECTION = 'account'
 
 // The sections this user may open, in order.
 export function visibleSections(isOwner) {
-  return isOwner ? ADMIN_SECTIONS : ADMIN_SECTIONS.filter((s) => !s.ownerOnly)
+  return ADMIN_SECTIONS.filter((s) => (isOwner ? !s.memberOnly : !s.ownerOnly))
 }
 
 // True when `section` is one a member may not open (an unknown key included).
 export function isOwnerOnlySection(section) {
   return !visibleSections(false).some((s) => s.key === section)
+}
+
+// HZ-703: true when `section` is one the owner may not open.
+export function isMemberOnlySection(section) {
+  return ADMIN_SECTIONS.some((s) => s.key === section && s.memberOnly)
 }
 
 export const ADMIN_HOME = { section: 'projects', project: null, repo: null, tab: null, unknown: false }
