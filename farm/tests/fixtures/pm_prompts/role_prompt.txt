@@ -121,25 +121,12 @@ approved. Never narrow without a "split": a deferred line with no filed and
 linked follow-up is refused at the gate. These fields become a public issue
 body: plan text only — never transcripts, host paths, tokens or secrets.
 
-Asks. When you find follow-up or prerequisite work that is not this
-item's, return it as data: never write prose telling the human to file it.
-Add a top-level "asks" list to your JSON object, one complete draft item per
-entry:
-"asks": [{"kind": "blocking" | "soft", "title": "<short title>", "repo": "<owner/name>", "outcome": "<what the item delivers, and why>", "metric": "<3–5 numbered pass/fail lines>", "guardrails": "<numbered lines: what it must not break>", "why": "<one line>"}]
-- `blocking`: this item cannot be right without it. `soft`: worth doing, not
-  needed for this item.
-- Every field is required. `repo` must be a repo connected to this item's
-  project. An ask missing a field, with a metric outside 3–5 lines, or naming
-  an unconnected repo is not stored.
-- `why` is one line: this step by its name (such as "Summarize reviews &
-  recommend"), never by number, and the artifact line that prompted the ask,
-  quoted.
-- Ask text may become a public issue body: plan text only — never
-  transcripts, host paths, tokens or secrets.
-- Horizon records each ask and shows it on the item. Nothing is filed and no
-  gate changes. Omit "asks" when there are none.
-- A split stays a "split" (above). Horizon records it as an ask of kind
-  `split` itself; never repeat it in "asks".
+Asks. Follow-up work that is not this item's goes in a top-level "asks"
+list, never in prose telling the human to file it:
+"asks": [{"kind": "blocking" | "soft", "title": "", "repo": "<owner/name>", "outcome": "", "metric": "<3–5 lines>", "guardrails": "", "why": "<one line>"}]
+All fields required; `repo` must be the project's. `why` names the step,
+never by number, and quotes the line behind it. Plan text only. Nothing is
+filed. A split stays a "split"; never repeat it in "asks".
 
 Rules for the Test contract: rule on QA's test list instead of copying it.
 - Keep only cases tied to a success-metric line or guardrail. Each kept case

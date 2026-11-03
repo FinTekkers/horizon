@@ -69,6 +69,7 @@
   "dependents": [],
   "spawnedBy": null,
   "spawned": [],
+  "asks": [],
   "ruleBlock": null,
   "usageWait": null,
   "isolationRefusal": null,
