@@ -350,3 +350,115 @@ def test_the_fails_on_main_headline_names_the_first_test_within_200_chars():
     assert long_title[:10] in headline
     # Every whole name fits when the names are short.
     assert base_check.fails_on_main_headline(["a::b"]) == "fails on main as well: `a::b`, not caused by this item"
+
+
+# ---- HZ-752: a red check that names no failing tests re-runs its whole line ----
+
+WHOLE = "sh test.sh"
+# Fails once, then passes: a counter file, no timing.
+FLAKY_SH = "if [ -f ran-once ]; then exit 0; fi\ntouch ran-once\nexit 1\n"
+
+
+def no_rows(line=WHOLE, slot="test", reason="failed", argv=True):
+    return CheckFailure(
+        "repo checks failed: test: exited 1\n(sh -c sh test.sh)\nboom",
+        "boom",
+        command=f"sh -c {line}",
+        reason=reason,
+        failed_tests=[],
+        argv=["sh", "-c", line] if argv else None,
+        slot=slot,
+    )
+
+
+def test_a_red_check_naming_no_tests_reruns_install_and_the_whole_line_on_main(hub, tmp_path, attempts):
+    push_main(tmp_path, {"test.sh": "exit 1\n"})
+    configured = {"install": "true", "test": f"{WHOLE}\necho second-test-line", "lint": "exit 9", "e2e": "exit 9"}
+    fail = no_rows()
+
+    assert base_check.skip_reason(fail) == ""
+    verdict, logs = run(hub, fail, configured=configured)
+
+    assert verdict.verdict == FAILS_ON_MAIN, (verdict, logs)
+    # Install, then the failing line un-narrowed, twice; no lint, e2e or other line.
+    assert attempts == [["sh", "-c", "true"], ["sh", "-c", WHOLE], ["sh", "-c", WHOLE]]
+
+
+@pytest.mark.parametrize("case", ["item-ran-out-of-time", "no-argv"])
+def test_a_failure_with_no_command_result_is_skipped_before_any_git_call(hub, monkeypatch, case):
+    fail = no_rows(reason="timed_out") if case == "item-ran-out-of-time" else no_rows(argv=False)
+    monkeypatch.setattr(base_check, "_git", lambda *a: pytest.fail("git ran for a failure with no command result"))
+
+    assert base_check.skip_reason(fail) == "the check reached no command result to re-run"
+    verdict, _ = run(hub, fail)
+    assert verdict.verdict == UNCLEAR
+    assert verdict.detail == "the check reached no command result to re-run"
+
+
+def test_a_lint_failure_with_no_tests_is_still_skipped():
+    assert base_check.skip_reason(no_rows(line="ruff check .", slot="lint")).startswith("not a test command (lint)")
+
+
+def test_a_whole_slot_failing_twice_on_main_is_fails_on_main_and_the_item_worktree_is_untouched(hub, tmp_path, scratch_runs):
+    push_main(tmp_path, {"test.sh": "exit 1\n"})
+    ws = item_worktree(hub)
+    before = snapshot(ws)
+
+    verdict, logs = run(ws, no_rows(), configured={"test": WHOLE})
+
+    assert verdict.verdict == FAILS_ON_MAIN, (verdict, logs)
+    assert verdict.tests == []
+    assert verdict.detail == "the test slot's failing command fails on main too, twice"
+    (made,) = scratch_runs
+    assert made["forbidden"] == [str(ws)]
+    assert not made["path"].exists()
+    assert snapshot(ws) == before
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("passes-on-main", PASSES_ON_MAIN),
+        ("flaky-on-main", PASSES_ON_MAIN),
+        ("runs-out-of-time", UNCLEAR),
+        ("install-breaks-on-main", UNCLEAR),
+        ("git-error", UNCLEAR),
+    ],
+)
+def test_whole_slot_cases_that_do_not_pause(hub, tmp_path, monkeypatch, attempts, case, expected):
+    script = {"flaky-on-main": FLAKY_SH, "passes-on-main": "exit 0\n"}.get(case, "exit 1\n")
+    push_main(tmp_path, {"test.sh": script})
+    configured = {"test": WHOLE}
+    if case == "runs-out-of-time":
+
+        def slow(*_a, **_k):
+            raise CheckFailure("repo checks timed out after 1s: sh -c sh test.sh", command="sh -c sh test.sh", reason="timed_out")
+
+        monkeypatch.setattr(base_check, "run_checks", slow)
+    elif case == "install-breaks-on-main":
+        configured = {"install": "exit 3", "test": WHOLE}
+    elif case == "git-error":
+
+        def broken(path, *args):
+            raise subprocess.TimeoutExpired(["git", *args], base_check.GIT_TIMEOUT_S)
+
+        monkeypatch.setattr(base_check, "_git", broken)
+
+    verdict, logs = run(hub, no_rows(), configured=configured)
+
+    assert verdict.verdict == expected, (verdict, logs)
+    assert verdict.tests == []
+    if case == "flaky-on-main":
+        assert attempts == [["sh", "-c", WHOLE], ["sh", "-c", WHOLE]]
+
+
+@pytest.mark.parametrize("mode", ["named", "whole"])
+def test_the_run_log_names_the_mode(hub, tmp_path, mode):
+    push_main(tmp_path, {"pytest.ini": "[pytest]\n", "tests/test_m.py": FAILING, "test.sh": "exit 1\n"})
+    fail = failure([row("test_y")]) if mode == "named" else no_rows()
+
+    verdict, logs = run(hub, fail)
+
+    assert verdict.verdict == FAILS_ON_MAIN, (verdict, logs)
+    suffix = "(named tests)" if mode == "named" else "(whole slot)"
+    assert [line for line in logs if line.startswith("base check: re-running ") and line.endswith(suffix)], logs
