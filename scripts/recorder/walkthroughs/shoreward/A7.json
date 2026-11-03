@@ -1,13 +1,26 @@
 {
   "actions": [
     {"action": "caption", "text": "Connect your repo", "ms": 3500},
-    {"action": "goto", "path": "/horizon/admin/projects"},
-    {"action": "waitFor", "selector": ".project-block", "timeoutMs": 30000},
-    {"action": "pause", "ms": 1500},
-    {"action": "type", "selector": "input[placeholder=\"Add a repo: owner/name or URL\"]", "text": "parvati-real-estate/website", "delayMs": 80},
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".connect-repo", "timeoutMs": 30000},
+    {"action": "pause", "ms": 3000},
+    {"action": "type", "selector": ".connect-repo input[placeholder=\"owner/name\"]", "text": "ParvatiRealEstate/parvati-site", "delayMs": 70},
+    {"action": "pause", "ms": 600},
+    {"action": "typeEnv", "selector": ".connect-repo input[placeholder^=\"github_pat\"]", "env": "PARVATI_GITHUB_TOKEN", "delayMs": 15},
     {"action": "pause", "ms": 800},
-    {"action": "click", "selector": ".project-block__add button.composer__cancel"},
-    {"action": "waitFor", "selector": ".repo-row", "timeoutMs": 60000},
+    {"action": "click", "selector": ".connect-repo__submit"},
+    {"action": "waitFor", "selector": ".connect-repo__results", "timeoutMs": 120000},
+    {"action": "pause", "ms": 4000},
+    {"action": "click", "selector": ".connect-repo__primary"},
+    {"action": "waitFor", "selector": ".repo-checks__form", "timeoutMs": 30000},
+    {"action": "pause", "ms": 1500},
+    {"action": "type", "selector": ".repo-checks__form .field:has(.field__label:text-is(\"Test\")) input.field__input", "text": "npm test", "delayMs": 80},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": ".repo-checks__form button.composer__submit"},
+    {"action": "waitFor", "selector": ".gh-success", "timeoutMs": 30000},
+    {"action": "pause", "ms": 2500},
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".board", "timeoutMs": 30000},
     {"action": "pause", "ms": 3000}
   ]
 }

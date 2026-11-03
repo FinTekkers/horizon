@@ -197,7 +197,7 @@ profile, record headed on the virtual display: add `--headed` and run under
 | A4 | The welcome page | runs right after A3 in the same run (`resume`) |
 | A5 | Google sign-in: clicks the saved account in Google's chooser | the saved profile |
 | A6 | "Set up your first project": names the project Parvati Real Estate | |
-| A7 | Connecting the repo | see below |
+| A7 | Connecting the repo on the "Connect your repository" card (HZ-703), then setting the Test command to `npm test` and returning to the board | `PARVATI_GITHUB_TOKEN`; `parvati-site` already published |
 | B1–B7 | The first item, "Add a Neighbourhoods page": set the goal, plan (B2 ends on the plan), approve the plan, execute, test and review (B5 ends on the review), approve the change, then the live site's new page | the item from B1; `parvati-site` marked **No deploy** (below) |
 | C1–C7 | The first Task, "Find comparable sales for an Upper West Side co-op": define, approve & prioritize, assess and run plan (C3 ends on the run plan), approve the run, execute, verify & report (C6 ends on the 20 ranked sales), review & close | the task from C1 |
 
@@ -217,10 +217,8 @@ dir and in `--out`.
 
 **First take checks the selectors.** A1–A5 drive the shoreward.ai homepage
 (its code is in `FinTekkers/shoreward`), Stripe's embedded checkout and
-Google, so their selectors are best guesses until the first headed take. A7
-uses the admin Projects page's repo box, and its repo name
-(`parvati-real-estate/website`) is a placeholder to set to the real repo;
-HZ-697 added the tenant API but no tenant screen yet. B7 opens the tenant's live site with `gotoSite` and clicks the header's new Neighbourhoods link; GitHub Pages republishes it a minute or so after the merge, so B7 waits up to 15 minutes, reloading. Fixes are JSON-only.
+Google, so their selectors are best guesses until the first headed take. A7 uses
+the tenant's connect card; the token is typed masked and scrubbed from the log. B7 opens the tenant's live site with `gotoSite` and clicks the header's new Neighbourhoods link; GitHub Pages republishes it a minute or so after the merge, so B7 waits up to 15 minutes, reloading. Fixes are JSON-only.
 
 ## Scenario actions
 
