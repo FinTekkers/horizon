@@ -13,9 +13,9 @@
   ],
   "actions": [
     {"action": "caption", "text": "Pay with a promotion code", "ms": 3500},
-    {"action": "waitUntil", "selector": "#signup-checkout iframe >> internal:control=enter-frame >> button:has-text(\"Add promotion code\")", "timeoutMs": 120000},
+    {"action": "waitUntil", "selector": "#signup-checkout iframe >> internal:control=enter-frame >> button:has-text(\"Add code\")", "timeoutMs": 120000},
     {"action": "pause", "ms": 1500},
-    {"action": "click", "selector": "#signup-checkout iframe >> internal:control=enter-frame >> button:has-text(\"Add promotion code\")"},
+    {"action": "click", "selector": "#signup-checkout iframe >> internal:control=enter-frame >> button:has-text(\"Add code\")"},
     {"action": "waitFor", "selector": "#signup-checkout iframe >> internal:control=enter-frame >> #promotionCode", "timeoutMs": 30000},
     {"action": "pause", "ms": 600},
     {"action": "typeEnv", "selector": "#signup-checkout iframe >> internal:control=enter-frame >> #promotionCode", "env": "SHOREWARD_PROMO_CODE", "delayMs": 150},
