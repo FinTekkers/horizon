@@ -2832,15 +2832,19 @@ def _fail_on_checks(ws, item, branch, conflicted, exc: CheckFailure, *, checkpoi
 
 
 class FailsOnMain(CheckFailure):
-    """HZ-590: the failing tests fail on the default branch too, so the item
-    did not cause them. No fix turn runs, and main() reports
+    """HZ-590: the failing tests, or the failing slot command (HZ-752), fail
+    on the default branch too, so the item did not cause them. No fix turn runs, and main() reports
     reasons.REASON["FAILS_ON_MAIN"], which the server pauses on."""
 
 
 def _fails_on_main(failure: CheckFailure, verdict: base_check.BaseVerdict) -> FailsOnMain:
-    """The failure, headlined with the tests that fail on main as well. Its
-    own message and digest follow, for "Show details". `argv` stays behind."""
-    headline = base_check.fails_on_main_headline(verdict.tests)
+    """The failure, headlined with the tests — or, when it names none, the
+    slot and its redacted command — that fail on main as well. Its own
+    message and digest follow, for "Show details". `argv` stays behind."""
+    if verdict.tests:
+        headline = base_check.fails_on_main_headline(verdict.tests)
+    else:
+        headline = base_check.fails_on_main_slot_headline(failure.slot or "check", failure.command or "")
     return FailsOnMain(
         f"{HEADLINE_PREFIX}{headline}\n{failure}",
         failure.digest,
@@ -2975,7 +2979,8 @@ def _check_until_green(
         if rounds == 0 and skipped:
             log(f"base check: skipped — {skipped}")
         if not skipped:
-            # HZ-590: before the first fix turn, the failing tests run once on
+            # HZ-590: before the first fix turn, the failing tests (HZ-752: or
+            # the whole failing command, when none is named) run once on
             # the default branch. Check time like the checks', not agent time.
             _notify_checks(task.get("run_id"), "start")
             began = time.monotonic()

@@ -95,7 +95,9 @@ class CheckFailure(RuntimeError):
     with status "fail" (suite, file, classname, test), from its rerun when
     one ran; `argv` is that command as run, unredacted and in-process only —
     never part of the message, digest or result; `slot` is its Admin slot
-    (None for FARM_CHECK_CMD). Empty for every other failure."""
+    (None for FARM_CHECK_CMD). `argv` and `slot` are set even when
+    `failed_tests` is empty: HZ-752's whole-slot base run relies on that.
+    Empty for every other failure."""
 
     def __init__(
         self,

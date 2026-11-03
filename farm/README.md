@@ -348,7 +348,7 @@ Every wait names what the slot is for, from its caller
 | `conflict_resolver` | waiting for a capacity slot to re-check after rebasing |
 | `screenshots` | waiting for a capacity slot to capture screenshots |
 | `validate` (Validate project) | waiting for a capacity slot to run checks on main |
-| `base_check` (HZ-590) | waiting for a capacity slot to re-run the failing tests on main |
+| `base_check` (HZ-590) | waiting for a capacity slot to re-run the failing tests, or the failing slot command, on main |
 
 A new caller adds its purpose there; a test fails any `caller=` under
 `farm/` that has none. `/farm/status` gives each slot waiter its message as

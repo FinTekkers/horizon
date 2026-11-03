@@ -373,7 +373,7 @@ def base_runs(monkeypatch):
     return state
 
 
-def _stub_agent_and_checks(monkeypatch, ws, red_rounds):
+def _stub_agent_and_checks(monkeypatch, ws, red_rounds, red=_red_on_tests):
     calls, rounds = [], []
 
     def run_agent(prompt, **kwargs):
@@ -384,7 +384,7 @@ def _stub_agent_and_checks(monkeypatch, ws, red_rounds):
     def run_checks(*args, **kwargs):
         rounds.append(len(calls))
         if red_rounds is None or len(rounds) <= red_rounds:
-            raise _red_on_tests()
+            raise red()
         return "1 repo check(s) passed"
 
     monkeypatch.setattr(step_agent, "run_agent", run_agent)
@@ -476,3 +476,65 @@ def test_the_base_check_runs_once_and_the_always_red_round_count_is_unchanged(ws
     assert len(rounds) == 1 + 2
     assert len(calls) == 1 + 2
     assert len(base_runs.calls) == 1
+
+
+# ---- HZ-752: a red check that names no failing tests ----
+
+
+def _red_with_no_rows():
+    return CheckFailure(
+        "repo checks failed: test: exited 1\n(sh -c sh test.sh)\nboom in test.sh",
+        "boom in test.sh",
+        command="sh -c sh test.sh",
+        headline="test: exited 1",
+        failed_tests=[],
+        argv=["sh", "-c", f"sh test.sh --token={SECRET_IN_ARGV}"],
+        slot="test",
+    )
+
+
+def test_a_whole_slot_fails_on_main_spends_no_fix_turn_and_names_the_slot(tmp_path, ws_origin, monkeypatch, base_runs):
+    ws, _ = ws_origin
+    base_runs.verdict = step_agent.base_check.BaseVerdict(
+        step_agent.base_check.FAILS_ON_MAIN, [], "the test slot's failing command fails on main too, twice"
+    )
+    calls, rounds = _stub_agent_and_checks(monkeypatch, ws, red_rounds=None, red=_red_with_no_rows)
+    posted = []
+    monkeypatch.setattr(step_agent, "post_result", posted.append)
+    task_file = tmp_path / "task.json"
+    task_file.write_text(step_agent.json.dumps(_task()))
+    monkeypatch.setattr(step_agent.sys, "argv", ["step_agent", "--task", str(task_file)])
+
+    step_agent.main()
+
+    assert len(calls) == 1, "no fix turn ran"
+    assert len(base_runs.calls) == 1
+    (result,) = posted
+    assert result["reason"] == step_agent.reasons.REASON["FAILS_ON_MAIN"]
+    assert result["error"].split("\n")[0] == (
+        f"{step_agent.HEADLINE_PREFIX}fails on main as well: the `test` slot (`sh test.sh`), not caused by this item"
+    )
+    assert SECRET_IN_ARGV not in step_agent.json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "verdict,detail",
+    [
+        (step_agent.base_check.PASSES_ON_MAIN, "the test slot's failing command passes on main"),
+        (step_agent.base_check.UNCLEAR, "a different command failed on main (sh -c true)"),
+    ],
+)
+def test_a_no_rows_red_check_that_does_not_fail_on_main_gets_one_fix_turn(ws_origin, monkeypatch, base_runs, verdict, detail):
+    ws, _ = ws_origin
+    base_runs.verdict = step_agent.base_check.BaseVerdict(verdict, [], detail)
+    calls, rounds = _stub_agent_and_checks(monkeypatch, ws, red_rounds=1, red=_red_with_no_rows)
+    logged = []
+    real_log = step_agent.log
+    monkeypatch.setattr(step_agent, "log", lambda msg: (logged.append(msg), real_log(msg)))
+
+    result = execute(_task())
+
+    assert len(base_runs.calls) == 1, "the real skip_reason let it through"
+    assert not [line for line in logged if line.startswith("base check: skipped")], logged
+    assert len(calls) == 2, "exactly one fix turn"
+    assert "fix loops: 1" in result["summary"]

@@ -172,7 +172,7 @@ WAIT_PURPOSES = {
     "conflict_resolver": "re-check after rebasing",
     "screenshots": "capture screenshots",
     "validate": "run checks on main",
-    "base_check": "re-run the failing tests on main",
+    "base_check": "re-run the failing tests, or the failing slot command, on main",
 }
 
 

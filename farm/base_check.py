@@ -1,12 +1,18 @@
 """HZ-590: before a fix turn, re-run only the failing tests on the default
 branch, to tell a failure the item caused from one main already has.
+HZ-752: a failure that names no failing tests re-runs its whole failing
+command there instead.
 
 US-275 spent two fix turns and two more full suites (about 17 minutes) on a
 Playwright spec that failed because of code the item never touched. Now the
 implement step's first red check comes here before the agent sees it:
 
-  - the failing command's failing tests (CheckFailure.failed_tests, the raw
-    JUnit rows) become that runner's own test-ID arguments (narrow_command);
+  - "named tests" mode: the failing command's failing tests
+    (CheckFailure.failed_tests, the raw JUnit rows) become that runner's own
+    test-ID arguments (narrow_command);
+  - "whole slot" mode, when the failure names no tests (ui-service's
+    test.sh in US-305 wrote no report): the failing slot's failing line runs
+    as it is, un-narrowed;
   - a scratch worktree is made off the repo hub at origin/<default branch>
     (validate.scratch_worktree: same root, path guard, run lock and reaping
     as the Validate project run), with the item's worktree forbidden;
@@ -14,10 +20,12 @@ implement step's first red check comes here before the agent sees it:
     there, and nothing else, rerunning a failure once whatever its kind.
 
 The verdict is FAILS_ON_MAIN only when every failing test has a failing
-row in the base run's own report on both attempts. Anything else — a runner
-with no adapter, a compound script, a test missing on main, a partial match,
-an install failure, a timeout, a git error, a crash — is "unclear", and the
-fix turn goes ahead exactly as before. An unclear result never pauses.
+row in the base run's own report on both attempts — or, in whole-slot mode,
+when that same command in the same slot fails on both attempts. Anything
+else — a runner with no adapter, a compound script, a test missing on main,
+a partial match, an install failure, another command failing, a timeout, a
+git error, a crash — is "unclear", and the fix turn goes ahead exactly as
+before. An unclear result never pauses.
 
 Adapters are keyed by the runner a command calls, never by repo.
 FARM_BASE_CHECK_TIMEOUT_S bounds the base run (default 600); 0 turns the base
@@ -51,6 +59,9 @@ GIT_TIMEOUT_S = 120
 # Only a test command's failure names tests; lint and install never do.
 TEST_SLOTS = ("test", "e2e")
 HEADLINE_PHRASE = "fails on main as well"
+# How the run log names the base run's mode (HZ-752).
+MODE_NAMED = "named tests"
+MODE_WHOLE_SLOT = "whole slot"
 
 
 class BaseVerdict(NamedTuple):
@@ -89,6 +100,20 @@ def fails_on_main_headline(tests: list[str]) -> str:
             if len(headline) <= HEADLINE_MAX_CHARS:
                 return headline
     return f"{HEADLINE_PHRASE}: {len(tests)} tests, not caused by this item"
+
+
+def fails_on_main_slot_headline(slot: str, command: str) -> str:
+    """HZ-752, for a failure that names no tests:
+    ``fails on main as well: the `test` slot (`./test.sh`), not caused by this
+    item`` within HEADLINE_MAX_CHARS. `command` is the failure's redacted
+    command, never its argv; a leading `sh -c ` is dropped from it."""
+    shown = command.strip().removeprefix("sh -c ").strip()
+    if shown:
+        for cap in _HEADLINE_TITLE_CAPS:
+            headline = f"{HEADLINE_PHRASE}: the `{slot}` slot (`{_one_line(shown, cap)}`), not caused by this item"
+            if len(headline) <= HEADLINE_MAX_CHARS:
+                return headline
+    return f"{HEADLINE_PHRASE}: the `{slot}` slot, not caused by this item"
 
 
 # ---- test-ID mapping: one adapter per runner ----
@@ -407,14 +432,31 @@ def _base_configured(configured, slot: str, line: str) -> dict:
     return out
 
 
-def _decide(failure: CheckFailure, exc: CheckFailure | None, test_runs: list[dict], tests: list[str]) -> BaseVerdict:
+def _line(argv: list[str]) -> str:
+    """The configured slot line `argv` runs: run_checks() runs each line as
+    ["sh", "-c", line]."""
+    return argv[2] if len(argv) == 3 and argv[:2] == ["sh", "-c"] else shlex.join(argv)
+
+
+def _decide_common(
+    failure: CheckFailure, exc: CheckFailure | None, test_runs: list[dict], tests: list[str], passes: str
+) -> BaseVerdict | None:
+    """The verdict both modes share — a pass, a run that reached no result
+    in the failing slot, a run that was not re-run — or None to go on."""
     if exc is None:
-        return BaseVerdict(PASSES_ON_MAIN, tests, "the failing tests pass on main")
+        return BaseVerdict(PASSES_ON_MAIN, tests, passes)
     if exc.reason != "failed" or exc.slot != failure.slot:
         return BaseVerdict(UNCLEAR, tests, f"the base run did not reach a test result ({exc.reason}, {exc.slot or 'no'} slot)")
     reran = any(c.get("attempt") == 2 for run in test_runs for c in run.get("commands", ()))
     if not reran:
         return BaseVerdict(UNCLEAR, tests, "the base run was not re-run, so a flake on main can't be ruled out")
+    return None
+
+
+def _decide(failure: CheckFailure, exc: CheckFailure | None, test_runs: list[dict], tests: list[str]) -> BaseVerdict:
+    common = _decide_common(failure, exc, test_runs, tests, "the failing tests pass on main")
+    if common is not None:
+        return common
     # The rerun's raw rows, then the stored first attempt's (no classname).
     failed_on_base = {_key(row) for row in exc.failed_tests}
     failed_first = {
@@ -435,15 +477,34 @@ def _decide(failure: CheckFailure, exc: CheckFailure | None, test_runs: list[dic
     return BaseVerdict(FAILS_ON_MAIN, tests, f"all {len(tests)} failing test(s) fail on main too")
 
 
+def _decide_whole_slot(failure: CheckFailure, exc: CheckFailure | None, test_runs: list[dict], line: str) -> BaseVerdict:
+    """HZ-752: FAILS_ON_MAIN only when the base run's failure is the same
+    command — its raw argv is ["sh", "-c", line], as run_checks() runs each
+    configured line — in the same slot, and it failed on both attempts. An
+    install failure or any other command failing is UNCLEAR."""
+    common = _decide_common(failure, exc, test_runs, [], f"the {failure.slot} slot's failing command passes on main")
+    if common is not None:
+        return common
+    if exc.argv != ["sh", "-c", line]:
+        return BaseVerdict(UNCLEAR, [], f"a different command failed on main ({exc.command})")
+    failed_twice = any(
+        c.get("attempt") == 2 and c.get("exit_code") not in (0, None) for run in test_runs for c in run.get("commands", ())
+    )
+    if not failed_twice:
+        return BaseVerdict(UNCLEAR, [], "the base run was not re-run, so a flake on main can't be ruled out")
+    return BaseVerdict(FAILS_ON_MAIN, [], f"the {failure.slot} slot's failing command fails on main too, twice")
+
+
 def skip_reason(failure: CheckFailure) -> str:
     """Why `failure` gets no base run at all, or "" when it gets one. Cheap:
-    no git, no clock — the caller asks before opening a checks window."""
+    no git, no clock — the caller asks before opening a checks window. A
+    failure that names no tests still gets one (HZ-752: whole-slot mode)."""
     if timeout_s() <= 0:
         return f"{TIMEOUT_ENV}=0 — the base check is off"
-    if failure.reason != "failed" or not failure.failed_tests or failure.argv is None:
-        return "the failure names no failing tests"
     if failure.slot not in TEST_SLOTS:
         return f"not a test command ({failure.slot or 'FARM_CHECK_CMD'})"
+    if failure.reason != "failed" or failure.argv is None:
+        return "the check reached no command result to re-run"
     return ""
 
 
@@ -458,8 +519,9 @@ def check_on_base(
     deadline: float,
     log,
 ) -> BaseVerdict:
-    """Runs `failure`'s failing tests on origin/<default branch> in a scratch
-    worktree and says whether they fail there too. Never raises an Exception:
+    """Runs `failure`'s failing tests — or, when it names none, its whole
+    failing slot command — on origin/<default branch> in a scratch worktree
+    and says whether they fail there too. Never raises an Exception:
     every error is UNCLEAR. A pause (PauseRequested) still propagates."""
     tests = list(dict.fromkeys(display_name(row) for row in failure.failed_tests))
     try:
@@ -485,11 +547,16 @@ def _check_on_base(repo_full, item_id, failure, tests, item_ws, configured, test
     home = Path(tempfile.mkdtemp(prefix=f"{validate.CHECKS_HOME_PREFIX}{run_id}-"))
     try:
         with validate.scratch_worktree(repo_full, run_id, sha, forbidden=[str(item_ws)], log=log) as base_ws:
-            narrowed = narrow_command(failure.argv, failure.failed_tests, base_ws)
-            if narrowed is None:
-                return BaseVerdict(UNCLEAR, tests, "the failing tests can't be mapped to this runner's IDs on main")
-            line = narrowed[2] if narrowed[:2] == ["sh", "-c"] else shlex.join(narrowed)
-            log(f"base check: re-running {len(tests)} failing test(s) on {branch} {sha[:12]}")
+            if failure.failed_tests:
+                narrowed = narrow_command(failure.argv, failure.failed_tests, base_ws)
+                if narrowed is None:
+                    return BaseVerdict(UNCLEAR, tests, "the failing tests can't be mapped to this runner's IDs on main")
+                line = _line(narrowed)
+                log(f"base check: re-running {len(tests)} failing test(s) on {branch} {sha[:12]} ({MODE_NAMED})")
+            else:
+                line = _line(failure.argv)
+                where = f"{branch} {sha[:12]}"
+                log(f"base check: re-running the {failure.slot} slot's failing command on {where} ({MODE_WHOLE_SLOT})")
             test_runs: list[dict] = []
             exc = None
             try:
@@ -509,6 +576,8 @@ def _check_on_base(repo_full, item_id, failure, tests, item_ws, configured, test
                 )
             except CheckFailure as caught:
                 exc = caught
-            return _decide(failure, exc, test_runs, tests)
+            if failure.failed_tests:
+                return _decide(failure, exc, test_runs, tests)
+            return _decide_whole_slot(failure, exc, test_runs, line)
     finally:
         shutil.rmtree(home, ignore_errors=True)
