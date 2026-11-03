@@ -8,8 +8,9 @@ import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { main } from '../publish/publish.mjs'
 import { createGitHub } from '../publish/lib/github.mjs'
+import { IDENTITY, IDENTITY_LINE } from '../publish/lib/identity.mjs'
 import { writeReport } from '../publish/lib/report.mjs'
-import { OWNER, REPO_PATH, stubGitHub } from './stub-github.mjs'
+import { OWNER, REPO_PATH, TOKEN_OWNER, stubGitHub } from './stub-github.mjs'
 import { TOKEN, run, tempDir } from './publish-helpers.mjs'
 
 globalThis.fetch = () => {
@@ -113,7 +114,9 @@ test('guardrail 2: no token, Stripe value, promotion code or email address in an
   const files = [...filesUnder(PUBLISH_DIR), ...filesUnder(path.join(ROOT, 'test'))]
   assert.ok(files.length >= 10, `scan saw only ${files.length} files`)
   for (const file of files) {
-    const text = readFileSync(file, 'utf8')
+    // HZ-725: the one allowed address is the fixed commit identity, stripped
+    // as that exact string (not its domain), so any other address still fails.
+    const text = readFileSync(file, 'utf8').split(IDENTITY.email).join('')
     for (const shape of shapes) assert.doesNotMatch(text, shape, `${file} matches ${shape}`)
   }
 })
@@ -174,6 +177,33 @@ test('guardrail 4: writes outside the repo, DELETE and force are refused before 
     await assert.rejects(gh.request(method, p, body), /refused/, `${method} ${p}`)
   }
   assert.deepEqual(stub.calls, [], 'the stub received nothing')
+})
+
+test('HZ-725 guardrail 3: a commit call without the Parvati identity, or a create asking for a first commit, is refused before fetch', async (t) => {
+  const stub = stubGitHub({ repo: { files: { 'index.html': 'x' } } })
+  const gh = createGitHub({ token: TOKEN, fetch: stub.fetch })
+  const commit = { message: 'm', tree: 'a'.repeat(40), parents: ['b'.repeat(40)] }
+  const put = { message: 'm', content: 'eA==', branch: 'main' }
+  const refused = [
+    ['POST', `${REPO_PATH}/git/commits`, { ...commit, committer: IDENTITY }],
+    ['POST', `${REPO_PATH}/git/commits`, { ...commit, author: IDENTITY }],
+    ['POST', `${REPO_PATH}/git/commits`, { ...commit, author: TOKEN_OWNER, committer: TOKEN_OWNER }],
+    ['POST', `${REPO_PATH}/git/commits`, { ...commit, author: IDENTITY, committer: TOKEN_OWNER }],
+    ['POST', `${REPO_PATH}/git/commits/`, commit],
+    ['PUT', `${REPO_PATH}/contents/index.html`, put],
+    ['POST', `/orgs/${OWNER}/repos`, { name: 'parvati-site', private: false, auto_init: false }],
+    ['POST', '/user/repos', { name: 'parvati-site', private: false, license_template: 'mit' }],
+  ]
+  for (const [method, p, body] of refused) {
+    await assert.rejects(gh.request(method, p, body), /refused/, `${method} ${p} ${JSON.stringify(body)}`)
+  }
+  assert.deepEqual(stub.calls, [], 'the stub received nothing')
+
+  // writeReport refuses a commit entry written as anyone else.
+  const dir = tempDir(t)
+  const other = `${TOKEN_OWNER.name} <${TOKEN_OWNER.email}>`
+  await assert.rejects(writeReport(dir, { commits: [{ sha: 'c'.repeat(40), author: IDENTITY_LINE, committer: other }] }), /not written as Parvati Real Estate/)
+  assert.deepEqual(readdirSync(dir), [], 'nothing was written')
 })
 
 test('guardrail 4: a 422 on the ref update exits 1 with one PATCH and no force', async (t) => {

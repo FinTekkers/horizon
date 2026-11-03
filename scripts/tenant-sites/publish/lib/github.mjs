@@ -1,4 +1,5 @@
 import { PublishError, redact } from './errors.mjs'
+import { IDENTITY, IDENTITY_LINE, isIdentity, personLine } from './identity.mjs'
 
 // The only account and repo this tool ever writes to. There is no flag or
 // option to change them.
@@ -8,6 +9,8 @@ export const API = 'https://api.github.com'
 export const REPO_PATH = `/repos/${OWNER}/${REPO}`
 export const CREATE_PATHS = { Organization: `/orgs/${OWNER}/repos`, User: '/user/repos' }
 export const WRITE_METHODS = ['POST', 'PUT', 'PATCH']
+// Create-repo keys that make GitHub write a first commit as the token's user.
+export const FIRST_COMMIT_KEYS = ['auto_init', 'gitignore_template', 'license_template']
 
 export const sameLogin = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase()
 
@@ -15,6 +18,9 @@ export const sameLogin = (a, b) => String(a ?? '').toLowerCase() === String(b ??
 // under REPO_PATH or to one of the two create-repo paths. DELETE is never
 // sent and no body may carry force: true. The check runs on the normalised
 // URL, so "..", "%2e%2e" and look-alike repo names cannot slip through.
+// HZ-725: the two calls that make a commit (POST git/commits and PUT
+// contents/...) must carry author and committer equal to IDENTITY, and a
+// create-repo call may not ask GitHub for a first commit of its own.
 export function checkWrite(method, url, body) {
   if (method === 'DELETE') throw new PublishError('refused: this tool never sends DELETE')
   if (!WRITE_METHODS.includes(method) && method !== 'GET') throw new PublishError(`refused: unexpected method ${method}`)
@@ -22,8 +28,28 @@ export function checkWrite(method, url, body) {
   if (method === 'GET') return
   if (body && body.force === true) throw new PublishError('refused: this tool never force-pushes')
   const p = url.pathname
+  if (Object.values(CREATE_PATHS).includes(p) && body && FIRST_COMMIT_KEYS.some((k) => Object.hasOwn(body, k))) {
+    throw new PublishError('refused: create-repo call asks GitHub for a first commit (auto_init or a template)')
+  }
+  const commitCall = (method === 'POST' && [`${REPO_PATH}/git/commits`, `${REPO_PATH}/git/commits/`].includes(p))
+    || (method === 'PUT' && p.startsWith(`${REPO_PATH}/contents/`))
+  if (commitCall && !(isIdentity(body?.author) && isIdentity(body?.committer))) {
+    throw new PublishError(`refused: commit call without the ${IDENTITY.name} author and committer`)
+  }
   if (p.startsWith(`${REPO_PATH}/`) || Object.values(CREATE_PATHS).includes(p)) return
   throw new PublishError(`refused: ${method} ${p} is outside ${OWNER}/${REPO}`)
+}
+
+// GitHub's record of a commit this tool made, as { sha, author, committer }
+// lines. Stops the run if GitHub stored any identity other than IDENTITY. The
+// stored identity is never printed: it could be the token owner's.
+function pushedCommit(commit, where) {
+  const author = personLine(commit?.author)
+  const committer = personLine(commit?.committer)
+  if (!commit?.sha || author !== IDENTITY_LINE || committer !== IDENTITY_LINE) {
+    throw new PublishError(`GitHub stored the commit from ${where} under a different author or committer than ${IDENTITY_LINE}. Stopped before any other write.`)
+  }
+  return { sha: commit.sha, author, committer }
 }
 
 // The GitHub REST client. The token goes only in the Authorization header of
@@ -84,16 +110,29 @@ export function createGitHub({ token, fetch }) {
     createRepo: async (ownerType) => {
       const p = Object.hasOwn(CREATE_PATHS, ownerType) ? CREATE_PATHS[ownerType] : null
       if (!p) throw new PublishError(`${OWNER} has unexpected account type ${ownerType}`)
-      return (await request('POST', p, { name: REPO, private: false, auto_init: true })).data
+      return (await request('POST', p, { name: REPO, private: false })).data
     },
-    putFirstFile: async (file, branch) => (await request('PUT', `${REPO_PATH}/contents/${encodePath(file.path)}`, {
-      message: `Publish ${REPO}: first file`,
-      content: file.content.toString('base64'),
-      branch,
-    })).data,
+    // The first commit of an empty repo. Returns { commit, content }.
+    putFirstFile: async (file, branch) => {
+      const data = (await request('PUT', `${REPO_PATH}/contents/${encodePath(file.path)}`, {
+        message: `Publish ${REPO}: first file`,
+        content: file.content.toString('base64'),
+        branch,
+        author: IDENTITY,
+        committer: IDENTITY,
+      })).data
+      return { commit: pushedCommit(data?.commit, 'the first-file PUT'), content: data?.content }
+    },
     createBlob: async (content) => (await request('POST', `${REPO_PATH}/git/blobs`, { content: content.toString('base64'), encoding: 'base64' })).data.sha,
     createTree: async (entries) => (await request('POST', `${REPO_PATH}/git/trees`, { tree: entries })).data.sha,
-    createCommit: async (message, tree, parent) => (await request('POST', `${REPO_PATH}/git/commits`, { message, tree, parents: [parent] })).data.sha,
+    // Returns { sha, author, committer }.
+    createCommit: async (message, tree, parent) => pushedCommit((await request('POST', `${REPO_PATH}/git/commits`, {
+      message,
+      tree,
+      parents: [parent],
+      author: IDENTITY,
+      committer: IDENTITY,
+    })).data, 'POST git/commits'),
     updateRef: async (branch, sha) => {
       const r = await request('PATCH', `${REPO_PATH}/git/refs/heads/${encodePath(branch)}`, { sha, force: false }, [422])
       if (r.status === 422) {
