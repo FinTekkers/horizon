@@ -43,7 +43,7 @@ npm --prefix scripts/tenant-sites test
 - `base-site.test.mjs`: exactly five pages, the shared header and footer, no Neighbourhoods.
 - `secrets.test.mjs`: no token shapes or email addresses, and only 555-01xx phone numbers.
 
-The root `npm test` does not run these yet. Neither suite makes network calls.
+The root `npm test` runs both this suite and the site's own `npm test`. Neither suite makes network calls.
 
 `scripts/recorder/` is a separate package. It is reference only: nothing here
 imports it.
