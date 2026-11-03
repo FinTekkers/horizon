@@ -1,0 +1,302 @@
+# FICTIONAL DATA: invented sales for a fictional brokerage (Parvati Real Estate). Not real transactions, buildings or people. Skip this line when parsing.
+sale_id,address,unit,neighbourhood,type,building,sq_ft,bedrooms,bathrooms,monthly_charges_usd,sale_price_usd,sale_date
+PV-0001,Madison Avenue at East 66th Street,14B,Upper East Side,co-op,prewar elevator,790,1,1,1430,915000,2024-11-02
+PV-0002,Amsterdam Avenue at West 81st Street,7A,Upper West Side,condo,postwar elevator,880,1,1,2230,1340000,2024-11-05
+PV-0003,West Street at Christopher Street,25A,West Village,condo,postwar elevator,795,1,1,2040,1970000,2024-11-07
+PV-0004,Lexington Avenue at East 36th Street,5H,Murray Hill,condo,prewar elevator,1955,3,3.5,3710,2220000,2024-11-10
+PV-0005,Riverside Drive at West 86th Street,12B,Upper West Side,condo,postwar elevator,690,1,1,1260,1215000,2024-11-14
+PV-0006,East End Avenue at East 70th Street,6G,Upper East Side,co-op,prewar elevator,1105,2,2.5,2070,1325000,2024-11-15
+PV-0007,Broadway at Wooster Street,7F,SoHo,condo,prewar elevator,870,1,1,1520,1940000,2024-11-15
+PV-0008,Broadway at West 102nd Street,16B,Upper West Side,co-op,prewar elevator,685,1,1,1110,765000,2024-11-17
+PV-0009,Mercer Street at Grand Street,11C,SoHo,condo,prewar elevator,1095,2,2.5,2270,2845000,2024-11-21
+PV-0010,Hudson Street at Christopher Street,4B,West Village,co-op,prewar elevator,780,1,1,1730,1445000,2024-12-03
+PV-0011,Sixth Avenue at Washington Place,7F,Greenwich Village,condo,postwar elevator,1765,3,3.5,3210,3845000,2024-12-09
+PV-0012,East End Avenue at East 66th Street,12C,Upper East Side,condo,postwar elevator,1080,2,2.5,2640,1665000,2024-12-10
+PV-0013,Hudson Street at Perry Street,16B,West Village,condo,prewar elevator,1715,3,3,3700,4350000,2024-12-10
+PV-0014,Seventh Avenue South at Bank Street,3F,West Village,co-op,prewar elevator,740,1,1,1880,1490000,2024-12-11
+PV-0015,Greenwich Street at Perry Street,12A,West Village,co-op,postwar elevator,755,1,1,1640,1315000,2024-12-12
+PV-0016,Riverside Drive at West 86th Street,9A,Upper West Side,co-op,prewar elevator,1450,2,2.5,3290,2025000,2024-12-13
+PV-0017,Madison Avenue at East 70th Street,6D,Upper East Side,co-op,prewar elevator,730,1,1,1540,1005000,2024-12-13
+PV-0018,Adam Clayton Powell Jr. Boulevard at West 126th Street,6A,Harlem,condo,prewar elevator,2435,4,4.5,5130,2630000,2024-12-13
+PV-0019,Third Avenue at East 22nd Street,7E,Gramercy Park,co-op,postwar elevator,2020,3,3,3330,2365000,2024-12-19
+PV-0020,Pearl Street at John Street,32F,Financial District,condo,postwar elevator,1670,3,3.5,4040,2605000,2024-12-20
+PV-0021,York Avenue at East 66th Street,3G,Upper East Side,co-op,prewar elevator,670,1,1,1370,915000,2024-12-23
+PV-0022,Greenwich Street at Bank Street,Whole house,West Village,townhouse,prewar walk-up,5350,3,2,4050,11925000,2024-12-25
+PV-0023,Second Avenue at East 34th Street,7G,Murray Hill,condo,prewar elevator,1080,2,2.5,2130,1375000,2025-01-01
+PV-0024,Ludlow Street at Rivington Street,2B,Lower East Side,co-op,prewar elevator,455,0,1,780,570000,2025-01-04
+PV-0025,Madison Avenue at East 70th Street,5E,Upper East Side,co-op,postwar elevator,1030,2,2.5,2020,1715000,2025-01-07
+PV-0026,Greenwich Street at Jane Street,12F,West Village,condo,prewar elevator,580,0,1,1200,1325000,2025-01-08
+PV-0027,Columbus Avenue at West 89th Street,10B,Upper West Side,co-op,prewar elevator,1655,3,3,2640,1825000,2025-01-10
+PV-0028,Church Street at Duane Street,4E,Tribeca,condo,prewar elevator,2835,4,4,6540,6955000,2025-01-16
+PV-0029,Church Street at Laight Street,4H,Tribeca,condo,prewar elevator,1425,2,2.5,2830,2940000,2025-01-18
+PV-0030,West Broadway at Leonard Street,2F,Tribeca,condo,prewar elevator,630,1,1,1150,1600000,2025-01-19
+PV-0031,North End Avenue at Murray Street,9H,Battery Park City,condo,postwar elevator,835,1,1,1500,1365000,2025-01-21
+PV-0032,Hudson Street at North Moore Street,4G,Tribeca,condo,prewar elevator,785,1,1,1560,1995000,2025-01-22
+PV-0033,Fifth Avenue at East 9th Street,33F,Greenwich Village,co-op,postwar elevator,1570,3,3.5,3680,2790000,2025-01-25
+PV-0034,North End Avenue at Warren Street,14H,Battery Park City,condo,postwar elevator,1075,2,2.5,2200,1795000,2025-01-29
+PV-0035,Hudson Street at Harrison Street,3A,Tribeca,condo,prewar walk-up,1725,3,3,3010,4190000,2025-01-30
+PV-0036,Ninth Avenue at West 22nd Street,21F,Chelsea,condo,postwar elevator,955,2,2,1940,1590000,2025-02-01
+PV-0037,Third Avenue at East 36th Street,2B,Murray Hill,co-op,prewar elevator,1425,2,2.5,1680,1275000,2025-02-03
+PV-0038,Columbus Avenue at West 96th Street,14A,Upper West Side,co-op,prewar elevator,1205,2,2,2240,1360000,2025-02-05
+PV-0039,Claremont Avenue at West 119th Street,7A,Morningside Heights,co-op,prewar elevator,2580,4,4,3390,2075000,2025-02-08
+PV-0040,Claremont Avenue at West 116th Street,3C,Morningside Heights,co-op,prewar elevator,1550,3,3.5,2120,1620000,2025-02-10
+PV-0041,Pearl Street at Pine Street,5D,Financial District,condo,prewar elevator,800,1,1,1830,1115000,2025-02-12
+PV-0042,Sixth Avenue at West 12th Street,1F,Greenwich Village,co-op,prewar walk-up,1760,3,3,2800,2455000,2025-02-19
+PV-0043,North End Avenue at Murray Street,7G,Battery Park City,condo,postwar elevator,1770,3,3.5,2960,2980000,2025-02-23
+PV-0044,Amsterdam Avenue at West 81st Street,3B,Upper West Side,co-op,prewar elevator,1015,2,2.5,1710,1405000,2025-02-25
+PV-0045,West End Avenue at West 72nd Street,8D,Upper West Side,co-op,postwar elevator,1760,3,3,3200,2315000,2025-02-26
+PV-0046,Greene Street at Spring Street,2G,SoHo,co-op,postwar elevator,2965,4,4,6750,5105000,2025-02-28
+PV-0047,West Broadway at Duane Street,2G,Tribeca,condo,prewar elevator,1230,2,2,3030,3035000,2025-03-01
+PV-0048,Park Avenue at East 74th Street,6G,Upper East Side,co-op,prewar elevator,805,1,1,1660,1145000,2025-03-03
+PV-0049,Madison Avenue at East 70th Street,Whole house,Upper East Side,townhouse,prewar walk-up,2950,6,6,3250,7295000,2025-03-03
+PV-0050,Amsterdam Avenue at West 81st Street,2F,Upper West Side,co-op,prewar elevator,700,1,1,1320,815000,2025-03-08
+PV-0051,Irving Place at East 19th Street,15G,Gramercy Park,condo,postwar elevator,1700,3,3.5,3800,3435000,2025-03-11
+PV-0052,Convent Avenue at West 144th Street,4C,Harlem,co-op,prewar elevator,535,0,1,550,440000,2025-03-11
+PV-0053,Water Street at Maiden Lane,32H,Financial District,condo,postwar elevator,1805,3,3.5,3380,2505000,2025-03-12
+PV-0054,Fifth Avenue at West 12th Street,6D,Greenwich Village,co-op,prewar elevator,1075,2,2.5,2220,1750000,2025-03-13
+PV-0055,Irving Place at East 20th Street,Whole house,Gramercy Park,townhouse,prewar walk-up,4950,3,2,3740,10015000,2025-03-13
+PV-0056,Madison Avenue at East 66th Street,Whole house,Upper East Side,townhouse,prewar walk-up,3250,5,5,2250,7070000,2025-03-29
+PV-0057,Park Avenue South at East 21st Street,7H,Gramercy Park,co-op,prewar elevator,1195,2,2,2150,1500000,2025-04-02
+PV-0058,Seventh Avenue South at Charles Street,5B,West Village,condo,prewar elevator,1400,2,2.5,3580,3210000,2025-04-10
+PV-0059,Sixth Avenue at West 12th Street,Whole house,Greenwich Village,townhouse,prewar walk-up,5120,4,3,3740,10895000,2025-04-12
+PV-0060,Broadway at West 81st Street,3B,Upper West Side,condo,postwar elevator,1340,2,2.5,3060,2225000,2025-04-15
+PV-0061,Broadway at West 76th Street,3B,Upper West Side,co-op,prewar elevator,845,1,1,1300,1080000,2025-04-18
+PV-0062,Park Avenue at East 66th Street,Whole house,Upper East Side,townhouse,prewar walk-up,3170,4,4,2630,6685000,2025-04-19
+PV-0063,Malcolm X Boulevard at West 126th Street,Whole house,Harlem,townhouse,prewar walk-up,2720,5,4.5,640,2025000,2025-04-19
+PV-0064,Riverside Drive at West 113th Street,5A,Morningside Heights,co-op,prewar walk-up,1525,3,3,1870,1345000,2025-04-24
+PV-0065,Park Avenue at East 79th Street,2A,Upper East Side,co-op,prewar elevator,760,1,1,1470,1000000,2025-04-25
+PV-0066,Broadway at West 79th Street,3A,Upper West Side,co-op,prewar elevator,810,1,1,1790,1195000,2025-04-28
+PV-0067,West End Avenue at West 86th Street,5G,Upper West Side,co-op,prewar elevator,1085,2,2,2580,1615000,2025-05-02
+PV-0068,Mercer Street at Broome Street,22H,SoHo,condo,postwar elevator,2065,3,3,5290,3840000,2025-05-08
+PV-0069,West Broadway at Franklin Street,3A,Tribeca,co-op,prewar elevator,2415,4,4,5620,4925000,2025-05-09
+PV-0070,Seventh Avenue South at Christopher Street,Whole house,West Village,townhouse,prewar walk-up,3120,5,5,3380,8420000,2025-05-10
+PV-0071,Riverside Drive at West 81st Street,6D,Upper West Side,condo,prewar elevator,1035,2,2,1770,1590000,2025-05-11
+PV-0072,Second Avenue at East 35th Street,Whole house,Murray Hill,townhouse,prewar walk-up,4420,6,6,2120,6845000,2025-05-11
+PV-0073,Central Park West at West 93rd Street,9H,Upper West Side,condo,prewar elevator,1415,2,2.5,3160,2285000,2025-05-12
+PV-0074,Water Street at Pine Street,15F,Financial District,condo,postwar elevator,1350,2,2,2330,2095000,2025-05-13
+PV-0075,Columbus Avenue at West 76th Street,5B,Upper West Side,co-op,prewar elevator,980,2,2,1660,1180000,2025-05-14
+PV-0076,Riverside Drive at West 79th Street,12A,Upper West Side,condo,postwar elevator,1155,2,2.5,2240,2200000,2025-05-18
+PV-0077,South End Avenue at Rector Place,10G,Battery Park City,condo,postwar elevator,600,0,1,1340,840000,2025-05-21
+PV-0078,Park Avenue South at East 21st Street,16H,Gramercy Park,co-op,postwar elevator,2175,3,3,3790,2965000,2025-05-23
+PV-0079,West Broadway at Harrison Street,9G,Tribeca,condo,postwar elevator,850,1,1,2200,2280000,2025-05-24
+PV-0080,Broadway at West 119th Street,4E,Morningside Heights,condo,prewar elevator,3090,4,4,5860,3405000,2025-05-24
+PV-0081,River Terrace at Albany Street,9G,Battery Park City,condo,postwar elevator,755,1,1,1380,1170000,2025-05-27
+PV-0082,Battery Place at Murray Street,5E,Battery Park City,condo,postwar elevator,1325,2,2.5,2330,2320000,2025-05-29
+PV-0083,Amsterdam Avenue at West 116th Street,6F,Morningside Heights,co-op,prewar elevator,770,1,1,880,625000,2025-05-31
+PV-0084,Church Street at Franklin Street,3C,Tribeca,condo,prewar walk-up,720,1,1,1690,1540000,2025-06-01
+PV-0085,Broadway at West 102nd Street,1H,Upper West Side,co-op,prewar walk-up,1755,3,3.5,4200,2570000,2025-06-06
+PV-0086,Riverside Drive at West 93rd Street,5C,Upper West Side,condo,prewar walk-up,2595,4,4.5,5720,4020000,2025-06-06
+PV-0087,Water Street at Exchange Place,9F,Financial District,condo,prewar elevator,720,1,1,1250,1040000,2025-06-07
+PV-0088,Ludlow Street at Broome Street,21E,Lower East Side,condo,postwar elevator,2685,4,4,6560,4160000,2025-06-08
+PV-0089,Lexington Avenue at East 37th Street,4E,Murray Hill,condo,prewar elevator,1030,2,2.5,2130,1275000,2025-06-16
+PV-0090,East End Avenue at East 70th Street,14B,Upper East Side,condo,postwar elevator,1220,2,2.5,2790,2445000,2025-06-21
+PV-0091,Pearl Street at John Street,10A,Financial District,condo,prewar elevator,1110,2,2,1960,1265000,2025-06-24
+PV-0092,Sixth Avenue at West 10th Street,7C,Greenwich Village,condo,postwar elevator,2040,3,3.5,3960,4655000,2025-06-26
+PV-0093,Church Street at Laight Street,15G,Tribeca,co-op,postwar elevator,2635,4,4,6340,5530000,2025-07-02
+PV-0094,Greene Street at Spring Street,2E,SoHo,condo,prewar elevator,1040,2,2.5,1970,2325000,2025-07-02
+PV-0095,Columbus Avenue at West 72nd Street,3A,Upper West Side,co-op,postwar elevator,640,1,1,940,760000,2025-07-03
+PV-0096,Water Street at Maiden Lane,20B,Financial District,condo,postwar elevator,2380,4,4,5170,2850000,2025-07-08
+PV-0097,West Broadway at Wooster Street,12D,SoHo,condo,prewar elevator,2020,3,3,4830,4010000,2025-07-08
+PV-0098,Madison Avenue at East 86th Street,13D,Upper East Side,condo,postwar elevator,455,0,1,1050,940000,2025-07-09
+PV-0099,West Broadway at Laight Street,Whole house,Tribeca,townhouse,prewar walk-up,4240,5,4,3630,9615000,2025-07-10
+PV-0100,West Broadway at Broome Street,6A,SoHo,co-op,prewar elevator,2150,3,3,5610,3985000,2025-07-11
+PV-0101,Broadway at Prince Street,6C,SoHo,condo,prewar elevator,1055,2,2.5,1860,2665000,2025-07-14
+PV-0102,Park Avenue South at East 21st Street,13A,Gramercy Park,co-op,prewar elevator,740,1,1,1760,1105000,2025-07-18
+PV-0103,Greenwich Street at Jane Street,10B,West Village,co-op,prewar elevator,450,0,1,1220,830000,2025-07-21
+PV-0104,Fifth Avenue at West 12th Street,9H,Greenwich Village,co-op,prewar elevator,760,1,1,1840,1445000,2025-07-21
+PV-0105,Hudson Street at Charles Street,12C,West Village,co-op,postwar elevator,2555,4,4.5,6850,5125000,2025-07-25
+PV-0106,Fifth Avenue at West 11th Street,4H,Greenwich Village,condo,prewar elevator,730,1,1,1640,1290000,2025-07-27
+PV-0107,Broadway at West 96th Street,3B,Upper West Side,co-op,prewar elevator,1175,2,2.5,2340,1535000,2025-07-29
+PV-0108,Madison Avenue at East 79th Street,4F,Upper East Side,co-op,postwar elevator,425,0,1,940,655000,2025-07-29
+PV-0109,Seventh Avenue South at Charles Street,7A,West Village,co-op,prewar elevator,625,1,1,1620,1190000,2025-07-29
+PV-0110,Tenth Avenue at West 16th Street,4H,Chelsea,condo,postwar elevator,650,1,1,1580,1255000,2025-07-31
+PV-0111,Seventh Avenue at West 22nd Street,5A,Chelsea,co-op,postwar elevator,1735,3,3.5,2550,2125000,2025-08-04
+PV-0112,Riverside Drive at West 96th Street,10E,Upper West Side,co-op,prewar elevator,560,0,1,730,615000,2025-08-08
+PV-0113,West End Avenue at West 93rd Street,8A,Upper West Side,co-op,prewar elevator,1815,3,3,3870,2770000,2025-08-09
+PV-0114,Columbus Avenue at West 89th Street,6H,Upper West Side,condo,prewar elevator,2445,4,4,4810,4400000,2025-08-10
+PV-0115,Fifth Avenue at East 86th Street,11D,Upper East Side,co-op,prewar elevator,1670,3,3.5,3720,2375000,2025-08-13
+PV-0116,Clinton Street at Broome Street,4B,Lower East Side,co-op,prewar walk-up,2980,4,4,5070,3965000,2025-08-13
+PV-0117,Irving Place at East 18th Street,11E,Gramercy Park,co-op,postwar elevator,2370,4,4,3930,2875000,2025-08-16
+PV-0118,Water Street at Beaver Street,23C,Financial District,condo,postwar elevator,835,1,1,1730,975000,2025-08-18
+PV-0119,Seventh Avenue at West 21st Street,6D,Chelsea,co-op,prewar elevator,755,1,1,1330,1035000,2025-08-19
+PV-0120,Riverside Drive at West 72nd Street,9H,Upper West Side,co-op,prewar elevator,1335,2,2,1960,1630000,2025-08-25
+PV-0121,Church Street at Laight Street,6G,Tribeca,condo,prewar elevator,1605,3,3,3220,3270000,2025-08-25
+PV-0122,Sixth Avenue at West 10th Street,8D,Greenwich Village,co-op,postwar elevator,1245,2,2,2920,2000000,2025-08-27
+PV-0123,Church Street at Leonard Street,4A,Tribeca,condo,prewar elevator,635,1,1,1040,1655000,2025-08-29
+PV-0124,York Avenue at East 79th Street,4E,Upper East Side,co-op,postwar elevator,1060,2,2,1870,1285000,2025-09-04
+PV-0125,Tenth Avenue at West 21st Street,4B,Chelsea,co-op,prewar elevator,550,0,1,980,750000,2025-09-05
+PV-0126,Eighth Avenue at West 24th Street,12G,Chelsea,co-op,prewar elevator,2715,4,4.5,4690,3920000,2025-09-07
+PV-0127,Columbus Avenue at West 81st Street,3A,Upper West Side,co-op,prewar elevator,1395,2,2.5,3250,1995000,2025-09-17
+PV-0128,Madison Avenue at East 74th Street,3G,Upper East Side,co-op,prewar elevator,2035,3,3.5,4140,3040000,2025-09-20
+PV-0129,Central Park West at West 102nd Street,3D,Upper West Side,co-op,prewar elevator,1765,3,3,3240,2325000,2025-09-26
+PV-0130,Essex Street at Delancey Street,8A,Lower East Side,condo,postwar elevator,1150,2,2.5,2950,1385000,2025-09-27
+PV-0131,Broadway at Prince Street,4B,SoHo,condo,prewar elevator,1170,2,2,2380,2820000,2025-09-29
+PV-0132,Third Avenue at East 20th Street,4B,Gramercy Park,co-op,prewar elevator,1190,2,2.5,2100,1390000,2025-09-29
+PV-0133,Frederick Douglass Boulevard at West 144th Street,Whole house,Harlem,townhouse,prewar walk-up,2620,5,5,690,2140000,2025-09-30
+PV-0134,Amsterdam Avenue at West 113th Street,8D,Morningside Heights,co-op,prewar elevator,1935,3,3.5,2350,1535000,2025-10-01
+PV-0135,Lexington Avenue at East 35th Street,24C,Murray Hill,condo,postwar elevator,2000,3,3,3940,2565000,2025-10-02
+PV-0136,Orchard Street at Broome Street,3F,Lower East Side,co-op,postwar elevator,2170,3,3,3390,2695000,2025-10-02
+PV-0137,Seventh Avenue South at Bethune Street,6E,West Village,co-op,postwar elevator,1995,3,3,4590,3145000,2025-10-10
+PV-0138,Central Park West at West 102nd Street,13D,Upper West Side,co-op,prewar elevator,835,1,1,1840,1190000,2025-10-14
+PV-0139,Ludlow Street at Delancey Street,3A,Lower East Side,co-op,prewar elevator,2890,4,4.5,4820,3860000,2025-10-14
+PV-0140,Hudson Street at Leonard Street,28B,Tribeca,condo,postwar elevator,870,1,1,2250,1985000,2025-10-22
+PV-0141,Ninth Avenue at West 22nd Street,4D,Chelsea,condo,postwar elevator,1600,3,3,2870,3150000,2025-10-23
+PV-0142,Battery Place at Warren Street,10G,Battery Park City,condo,postwar elevator,485,0,1,900,755000,2025-10-23
+PV-0143,Pearl Street at Wall Street,14A,Financial District,condo,postwar elevator,1005,2,2.5,2560,1100000,2025-10-24
+PV-0144,Church Street at Leonard Street,9D,Tribeca,condo,postwar elevator,970,2,2,2340,1930000,2025-10-29
+PV-0145,Amsterdam Avenue at West 120th Street,2G,Morningside Heights,condo,prewar elevator,690,1,1,1150,830000,2025-11-04
+PV-0146,Central Park West at West 72nd Street,4C,Upper West Side,co-op,prewar elevator,770,1,1,1580,1040000,2025-11-05
+PV-0147,Frederick Douglass Boulevard at West 122nd Street,2A,Harlem,condo,prewar elevator,2845,4,4,5820,2900000,2025-11-06
+PV-0148,Broadway at West 72nd Street,4D,Upper West Side,co-op,postwar elevator,770,1,1,1250,1010000,2025-11-07
+PV-0149,Central Park West at West 86th Street,5A,Upper West Side,co-op,prewar elevator,1235,2,2.5,2500,1705000,2025-11-07
+PV-0150,Hudson Street at Perry Street,9D,West Village,co-op,prewar elevator,545,0,1,1250,1115000,2025-11-07
+PV-0151,Eighth Avenue at West 16th Street,16F,Chelsea,co-op,postwar elevator,2680,4,4,5670,4625000,2025-11-09
+PV-0152,Greenwich Street at Bank Street,13A,West Village,co-op,prewar elevator,1295,2,2.5,2830,2450000,2025-11-13
+PV-0153,University Place at West 12th Street,4A,Greenwich Village,condo,prewar walk-up,605,0,1,1180,1175000,2025-11-13
+PV-0154,Park Avenue at East 38th Street,23A,Murray Hill,condo,postwar elevator,1070,2,2,2280,1580000,2025-11-17
+PV-0155,River Terrace at Vesey Street,8E,Battery Park City,condo,postwar elevator,880,1,1,1910,1485000,2025-11-19
+PV-0156,Broadway at West 72nd Street,13G,Upper West Side,co-op,prewar elevator,815,1,1,1570,1020000,2025-11-20
+PV-0157,Fifth Avenue at West 11th Street,12B,Greenwich Village,co-op,prewar elevator,670,1,1,1600,1245000,2025-11-20
+PV-0158,Broadway at West 96th Street,5C,Upper West Side,condo,prewar elevator,1225,2,2.5,2700,1950000,2025-11-25
+PV-0159,Hudson Street at North Moore Street,19E,Tribeca,condo,postwar elevator,865,1,1,1490,2295000,2025-11-25
+PV-0160,Broadway at West 72nd Street,4A,Upper West Side,co-op,prewar walk-up,2045,3,3,3990,2865000,2025-11-28
+PV-0161,Lexington Avenue at East 34th Street,8E,Murray Hill,co-op,prewar elevator,2435,4,4,3560,2260000,2025-11-30
+PV-0162,University Place at Waverly Place,25B,Greenwich Village,condo,postwar elevator,1180,2,2.5,1980,2255000,2025-12-03
+PV-0163,Amsterdam Avenue at West 113th Street,6C,Morningside Heights,co-op,prewar elevator,1665,3,3.5,2540,1585000,2025-12-03
+PV-0164,West Broadway at Wooster Street,5D,SoHo,co-op,prewar elevator,865,1,1,2390,1500000,2025-12-04
+PV-0165,Greene Street at Broome Street,7E,SoHo,condo,postwar elevator,1630,3,3,3000,3095000,2025-12-04
+PV-0166,Park Avenue at East 34th Street,3E,Murray Hill,co-op,postwar elevator,2055,3,3,3760,2355000,2025-12-05
+PV-0167,Greenwich Street at Charles Street,Whole house,West Village,townhouse,prewar walk-up,4980,4,3,3270,10385000,2025-12-07
+PV-0168,Amsterdam Avenue at West 116th Street,7C,Morningside Heights,co-op,prewar elevator,580,0,1,580,470000,2025-12-10
+PV-0169,Lexington Avenue at East 18th Street,6B,Gramercy Park,condo,postwar elevator,790,1,1,1410,1300000,2025-12-12
+PV-0170,Tenth Avenue at West 16th Street,6C,Chelsea,co-op,prewar elevator,1260,2,2,3220,2160000,2025-12-18
+PV-0171,Tenth Avenue at West 19th Street,5H,Chelsea,condo,prewar elevator,780,1,1,1860,1200000,2025-12-19
+PV-0172,Fifth Avenue at Washington Place,Whole house,Greenwich Village,townhouse,prewar walk-up,3050,5,5,3120,6395000,2025-12-21
+PV-0173,Hudson Street at Laight Street,2A,Tribeca,condo,prewar elevator,3190,4,4,7830,7495000,2025-12-25
+PV-0174,Park Avenue at East 92nd Street,12E,Upper East Side,co-op,postwar elevator,855,1,1,1480,985000,2025-12-26
+PV-0175,Park Avenue at East 34th Street,4H,Murray Hill,co-op,prewar elevator,520,0,1,650,485000,2025-12-26
+PV-0176,Lexington Avenue at East 21st Street,10F,Gramercy Park,co-op,prewar elevator,655,1,1,1130,920000,2025-12-28
+PV-0177,Ludlow Street at Broome Street,11A,Lower East Side,co-op,prewar elevator,1825,3,3.5,2530,1850000,2026-01-02
+PV-0178,Convent Avenue at West 122nd Street,Whole house,Harlem,townhouse,prewar walk-up,4800,4,4,2260,4520000,2026-01-04
+PV-0179,Frederick Douglass Boulevard at West 135th Street,Whole house,Harlem,townhouse,prewar walk-up,3690,5,4.5,1070,3290000,2026-01-04
+PV-0180,St. Nicholas Avenue at West 126th Street,3A,Harlem,condo,prewar elevator,1095,2,2.5,2320,1245000,2026-01-05
+PV-0181,Park Avenue at East 92nd Street,4H,Upper East Side,co-op,prewar walk-up,890,1,1,1780,1460000,2026-01-06
+PV-0182,University Place at Waverly Place,8F,Greenwich Village,condo,prewar elevator,950,2,2,1920,1875000,2026-01-16
+PV-0183,Orchard Street at Delancey Street,6G,Lower East Side,condo,postwar elevator,425,0,1,850,530000,2026-01-16
+PV-0184,Broadway at Grand Street,7G,SoHo,condo,prewar elevator,1745,3,3.5,4270,3460000,2026-01-17
+PV-0185,Park Avenue South at East 21st Street,6E,Gramercy Park,condo,postwar elevator,1850,3,3.5,3990,2680000,2026-01-17
+PV-0186,West End Avenue at West 81st Street,4C,Upper West Side,condo,prewar elevator,575,0,1,1010,1085000,2026-01-22
+PV-0187,Adam Clayton Powell Jr. Boulevard at West 139th Street,4E,Harlem,co-op,prewar elevator,690,1,1,730,535000,2026-01-25
+PV-0188,Amsterdam Avenue at West 110th Street,6A,Morningside Heights,co-op,prewar elevator,1145,2,2.5,1700,1175000,2026-01-25
+PV-0189,Fifth Avenue at East 74th Street,5A,Upper East Side,co-op,prewar elevator,1865,3,3.5,3540,2570000,2026-01-26
+PV-0190,Hudson Street at Bank Street,10G,West Village,condo,prewar elevator,1915,3,3,3960,4575000,2026-01-29
+PV-0191,Fifth Avenue at West 11th Street,5F,Greenwich Village,co-op,prewar walk-up,1805,3,3.5,4130,3100000,2026-01-29
+PV-0192,Park Avenue at East 70th Street,2D,Upper East Side,co-op,prewar elevator,2895,4,4,5260,3890000,2026-01-30
+PV-0193,Fifth Avenue at East 70th Street,8F,Upper East Side,co-op,prewar elevator,985,2,2.5,2470,1480000,2026-02-09
+PV-0194,Central Park West at West 102nd Street,2E,Upper West Side,co-op,postwar elevator,1020,2,2.5,1460,1250000,2026-02-10
+PV-0195,Ludlow Street at Delancey Street,6B,Lower East Side,condo,postwar elevator,640,1,1,1110,1045000,2026-02-12
+PV-0196,Riverside Drive at West 76th Street,Whole house,Upper West Side,townhouse,prewar walk-up,2940,3,3,2010,4755000,2026-02-13
+PV-0197,Frederick Douglass Boulevard at West 135th Street,8H,Harlem,condo,prewar elevator,1875,3,3.5,4650,2085000,2026-02-13
+PV-0198,Broadway at West 86th Street,5B,Upper West Side,condo,postwar elevator,1115,2,2,2310,1845000,2026-02-17
+PV-0199,York Avenue at East 70th Street,5D,Upper East Side,co-op,postwar elevator,2615,4,4.5,4700,3880000,2026-02-18
+PV-0200,York Avenue at East 92nd Street,10C,Upper East Side,co-op,prewar elevator,785,1,1,1780,1300000,2026-02-21
+PV-0201,Tenth Avenue at West 24th Street,24A,Chelsea,condo,postwar elevator,535,0,1,1090,950000,2026-02-26
+PV-0202,St. Nicholas Avenue at West 126th Street,Whole house,Harlem,townhouse,prewar walk-up,3940,3,2,1420,3270000,2026-02-26
+PV-0203,Greenwich Street at Bank Street,1H,West Village,condo,prewar walk-up,1240,2,2.5,2220,3005000,2026-03-02
+PV-0204,Malcolm X Boulevard at West 126th Street,Whole house,Harlem,townhouse,prewar walk-up,3080,4,3,1080,2275000,2026-03-02
+PV-0205,Columbus Avenue at West 86th Street,7H,Upper West Side,co-op,prewar elevator,885,1,1,1560,1140000,2026-03-07
+PV-0206,East End Avenue at East 74th Street,6F,Upper East Side,co-op,prewar elevator,2075,3,3,3710,2630000,2026-03-12
+PV-0207,Adam Clayton Powell Jr. Boulevard at West 144th Street,4H,Harlem,condo,postwar elevator,655,1,1,1430,705000,2026-03-16
+PV-0208,Greenwich Street at Perry Street,6C,West Village,co-op,prewar elevator,855,1,1,1850,1405000,2026-03-17
+PV-0209,Broadway at West 10th Street,5E,Greenwich Village,co-op,prewar elevator,1340,2,2,2530,2155000,2026-03-19
+PV-0210,Columbus Avenue at West 102nd Street,Whole house,Upper West Side,townhouse,prewar walk-up,2860,3,2,1330,4085000,2026-03-20
+PV-0211,Amsterdam Avenue at West 72nd Street,8A,Upper West Side,co-op,prewar elevator,1355,2,2,2140,1905000,2026-03-21
+PV-0212,Mercer Street at Wooster Street,5B,SoHo,condo,prewar elevator,1110,2,2.5,2180,2365000,2026-03-22
+PV-0213,York Avenue at East 92nd Street,5D,Upper East Side,co-op,prewar elevator,445,0,1,700,585000,2026-04-01
+PV-0214,Essex Street at Grand Street,6D,Lower East Side,condo,postwar elevator,3120,4,4.5,7620,4265000,2026-04-01
+PV-0215,Broadway at West 86th Street,5D,Upper West Side,condo,prewar elevator,1500,3,3.5,2450,2240000,2026-04-02
+PV-0216,Amsterdam Avenue at West 93rd Street,5C,Upper West Side,co-op,prewar elevator,605,0,1,1270,940000,2026-04-03
+PV-0217,Amsterdam Avenue at West 93rd Street,8C,Upper West Side,co-op,prewar elevator,445,0,1,710,540000,2026-04-07
+PV-0218,Lexington Avenue at East 92nd Street,3B,Upper East Side,co-op,prewar elevator,1130,2,2,1670,1410000,2026-04-12
+PV-0219,West Broadway at North Moore Street,2D,Tribeca,condo,prewar elevator,1730,3,3.5,3640,4435000,2026-04-13
+PV-0220,Pearl Street at Wall Street,8A,Financial District,co-op,prewar elevator,605,0,1,710,540000,2026-04-16
+PV-0221,Riverside Drive at West 110th Street,4A,Morningside Heights,co-op,prewar elevator,555,0,1,740,570000,2026-04-16
+PV-0222,Riverside Drive at West 86th Street,Whole house,Upper West Side,townhouse,prewar walk-up,4890,6,5,2430,6705000,2026-04-21
+PV-0223,Madison Avenue at East 70th Street,11D,Upper East Side,condo,prewar elevator,775,1,1,1320,1340000,2026-04-22
+PV-0224,Park Avenue at East 92nd Street,5F,Upper East Side,condo,prewar elevator,605,0,1,1190,1045000,2026-04-24
+PV-0225,Lexington Avenue at East 20th Street,7E,Gramercy Park,condo,prewar elevator,1385,2,2.5,2460,1920000,2026-04-24
+PV-0226,Lexington Avenue at East 36th Street,4B,Murray Hill,co-op,postwar elevator,775,1,1,880,745000,2026-04-24
+PV-0227,Ludlow Street at Stanton Street,5C,Lower East Side,condo,prewar elevator,1295,2,2.5,2950,1780000,2026-04-24
+PV-0228,Claremont Avenue at West 110th Street,6D,Morningside Heights,co-op,prewar elevator,900,1,1,1440,925000,2026-05-01
+PV-0229,Columbus Avenue at West 72nd Street,1C,Upper West Side,co-op,prewar walk-up,1180,2,2,2170,1570000,2026-05-04
+PV-0230,Orchard Street at Grand Street,11H,Lower East Side,condo,prewar elevator,440,0,1,880,730000,2026-05-04
+PV-0231,Riverside Drive at West 72nd Street,9A,Upper West Side,co-op,postwar elevator,735,1,1,1010,840000,2026-05-10
+PV-0232,Seventh Avenue at West 16th Street,6A,Chelsea,condo,prewar elevator,895,1,1,1960,1535000,2026-05-14
+PV-0233,York Avenue at East 83rd Street,Whole house,Upper East Side,townhouse,prewar walk-up,3260,4,3.5,2450,7490000,2026-05-17
+PV-0234,East End Avenue at East 92nd Street,14H,Upper East Side,condo,postwar elevator,1065,2,2,2170,2185000,2026-05-18
+PV-0235,River Terrace at Albany Street,36H,Battery Park City,condo,postwar elevator,620,0,1,1050,985000,2026-05-24
+PV-0236,Church Street at Leonard Street,8D,Tribeca,condo,postwar elevator,535,0,1,1370,1195000,2026-05-28
+PV-0237,Madison Avenue at East 92nd Street,6E,Upper East Side,condo,prewar elevator,2165,3,3.5,4900,4455000,2026-06-04
+PV-0238,Madison Avenue at East 66th Street,2H,Upper East Side,condo,prewar elevator,750,1,1,1320,1295000,2026-06-06
+PV-0239,Water Street at Wall Street,11H,Financial District,condo,postwar elevator,555,0,1,1210,650000,2026-06-07
+PV-0240,Broadway at Broome Street,8F,SoHo,co-op,prewar elevator,1165,2,2,2460,1770000,2026-06-07
+PV-0241,Third Avenue at East 35th Street,2F,Murray Hill,condo,postwar elevator,1770,3,3,3880,2375000,2026-06-09
+PV-0242,Third Avenue at East 37th Street,15A,Murray Hill,co-op,postwar elevator,1155,2,2.5,1940,1410000,2026-06-12
+PV-0243,Lexington Avenue at East 66th Street,17A,Upper East Side,condo,postwar elevator,520,0,1,1330,860000,2026-06-13
+PV-0244,Riverside Drive at West 96th Street,3D,Upper West Side,co-op,postwar elevator,1055,2,2,2200,1395000,2026-06-15
+PV-0245,Fifth Avenue at Washington Place,4C,Greenwich Village,co-op,prewar elevator,665,1,1,1380,1040000,2026-06-15
+PV-0246,Columbus Avenue at West 79th Street,23A,Upper West Side,co-op,postwar elevator,800,1,1,1220,1050000,2026-06-16
+PV-0247,Water Street at Exchange Place,5E,Financial District,condo,prewar elevator,1185,2,2,2430,1450000,2026-06-18
+PV-0248,William Street at Beaver Street,21D,Financial District,condo,postwar elevator,1000,2,2,2230,1105000,2026-06-19
+PV-0249,Water Street at Beaver Street,2H,Financial District,condo,postwar elevator,1070,2,2.5,2010,1280000,2026-06-21
+PV-0250,Broadway at West 11th Street,7E,Greenwich Village,co-op,prewar elevator,1340,2,2.5,2750,2025000,2026-06-24
+PV-0251,Greenwich Street at Leonard Street,4F,Tribeca,condo,prewar elevator,760,1,1,1300,1685000,2026-07-05
+PV-0252,Tenth Avenue at West 24th Street,17D,Chelsea,condo,postwar elevator,2290,4,4.5,5390,4330000,2026-07-06
+PV-0253,Greenwich Street at Bethune Street,4B,West Village,co-op,prewar elevator,670,1,1,1440,1205000,2026-07-09
+PV-0254,Frederick Douglass Boulevard at West 144th Street,5D,Harlem,co-op,prewar walk-up,2595,4,4.5,3010,2020000,2026-07-12
+PV-0255,Park Avenue at East 66th Street,6C,Upper East Side,condo,prewar elevator,495,0,1,1060,915000,2026-07-14
+PV-0256,Pearl Street at Pine Street,11F,Financial District,condo,prewar elevator,775,1,1,1780,875000,2026-07-18
+PV-0257,West End Avenue at West 93rd Street,2C,Upper West Side,co-op,prewar elevator,1810,3,3.5,2870,2420000,2026-07-19
+PV-0258,Church Street at Leonard Street,8H,Tribeca,condo,prewar elevator,575,0,1,950,1360000,2026-07-20
+PV-0259,Broadway at Grand Street,10F,SoHo,condo,prewar elevator,2235,4,4,3770,5585000,2026-07-20
+PV-0260,Third Avenue at East 36th Street,3H,Murray Hill,co-op,prewar elevator,1265,2,2,2090,1245000,2026-07-20
+PV-0261,Columbus Avenue at West 72nd Street,1A,Upper West Side,co-op,prewar walk-up,1040,2,2,1760,1480000,2026-07-21
+PV-0262,South End Avenue at Albany Street,2G,Battery Park City,condo,postwar elevator,2040,3,3.5,4940,2895000,2026-07-21
+PV-0263,Essex Street at Broome Street,3E,Lower East Side,co-op,postwar elevator,630,1,1,1180,785000,2026-07-23
+PV-0264,Madison Avenue at East 74th Street,12F,Upper East Side,co-op,prewar elevator,1895,3,3.5,4000,2685000,2026-07-24
+PV-0265,Third Avenue at East 22nd Street,17E,Gramercy Park,condo,postwar elevator,795,1,1,2060,1305000,2026-08-04
+PV-0266,Park Avenue South at East 18th Street,6C,Gramercy Park,co-op,prewar elevator,2135,3,3.5,5490,3290000,2026-08-06
+PV-0267,Broadway at Exchange Place,13B,Financial District,condo,postwar elevator,3055,4,4.5,7370,3295000,2026-08-08
+PV-0268,Ninth Avenue at West 24th Street,7C,Chelsea,condo,prewar elevator,1295,2,2,2350,1940000,2026-08-09
+PV-0269,West End Avenue at West 72nd Street,27E,Upper West Side,co-op,postwar elevator,705,1,1,1280,760000,2026-08-10
+PV-0270,Malcolm X Boulevard at West 126th Street,2G,Harlem,co-op,prewar elevator,770,1,1,790,610000,2026-08-11
+PV-0271,Sixth Avenue at Washington Place,Whole house,Greenwich Village,townhouse,prewar walk-up,3110,5,5,2980,7790000,2026-08-12
+PV-0272,Broadway at West 81st Street,3G,Upper West Side,co-op,prewar elevator,1635,3,3,2730,1965000,2026-08-18
+PV-0273,University Place at West 11th Street,10C,Greenwich Village,co-op,prewar elevator,1030,2,2.5,3310,2080000,2026-08-18
+PV-0274,University Place at East 9th Street,3H,Greenwich Village,co-op,prewar elevator,985,2,2.5,2380,1850000,2026-08-19
+PV-0275,Seventh Avenue at West 21st Street,Whole house,Chelsea,townhouse,prewar walk-up,4290,4,4,3680,9445000,2026-08-21
+PV-0276,William Street at Wall Street,5H,Financial District,condo,postwar elevator,1200,2,2.5,2840,1615000,2026-09-02
+PV-0277,Seventh Avenue at West 16th Street,12B,Chelsea,condo,postwar elevator,1240,2,2.5,2920,1875000,2026-09-03
+PV-0278,Central Park West at West 96th Street,6G,Upper West Side,co-op,prewar elevator,730,1,1,1490,905000,2026-09-05
+PV-0279,Park Avenue at East 79th Street,29A,Upper East Side,co-op,postwar elevator,730,1,1,1080,860000,2026-09-06
+PV-0280,Columbus Avenue at West 79th Street,3A,Upper West Side,co-op,prewar elevator,1080,2,2,1660,1230000,2026-09-15
+PV-0281,West Street at Bank Street,5F,West Village,co-op,prewar elevator,2605,4,4,6330,4350000,2026-09-16
+PV-0282,River Terrace at Vesey Street,7G,Battery Park City,condo,postwar elevator,2870,4,4.5,6280,4310000,2026-09-17
+PV-0283,Central Park West at West 72nd Street,7H,Upper West Side,condo,prewar elevator,1370,2,2.5,3250,1935000,2026-09-20
+PV-0284,River Terrace at Rector Place,20G,Battery Park City,condo,postwar elevator,835,1,1,1750,1065000,2026-09-20
+PV-0285,Malcolm X Boulevard at West 118th Street,6B,Harlem,condo,prewar elevator,580,0,1,1390,525000,2026-09-23
+PV-0286,Park Avenue at East 86th Street,10A,Upper East Side,co-op,prewar elevator,620,0,1,1580,975000,2026-09-24
+PV-0287,West Broadway at Grand Street,9D,SoHo,condo,postwar elevator,635,1,1,1210,1460000,2026-09-24
+PV-0288,York Avenue at East 86th Street,5H,Upper East Side,co-op,prewar walk-up,680,1,1,1550,1065000,2026-10-03
+PV-0289,Columbus Avenue at West 81st Street,8D,Upper West Side,co-op,prewar elevator,535,0,1,1120,710000,2026-10-04
+PV-0290,Water Street at Beaver Street,30B,Financial District,condo,postwar elevator,730,1,1,1190,910000,2026-10-05
+PV-0291,Orchard Street at Broome Street,7B,Lower East Side,co-op,prewar elevator,1835,3,3.5,2740,2005000,2026-10-07
+PV-0292,Lexington Avenue at East 21st Street,3B,Gramercy Park,co-op,prewar elevator,555,0,1,870,620000,2026-10-11
+PV-0293,Amsterdam Avenue at West 89th Street,9C,Upper West Side,co-op,postwar elevator,2235,4,4,4020,3250000,2026-10-14
+PV-0294,Amsterdam Avenue at West 119th Street,32B,Morningside Heights,condo,postwar elevator,3015,4,4.5,7030,3830000,2026-10-16
+PV-0295,Amsterdam Avenue at West 76th Street,4E,Upper West Side,co-op,prewar elevator,2755,4,4,4990,3755000,2026-10-17
+PV-0296,Third Avenue at East 34th Street,2E,Murray Hill,co-op,prewar elevator,695,1,1,1080,680000,2026-10-20
+PV-0297,Riverside Drive at West 93rd Street,16B,Upper West Side,co-op,prewar elevator,2155,3,3.5,4810,3010000,2026-10-21
+PV-0298,Orchard Street at Grand Street,13F,Lower East Side,condo,prewar elevator,795,1,1,1410,1310000,2026-10-27
+PV-0299,East End Avenue at East 74th Street,12B,Upper East Side,condo,postwar elevator,1420,2,2.5,3630,2240000,2026-10-28
+PV-0300,Greenwich Street at Harrison Street,2C,Tribeca,condo,prewar elevator,1550,3,3,3490,3285000,2026-10-28

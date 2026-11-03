@@ -1,0 +1,10 @@
+{
+  "name": "parvati-site",
+  "private": true,
+  "type": "module",
+  "description": "Parvati Real Estate: a static site for a fictional Manhattan brokerage. npm test checks every link and image, and data/sales.csv (fictional sales, written by data/generate-sales.mjs).",
+  "scripts": {
+    "test": "node check-links.mjs",
+    "generate-sales": "node data/generate-sales.mjs"
+  }
+}

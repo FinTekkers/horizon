@@ -1,0 +1,9 @@
+{
+  "name": "horizon-tenant-sites",
+  "private": true,
+  "type": "module",
+  "description": "HZ-706: static sites for demo tenants. Tests for parvati-site/ (its own npm test, its sales data, its page set and its content rules). No dependencies and no network calls.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}
