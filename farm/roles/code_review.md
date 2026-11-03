@@ -17,6 +17,9 @@ Check specifically:
 Test evidence comes ONLY from the `Stored test results (step record)` input.
 Test-output files in the worktree (`test-results/`, `build/test-results/`)
 are **not** evidence of a run. Reading code is unaffected.
+Judge the checks only on `### Final check round` and the `main` and `branch`
+sections under it. `History` rows are earlier fix rounds and never a current
+failure.
 
 Respond with ONLY a JSON object (no prose, no fences):
 {

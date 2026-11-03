@@ -139,6 +139,7 @@ import { ruleBlockActionsText } from '../../domain/js/ruleBlockActions.js'
 import {
   RESULTS_LOST_TEXT,
   buildStoredResultsInput,
+  reviewCheckGate,
   storedResultsPending,
   storedResultsUpload,
   waitForStoredResults,
@@ -2586,6 +2587,25 @@ function blockingFindings(verdict) {
 
 const normalizePath = (p) => p.replace(/^\.\//, '')
 
+// HZ-751: review is judged on the final check round only, the one the pushed
+// commit was checked with (storedTestResults.js). Horizon sets
+// regression_tests_run from that round, and a false value fails QA. A final
+// round that is red, missing or for another sha fails code review with a
+// finding of its own, whatever the reviewers said. It only adds failures: no
+// reviewer finding is dropped. Mutates `verdict`, so the full and delta rules
+// both read it; returns the artifact with the server's check result appended.
+function applyCheckGate(id, verdict, artifactMd) {
+  const gate = reviewCheckGate(id)
+  if (!gate) return artifactMd
+  verdict.qa_review.regression_tests_run = gate.regressionTestsRun
+  if (!gate.regressionTestsRun) verdict.qa_review.verdict = 'fail'
+  if (!gate.failure) return artifactMd
+  const section = verdict.code_review
+  section.verdict = 'fail'
+  section.findings = [...(Array.isArray(section.findings) ? section.findings : []), { file: null, line: null, severity: 'block', detail: gate.failure }]
+  return [artifactMd, `## Final check round (server)\n\n${gate.failure}`].filter(Boolean).join('\n\n')
+}
+
 // Exported for tests. The note-versus-block rule of a delta review, in code.
 // Blocks on exactly: a previous finding not reported `resolved: true`, a new
 // finding in a file the fix diff changed, a new finding with no file (it
@@ -3087,6 +3107,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
       const previousFindings = Array.isArray(scope.previous_findings) ? scope.previous_findings : []
       delta = { deltaFiles: report.deltaFiles, previousFindings }
     }
+    artifactMd = applyCheckGate(id, artifacts.verdict, artifactMd)
     const reviewedSha = typeof artifacts.reviewed_sha === 'string' && artifacts.reviewed_sha.trim() ? artifacts.reviewed_sha.trim() : null
     artifactMd = recordAsks(item, runId, run.step_index, artifacts.asks, artifactMd)
     finalizeReviewStep(id, runId, text, artifactMd, artifacts.verdict, cleanPatch, false, {
