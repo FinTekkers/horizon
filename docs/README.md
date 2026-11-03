@@ -2,6 +2,8 @@
 
 Newest first. Add one line per new doc — no other changes needed.
 
+- [`adr/README.md`](adr/README.md) — HZ-727: architecture decision records — numbering, statuses, template and index.
+- [`adr/0001-agent-asks.md`](adr/0001-agent-asks.md) — HZ-727: ADR 0001, agents raise follow-up and prerequisite work as reviewed asks.
 - [`tool-allowlist.md`](tool-allowlist.md) — HZ-536: add a tool venv to `farm/tools/allowlist.json` by PR, so a project persona can use it read-only.
 - [`project-onboarding.md`](project-onboarding.md) — HZ-400: onboard a new project end to end, with Admin screenshots.
 - [`deploy-release-wait.md`](deploy-release-wait.md) — HZ-275: the Deploy step waits for its own release before the smoke check, and queued deploys wait for the lock.
