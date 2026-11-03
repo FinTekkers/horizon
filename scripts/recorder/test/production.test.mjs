@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
-import { PROD_VIEWPORT } from '../browser.mjs'
+import { PROD_VIEWPORT, launchProfile } from '../browser.mjs'
 import { PROFILE_MARKER, checkProfile, initProfile } from '../profile.mjs'
 import { TEMP_PREFIX } from '../walkthrough.mjs'
 import { HOOKS_ON, startWalkthroughStub } from './stub-walkthrough.mjs'
@@ -381,5 +381,17 @@ contractTest('guardrail 4: --production refuses any base but https://shoreward.a
     assert.match(run.stderr, /production refused --production/, base)
     assert.doesNotMatch(run.stdout, /launch/, base)
     assert.equal(existsSync(run.out), false, `${base}: --out was made`)
+  }
+})
+
+test('launchProfile hides navigator.webdriver, so Stripe accepts a typed promotion code', async () => {
+  const dir = mkdtempSync(path.join(work, 'launch-'))
+  const videoDir = mkdtempSync(path.join(work, 'video-'))
+  const context = await launchProfile(dir, { videoDir })
+  try {
+    const page = context.pages()[0] ?? await context.newPage()
+    assert.equal(await page.evaluate(() => navigator.webdriver), false)
+  } finally {
+    await context.close()
   }
 })
