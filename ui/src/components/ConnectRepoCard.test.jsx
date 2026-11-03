@@ -85,6 +85,8 @@ test('metric 1: submitting owner/name and a token POSTs exactly both, then shows
     'Webhook createdGitHub tells Horizon about new issues and pull requests.',
     'Run user readyYour agents work in their own isolated space on the server.',
   ])
+  // HZ-741 metric 5: the note names the connected repo.
+  expect(screen.getByText('Horizon uses this token only for Acme/site.')).toBeTruthy()
   expect(document.body.textContent).not.toContain('$HZ_TENANT_7')
   expect(screen.getByRole('link', { name: 'Set your check commands' }).getAttribute('href')).toBe('/admin/checks')
   expect(screen.getByRole('button', { name: 'File your first item' })).toBeTruthy()
@@ -104,8 +106,11 @@ test.each([
   [
     'token_too_broad',
     400,
-    { error: 'token_too_broad', message: 'This token can reach Acme/other. Limit it to Acme/site only.' },
-    'This token can reach Acme/other. Limit it to Acme/site only.',
+    {
+      error: 'token_too_broad',
+      message: "A classic token's repo scope reaches every repository you can. Create a fine-grained token limited to Acme/site only.",
+    },
+    "A classic token's repo scope reaches every repository you can. Create a fine-grained token limited to Acme/site only.",
   ],
   [
     'token_missing_permission',

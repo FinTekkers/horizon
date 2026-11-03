@@ -1471,6 +1471,7 @@ button { font-family: var(--font-sans); }
 }
 .connect-repo__title { margin: 0; font: 800 22px var(--font-sans); color: var(--deep); }
 .connect-repo__lede { margin: -10px 0 0; font: 500 14px/1.55 var(--font-sans); color: var(--text-secondary); }
+.connect-repo__note { margin: 0; font: 500 14px/1.55 var(--font-sans); color: var(--text-secondary); }
 .connect-repo__step { display: flex; flex-direction: column; gap: 10px; }
 .connect-repo__step--box { padding: 16px; border-radius: 12px; background: var(--surface-alt); border: 1px solid var(--border); }
 .connect-repo__step-head { display: flex; align-items: baseline; gap: 10px; }

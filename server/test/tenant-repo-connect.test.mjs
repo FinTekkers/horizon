@@ -197,25 +197,9 @@ test('metric 1: a non-member, another project’s member, an unknown id and an i
   assert.deepEqual(repoRows(INTERNAL), internalRepos)
 })
 
-// ---- metric 2: a token that reaches any other repo is refused ----
+// ---- HZ-741 metrics 2 and 3: a classic token, and a token that cannot reach the repo, are refused ----
 
-for (const [label, pages, repo, extra] of [
-  ['a second repo on page 2 of /user/repos', [[{ full_name: REPO }], [{ full_name: 'acme/other' }]], REPO, 'acme/other'],
-  ['an org-owned token reaching another org repo', [[{ full_name: 'acme-org/widgets' }, { full_name: 'acme-org/ledger' }]], 'acme-org/widgets', 'acme-org/ledger'],
-]) {
-  test(`metric 2: ${label} is refused as token_too_broad, naming ${extra}; nothing is saved`, async () => {
-    fresh({ repo, pages })
-    const res = await connect(member, R, good({ repo }))
-    assert.equal(res.statusCode, 400, res.body)
-    assert.equal(res.json().error, 'token_too_broad')
-    assert.match(res.json().message, new RegExp(extra.replace('/', '\\/')))
-    assertNothingSaved(R, label)
-    assertTokenNowhere(res, label)
-    assert.deepEqual(unexpected, [])
-  })
-}
-
-test('metric 2: a classic ghp_ token is refused as token_too_broad, naming its repo scope, before any GitHub call', async () => {
+test('metric 2 (HZ-741): a classic ghp_ token is refused as token_too_broad, naming its repo scope, before any GitHub call', async () => {
   fresh()
   const classic = `ghp_${'C'.repeat(36)}`
   const res = await connect(member, R, good({ token: classic }))
@@ -225,6 +209,18 @@ test('metric 2: a classic ghp_ token is refused as token_too_broad, naming its r
   assert.ok(!res.body.includes(classic) && !logs.join('').includes(classic))
   assert.deepEqual(calls, [])
   assertNothingSaved(R, 'classic token')
+})
+
+test('metric 3 (HZ-741): a fine-grained token that cannot reach the named repo is refused as missing Metadata: read; nothing is saved', async () => {
+  fresh({ status: { 'GET ': 404 } })
+  const res = await connect(member, R, good())
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(res.json().error, 'token_missing_permission')
+  assert.equal(res.json().permission, 'metadata:read')
+  assert.match(res.json().message, new RegExp(`Metadata: read on ${REPO}`))
+  assertNothingSaved(R, 'unreachable repo')
+  assertTokenNowhere(res, 'unreachable repo')
+  assert.deepEqual(unexpected, [])
 })
 
 // ---- metric 3: a token missing any one permission is refused ----
@@ -296,8 +292,11 @@ test('guardrail 1: a failed helper returns run_user_provision_failed and removes
 
 // ---- metric 1: a member connects ----
 
+// HZ-741 metric 1: /user/repos lists the ACCOUNT's repos, so a correctly scoped
+// fine-grained token still sees others there. The stub keeps answering it, so
+// "no call" proves the check is gone rather than that it crashed.
 test('metric 1: a non-owner member connects with a valid token — the repo syncs, one webhook, the file: ref, the helper once; every call carries the tenant token', async () => {
-  fresh()
+  fresh({ pages: [[{ full_name: REPO }, { full_name: 'acme/other' }, { full_name: 'someone/public' }]] })
   const res = await connect(member, T, good())
   assert.equal(res.statusCode, 200, res.body)
   const body = res.json()
@@ -320,6 +319,11 @@ test('metric 1: a non-owner member connects with a valid token — the repo sync
   assert.ok(calls.length > REQUIRED_PERMISSIONS.length)
   for (const c of calls) assert.equal(c.authz, `Bearer ${TENANT_TOKEN}`, `${c.method} ${c.url}`)
   assert.ok(calls.some((c) => c.url.includes('/issues?state=all')), 'pollRepo ran with the tenant token')
+  // HZ-741: /user/repos is never asked, and every call stays on the connected repo.
+  assert.deepEqual(calls.filter((c) => new URL(c.url).pathname === '/user/repos'), [])
+  for (const c of calls) {
+    assert.ok(new URL(c.url).pathname.toLowerCase().startsWith(`/repos/${REPO}`.toLowerCase()), `${c.method} ${c.url} leaves ${REPO}`)
+  }
 
   // The repo synced its issue.
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM work_item WHERE repo = ?').get(REPO).n, 1)

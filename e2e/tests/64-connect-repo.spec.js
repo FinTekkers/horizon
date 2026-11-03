@@ -19,7 +19,7 @@ const CONNECTED = 'Repository connected'
 const PIN = '640364'
 const TOKEN = 'github_pat_11E2ECONNECTREPO0secretTOKENvalue64'
 const REPO = 'E2EConnect/site'
-const REFUSAL = `This token can reach E2EConnect/brand-assets. Limit it to ${REPO} only.`
+const REFUSAL = `A classic token's repo scope reaches every repository you can. Create a fine-grained token limited to ${REPO} only.`
 const CONNECT_ROUTE = '**/api/tenant/projects/*/repos'
 
 let journeyMember
@@ -163,6 +163,8 @@ test('metrics 1–4: a member connects from the card, sees the result, and the b
     for (const line of [CONNECTED, 'Webhook created', 'Run user ready']) {
       await expect(page.locator('.connect-repo__result strong', { hasText: line })).toBeVisible()
     }
+    // HZ-741 metric 5: the card says which repo the token is used for.
+    await expect(page.getByText(`Horizon uses this token only for ${REPO}.`)).toBeVisible()
 
     // Metric 3: the token is nowhere the browser keeps or shows things.
     expect(await page.content()).not.toContain(TOKEN)
