@@ -87,6 +87,16 @@ in the UI.
 | **QA** | Reviews whether the test plan is sufficient |
 | **Review** | Automated code + QA review after implementation |
 | **DevOps** | Deploys the change |
+| **Ask reviewer** | Reviews each ask a step raised, for fit, overlap and shape (not a step) |
+
+The **ask reviewer** (HZ-729) is not a lifecycle step. When a step's reply
+carries asks, the server sends each one, once, to a reviewer on a provider
+other than the ask's author: Muse by default, or the project's
+`ask_review_provider`. If that provider is unavailable, the ask waits for
+review; it never falls back to the author's provider. The reviewer only
+reviews: its `accept`, `amend` or `escalate` verdict and reasons are stored
+on the ask and shown in the item snapshot. See
+[`docs/agent-architecture.md`](agent-architecture.md#ask-review--an-independent-check-on-a-different-provider-hz-729).
 
 The table above names the *label* a step shows in the UI; it does not say
 which *process* actually executes it. Two steps that look like separate

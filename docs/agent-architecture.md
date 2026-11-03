@@ -218,6 +218,58 @@ HZ-204 shipped stage 1 (the context block); HZ-212 shipped stage 2: PM steps
 run per task through `_claim_and_launch()`, with no session resume, each with
 its own log.
 
+## Ask review — an independent check on a different provider (HZ-729)
+
+A step reply may carry **asks**: drafted follow-up or prerequisite items
+(HZ-728, `server/src/asks.js`). Every open ask gets exactly one independent
+review before anyone can accept it. It is not a lifecycle step and has no
+step row: `server/src/askReview.js` sweeps for open asks with no review (on
+every store change and every 60s), and makes one bounded call per ask to
+farmd's `POST /ask/review` → `farm/ask_review.py` — one turn, no tools, the
+role prompt `farm/roles/ask_review.md`. Same shape as the Caretaker ruling.
+
+**Provider rule.** The reviewer never runs on the ask author's provider (the
+`step_run.provider` of the step that raised it, else the provider the run was
+dispatched on):
+
+1. The target is the project's `ask_review_provider` setting, else **Muse**
+   (the owner's ruling). The setting is a nullable `project` column; there is
+   no Admin control for it yet.
+2. If the target is the author's provider, the first *other* provider in
+   `domain/providers.json`'s declared order is used (today: Claude, then
+   Muse). So an ask a Muse step raised is reviewed on Claude.
+3. An unknown author, an unknown project setting, or no other declared
+   provider: the review waits with a stated reason. It never guesses.
+
+**No fallback.** The reviewer runs on that provider's exact model
+(`defaultModel`, or the PM's Claude model). If that model is usage-limited
+(`model_limit`), or farmd answers 503 (the provider is not authenticated, or
+it hit a usage limit mid-call, which is also recorded on the ledger), the
+review stays `awaiting` with a `wait_reason`, and a later sweep tries again.
+It never falls back to the author's provider and never runs a chain.
+
+**What the reviewer sees.** Only the ask draft, the project rules (the same
+ones agents receive; the server sends the DB-served overrides) and the
+overlap matches, plus the ask's metadata: the step's name (never its index),
+its kind, its one-line why, and the titles of open items not yet planned.
+The overlap matches come from the existing overlap check, run read-only: the
+draft's footprint against in-flight items in its repo and against each open
+Plan's drafted items. The body is checked with `redact` and `hasHostPath`
+before it is sent; a body holding a token, secret or host path is not sent,
+and the review waits. No transcript, workspace, host path or secret is ever
+included. The body sent is kept in `ask_review.input_json` for audit and is
+never shown in the snapshot.
+
+**What it stores.** The verdict — `accept`, `amend` (with the edited draft,
+held to the ask's own checks) or `escalate` — with 1–6 reasons and the ids
+of the matched items or Plans it names (`refers_to`, filtered to the
+matches). It writes only the `ask_review` table: never an item, never the
+ask row, never a dependency. The item snapshot shows it as `asks[i].review`
+with a `status`: only `done` is a real reviewer verdict. `failed` (a network
+error, a timeout, or a reply the farm could not use) and `interrupted` (a
+restart mid-review) store `escalate` with the reason, and are never re-run,
+so an ask is reviewed at most once.
+
 ## Muse provider
 
 For the Muse CLI's actual interface — flags, event stream, session

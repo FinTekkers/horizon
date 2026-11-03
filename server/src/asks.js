@@ -45,7 +45,14 @@ const insertAsk = db.prepare(
 const supersedeStep = db.prepare(
   "UPDATE ask SET status = 'superseded', updated_at = datetime('now') WHERE item_id = ? AND step_index = ? AND step_run_id != ? AND status = 'open'",
 )
-const selectOpen = db.prepare("SELECT * FROM ask WHERE item_id = ? AND status = 'open' ORDER BY id DESC")
+// HZ-729: each open ask with its review (server/src/askReview.js), if any.
+const selectOpen = db.prepare(
+  `SELECT a.*, r.id AS review_id, r.status AS review_status, r.provider AS review_provider, r.verdict AS review_verdict,
+          r.reasons_json AS review_reasons_json, r.amended_draft_json AS review_amended_draft_json,
+          r.refers_to_json AS review_refers_to_json, r.wait_reason AS review_wait_reason
+     FROM ask a LEFT JOIN ask_review r ON r.ask_id = a.id
+    WHERE a.item_id = ? AND a.status = 'open' ORDER BY a.id DESC`,
+)
 
 export const stepLabel = (stepIndex) => STEPS[stepIndex]?.label ?? 'an unknown step'
 
@@ -154,12 +161,33 @@ export function recordSplitAsk(item, runId, stepIndex, split, itemSplitId) {
   insertAsk.run(item.id, runId, stepIndex, 'split', JSON.stringify(draft), `Split proposed at “${stepLabel(stepIndex)}”`, itemSplitId)
 }
 
-function parseDraft(json) {
+function parseJson(json, fallback) {
   try {
-    const draft = JSON.parse(json)
-    return draft && typeof draft === 'object' ? draft : {}
+    const value = JSON.parse(json)
+    return value && typeof value === 'object' ? value : fallback
   } catch {
-    return {}
+    return fallback
+  }
+}
+
+const parseDraft = (json) => parseJson(json, {})
+
+// HZ-729: the ask's review as the snapshot shows it, or null before the first
+// sweep. Only status 'done' is a real reviewer verdict; 'failed' and
+// 'interrupted' carry 'escalate' with the reason no review came back. The
+// body sent to the reviewer (input_json) is never shown.
+function reviewOf(row) {
+  if (row.review_id == null) return null
+  const reasons = parseJson(row.review_reasons_json, null)
+  const refersTo = parseJson(row.review_refers_to_json, null)
+  return {
+    status: row.review_status,
+    provider: row.review_provider,
+    verdict: row.review_verdict,
+    reasons: Array.isArray(reasons) ? reasons : [],
+    amended_draft: row.review_amended_draft_json ? parseJson(row.review_amended_draft_json, null) : null,
+    refers_to: Array.isArray(refersTo) ? refersTo : [],
+    wait_reason: row.review_wait_reason,
   }
 }
 
@@ -178,6 +206,7 @@ export function openAsks(itemId) {
       guardrails: draft.guardrails ?? '',
       why: row.why,
       created_at: row.created_at,
+      review: reviewOf(row),
     }
   })
 }

@@ -1521,6 +1521,37 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_ask_item_step ON ask(item_id, step_index);
 `)
 
+// HZ-729: one independent review per ask (server/src/askReview.js), on a
+// provider other than the ask's author. Its own table, so the review never
+// writes the ask row. `status` is awaiting | running | done | failed |
+// interrupted; only 'done' holds a real reviewer verdict. `input_json` is the
+// exact body sent to farmd, for audit; it is never shown in the snapshot.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ask_review (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    ask_id             INTEGER NOT NULL UNIQUE REFERENCES ask(id),
+    author_provider    TEXT,
+    provider           TEXT,
+    model              TEXT,
+    status             TEXT NOT NULL DEFAULT 'awaiting',
+    wait_reason        TEXT,
+    verdict            TEXT CHECK (verdict IS NULL OR verdict IN ('accept','amend','escalate')),
+    reasons_json       TEXT,
+    amended_draft_json TEXT,
+    refers_to_json     TEXT,
+    input_json         TEXT,
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_ask_review_status ON ask_review(status);
+`)
+
+// HZ-729: the provider a project's asks are reviewed on. NULL = Muse. Set at
+// DB level until an Admin control exists.
+if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'ask_review_provider')) {
+  db.exec('ALTER TABLE project ADD COLUMN ask_review_provider TEXT')
+}
+
 // HZ-379: items one parent filed for itself (server/src/spawn.js) — a Task's
 // Assess asking for code today, a list of items from one idea later. One row
 // per item to file: seq is its place in the request's list, and

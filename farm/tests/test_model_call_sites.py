@@ -37,11 +37,13 @@ CALLER_MODULES = (
     "conflict_resolver.py",
     "handoff.py",
     "caretaker_ruling.py",
+    "ask_review.py",
 )
 # 4 in step_agent (one is the PM step kind's, HZ-371), 2 in concierge_agent,
 # 2 in conflict_resolver, 1 in handoff (HZ-158's note from an exhausted
-# session), 1 in caretaker_ruling (HZ-273's ruling proposal).
-EXPECTED_CALL_SITES = 10
+# session), 1 in caretaker_ruling (HZ-273's ruling proposal), 1 in ask_review
+# (HZ-729's ask review).
+EXPECTED_CALL_SITES = 11
 
 
 def call_site_problems(source: str, filename: str) -> tuple[int, list[str]]:
