@@ -223,7 +223,7 @@ const FLAG_CASES = [
     checkRound(id, run, `${id}-r1`, SHA_A, { ...allExit(0), [CHECKS[0]]: 1 })
     checkRound(id, run, `${id}-r2`, SHA_C, { [CHECKS[1]]: 0 })
   }, true, false],
-  ['no checks expected', null, false, false],
+  ['no checks expected', null, true, true],
 ]
 
 function implementWithChecks(id, rounds) {
@@ -291,3 +291,33 @@ for (const [i, [name, rounds, llmFlag, expected]] of FLAG_CASES.entries()) {
     assert.equal(details.includes(FLAG_BLOCK), !expected, details.join(' | '))
   })
 }
+
+// The delta rules read QA's flags only on a QA fail, so a computed false flag
+// must turn a QA pass into a fail for its block to fire.
+test('HZ-751 delta review: QA passes but the final round ran 1 of 4 checks → QA fails on the flag', async () => {
+  const id = 'R-FLAG-DPASS'
+  insertItem.run(id, 'QA pass, partial round', 'Medium', REVIEW_STEP_INDEX)
+  const previous = [{ file: 'server/src/x.js', line: 1, detail: 'an earlier finding', index: 0 }]
+  db.prepare("UPDATE work_item SET fix_pass = 1, last_reviewed_sha = 'aaaaaaa1', fix_findings_json = ? WHERE id = ?").run(JSON.stringify(previous), id)
+  implementWithChecks(id, FLAG_CASES[2][1])
+  const runId = activeRunFor(id, REVIEW_STEP_INDEX)
+  db.prepare('UPDATE step_run SET scope_json = ? WHERE id = ?').run(
+    JSON.stringify({ mode: 'delta', base_sha: 'aaaaaaa1', previous_findings: previous }),
+    runId,
+  )
+  const verdict = {
+    code_review: { verdict: 'pass', findings: [] },
+    qa_review: { verdict: 'pass', regression_tests_run: true, new_code_unit_coverage: true, e2e_test_present: true, findings: [] },
+    previous_findings: [{ index: 0, resolved: true }],
+  }
+  await orchestrator.completeFarmRun(runId, {
+    summary: 'reviewed',
+    artifacts: { artifact_md: '# r', verdict, review_mode: 'delta', reviewed_sha: 'bbbbbbb2', delta_files: ['server/src/x.js'] },
+  })
+  orchestrator.cancel(id)
+  assert.equal(verdict.qa_review.regression_tests_run, false)
+  assert.equal(verdict.qa_review.verdict, 'fail')
+  const details = storedBlocks(id).map((f) => f.detail)
+  assert.ok(details.includes(FLAG_BLOCK), details.join(' | '))
+  assert.equal(store.getItem(id).cursor, IMPLEMENT_STEP_INDEX)
+})
