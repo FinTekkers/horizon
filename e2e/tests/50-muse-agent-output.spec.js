@@ -17,6 +17,7 @@ import { STEPS, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 const DB_PATH = process.env.HORIZON_E2E_DB
 const MUSE = 'HZ-E2E-MUSE-LOG'
 const CLAUDE = 'HZ-E2E-CLAUDE-LOG'
+const FARM_DOWN = 'HZ-E2E-FARM-DOWN-LOG'
 const sqliteNow = () => new Date().toISOString().replace('T', ' ').slice(0, 19)
 const runIds = {}
 
@@ -36,7 +37,7 @@ const LOGS = {
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
-    for (const id of [MUSE, CLAUDE]) {
+    for (const id of [MUSE, CLAUDE, FARM_DOWN]) {
       // beforeAll re-runs in a fresh worker after a failed test; seed once.
       const seeded = db.prepare('SELECT id FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id DESC').get(id, IMPLEMENT_STEP_INDEX)
       if (seeded) {
@@ -115,4 +116,33 @@ test('a Muse step’s agent output view shows its tool calls and text lines the 
   expect(new Set(muse.map(shape))).toEqual(new Set(['tool', 'text', 'result']))
   expect(new Set(claude.map(shape))).toEqual(new Set(muse.map(shape)))
   expect(muse.at(-1)).toMatch(/── result: 4 turn\(s\) in 19s ──$/)
+})
+
+// HZ-717: while the server can't reach the farm the log route answers 503
+// `farm unavailable`. The view says so, keeps polling, and once a read
+// succeeds shows the log and drops that status.
+test('the agent output view says when the farm can’t be reached, and recovers when it answers', async ({ page }, testInfo) => {
+  const LINE = '[12:02:00] Back after the farm returned.\n'
+  let calls = 0
+  await page.context().route(
+    (url) => url.pathname.endsWith(`/api/runs/${runIds[FARM_DOWN]}/log`),
+    (route) => {
+      calls += 1
+      if (calls === 1) return route.fulfill({ status: 503, json: { error: 'farm unavailable' } })
+      const offset = Number(new URL(route.request().url()).searchParams.get('offset'))
+      return route.fulfill({ json: offset === 0 ? { content: LINE, next_offset: LINE.length, active: false } : { content: '', next_offset: LINE.length, active: false } })
+    },
+  )
+  await page.goto(`/${FARM_DOWN.toLowerCase()}`)
+  const [view] = await Promise.all([page.waitForEvent('popup'), page.getByRole('link', { name: 'See agent output ↗' }).click()])
+  const status = view.locator('#status')
+  await expect(status).toHaveText('Can’t reach the farm. Retrying…', { timeout: 10_000 })
+  await expect(view.locator('#log')).toHaveText('Waiting for output…')
+  for (const colorScheme of ['light', 'dark']) {
+    await view.emulateMedia({ colorScheme })
+    await testInfo.attach(`agent-output-farm-down-${colorScheme}`, { body: await view.screenshot(), contentType: 'image/png' })
+  }
+
+  await expect(view.locator('#log')).toHaveText(LINE, { timeout: 10_000 })
+  await expect(status).toHaveText('Run finished.', { timeout: 10_000 })
 })

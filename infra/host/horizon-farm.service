@@ -1,21 +1,27 @@
 [Unit]
-Description=Horizon agent farm (farmd in tmux via run.sh)
+Description=Horizon agent farm (farmd)
 After=network.target horizon-server.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+# HZ-714: systemd runs farmd itself. Every farm.env setting reaches it through
+# EnvironmentFile (not a filtered copy on a tmux command line), and its output
+# goes to the journal: journalctl -fu horizon-farm.
+Type=simple
 User=ubuntu
 WorkingDirectory=/opt/horizon
 EnvironmentFile=/etc/horizon/farm.env
-ExecStart=/opt/horizon/farm/run.sh
-# run.sh replaces any existing farm-daemon tmux session; agent sessions
-# (farm-pm-*, farm-run-*, farm-concierge-*) are managed by farmd itself.
-ExecStop=/usr/bin/tmux kill-session -t farm-daemon
-# Stop only the main process and ExecStop. The farm-run-* agent sessions share
-# the tmux server in this unit's cgroup; with the default control-group mode a
-# restart killed every running agent step (2026-10-07 deploy loop, HZ-321).
-# The restarted farmd re-adopts the live sessions.
+Environment=PYTHONUNBUFFERED=1
+# venv, pip and the capture worker's npm ci; also stops a farm-daemon tmux
+# session left by the old oneshot unit. pip and npm ci can be slow.
+ExecStartPre=/opt/horizon/farm/run.sh prepare
+ExecStart=/opt/horizon/farm/.venv/bin/python -m farm.farmd
+TimeoutStartSec=600
+Restart=on-failure
+RestartSec=5
+# Stop only the main process. The farm-run-*, farm-pm-* and farm-concierge-*
+# agent sessions share the tmux server in this unit's cgroup; with the default
+# control-group mode a restart killed every running agent step (2026-10-07
+# deploy loop, HZ-321). The restarted farmd re-adopts the live sessions.
 KillMode=process
 
 [Install]

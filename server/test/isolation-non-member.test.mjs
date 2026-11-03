@@ -259,6 +259,7 @@ const WRITE_CASES = {
   'POST /api/test/conflict-reply': { expect: '404', url: '/api/test/conflict-reply', body: {}, owner: 200 },
   'POST /api/test/github-pr': { expect: '404', url: '/api/test/github-pr', body: {}, owner: 200 },
   'POST /api/test/screenshot-snapshot': { expect: '404', url: '/api/test/screenshot-snapshot', body: SCREENSHOTS, owner: 200 },
+  'POST /api/test/farm-reachable': { expect: '404', url: '/api/test/farm-reachable', body: { reachable: true }, owner: 200 },
   // owner
   'POST /api/admin/deploy-targets': { expect: '404', url: '/api/admin/deploy-targets', body: { key: 'iso-target', ...DEPLOY_TARGET }, owner: 201 },
   'PUT /api/admin/deploy-targets/:key': { expect: '404', url: '/api/admin/deploy-targets/iso-target', body: DEPLOY_TARGET, owner: 200 },

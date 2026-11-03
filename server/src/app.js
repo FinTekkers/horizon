@@ -4961,6 +4961,16 @@ export function buildApp({
       return { ok: true }
     })
 
+    // e2e only (HZ-717), same reasoning: with no farm, nothing ever marks it
+    // unreachable, so this is how a spec shows and clears the item page's
+    // "farm isn't reachable" banner through the real snapshot and SSE.
+    fastify.post('/api/test/farm-reachable', { config: { scope: 'test' } }, async (request, reply) => {
+      const reachable = request.body?.reachable
+      if (typeof reachable !== 'boolean') return reply.code(400).send({ error: 'reachable must be a boolean' })
+      orchestrator.setFarmReachableForTest(reachable)
+      return { ok: true }
+    })
+
     // e2e only (HZ-154), same reasoning: with no farm daemon, the scoped
     // conflict path has nothing to answer the /conflicts/resolve call the
     // Accept gate's "send back to resolve conflicts" button makes. This queues

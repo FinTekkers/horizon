@@ -48,7 +48,7 @@ test('with test hooks on, the app boots and every route, /api/test/* and HEAD in
   const legal = new Set([...USER_SCOPES, ...EXEMPT_SCOPES])
   for (const route of routes) assert.ok(legal.has(route.scope), `${route.method} ${route.url}: ${route.scope}`)
 
-  for (const url of ['/api/test/run-state', '/api/test/conflict-reply', '/api/test/github-pr', '/api/test/screenshot-snapshot']) {
+  for (const url of ['/api/test/run-state', '/api/test/conflict-reply', '/api/test/github-pr', '/api/test/screenshot-snapshot', '/api/test/farm-reachable']) {
     assert.deepEqual(
       routes.filter((r) => r.url === url),
       [{ method: 'POST', url, scope: 'test' }],

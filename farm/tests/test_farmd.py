@@ -1009,6 +1009,11 @@ def private_tmux_env():
     try:
         yield env
     finally:
+        # HZ-714: a booted farmd's ensure_server() leaves that throwaway server
+        # running (exit-empty off); stop it by its own socket path.
+        private_socket = Path(socket_dir) / f"tmux-{os.getuid()}" / "default"
+        if private_socket.exists():
+            subprocess.run(["tmux", "-S", str(private_socket), "kill-server"], capture_output=True, timeout=15)
         shutil.rmtree(socket_dir, ignore_errors=True)
 
 

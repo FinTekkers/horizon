@@ -165,6 +165,9 @@ def test_an_ordinary_inbound_message_still_reaches_the_model(transport, monkeypa
         raise RuntimeError("stop here — reaching the model is the whole assertion")
 
     monkeypatch.setattr(concierge_agent, "run_agent", record)
+    # The snapshot comes from farmd; left unstubbed it was fetched from the
+    # host's real farmd port, so this control failed whenever none answered.
+    monkeypatch.setattr(concierge_agent, "fetch_snapshot", lambda *a, **k: {"projects": [], "items": []})
     monkeypatch.setattr(concierge_agent.config, "FARM_WA_ALLOWED_JIDS", [OWN_PHONE])
     monkeypatch.setattr(concierge_agent.config, "FARM_WA_GROUP_JIDS", [COMMAND_GROUP])
 

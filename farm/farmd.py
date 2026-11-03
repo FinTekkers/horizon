@@ -2,7 +2,8 @@
 
 Owns tmux sessions, workspaces and the task queue. Executes exactly one step
 when the Node orchestrator asks; never sequences anything itself. Runs under
-tmux session `farm-daemon` (see run.sh) on port 4100.
+systemd (infra/host/horizon-farm.service; `./farm/run.sh fg` by hand) on port
+4100, its output in the journal.
 """
 
 import asyncio
@@ -28,7 +29,7 @@ from fastapi.responses import JSONResponse
 from domain.py import reasons, run_plan, steps
 from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
-from .checks import CHECK_SLOTS, default_check_slots, redact
+from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
@@ -1791,7 +1792,7 @@ def _start_async(project: dict, repos: list, token: str | None) -> None:
                 workspaces.prune_worktrees(entry["repo"])
                 print(f"farmd: workspace ready for {entry['repo']}", flush=True)
             except Exception as exc:  # workspaces are not needed until phase 3
-                print(f"farmd: WARNING workspace for {entry['repo']} failed: {exc}", flush=True)
+                print(f"farmd: WARNING workspace for {entry['repo']} failed: {scrub(str(exc))}", flush=True)
 
         if _maybe_launch_concierge():
             print("farmd: WhatsApp concierge launched", flush=True)
@@ -1802,7 +1803,7 @@ def _start_async(project: dict, repos: list, token: str | None) -> None:
     except Exception as exc:
         with _lock:
             state.update(status="error", error=str(exc)[:300], since=_now())
-        print(f"farmd: start FAILED: {exc}", flush=True)
+        print(f"farmd: start FAILED: {scrub(str(exc))}", flush=True)
 
 
 @app.get("/")
@@ -2123,7 +2124,7 @@ async def conflicts_resolve(request: Request):
         print(f"farmd: conflict resolution for {item_id} was cancelled — nothing pushed", flush=True)
         return JSONResponse({"error": "cancelled"}, status_code=409)
     except Exception as exc:
-        print(f"farmd: conflict resolution for {item_id} failed: {exc}", flush=True)
+        print(f"farmd: conflict resolution for {item_id} failed: {scrub(str(exc))}", flush=True)
         return JSONResponse({"error": str(exc)[:300]}, status_code=500)
     return {"ok": True, **result}
 
@@ -2758,6 +2759,8 @@ ensure_dirs()
 # HZ-5 cost guardrail at boot: covers the adopt path too, which never goes
 # through /farm/start — a farm on API billing must not come up at all.
 assert_provider_auth()
+# HZ-714: before any agent session, so the tmux server's argv holds no value.
+tmux_mgr.ensure_server()
 _adopt_existing()
 _adopt_jobs()
 _reconcile_claimed_runs()
