@@ -55,7 +55,7 @@ const FALLBACK_TEXT = {
 }
 
 const HINT = {
-  token_too_broad: `On GitHub, edit the token: Repository access → Only select repositories → this one. Then paste it again. ${NOTHING_SAVED}`,
+  token_too_broad: `On GitHub, create a fine-grained token. Under Repository access, choose Only select repositories → this one. Then paste it again. ${NOTHING_SAVED}`,
   token_missing_permission: `On GitHub, edit the token and give it the permissions above. Then paste it again. ${NOTHING_SAVED}`,
   pin_needed: `Find or regenerate it in Admin → Your PIN and API tokens, then paste the token again. ${NOTHING_SAVED}`,
 }

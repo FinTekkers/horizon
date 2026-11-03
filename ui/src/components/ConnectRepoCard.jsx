@@ -72,6 +72,7 @@ export default function ConnectRepoCard({ project, result = null, onConnect, onC
         <p className="connect-repo__lede">
           Horizon can now work in {result.repo}. Set the commands that test it, then file your first item.
         </p>
+        <p className="connect-repo__note">Horizon uses this token only for {result.repo}.</p>
         <ul className="connect-repo__results">
           {rows.map((row) => (
             <li key={row.key} className={row.ok ? 'connect-repo__result' : 'connect-repo__result connect-repo__result--warn'}>

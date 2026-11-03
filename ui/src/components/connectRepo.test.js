@@ -48,7 +48,9 @@ test("the token link is GitHub's fine-grained token page with the owner and ever
 })
 
 test("a refusal shows the server's message as is, else the UI's line for its code", () => {
-  expect(refusalText({ code: 'token_too_broad', serverMessage: 'This token can reach A/b.' }).text).toBe('This token can reach A/b.')
+  expect(refusalText({ code: 'token_too_broad', serverMessage: "A classic token's repo scope reaches every repository you can." }).text).toBe(
+    "A classic token's repo scope reaches every repository you can.",
+  )
   expect(refusalText({ code: 'token_too_broad', serverMessage: 'x' }).hint).toMatch(/Only select repositories/)
   expect(refusalText(Object.assign(new Error('network'))).text).toMatch(/could not be reached/)
   expect(refusalText({ code: 'not_a_tenant_project', message: 'not_a_tenant_project', serverMessage: null }).text).toMatch(/Horizon owner/)
