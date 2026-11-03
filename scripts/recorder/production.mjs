@@ -104,7 +104,7 @@ function where(url, baseOrigin) {
 }
 
 function stepLine(i, a, step) {
-  const target = a.selector ?? (a.path ? a.path.split(/[?#]/)[0] : '')
+  const target = a.selector ?? (a.path ? a.path.split(/[?#]/)[0] : a.url ?? '')
   return `${step} ${i} ${a.action}${target ? ` ${target}` : ''}${a.action === 'typeEnv' ? ` from ${a.env}` : ''}`
 }
 

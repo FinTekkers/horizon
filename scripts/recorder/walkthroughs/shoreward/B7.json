@@ -1,15 +1,19 @@
 {
   "setup": [
     {"action": "goto", "path": "/horizon/"},
-    {"action": "waitFor", "selector": ".card:has-text(\"Open-house times on every listing\")", "timeoutMs": 30000},
-    {"action": "click", "selector": ".card:has-text(\"Open-house times on every listing\")"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Add a Neighbourhoods page\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Add a Neighbourhoods page\")"},
     {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
   ],
   "actions": [
     {"action": "caption", "text": "Deploy, and see it live", "ms": 3500},
-    {"action": "waitUntil", "selector": ".step:has-text(\"Review the work & close\") .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "waitFor", "selector": ".step:has(.step-card__label:text-is(\"Review the work & close\")) .btn-gate-approve", "timeoutMs": 30000},
     {"action": "pause", "ms": 2500},
-    {"action": "click", "selector": ".step:has-text(\"Deploy the changes\") a.step-card__output-link"},
+    {"action": "gotoSite", "url": "https://parvatirealestate.github.io/parvati-site/"},
+    {"action": "waitUntil", "selector": "header a:has-text(\"Neighbourhoods\")", "timeoutMs": 900000, "reloadEveryMs": 30000},
+    {"action": "pause", "ms": 3000},
+    {"action": "click", "selector": "header a:has-text(\"Neighbourhoods\")"},
+    {"action": "waitFor", "selector": "h1:has-text(\"Neighbourhoods\")", "timeoutMs": 30000},
     {"action": "pause", "ms": 8000}
   ]
 }

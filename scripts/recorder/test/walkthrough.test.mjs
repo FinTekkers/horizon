@@ -444,3 +444,15 @@ contractTest('HZ-665: a board that draws Sign in after load fails the run with "
     await stub.close()
   }
 })
+
+test('gotoSite opens only the tenant live site, and followLink needs a selector', async () => {
+  const write = (name, actions) => writeFileSync(path.join(scenarios, `${name}.json`), JSON.stringify({ actions }))
+  write('site-ok', [{ action: 'gotoSite', url: 'https://parvatirealestate.github.io/parvati-site/' }, { action: 'followLink', selector: 'a.step-card__artifact-link' }])
+  assert.equal((await loadScenario('site-ok', scenarios)).actions.length, 2)
+  for (const [name, url] of [['site-other', 'https://example.com/'], ['site-query', 'https://parvatirealestate.github.io/parvati-site/?x=1'], ['site-other-repo', 'https://parvatirealestate.github.io/other/']]) {
+    write(name, [{ action: 'gotoSite', url }])
+    await assert.rejects(loadScenario(name, scenarios))
+  }
+  write('follow-empty', [{ action: 'followLink', selector: '' }])
+  await assert.rejects(loadScenario('follow-empty', scenarios))
+})

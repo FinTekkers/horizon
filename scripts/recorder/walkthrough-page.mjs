@@ -95,6 +95,18 @@ export async function runAction(page, action, boardUrl, { env = {}, log = () => 
     case 'goto':
       await page.goto(new URL(action.path.replace(/^\//, ''), `${boardUrl}/`).href, { waitUntil: 'load' })
       return
+    case 'followLink': {
+      const href = await page.locator(action.selector).first().getAttribute('href')
+      if (!href) throw new Error(`no link at ${action.selector}`)
+      const target = new URL(href, page.url())
+      if (target.origin !== new URL(boardUrl).origin) throw new Error('followLink opens same-origin links only')
+      await page.goto(target.href, { waitUntil: 'load' })
+      return
+    }
+    case 'gotoSite':
+      // The loader allows only SITE_URL_PREFIXES (the tenant's live site).
+      await page.goto(action.url, { waitUntil: 'load' })
+      return
     case 'click':
       await page.locator(action.selector).first().click()
       return

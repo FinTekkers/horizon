@@ -1,13 +1,15 @@
 {
   "setup": [
     {"action": "goto", "path": "/horizon/"},
-    {"action": "waitFor", "selector": ".card:has-text(\"Open-house times on every listing\")", "timeoutMs": 30000},
-    {"action": "click", "selector": ".card:has-text(\"Open-house times on every listing\")"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Add a Neighbourhoods page\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Add a Neighbourhoods page\")"},
     {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
   ],
   "actions": [
     {"action": "caption", "text": "Automated tests and review", "ms": 3500},
-    {"action": "waitUntil", "selector": ".step:has-text(\"Accept the code\") .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
-    {"action": "pause", "ms": 4000}
+    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Accept the code\")) .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 3000},
+    {"action": "followLink", "selector": ".step:has(.step-card__label:text-is(\"Automated review (code + QA)\")) a.step-card__artifact-link"},
+    {"action": "pause", "ms": 10000}
   ]
 }
