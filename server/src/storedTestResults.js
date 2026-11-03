@@ -323,28 +323,35 @@ export function renderStoredResults(round, runId, { lost = false } = {}) {
     ].join('\n\n')
   }
   const { main, branch } = round
+  // A run with no checks renders as it did before HZ-751.
+  const checked = round.state !== 'none'
   const intro = [
     `## ${STORED_RESULTS_INPUT_LABEL}`,
     runId == null
       ? 'No finished implement run was found for this item.'
       : `What the farm stored for the implement step's run #${runId}. This is the only evidence of which tests ran and how they ended; test-output files in the worktree (test-results/, build/test-results/, playwright-report/) are not.`,
-    "`main` is the repo's configured check commands. `branch` is this item's own changed scripts/checks/, run after main's. Both decide pass or fail: a failure in either fails the check. Only the final check round below is current; earlier fix rounds are listed under History.",
+    "`main` is the repo's configured check commands. `branch` is this item's own changed scripts/checks/, run after main's. Both decide pass or fail: a failure in either fails the check." +
+      (checked ? ' Only the final check round below is current; earlier fix rounds are listed under History.' : ''),
   ].join('\n\n')
-  const finalRound = [
-    '### Final check round',
-    finalRoundText(round, runId),
-    ...(round.state === 'none' ? [] : [`Horizon sets regression_tests_run from this round: ${round.regressionRan ? 'true' : 'false'}.`]),
-  ].join('\n')
+  const finalRound = checked
+    ? [
+        '### Final check round',
+        finalRoundText(round, runId),
+        `Horizon sets regression_tests_run from this round: ${round.regressionRan ? 'true' : 'false'}.`,
+      ].join('\n')
+    : ''
   const history = renderHistory(round.history)
   const room = STORED_RESULTS_MAX_CHARS - intro.length - finalRound.length - (history?.length ?? 0) - 200
-  const sections = [finalRound]
+  const sections = checked ? [finalRound] : []
   sections.push(
     main.length > 0 ? renderSection('main', main, branch.length > 0 ? Math.floor(room / 2) : room) : '### main\nNo per-test results were stored for this run.',
   )
   sections.push(
     branch.length > 0
       ? renderSection('branch', branch, Math.floor(room / 2))
-      : '### branch\nNo branch run was recorded in the final round: this item changed no configured `scripts/checks/` script, or its branch run checked another commit.',
+      : checked
+        ? '### branch\nNo branch run was recorded in the final round: this item changed no configured `scripts/checks/` script, or its branch run checked another commit.'
+        : '### branch\nNo branch run was recorded: this item changed no configured `scripts/checks/` script.',
   )
   if (history) sections.push(history)
   return [intro, ...sections].join('\n\n').slice(0, STORED_RESULTS_MAX_CHARS)
