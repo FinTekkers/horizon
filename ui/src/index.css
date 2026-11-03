@@ -932,6 +932,13 @@ button { font-family: var(--font-sans); }
   background: var(--danger-bg-soft); border: 1px solid var(--danger-border-soft); border-radius: 12px;
 }
 .pause-banner__title { font: 700 13px var(--font-sans); color: var(--danger-ink); margin-bottom: 3px; }
+/* HZ-717: the farm can't be reached — a warning, not an error on this item. */
+.pause-banner--farm { background: var(--warning-bg-soft); border-color: var(--warning-border-soft); }
+.pause-banner--farm .pause-banner__title { color: var(--warning-ink); }
+.pause-banner__link {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font: 700 12.5px var(--font-sans); color: var(--primary-ink); text-decoration: underline;
+}
 .pause-banner__detail { font: 500 12.5px var(--font-sans); color: var(--deep); line-height: 1.5; }
 .pause-banner__cause { white-space: pre-line; }
 .pause-banner__meta { font: 600 12px var(--font-sans); color: var(--muted-strong); margin-top: 6px; }
