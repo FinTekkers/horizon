@@ -65,6 +65,7 @@ from . import (
     screenshot_runner,
     screenshots_config,
     targeted_checks,
+    task_clone,
     task_job,
 )
 from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
@@ -245,6 +246,12 @@ READ_ONLY_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, ARCH_REVIEW_LABEL, 
 # HZ-383: every Task step on the farm lane is held read-only the same way.
 # HZ-413: the Task's PM steps keep no workspace, so they are not listed.
 TASK_READ_ONLY_LABELS = frozenset({ASSESS_LABEL, RUN_PLAN_LABEL, IMPACT_REVIEW_LABEL, VERIFY_REPORT_LABEL})
+# HZ-738: the Task steps that fast-forward the task clone before they read,
+# and how long one waits for a running Execute's shared lock before failing.
+TASK_CLONE_REFRESH_LABELS = frozenset({ASSESS_LABEL, RUN_PLAN_LABEL, IMPACT_REVIEW_LABEL})
+# Of those, the ones whose agent reads the item worktree, not the clone.
+TASK_WORKTREE_REFRESH_LABELS = frozenset({ASSESS_LABEL, IMPACT_REVIEW_LABEL})
+TASK_CLONE_WAIT_S = 30
 # HZ-446: every Plan step on the farm lane too.
 PLAN_READ_ONLY_LABELS = frozenset(PLAN_FARM_LABELS)
 # Keyed by kind; a kind with no entry reads the change set, as before.
@@ -2058,6 +2065,43 @@ def _requires_recheck(kind: str, label: str, task: dict):
     return recheck
 
 
+def _refresh_task_clone(kind: str, label: str, task: dict, item: dict, ws: Path | None) -> str | None:
+    """HZ-738: Assess, Run plan and Impact review read main as it is now,
+    not as the last Execute left it. Fast-forwards the target's task clone
+    (task_clone.refresh: fetch and fast-forward only, under the exclusive
+    clone lock) and logs `task clone HEAD: <sha>`, as Execute does. Returns
+    the sha, or None when the step has no task clone — a repoDir checkout is
+    never touched. The kind is matched by its table, never by name.
+
+    Assess and Impact review read the item worktree, so it is moved to the
+    same sha, detached — unless the step runs on a `checkout_sha` (HZ-379).
+    That needs the task clone: a repo without a taskDir keeps today's
+    worktree. Run before the read-only guard's baseline, under the item_lock
+    execute() holds. A refused or busy clone fails the step with its one
+    line, before any agent runs."""
+    if STEP_CONFIGS.get(kind) is not TASK_STEP_CONFIG or label not in TASK_CLONE_REFRESH_LABELS:
+        return None
+    if not task.get("task_clone"):
+        return None
+    try:
+        sha = task_clone.refresh(task.get("repo_dir"), forbid=str(task_job.HORIZON_ROOT), wait_s=TASK_CLONE_WAIT_S)
+    except run_plan.CwdRefused as exc:
+        reason = str(exc).splitlines()[0] if str(exc) else "task clone refused"
+        log(f"{label}: {reason}")
+        raise AgentError(reason) from None
+    log(f"task clone HEAD: {sha}")
+    if ws is not None and label in TASK_WORKTREE_REFRESH_LABELS and not task.get("checkout_sha"):
+        try:
+            checkout_detached(item["repo"], item["id"], sha)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            if git(ws, "cat-file", "-e", f"{sha}^{{commit}}", check=False).returncode != 0:
+                raise AgentError(f"workspace cannot reach task clone HEAD {sha[:12]}") from None
+            reason = (str(exc).splitlines() or [type(exc).__name__])[0]
+            raise AgentError(f"workspace checkout of task clone HEAD {sha[:12]} failed: {reason}") from None
+        log(f"workspace {ws} checked out at {sha[:12]} (origin/main, same as the task clone)")
+    return sha
+
+
 def _prior_inventory(task: dict, scope: list[str]) -> dict:
     """HZ-447: the validated Inventory block among the prior artifacts."""
     for artifact in reversed(task.get("artifacts") or []):
@@ -3163,6 +3207,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     if ws is not None and isinstance(task.get("checkout_sha"), str) and task["checkout_sha"]:
         checkout_detached(item["repo"], item["id"], task["checkout_sha"])
         log(f"workspace {ws} checked out at {task['checkout_sha'][:12]} (the deployed code it waited for)")
+    # HZ-738: before the guard's baseline too, and before the agent starts.
+    _refresh_task_clone(kind, label, task, item, ws)
 
     # Implement step without a repo/workspace: nothing real to build.
     if label == IMPLEMENT_LABEL:

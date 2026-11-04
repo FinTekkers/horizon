@@ -701,6 +701,8 @@
     "APPROVE_RUN_GATE_INDEX": [{ "case": "points at the task's approve-the-run gate", "expectLabel": "Approve the run" }],
     "EXECUTE_STEP_INDEX": [{ "case": "points at the task's execute step", "expectLabel": "Execute" }],
     "VERIFY_REPORT_STEP_INDEX": [{ "case": "points at the task's verify step", "expectLabel": "Verify & report" }],
+    "ASSESS_STEP_INDEX": [{ "case": "points at the task's assess step", "expectLabel": "Assess" }],
+    "IMPACT_REVIEW_STEP_INDEX": [{ "case": "points at the task's impact review step", "expectLabel": "Impact review" }],
     "APPROVE_FILE_GATE_INDEX": [{ "case": "points at the plan's approve-and-file gate", "expectLabel": "Approve & file" }],
     "PLAN_DRAFT_STEP_INDEX": [{ "case": "points at the plan's draft items step", "expectLabel": "Draft items" }],
     "FILE_ITEMS_STEP_INDEX": [{ "case": "points at the plan's file items step", "expectLabel": "File items" }],
