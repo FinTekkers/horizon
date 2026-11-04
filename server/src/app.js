@@ -8,6 +8,8 @@ import fastifyCookie from '@fastify/cookie'
 import { fastifySwagger } from '@fastify/swagger'
 import crypto from 'node:crypto'
 import * as store from './store.js'
+import { dismissAsk, fileAsk } from './asks.js'
+import { linkSpawned, spawnItems } from './spawn.js'
 import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
@@ -2268,6 +2270,68 @@ export function buildApp({
       },
     },
     (request, reply) => send(reply, store.removeDependency(request.params.id, request.body.dependsOnId, actorOf(request))),
+  )
+
+  // HZ-730: the owner acts on one open ask (server/src/asks.js). Both need a
+  // browser session and the gate PIN, so an API token can neither file nor
+  // dismiss. File it files on the repo the ask names, re-checked against the
+  // item's project; Dismiss queues the reason for the item's next agent step.
+  const askParams = {
+    type: 'object',
+    required: ['id', 'askId'],
+    properties: { id: { type: 'string', minLength: 1 }, askId: { type: 'integer', minimum: 1 } },
+  }
+  const ASK_RESPONSES = { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 422: ERROR_OBJECT, 502: ERROR_OBJECT }
+  const sendAsk = (reply, { status = 409, ...result }) => (result.error ? reply.code(status).send(result) : reply.send(result))
+
+  fastify.post(
+    '/api/items/:id/asks/:askId/file',
+    { config: { scope: 'member:item' }, schema: { params: askParams, response: ASK_RESPONSES, security: HUMAN_GATE_SECURITY } },
+    async (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      const repos = store
+        .listRepos()
+        .filter((r) => item.project_id != null && r.project_id === item.project_id)
+        .map((r) => r.repo)
+      const result = await fileAsk(item, request.params.askId, { repos, actor: actorOf(request), spawnItems, linkSpawned })
+      // spawnItems already wrote the "filed HZ-x" events on both items.
+      if (result.ok) store.notifyChange()
+      return sendAsk(reply, result)
+    },
+  )
+
+  fastify.post(
+    '/api/items/:id/asks/:askId/dismiss',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: askParams,
+        body: {
+          type: 'object',
+          required: ['reason'],
+          properties: { reason: { type: 'string', maxLength: 500 } },
+        },
+        response: ASK_RESPONSES,
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      const result = dismissAsk(item, request.params.askId, {
+        reason: request.body.reason,
+        actor: actorOf(request),
+        queueFeedbackOnce: store.queueFeedbackOnce,
+      })
+      if (result.ok && !result.alreadyDismissed) {
+        store.addEvent(item.id, { who: actorOf(request), text: `dismissed the ask “${result.title}”: ${result.reason}`, color: '#9C333E', initials: 'HZ' })
+        store.notifyChange()
+      }
+      return sendAsk(reply, result.ok ? { ok: true, ...(result.alreadyDismissed ? { alreadyDismissed: true } : {}) } : result)
+    },
   )
 
   // Confirm/override one agent's specialist persona (the PM proposes the Eng

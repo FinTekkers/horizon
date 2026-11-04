@@ -162,8 +162,10 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/autopilot-off': { payload: { off: true } },
   'POST /api/items/:id/phases/:phase/restart': { payload: {} },
   'POST /api/items/:id/abandon': { payload: { reason: 'drop it' } },
+  'POST /api/items/:id/asks/:askId/file': { payload: {} },
+  'POST /api/items/:id/asks/:askId/dismiss': { payload: { reason: 'covered elsewhere' } },
 }
-const fillUrl = (url, id) => url.replace(':id', id).replace(':stepIndex', String(PRIORITIZE_GATE)).replace(':phase', '1')
+const fillUrl = (url, id) => url.replace(':id', id).replace(':stepIndex', String(PRIORITIZE_GATE)).replace(':phase', '1').replace(':askId', '1')
 
 test('overlap spy is live: a member sending their own item back to step 9 runs the overlap check', async () => {
   const res = await post(`/api/items/${ALPHA_REVIEW}/reject`, m, { feedback: 'redo the summary', targetStepIndex: SUMMARIZE })
@@ -181,7 +183,7 @@ test('metric 1: a non-member gets exactly 404 on every member:item route; nothin
     .filter((r) => r.scope === 'member:item' && r.method !== 'GET' && r.method !== 'HEAD')
     .map((r) => `${r.method} ${r.url}`)
   assert.deepEqual(routes.sort(), Object.keys(MEMBER_ITEM_ROUTES).sort())
-  assert.equal(routes.length, 16)
+  assert.equal(routes.length, 18)
 
   const overlapBefore = overlapCalls
   const before = snapshot()

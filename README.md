@@ -172,6 +172,13 @@ because HZ-77 has nothing to render until HZ-76's categories exist.
   remedy is explicit: remove the dependency, or add a replacement one.
 * **Multiple blockers are supported.** An item can depend on more than one
   other item; it stays held until every one of them has merged or closed.
+* **Accepted blocking asks add one (HZ-730).** When the owner presses
+  **File it** on a blocking ask (`docs/workflow.md`, "Asks"), Horizon files
+  the ask's draft as a new item and adds the dependency asking item → new
+  item through `addDependency`, like any other edge: the same cycle and
+  abandoned-blocker checks, and it is removed the same way. Filing is keyed
+  on the ask, so a second File it adds no second item or edge. A soft ask
+  never adds a dependency.
 
 Implementation: `work_item_dependency` (server/src/db.js) is an additive
 table, not a column — no `CHECK` constraint on `work_item` or `step_run` is

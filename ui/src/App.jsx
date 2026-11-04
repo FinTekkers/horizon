@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
-import { STEPS, IMPLEMENT_STEP_INDEX, APPROVE_FILE_GATE_INDEX, awaitingGate, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
+import { STEPS, IMPLEMENT_STEP_INDEX, APPROVE_FILE_GATE_INDEX, awaitingGate, isClosed, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
 import { substepReworkTargets } from '../../domain/js/substeps.js'
 import TopBar from './components/TopBar'
 import BottomNav from './components/BottomNav'
@@ -8,6 +8,8 @@ import { MOBILE_QUERY, useMediaQuery } from './useMediaQuery'
 import Board from './components/Board'
 import Tracker from './components/Tracker'
 import ApprovalsDrawer from './components/ApprovalsDrawer'
+import FollowUpsPage, { softAsks } from './components/FollowUpsPage'
+import { blockingAsks } from './components/BlockingAsksBanner'
 import ComposerModal from './components/ComposerModal'
 import ConfirmGateDialog from './components/ConfirmGateDialog'
 import ResolveConflictsDialog from './components/ResolveConflictsDialog'
@@ -120,6 +122,7 @@ function parsePath(pathname) {
   }
   if (seg.toLowerCase() === 'definitions') return { view: 'definitions', id: null }
   if (seg.toLowerCase() === 'farm-health') return { view: 'farm-health', id: null }
+  if (seg.toLowerCase() === 'follow-ups') return { view: 'follow-ups', id: null }
   if (Object.hasOwn(LEGAL_DOCS, seg.toLowerCase())) return { view: 'legal', id: seg.toLowerCase() }
   return { view: 'tracker', id: seg.toUpperCase() }
 }
@@ -319,8 +322,13 @@ function AuthenticatedApp({ user, onLogout }) {
   // ends. Both pending sets clear when the request errors, so it comes back.
   // HZ-360: nor is an item queued to merge behind a Horizon deploy.
   const isPendingApproval = (item) => awaitingGate(item) && !isGateBusy(item) && !queuedToMerge(item, deployBlock)
+  // HZ-730: an item's open blocking asks wait on a human too, so they count
+  // and light the button. Closed and abandoned items show no banner, so none.
+  const hasBlockingAsks = (item) => !isClosed(item) && !item.abandoned_at && blockingAsks(item).length > 0
   // Every enabled project's pending gates, whatever the filter shows.
-  const pendingCount = items.filter(isPendingApproval).length
+  const pendingCount =
+    items.filter(isPendingApproval).length + items.filter(hasBlockingAsks).reduce((n, item) => n + blockingAsks(item).length, 0)
+  const followUpCount = visibleItems.reduce((n, item) => n + softAsks(item).length, 0)
 
   const openResolveDialog = (itemId, pr) => {
     const item = items.find((it) => it.id === itemId)
@@ -395,6 +403,11 @@ function AuthenticatedApp({ user, onLogout }) {
   const openFarmHealth = () => {
     navigate('/farm-health')
     setView('farm-health')
+    setApprovalsOpen(false)
+  }
+  const openFollowUps = () => {
+    navigate('/follow-ups')
+    setView('follow-ups')
     setApprovalsOpen(false)
   }
   // HZ-547: the "From Plan" chip and pill — the board, filtered to that Plan.
@@ -553,6 +566,9 @@ function AuthenticatedApp({ user, onLogout }) {
         }}
         onOpenFarmHealth={openFarmHealth}
         farmHealthState={farmHealth.data?.state ?? null}
+        followUpCount={followUpCount}
+        followUpsHref={`${PREFIX}/follow-ups`}
+        onOpenFollowUps={openFollowUps}
       />
 
       {isMobile && (
@@ -629,6 +645,8 @@ function AuthenticatedApp({ user, onLogout }) {
           <div className="admin">Farm health is open to admins only.</div>
         ))}
 
+      {view === 'follow-ups' && <FollowUpsPage items={visibleItems} onOpenItem={openItem} />}
+
       {view === 'tracker' && selected && (
         <Tracker
           item={selected}
@@ -676,6 +694,7 @@ function AuthenticatedApp({ user, onLogout }) {
       {approvalsOpen && (
         <ApprovalsDrawer
           items={visibleItems.filter(isPendingApproval)}
+          askItems={visibleItems.filter(hasBlockingAsks)}
           onClose={() => setApprovalsOpen(false)}
           onOpenItem={openItem}
           onApprove={requestApprove}

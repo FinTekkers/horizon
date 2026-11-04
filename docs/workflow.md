@@ -154,6 +154,43 @@ change, the cursor.
 7. Once `cursor` passes index 15 (the last step), `isClosed(item)` is `true`
    and the item is done.
 
+## Asks
+
+A step's reply may carry **asks**: complete drafts of work it wants filed
+(HZ-728), each reviewed once by the ask reviewer (HZ-729). The owner acts on
+them (HZ-730):
+
+- **Blocking asks** are work the item needs first. They show prominently: a
+  banner on the item page ("This item needs “…” filed first") and a
+  **Blocking asks** section at the top of the Approvals drawer. They count
+  towards the Pending approvals number.
+- **Soft asks** are suggested follow-ups. They show quietly, under
+  **Suggested follow-ups** on the item, and on the project-wide
+  **Follow-ups** page (`/follow-ups`, linked from the top bar), for triage in
+  batches.
+- Each ask shows its draft (title, repo, outcome, success metric,
+  guardrails), the step that raised it by name, why, and the reviewer's
+  verdict and reasons, or **Not reviewed yet**. When the verdict is `amend`
+  the card shows the reviewer's amended draft, and that is what gets filed.
+
+Two actions, both needing a browser session and the gate PIN (an API token
+cannot file or dismiss):
+
+- **File it** files the draft as a new item on the repo the ask names, and
+  only if that repo is connected to the asking item's project. The draft is
+  re-checked first: no token, secret or host path, and the issue body holds
+  the plan text only. For a blocking ask the new item becomes a dependency of
+  the asking item, which then waits for it (see the Dependencies section of
+  `README.md`). A soft ask adds no dependency. File it waits for the review:
+  an ask with no verdict yet is refused; an `escalate` verdict is the
+  owner's call. A second File it files nothing new and links nothing new.
+- **Dismiss** needs a reason. The ask closes, and the reason is queued as
+  feedback for the asking item's next agent step, addressed to the agent of
+  the step that raised it and naming that step.
+
+A PM split (an ask of kind `split`) stays read-only: it is filed at its own
+gate, as before.
+
 ## Two things that can interrupt "ever-forward"
 
 - **Paused.** A human can pause an item at any point (a UI action, tracked

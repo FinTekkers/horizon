@@ -316,6 +316,15 @@ mode you chose. Items from the repo's open issues start moving on the board.
 Enter the PIN again. To stop everything at once, turn the switch back to
 **`Disabled`**. Nothing new is dispatched for the project after that.
 
+**Triaging Suggested follow-ups.** Once items move, steps may suggest
+follow-up work (soft asks). Open **`Follow-ups`** in the top bar
+(`/follow-ups`) to see them all, grouped by item, and work through them in a
+batch: **File it** files one as a new item on its repo, and **Dismiss** asks
+for a reason, which the item's next agent step reads. Both ask for your PIN.
+The page lists only the items the board has loaded, so the project filter
+applies: choose the project first. Blocking asks are not listed there; they
+show on their item and in Pending approvals.
+
 Now go back to step 5 if you skipped it, then finish step 7's Dry run.
 
 ## 9. File and watch a first small item

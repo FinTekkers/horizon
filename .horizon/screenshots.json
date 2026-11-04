@@ -50,6 +50,9 @@
     {"name": "journey-live-feed", "path": "/js-live", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".activity-row__text:has-text(\"completed “Plan options & trade-offs (pros / cons)”\")"},
     {"name": "journey-plan-pill", "path": "/js-pf-1", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": "a:has-text(\"From Plan JS-PLAN-DONE · 1 of 3 done\")"},
     {"name": "journey-plan-board", "path": "/?plan=JS-PLAN-DONE", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": ".board__plan-chip:has-text(\"JS-PLAN-DONE\")"},
+    {"name": "asks-item-banner", "path": "/as-730", "waitFor": ".ask-banner .ask-card__verdict:has-text(\"Reviewer: accept\")"},
+    {"name": "asks-approvals", "path": "/?approvals", "waitFor": ".approval--ask .ask-card__title:has-text(\"Publish script must use the bot identity\")"},
+    {"name": "asks-follow-ups", "path": "/follow-ups", "waitFor": ".follow-ups__group .ask-card__amended"},
     {"name": "journey-farm-health", "path": "/farm-health", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": "[aria-label=\"Overall\"][data-state=\"red\"]", "mask": [".farm-health__refresh", ".farm-health__overall-meta", ".farm-health__card--box", ".farm-health__svc-count", ".farm-health__services", ".farm-health__event-at"]}
   ]
 }

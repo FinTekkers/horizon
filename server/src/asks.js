@@ -5,13 +5,20 @@
 // `ask` table, linked to the item and the step run. A PM `split` is recorded
 // here too, as an ask of kind 'split'.
 //
-// Recorded and shown only: nothing here calls GitHub, adds a dependency or
-// touches a gate. A refused ask is never fatal — the step's artifact and its
-// valid asks are still stored, and the artifact's `## Asks` section names the
-// field that failed.
+// A refused ask is never fatal — the step's artifact and its valid asks are
+// still stored, and the artifact's `## Asks` section names the field that
+// failed.
+//
+// HZ-730: the owner acts on an open ask. fileAsk files its draft (the
+// reviewer's amended one when there is one) through the injected spawnItems
+// and, for a blocking ask, links it as a dependency through the injected
+// linkSpawned. dismissAsk closes it with a reason, queued for the item's next
+// agent step through the injected queueFeedbackOnce. Nothing here touches a
+// gate.
 //
 // Depends on db.js and leaf modules only; callers pass in what it needs (the
-// connected repos) and write the events, so nothing here imports store.js.
+// connected repos, the spawn and feedback calls) and write the events, so
+// nothing here imports store.js or spawn.js.
 
 import { db } from './db.js'
 import { redact } from './caretakerRules.js'
@@ -21,7 +28,7 @@ import { fieldByName } from '../../domain/js/fields.js'
 
 // What an agent may send. 'split' is written by recordSplitAsk only. The
 // status column has no CHECK, so later items can add their own; this module
-// writes 'open' and 'superseded'.
+// writes 'open', 'superseded', 'filed' and 'dismissed'.
 export const ASK_KINDS = ['blocking', 'soft']
 export const MAX_ASKS = 8
 export const METRIC_MIN_LINES = 3
@@ -53,6 +60,18 @@ const selectOpen = db.prepare(
      FROM ask a LEFT JOIN ask_review r ON r.ask_id = a.id
     WHERE a.item_id = ? AND a.status = 'open' ORDER BY a.id DESC`,
 )
+
+// HZ-730: who resolved an ask, and how. 'filed' is set by id whatever the
+// status, so an ask a step re-run superseded mid-filing still names its item.
+const selectAsk = db.prepare('SELECT * FROM ask WHERE id = ? AND item_id = ?')
+const selectReviewOf = db.prepare('SELECT status, verdict, amended_draft_json FROM ask_review WHERE ask_id = ?')
+const markFiled = db.prepare(
+  "UPDATE ask SET status = 'filed', filed_item_id = ?, resolved_by = ?, resolved_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+)
+const markDismissed = db.prepare(
+  "UPDATE ask SET status = 'dismissed', dismiss_reason = ?, resolved_by = ?, resolved_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND status = 'open'",
+)
+export const DISMISS_REASON_MAX = 500
 
 export const stepLabel = (stepIndex) => STEPS[stepIndex]?.label ?? 'an unknown step'
 
@@ -209,4 +228,85 @@ export function openAsks(itemId) {
       review: reviewOf(row),
     }
   })
+}
+
+// ---- HZ-730: File it and Dismiss ----
+
+// The item_spawn request key one ask files under. One key per ask, so a
+// second File it finds the first one's row and files nothing.
+export const askRequestKey = (askId) => `ask:${askId}`
+
+export const getAsk = (itemId, askId) => selectAsk.get(askId, itemId) ?? null
+
+// The draft File it would file: the reviewer's amended draft when the verdict
+// is amend, else the ask's own.
+function chosenDraft(row, review) {
+  const amended = review?.verdict === 'amend' && review.amended_draft_json ? parseJson(review.amended_draft_json, null) : null
+  return amended ?? parseDraft(row.draft_json)
+}
+
+// The draft re-checked at file time, as at ingest: secrets, host paths, the
+// field limits, the metric's line count, and the repo against the project's
+// connected repos. { draft } or { error, status, field }.
+export function effectiveDraft(row, review, { repos = [] } = {}) {
+  const draft = chosenDraft(row, review)
+  const raw = { kind: 'soft', why: row.why, ...Object.fromEntries(DRAFT_FIELDS.map((f) => [f, Object.hasOwn(draft, f) ? draft[f] : undefined])) }
+  // Text first, with the draft's own repo let through; then the project check,
+  // so a foreign repo is named as such rather than as a bad field.
+  const checked = validateAsk(raw, { repos: typeof raw.repo === 'string' ? [raw.repo.trim()] : [] })
+  if (checked.refused) return { error: 'draft_invalid', status: 422, field: checked.refused.field, message: `\`${checked.refused.field}\` ${checked.refused.message}` }
+  const connected = repos.find((r) => r.toLowerCase() === checked.ask.repo.toLowerCase())
+  if (!connected) return { error: 'repo_not_in_project', status: 409, message: `${checked.ask.repo} is not connected to this item’s project` }
+  return { draft: { ...Object.fromEntries(DRAFT_FIELDS.map((f) => [f, checked.ask[f]])), repo: connected } }
+}
+
+// Files one open blocking or soft ask. spawnItems files under the ask's own
+// request key (a retry after a half-finished call files nothing new) and a
+// blocking ask's item becomes a dependency of the asking item. The ask must
+// have been reviewed first (HZ-729); an escalated ask is the owner's call.
+// { ok, itemId, alreadyFiled, dependencyAdded } or { error, status }.
+export async function fileAsk(item, askId, { repos = [], actor = 'Horizon', spawnItems, linkSpawned }) {
+  const row = getAsk(item.id, askId)
+  if (!row) return { error: 'not_found', status: 404 }
+  if (!ASK_KINDS.includes(row.kind)) return { error: 'ask_not_fileable', status: 409, message: 'A split is filed at its own gate.' }
+  if (row.status === 'filed') return { ok: true, itemId: row.filed_item_id, alreadyFiled: true, dependencyAdded: false }
+  if (row.status !== 'open') return { error: 'ask_closed', status: 409, message: `This ask is ${row.status}.` }
+  const review = selectReviewOf.get(row.id)
+  if (!review?.verdict) return { error: 'ask_not_reviewed', status: 409, message: 'This ask has not been reviewed yet.' }
+  const checked = effectiveDraft(row, review, { repos })
+  if (checked.error) return checked
+  const key = askRequestKey(row.id)
+  const blocking = row.kind === 'blocking'
+  const filed = await spawnItems(item, [checked.draft], { requestKey: key, kind: 'change', actor, waits: blocking })
+  if (filed.error) return filed
+  const itemId = filed.children[0]
+  let dependencyAdded = false
+  if (blocking) {
+    const linked = linkSpawned(item.id, key)
+    if (linked.error) return { error: 'link_failed', status: 409, message: linked.error }
+    dependencyAdded = true
+  }
+  markFiled.run(itemId, actor, row.id)
+  return { ok: true, itemId, alreadyFiled: false, dependencyAdded }
+}
+
+// Closes one open ask with the owner's reason and queues that reason for the
+// asking item's next agent step, addressed to the agent of the step that
+// asked. One transaction. { ok, alreadyDismissed? } or { error, status }.
+export function dismissAsk(item, askId, { reason, actor = 'Horizon', queueFeedbackOnce }) {
+  const text = redact(String(reason ?? ''), { oneLine: true }).trim()
+  if (!text) return { error: 'reason_required', status: 400, message: 'Say why the ask is dismissed.' }
+  if (text.length > DISMISS_REASON_MAX) return { error: 'reason_too_long', status: 400, message: `At most ${DISMISS_REASON_MAX} characters.` }
+  const row = getAsk(item.id, askId)
+  if (!row) return { error: 'not_found', status: 404 }
+  if (row.status === 'dismissed') return { ok: true, alreadyDismissed: true }
+  if (row.status !== 'open') return { error: 'ask_closed', status: 409, message: `This ask is ${row.status}.` }
+  const title = parseDraft(row.draft_json).title ?? ''
+  const message = `Owner dismissed the ask “${title}” from “${stepLabel(row.step_index)}”: ${text}`
+  return db.transaction(() => {
+    if (markDismissed.run(text, actor, row.id).changes === 0) return { error: 'ask_closed', status: 409, message: 'This ask is no longer open.' }
+    const queued = queueFeedbackOnce(item.id, { message, target: STEPS[row.step_index]?.agent ?? 'Eng', source: 'ask' })
+    if (queued.error) throw new Error(`could not queue the reason: ${queued.error}`)
+    return { ok: true, title, reason: text }
+  })()
 }

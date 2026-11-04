@@ -2,6 +2,8 @@ import { phasesFor, itemKindOf, curStep, phaseIdx, awaitingGate, ACCEPT_GATE_IND
 import { stepLabel } from '../../../domain/js/substeps.js'
 import { LockIcon } from './icons'
 import { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
+import AskCard from './AskCard'
+import { blockingAsks } from './BlockingAsksBanner'
 
 // HZ-544: what Autopilot would have done at this gate, from the server's
 // item.autopilotWouldHave (an evaluation at the item's current gate only).
@@ -21,12 +23,16 @@ function autopilotOffNote(item) {
   return `Waiting for you because Autopilot is off for this item.${tail}`
 }
 
-export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove, onReject }) {
+// HZ-730: `askItems` are items with open blocking asks; each ask is listed
+// first, under "Blocking asks", to file or dismiss in place.
+export default function ApprovalsDrawer({ items, askItems = [], onClose, onOpenItem, onApprove, onReject }) {
   const pending = items.filter(awaitingGate)
-  const headline =
-    pending.length > 0
-      ? `${pending.length} gate${pending.length > 1 ? 's' : ''} waiting on a human decision`
-      : 'Nothing waiting on you'
+  const asks = askItems.flatMap((item) => blockingAsks(item).map((ask) => ({ item, ask })))
+  const parts = [
+    pending.length > 0 && `${pending.length} gate${pending.length > 1 ? 's' : ''}`,
+    asks.length > 0 && `${asks.length} blocking ask${asks.length > 1 ? 's' : ''}`,
+  ].filter(Boolean)
+  const headline = parts.length > 0 ? `${parts.join(' and ')} waiting on a human decision` : 'Nothing waiting on you'
 
   return (
     <div className="drawer">
@@ -42,6 +48,22 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
           </button>
         </div>
         <div className="drawer__list">
+          {asks.length > 0 && (
+            <section className="approval-asks" aria-label="Blocking asks">
+              <div className="approval-asks__label">Blocking asks</div>
+              {asks.map(({ item, ask }) => (
+                <div key={ask.id} className="approval approval--ask" data-testid="approval-ask">
+                  <div className="approval__meta">
+                    <span className="approval__id">{item.id}</span>
+                  </div>
+                  <div className="approval__title" onClick={() => onOpenItem(item.id)}>
+                    {item.title}
+                  </div>
+                  <AskCard item={item} ask={ask} compact />
+                </div>
+              ))}
+            </section>
+          )}
           {pending.map((item) => {
             const cur = curStep(item)
             // HZ-540: the sub-step's label when the item is at one.
@@ -90,7 +112,7 @@ export default function ApprovalsDrawer({ items, onClose, onOpenItem, onApprove,
               </div>
             )
           })}
-          {pending.length === 0 && (
+          {pending.length === 0 && asks.length === 0 && (
             <div className="all-clear">
               <div className="all-clear__icon">✓</div>
               <div className="all-clear__title">All clear</div>

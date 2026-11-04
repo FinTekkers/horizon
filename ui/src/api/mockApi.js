@@ -806,6 +806,24 @@ export function restartPhase(id, phase, reason) {
   runAgents(id)
 }
 
+// HZ-730: the demo has no repos to file on, so File it only closes the ask,
+// as Dismiss does; both drop it from the item's open asks.
+function closeAsk(itemId, askId) {
+  if (!items.some((x) => x.id === itemId)) throw new Error('not_found')
+  update(itemId, (x) => ({ ...x, asks: (x.asks || []).filter((a) => a.id !== askId) }))
+}
+
+export async function fileAsk(itemId, askId) {
+  closeAsk(itemId, askId)
+  return { ok: true, itemId: null, alreadyFiled: false, dependencyAdded: false }
+}
+
+export async function dismissAsk(itemId, askId, reason) {
+  if (!String(reason ?? '').trim()) throw Object.assign(new Error('reason_required'), { status: 400 })
+  closeAsk(itemId, askId)
+  return { ok: true }
+}
+
 // Soft delete (HZ-59) — mock mirror of store.abandonItem: stops dispatch by
 // clearing the mock agent timer and setting abandoned_at. HZ-354:
 // removeDependentLinks drops every edge where this item is the blocker, on

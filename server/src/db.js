@@ -1552,6 +1552,16 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   db.exec('ALTER TABLE project ADD COLUMN ask_review_provider TEXT')
 }
 
+// HZ-730: how the owner resolved an ask — File it ('filed', with the item it
+// created) or Dismiss ('dismissed', with the reason). Nullable, no default: an
+// older row reads as unresolved. The review stays in ask_review.
+{
+  const askColumns = new Set(db.prepare('PRAGMA table_info(ask)').all().map((column) => column.name))
+  for (const column of ['filed_item_id', 'dismiss_reason', 'resolved_by', 'resolved_at']) {
+    if (!askColumns.has(column)) db.exec(`ALTER TABLE ask ADD COLUMN ${column} TEXT`)
+  }
+}
+
 // HZ-379: items one parent filed for itself (server/src/spawn.js) — a Task's
 // Assess asking for code today, a list of items from one idea later. One row
 // per item to file: seq is its place in the request's list, and

@@ -803,10 +803,78 @@ button { font-family: var(--font-sans); }
   font: 700 11px var(--font-sans); letter-spacing: 1px; text-transform: uppercase;
   margin-bottom: 6px; color: var(--primary-ink);
 }
-.asks-panel__list { margin: 0; padding-left: 18px; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
-.asks-panel__ask + .asks-panel__ask { margin-top: 6px; }
+.asks-panel__list { margin: 0; padding: 0; list-style: none; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
+.asks-panel__ask + .asks-panel__ask { margin-top: 8px; }
 .asks-panel__kind { font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
-.asks-panel__kind--blocking { color: var(--danger-ink); }
+/* HZ-730: one ask the owner can file or dismiss — the item page's banner and
+   Suggested follow-ups, the Approvals drawer and the Follow-ups page. */
+.ask-card {
+  border-radius: 12px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border);
+  font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; min-width: 0;
+}
+.ask-card + .ask-card { margin-top: 8px; }
+.ask-card__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.ask-card__title { font-weight: 700; overflow-wrap: anywhere; }
+.ask-card__repo { font: 500 12px var(--font-mono); color: var(--muted-strong); overflow-wrap: anywhere; }
+.ask-card__why { color: var(--muted-strong); overflow-wrap: anywhere; }
+.ask-card__step { font-weight: 700; }
+.ask-card__review { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; font-size: 12px; }
+.ask-card__verdict {
+  font-weight: 700; border-radius: 6px; padding: 1px 7px; background: var(--chip); color: var(--muted-strong);
+}
+.ask-card__verdict--accept { background: var(--success-bg); color: var(--success-ink); }
+.ask-card__verdict--amend { background: var(--primary-bg); color: var(--primary-ink); }
+.ask-card__verdict--escalate { background: var(--warning-bg); color: var(--warning-ink); }
+.ask-card__amended { font-weight: 700; color: var(--primary-ink); }
+.ask-card__reasons { color: var(--muted-strong); overflow-wrap: anywhere; }
+.ask-card__draft { margin: 8px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; }
+.ask-card__draft dt { font-weight: 700; color: var(--muted-strong); font-size: 12px; }
+.ask-card__draft dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
+.ask-card__more { margin-top: 6px; }
+.ask-card__more summary { cursor: pointer; font-weight: 700; color: var(--primary-ink); font-size: 12px; }
+.ask-card__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ask-card__actions button { min-height: 36px; }
+.ask-card__actions .btn-approve:disabled, .ask-card__actions .btn-reject:disabled { opacity: 0.5; cursor: default; }
+.ask-card__cancel {
+  flex: 1; cursor: pointer; border-radius: 9px; padding: 9px; font: 700 12px var(--font-sans);
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted-strong);
+}
+.ask-card__reason {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 10px; padding: 8px 10px; border-radius: 9px;
+  border: 1.5px solid var(--border-strong); background: var(--surface); color: var(--deep); font: 500 13px var(--font-sans);
+  resize: vertical;
+}
+.ask-card__error { margin-top: 6px; color: var(--danger-ink); font-weight: 700; overflow-wrap: anywhere; }
+.ask-banner {
+  margin-top: 14px; border-radius: 14px; padding: 12px 16px;
+  background: var(--warning-bg); border: 1px solid var(--warning-border-soft); color: var(--warning-ink);
+}
+.ask-banner__ask + .ask-banner__ask { margin-top: 12px; }
+.ask-banner__headline { font: 700 14px var(--font-sans); margin-bottom: 8px; overflow-wrap: anywhere; }
+.approval-asks__label {
+  font: 700 11px var(--font-sans); letter-spacing: 1px; text-transform: uppercase; color: var(--warning-ink); margin: 4px 0 8px;
+}
+.approval--ask { border-left: 4px solid var(--warning-ink); }
+.followups-link {
+  display: inline-flex; align-items: center; gap: 8px; border-radius: 11px; padding: 9px 14px;
+  font: 700 13px var(--font-sans); background: var(--chip); color: var(--muted); text-decoration: none;
+}
+.followups-link--on { background: var(--primary-bg); color: var(--primary-ink); }
+.followups-link__badge {
+  min-width: 20px; height: 20px; border-radius: 20px; padding: 0 6px; box-sizing: border-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 700 11px var(--font-sans); color: #fff; background: var(--neutral-badge);
+}
+.follow-ups { padding: 24px 28px 40px; max-width: 900px; }
+.follow-ups__title { font: 800 22px var(--font-sans); color: var(--deep); margin: 0; }
+.follow-ups__sub { font: 500 13px var(--font-sans); color: var(--muted-strong); margin: 4px 0 16px; }
+.follow-ups__group { margin-bottom: 18px; }
+.follow-ups__item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
+.follow-ups__item-id {
+  border: none; background: none; padding: 0; cursor: pointer; font: 700 13px var(--font-mono); color: var(--primary-ink);
+  text-decoration: underline;
+}
+.follow-ups__item-title { font: 700 14px var(--font-sans); color: var(--deep); overflow-wrap: anywhere; }
 .asks-panel__title { font-weight: 700; overflow-wrap: anywhere; }
 .asks-panel__why { color: var(--muted-strong); overflow-wrap: anywhere; }
 .asks-panel__step { font-weight: 700; }
@@ -1665,6 +1733,8 @@ button { font-family: var(--font-sans); }
      Approvals live in the bottom nav instead. */
   .topbar { padding: 8px 12px; gap: 10px; }
   .topbar__title, .topbar__subtitle, .seg-tabs, .pending-btn { display: none; }
+  .followups-link { min-height: 44px; padding: 8px 10px; box-sizing: border-box; }
+  .follow-ups { padding: 16px 16px 40px; }
   .projswitch { min-width: 44px; min-height: 44px; justify-content: center; padding: 8px 12px; }
   .projswitch__label {
     position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
