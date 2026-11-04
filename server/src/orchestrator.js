@@ -2005,10 +2005,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
     ...(stepIndex === RUN_PLAN_STEP_INDEX ? { ...jobEnvFields(item.repo), runner: defaultRunnerFor(item.repo) } : {}),
-    // HZ-738: Assess and Impact review get the same checkout fields, so they
-    // fast-forward the task clone before they read (never runner: only Run
-    // plan's prompt names it).
-    ...(stepIndex === ASSESS_STEP_INDEX || stepIndex === IMPACT_REVIEW_STEP_INDEX ? jobEnvFields(item.repo) : {}),
+    // HZ-738: Assess and Impact review get the same checkout fields when the
+    // target has a task clone, so they fast-forward it before they read
+    // (never runner: only Run plan's prompt names it). Without one their
+    // payload is unchanged.
+    ...((stepIndex === ASSESS_STEP_INDEX || stepIndex === IMPACT_REVIEW_STEP_INDEX) && findTargetByRepo(item.repo)?.taskDir
+      ? jobEnvFields(item.repo)
+      : {}),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])

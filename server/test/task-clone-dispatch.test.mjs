@@ -82,9 +82,13 @@ test('with a taskDir, Assess, Run plan and Impact review carry it as repo_dir wi
   }
 })
 
-test('without a taskDir, none of the three carries task_clone', async () => {
-  for (const body of await dispatchAll('UNSET')) {
-    assert.equal(body.repo_dir, REPO_DIR)
-    assert.equal(Object.hasOwn(body, 'task_clone'), false)
+test('without a taskDir, none of the three carries task_clone, and Assess and Impact review carry no checkout', async () => {
+  const [assess, runPlan, impact] = await dispatchAll('UNSET')
+  for (const body of [assess, runPlan, impact]) assert.equal(Object.hasOwn(body, 'task_clone'), false)
+  assert.equal(runPlan.repo_dir, REPO_DIR)
+  for (const body of [assess, impact]) {
+    for (const key of ['repo_dir', 'venv_dir', 'container_image', 'cpu_limit', 'memory_limit']) {
+      assert.equal(Object.hasOwn(body, key), false, `${body.step.label} carries no ${key}`)
+    }
   }
 })
