@@ -111,7 +111,13 @@ def classify_failure(tail: str, returncode: int | None) -> str:
 
 
 def new_record(
-    *, run_id=None, item_id=None, caller: str = "step_agent", slot: check_slots.SlotHold, repo: str | None = None
+    *,
+    run_id=None,
+    item_id=None,
+    caller: str = "step_agent",
+    slot: check_slots.SlotHold,
+    repo: str | None = None,
+    scope: str = "full",
 ) -> dict:
     return {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -143,6 +149,12 @@ def new_record(
         # run had no install command.
         "repo": repo,
         "install": None,
+        # HZ-750: "targeted" for a fix round's run of last round's failing
+        # tests in one slot, else "full"; the run's own seconds in its slot
+        # (set when it ends), and how many tests a targeted run was given.
+        "scope": scope,
+        "duration_s": None,
+        "targeted_tests": None,
     }
 
 

@@ -97,7 +97,7 @@ test('a valid PIN saves: blanks become null and a command round-trips verbatim, 
   )
   assert.equal(res.statusCode, 200, res.body)
   const expected = { install: 'npm install --ignore-scripts', test: ' npm test ', lint: null, e2e: null, screenshots: null }
-  assert.deepEqual(res.json(), { ok: true, repo: 'FinTekkers/ui-service', checks: expected })
+  assert.deepEqual(res.json(), { ok: true, repo: 'FinTekkers/ui-service', checks: expected, targeted: [] })
   assert.deepEqual(rowOf('FinTekkers/ui-service'), {
     check_install: 'npm install --ignore-scripts',
     check_test: ' npm test ',
@@ -250,4 +250,70 @@ test('setRepoCheckCommands is called from exactly two places in server/src: the 
     const writes = readFileSync(join(srcDir, file), 'utf8').match(/SET check_install/g) || []
     assert.equal(writes.length, file === 'store.js' ? 1 : 0, file)
   }
+})
+
+// ---- HZ-750: opting a slot into a fix round's targeted run ----
+
+const targetedOf = (repo) => db.prepare('SELECT check_targeted FROM project_repo WHERE repo = ?').get(repo).check_targeted
+
+test('HZ-750: an opted-in e2e slot is stored and rides to the farm as targeted_slots', async () => {
+  const orchestrator = await import('../src/orchestrator.js')
+  const item = { id: 'US-1', repo: 'FinTekkers/ui-service' }
+  seed()
+  // A NULL column sends no field: the task looks as it did before HZ-750.
+  assert.equal(targetedOf('FinTekkers/ui-service'), null)
+  assert.equal('targeted_slots' in orchestrator.checkCommandsField(item), false)
+
+  const res = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, targeted: ['e2e'] }, asSession(alice.pin))
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json().targeted, ['e2e'])
+  assert.equal(targetedOf('FinTekkers/ui-service'), '["e2e"]')
+  assert.deepEqual(orchestrator.checkCommandsField(item).targeted_slots, ['e2e'])
+
+  // Omitted keeps it; the snapshot shows it to every Admin reader.
+  const kept = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED }, asSession(alice.pin))
+  assert.deepEqual(kept.json().targeted, ['e2e'])
+  settings.setSetting('active_project_id', String(FINTEKKERS_PROJECT))
+  const snap = await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })
+  const repos = snap.json().projects.flatMap((p) => p.repos)
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').targeted, ['e2e'])
+
+  // An empty list opts out and clears the column.
+  const off = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, targeted: [] }, asSession(alice.pin))
+  assert.deepEqual(off.json().targeted, [])
+  assert.equal(targetedOf('FinTekkers/ui-service'), null)
+  assert.equal('targeted_slots' in orchestrator.checkCommandsField(item), false)
+})
+
+test('HZ-750: a slot with no command is dropped, and the field is absent', async () => {
+  const orchestrator = await import('../src/orchestrator.js')
+  const res = await put(
+    FINTEKKERS_PROJECT,
+    { repo: 'FinTekkers/ui-service', ...SEEDED, test: '', targeted: ['test'] },
+    asSession(alice.pin),
+  )
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json().targeted, [])
+  assert.equal(targetedOf('FinTekkers/ui-service'), null)
+  assert.equal('targeted_slots' in orchestrator.checkCommandsField({ id: 'US-1', repo: 'FinTekkers/ui-service' }), false)
+  // Clearing a slot's command later drops its opt-in too.
+  await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, targeted: ['e2e'] }, asSession(alice.pin))
+  const cleared = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, e2e: '' }, asSession(alice.pin))
+  assert.deepEqual(cleared.json().targeted, [])
+})
+
+test('HZ-750: a slot that names no tests is 400, and no PIN is 401; neither writes', async () => {
+  seed()
+  const lint = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, targeted: ['lint'] }, asSession(alice.pin))
+  assert.equal(lint.statusCode, 400)
+  const noPin = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', ...SEEDED, targeted: ['e2e'] }, asSession())
+  assert.equal(noPin.statusCode, 401)
+  assert.equal(targetedOf('FinTekkers/ui-service'), null)
+})
+
+test('HZ-750: a malformed stored value reads as no opted-in slot', () => {
+  seed()
+  db.prepare("UPDATE project_repo SET check_targeted = 'not json' WHERE repo = ?").run('FinTekkers/ui-service')
+  assert.deepEqual(store.getRepoTargetedSlots('FinTekkers/ui-service'), [])
+  db.prepare('UPDATE project_repo SET check_targeted = NULL WHERE repo = ?').run('FinTekkers/ui-service')
 })

@@ -4068,6 +4068,13 @@ export function buildApp({
   // before the repo lookup so a bad PIN never touches state. Reading them
   // needs only a login — they ride on snapshot()'s projects.
   const CHECK_COMMAND_SCHEMA = { type: 'string', maxLength: 2000 }
+  // HZ-750: the slots whose fix rounds first re-run only the failed tests.
+  const TARGETED_SCHEMA = {
+    type: 'array',
+    items: { type: 'string', enum: store.TARGETABLE_SLOTS },
+    uniqueItems: true,
+    maxItems: store.TARGETABLE_SLOTS.length,
+  }
   fastify.put(
     '/api/projects/:id/repos/checks',
     {
@@ -4090,6 +4097,7 @@ export function buildApp({
             lint: CHECK_COMMAND_SCHEMA,
             e2e: CHECK_COMMAND_SCHEMA,
             screenshots: CHECK_COMMAND_SCHEMA,
+            targeted: TARGETED_SCHEMA,
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
@@ -4097,11 +4105,11 @@ export function buildApp({
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      const { repo, ...checks } = request.body
-      const result = store.setRepoCheckCommands(request.params.id, repo, checks)
+      const { repo, targeted, ...checks } = request.body
+      const result = store.setRepoCheckCommands(request.params.id, repo, checks, targeted)
       if (result.error) return reply.code(404).send({ error: 'That repository is not connected to this project' })
       broadcast()
-      return { ok: true, repo, checks: result.checks }
+      return { ok: true, repo, checks: result.checks, targeted: result.targeted }
     },
   )
 
@@ -4240,7 +4248,8 @@ export function buildApp({
       if (!isTenantProject(request.params.id)) return reply.code(404).send(TENANT_NOT_FOUND)
       const checks = store.getRepoChecksForProject(request.params.id, request.query.repo)
       if (!checks) return reply.code(404).send(TENANT_REPO_GONE)
-      return { repo: request.query.repo, checks: tenantChecks(checks) }
+      const targeted = store.getRepoTargetedForProject(request.params.id, request.query.repo)
+      return { repo: request.query.repo, checks: tenantChecks(checks), targeted }
     },
   )
 
@@ -4258,13 +4267,14 @@ export function buildApp({
         body: {
           type: 'object',
           required: ['repo'],
-          propertyNames: { enum: ['repo', ...TENANT_CHECK_SLOTS] },
+          propertyNames: { enum: ['repo', ...TENANT_CHECK_SLOTS, 'targeted'] },
           additionalProperties: false,
           properties: {
             repo: { type: 'string', minLength: 1, maxLength: 300 },
             install: CHECK_COMMAND_SCHEMA,
             test: CHECK_COMMAND_SCHEMA,
             e2e: CHECK_COMMAND_SCHEMA,
+            targeted: TARGETED_SCHEMA,
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },
@@ -4274,13 +4284,13 @@ export function buildApp({
       if (!humanAuthorized(request, reply)) return
       const projectId = request.params.id
       if (!isTenantProject(projectId)) return reply.code(404).send(TENANT_NOT_FOUND)
-      const { repo, ...sent } = request.body
+      const { repo, targeted, ...sent } = request.body
       const stored = store.getRepoChecksForProject(projectId, repo)
       if (!stored) return reply.code(404).send(TENANT_REPO_GONE)
-      const result = store.setRepoCheckCommands(projectId, repo, { ...stored, ...tenantChecks(sent) })
+      const result = store.setRepoCheckCommands(projectId, repo, { ...stored, ...tenantChecks(sent) }, targeted)
       if (result.error) return reply.code(404).send(TENANT_REPO_GONE)
       broadcast()
-      return { ok: true, repo, checks: tenantChecks(result.checks) }
+      return { ok: true, repo, checks: tenantChecks(result.checks), targeted: result.targeted }
     },
   )
 

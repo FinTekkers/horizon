@@ -429,9 +429,55 @@ test('saving check commands needs the PIN and sends the edited slots with it', a
     'acme/web',
     { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: '', screenshots: '' },
     'right-pin',
+    [],
   )
   expect(fin.getByLabelText('Gate PIN to save check commands for acme/web').value).toBe('')
   expect(Object.values({ ...localStorage })).not.toContain('right-pin')
+})
+
+// ---- HZ-750: opting a test slot into a fix round's targeted run ----
+
+const TARGETED = 'On a fix round, re-run only the failed tests first'
+
+test('the targeted-run box is disabled while its slot has no command, and is sent with the PIN once ticked', async () => {
+  api.saveRepoChecks.mockResolvedValueOnce({
+    ok: true,
+    repo: 'acme/web',
+    checks: { install: 'npm install --ignore-scripts', test: 'npm test', lint: null, e2e: 'npm run e2e', screenshots: null },
+    targeted: ['e2e'],
+  })
+  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const fin = within(projectBlock(container, 'Fin'))
+  fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
+  const e2eBox = fin.getByLabelText(`E2E: ${TARGETED} (acme/web)`)
+  expect(e2eBox.disabled).toBe(true)
+  expect(fin.getByLabelText(`Test: ${TARGETED} (acme/web)`).disabled).toBe(false)
+  expect(fin.queryByLabelText(`Lint: ${TARGETED} (acme/web)`)).toBeNull()
+
+  fireEvent.change(fin.getByLabelText('E2E command for acme/web'), { target: { value: 'npm run e2e' } })
+  expect(e2eBox.disabled).toBe(false)
+  fireEvent.click(e2eBox)
+  expect(e2eBox.checked).toBe(true)
+  fireEvent.change(fin.getByLabelText('Gate PIN to save check commands for acme/web'), { target: { value: 'right-pin' } })
+  fireEvent.click(fin.getByRole('button', { name: 'Save commands' }))
+  await fin.findByText('Check commands saved.')
+  expect(api.saveRepoChecks).toHaveBeenLastCalledWith(
+    3,
+    'acme/web',
+    { install: 'npm install --ignore-scripts', test: 'npm test', lint: '', e2e: 'npm run e2e', screenshots: '' },
+    'right-pin',
+    ['e2e'],
+  )
+  expect(fin.getByLabelText(`E2E: ${TARGETED} (acme/web)`).checked).toBe(true)
+})
+
+test('a saved opt-in shows ticked from the snapshot', () => {
+  const projects = [{ ...CHECK_PROJECTS[0], repos: [{ ...CHECK_PROJECTS[0].repos[0], targeted: ['test'] }] }]
+  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} />)
+  const fin = within(projectBlock(container, 'Fin'))
+  fireEvent.click(fin.getByRole('button', { name: /Check commands/ }))
+  expect(fin.getByLabelText(`Test: ${TARGETED} (acme/web)`).checked).toBe(true)
+  expect(fin.getByLabelText(`E2E: ${TARGETED} (acme/web)`).checked).toBe(false)
 })
 
 // ---- HZ-505: the screenshots slot ----
@@ -450,6 +496,7 @@ test('the Screenshots slot is a fifth command box, saved with the PIN like the o
     'acme/web',
     { install: 'npm install --ignore-scripts', test: 'npm test', lint: '', e2e: '', screenshots: 'node scripts/shots.mjs' },
     'right-pin',
+    [],
   )
 })
 

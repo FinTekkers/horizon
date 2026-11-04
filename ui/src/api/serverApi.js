@@ -544,11 +544,13 @@ export async function setProjectDefinitionsEnabled(projectId, enabled, pin) {
 // HZ-245: a repo's check commands (install, test, lint, e2e, screenshots). Same PIN
 // handling as setProjectEnabled: asked for on every save, sent only in the
 // x-human-key header, never cached.
-export async function saveRepoChecks(projectId, repo, checks, pin) {
+// HZ-750: `targeted` (the slots opted into a fix round's targeted run) goes
+// beside the commands; undefined leaves the stored list unchanged.
+export async function saveRepoChecks(projectId, repo, checks, pin, targeted) {
   const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/checks`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ repo, ...checks }),
+    body: JSON.stringify({ repo, ...checks, ...(targeted === undefined ? {} : { targeted }) }),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -671,8 +673,14 @@ export function getTenantChecks(projectId, repo) {
 }
 
 // Saves install, test and e2e (null clears one). A gate action, like Admin's.
-export function saveTenantChecks(projectId, repo, { install, test, e2e }) {
-  return gateAction(`/tenant/projects/${encodeURIComponent(projectId)}/repos/checks`, { repo, install, test, e2e }, 'PUT')
+// HZ-750: `targeted`, when given, replaces the slots opted into a fix
+// round's targeted run.
+export function saveTenantChecks(projectId, repo, { install, test, e2e, targeted }) {
+  return gateAction(
+    `/tenant/projects/${encodeURIComponent(projectId)}/repos/checks`,
+    { repo, install, test, e2e, ...(targeted === undefined ? {} : { targeted }) },
+    'PUT',
+  )
 }
 
 // HZ-659: the projects the signed-in user belongs to (every project for the

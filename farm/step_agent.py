@@ -64,6 +64,7 @@ from . import (
     run_plan_requires,
     screenshot_runner,
     screenshots_config,
+    targeted_checks,
     task_job,
 )
 from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
@@ -2878,6 +2879,60 @@ def _no_fix_reason(exc: CheckFailure, rounds: int, turns_used, max_turns: int, d
     return ""
 
 
+def _timed_checks(
+    ws: Path,
+    task: dict,
+    *,
+    only_slot: str | None = None,
+    child_env: dict[str, str] | None = None,
+    tests: int | None = None,
+) -> tuple[str | None, CheckFailure | None, float]:
+    """One run_checks() in its own checks window: (its note, or None; its
+    CheckFailure, or None; the seconds it took). The server pauses the step
+    clock for exactly this window, slot wait included, and the caller moves
+    the farm's agent deadline by the same span. only_slot (HZ-750) makes it
+    a targeted run of that slot. PauseRequested and any crash propagate."""
+    item = task["item"]
+    check_scope = "full" if only_slot is None else "targeted"
+    _notify_checks(task.get("run_id"), "start")
+    began = time.monotonic()
+    note, failure = None, None
+    try:
+        with pause.interruptible():
+            # HZ-245: the repo's Admin-configured commands, from the task dict
+            # parsed at startup — never re-read after the agent has run.
+            note = run_checks(
+                ws,
+                log,
+                run_id=task.get("run_id"),
+                item_id=item["id"],
+                configured=task.get("check_commands"),
+                repo=item.get("repo"),
+                # HZ-304: from the server, like check_commands.
+                checks_waiver=task.get("checks_waiver"),
+                # HZ-494: a path from the server; the file is read now.
+                test_env_file=task.get("test_env_file"),
+                # HZ-506: the farm's runner captures a configured repo's
+                # screens here only (never pre-merge, validate or conflicts).
+                # A targeted run never captures; its full run does.
+                capture_screenshots=only_slot is None,
+                only_slot=only_slot,
+                check_scope=check_scope,
+                child_env=child_env,
+                # HZ-327: flakes and per-test results ride on the result.
+                **_recording(),
+            )
+    except CheckFailure as exc:
+        failure = exc
+    finally:
+        spent = time.monotonic() - began
+        _notify_checks(task.get("run_id"), "end")
+    targeted = f" slot={only_slot} tests={tests}" if only_slot is not None else ""
+    result = "red" if failure is not None else "green"
+    log(f"checks: scope={check_scope}{targeted} duration_s={spent:.1f} result={result}")
+    return note, failure, spent
+
+
 def _check_until_green(
     ws: Path,
     task: dict,
@@ -2935,42 +2990,36 @@ def _check_until_green(
         checkpoint = _push_precheck_checkpoint(ws, item, branch, prepared, scope, lease_sha=lease)
         lease = checkpoint or lease
         unpushed = "" if checkpoint else (farm_commit or unpushed)
-        # The server pauses the step clock for exactly this window, slot wait
-        # included, and the farm's own agent deadline moves by the same span.
-        _notify_checks(task.get("run_id"), "start")
-        began = time.monotonic()
+        # HZ-750: an opted-in slot's fix round first re-runs that slot on last
+        # round's failing tests. Red is the round's result; green still needs
+        # the full run below. Part of this round: `rounds` is not touched.
+        targeted_slots = task.get("targeted_slots") or []
+        why = targeted_checks.skip_reason(failure, targeted_slots, rounds=rounds, ws=ws, fix_base=fix_base)
+        if why and targeted_slots:
+            log(f"targeted checks: skipped — {why}")
         try:
-            with pause.interruptible():
-                # HZ-245: the repo's Admin-configured commands, from the task dict
-                # parsed at startup — never re-read after the agent has run.
-                check_note = run_checks(
+            round_failure = None
+            if why is None:
+                value = targeted_checks.failed_tests_value(failure.failed_tests)
+                _, round_failure, spent = _timed_checks(
                     ws,
-                    log,
-                    run_id=task.get("run_id"),
-                    item_id=item["id"],
-                    configured=task.get("check_commands"),
-                    repo=item.get("repo"),
-                    # HZ-304: from the server, like check_commands.
-                    checks_waiver=task.get("checks_waiver"),
-                    # HZ-494: a path from the server; the file is read now.
-                    test_env_file=task.get("test_env_file"),
-                    # HZ-506: the farm's runner captures a configured repo's
-                    # screens here only (never pre-merge, validate or conflicts).
-                    capture_screenshots=True,
-                    # HZ-327: flakes and per-test results ride on the result.
-                    **_recording(),
+                    task,
+                    only_slot=failure.slot,
+                    child_env={targeted_checks.FAILED_TESTS_ENV: value},
+                    tests=len(value.splitlines()),
                 )
-            return CheckedWork(checked_sha, checked_tree, check_note, check_record.now_iso(), lease, rounds)
+                deadline += spent
+            if round_failure is None:
+                check_note, round_failure, spent = _timed_checks(ws, task)
+                deadline += spent
+                if round_failure is None:
+                    return CheckedWork(checked_sha, checked_tree, check_note, check_record.now_iso(), lease, rounds)
+            failure = round_failure
         except pause.PauseRequested:
             # HZ-194: the agent's work is finished but unchecked. The checks
             # are stopped and never count as a failure; the code is saved.
             pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
             raise
-        except CheckFailure as exc:
-            failure = exc
-        finally:
-            deadline += time.monotonic() - began
-            _notify_checks(task.get("run_id"), "end")
         why_not = _no_fix_reason(failure, rounds, turns_used, max_turns, deadline)
         if why_not:
             log(f"fix loop: no fix turn — {why_not}")

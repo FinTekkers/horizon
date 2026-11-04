@@ -267,3 +267,29 @@ def test_a_secret_in_a_branch_commands_failure_message_is_redacted(tmp_path, mon
     assert err.value.tail.startswith("failing tests (1):\nLedgerTest › leaks — token [redacted]\n")
     branch = next(run for run in test_runs if run["label"] == "branch")
     assert [row["failure_message"] for row in branch["tests"]] == ["token [redacted]"]
+
+
+# ---- HZ-750: a test case's source line, for a targeted run only ----
+
+
+def test_parse_junit_keeps_a_valid_line_and_drops_pytests_and_the_stored_rows_never_carry_it(ws, tmp_path):
+    path = tmp_path / "r.xml"
+    path.write_text(
+        '<testsuite name="S">'
+        '<testcase name="kept" file="e2e/a.spec.ts" line="12"><failure/></testcase>'
+        '<testcase name="word" file="e2e/a.spec.ts" line="x"><failure/></testcase>'
+        '<testcase name="negative" file="e2e/a.spec.ts" line="-1"><failure/></testcase>'
+        '<testcase name="huge" file="e2e/a.spec.ts" line="99999999"><failure/></testcase>'
+        '<testcase name="none" file="e2e/b.spec.ts"><failure/></testcase>'
+        # pytest's line attribute is 0-based: dropped, not shifted.
+        '<testcase name="test_y" classname="tests.test_x" file="tests/test_x.py" line="0"><failure/></testcase>'
+        '<testcase name="test_z" classname="tests.test_x" file="tests/test_x.py" line="7"><failure/></testcase>'
+        "</testsuite>"
+    )
+
+    rows = parse_junit(path, ws)
+    lines = {row["test"]: row["line"] for row in rows}
+
+    assert lines == {"kept": 12, "word": None, "negative": None, "huge": None, "none": None, "test_y": None, "test_z": None}
+    stored = checks._test_rows(rows, "sh -c e2e", 1, 0.1, attempt=1, secrets={})
+    assert all("line" not in row for row in stored)

@@ -104,6 +104,10 @@ CHECK_SUBPROCESS_SCRUB = frozenset(
         # must not reach it.
         "FARM_MIN_MEM_AVAILABLE_PCT",
         "FARM_MEMINFO_PATH",
+        # HZ-750: checks.FAILED_TESTS_ENV. Only a targeted run's own child_env
+        # sets it; a value inherited from an outer targeted run (Horizon's
+        # suite calls run_checks) must never narrow an inner run.
+        "HORIZON_FAILED_TESTS",
     }
 )
 
