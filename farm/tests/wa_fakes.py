@@ -86,7 +86,9 @@ class StubHorizon:
         # a test double must not record, compare or print a secret's value.
         self.auth_headers: list[tuple[str, list[str]]] = []
         self.created_items: list[dict] = []  # payloads POSTed to /api/items
-        self.approvals: list[tuple[str, int, dict]] = []  # (item_id, step_index, payload) via approve-via-whatsapp
+        # (item_id, step, payload) via approve-via-whatsapp; step is the URL's
+        # step key, or an int for the numeric form from before HZ-709.
+        self.approvals: list[tuple[str, int | str, dict]] = []
         self.create_item_result = create_item_result
         self.approve_result = approve_result
         self.autopilot_offs: list[dict] = []  # payloads POSTed to the kill switch
@@ -144,9 +146,9 @@ class StubHorizon:
                     if action == "feedback":
                         key = "rerun" if stub.feedback_rerun else "queued"
                         return self._reply(200, {"ok": True, key: True})
-                # /api/items/<id>/gates/<stepIndex>/approve-via-whatsapp
+                # /api/items/<id>/gates/<step>/approve-via-whatsapp
                 if len(parts) == 6 and parts[:2] == ["api", "items"] and parts[3] == "gates" and parts[5] == "approve-via-whatsapp":
-                    item_id, step_index = parts[2], int(parts[4])
+                    item_id, step_index = parts[2], int(parts[4]) if parts[4].isdigit() else parts[4]
                     status, body = stub._handle_approve(item_id, step_index, payload)
                     return self._reply(status, body)
                 return self._reply(404, {"error": "not_found"})

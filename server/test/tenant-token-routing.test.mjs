@@ -110,6 +110,8 @@ test('orchestrator: /farm/start for a tenant project carries no token; for an in
     assert.ok(start, 'farm start was sent')
     const body = JSON.parse(start.body)
     assert.equal(body.project.id, projectId)
+    // HZ-758: farmd skips cloning a tenant project's repos on this isolation.
+    assert.equal(body.project.isolation, projectId === TENANT ? 'tenant' : 'internal')
     assert.equal(body.token, token)
     assert.ok(!start.body.includes(GLOBAL_TOKEN) || token === GLOBAL_TOKEN)
     while (orchestrator.getFarmState().status !== 'running' && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))

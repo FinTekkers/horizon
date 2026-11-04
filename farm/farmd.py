@@ -475,6 +475,21 @@ def step_kind_mismatch(item: dict, step: dict) -> bool:
     return False
 
 
+# HZ-709: a dispatched step is named by its permanent key. The server sends
+# `step.key` beside `step.index`; the key wins, so a task never runs as the
+# wrong step after one was inserted. Returns the step with its index taken
+# from the key, the step unchanged when it carries no key (a task queued by a
+# server from before keys), or None for a key this table does not have.
+def step_by_key(step: dict) -> dict | None:
+    key = step.get("key")
+    if key is None:
+        return step
+    index = steps.step_index_of(key)
+    if index is None:
+        return None
+    return {**step, "index": index}
+
+
 WORKSPACE_MUTATING_STEPS = frozenset(workspace_mutating_indexes(steps.STEPS))
 _WORKSPACE_MUTATING_STEP_STRS = frozenset(str(i) for i in WORKSPACE_MUTATING_STEPS)
 
@@ -622,6 +637,9 @@ def _forward_result(body: dict) -> int | None:
     # run and stores the view in one write — a late nudge can't be lost to it.
     if isinstance(body.get("job_view"), dict) and path in ("complete", "fail"):
         payload["job_view"] = body["job_view"]
+    # HZ-709: the result names the step it ran by key, on every path.
+    if isinstance(body.get("step_key"), str) and body["step_key"]:
+        payload["step_key"] = body["step_key"][:80]
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
     status = None
     for attempt in (1, 2):
@@ -1110,13 +1128,18 @@ def _cleanup_loop(stop: threading.Event | None = None) -> None:
 
 
 def _knowledge_sources() -> list[dict]:
-    """HZ-537: GET /api/farm/knowledge/sources for farm/knowledge.py."""
+    """HZ-537: GET /api/farm/knowledge/sources for farm/knowledge.py.
+    HZ-758: only sources the server marks `internal` — farmd clones and
+    fetches hubs as the farm user with $GITHUB_TOKEN, which must never touch
+    a tenant repo. A source with no or another isolation is dropped."""
     res = httpx.get(
         f"{HORIZON_URL}/api/farm/knowledge/sources", headers={"x-farm-secret": SHARED_SECRET}, timeout=10
     )
     res.raise_for_status()
     sources = res.json().get("sources")
-    return sources if isinstance(sources, list) else []
+    if not isinstance(sources, list):
+        return []
+    return [s for s in sources if isinstance(s, dict) and s.get("isolation") == "internal"]
 
 
 def _report_knowledge_doc(project_id: int, slug: str, body: dict) -> None:
@@ -1192,24 +1215,22 @@ def _log_isolation_refusal(run_id, project: dict, reason: str) -> None:
     print(f"farmd: refused run {run_id}: {reason} (token ref {shown})", flush=True)
 
 
-# HZ-663 part 1: every tenant launch is refused here until part 2 moves the
-# workspace to the run user. As the run user, step_agent would still reach
-# workspaces.ensure()'s token-in-URL clone and the farm user's locks.
-TENANT_WORKSPACE_GATE = "tenant workspace not supported yet: the farm will not run tenant items until it is"
-
-
 def _is_tenant(task: dict) -> bool:
-    project = task.get("project")
-    return isinstance(project, dict) and project.get("isolation") == "tenant"
+    return credentials.is_tenant_project(task.get("project"))
+
+
+# HZ-758: a tenant item's job step (launch_job) still has no run-user path.
+TENANT_JOB_REFUSAL = "tenant job steps do not run on the farm yet: they would run as the farm user"
 
 
 def _tenant_launch_refusal(task: dict) -> str | None:
     """Why a tenant task that passed _isolation_refusal still must not launch,
     or None (always None for an internal task). Fails closed: the token ref
     must resolve in farmd's env (never falling back to $GITHUB_TOKEN) and the
-    test-env file must sit under the project's own directory. The reason
-    names fields only. Kept apart from _isolation_refusal, whose rule is the
-    table shared with server/src/projectIsolation.js."""
+    test-env file, when one is named, must sit under the project's own
+    directory (HZ-758: none is allowed). The reason names fields only. Kept
+    apart from _isolation_refusal, whose rule is the table shared with
+    server/src/projectIsolation.js."""
     if not _is_tenant(task):
         return None
     project = task["project"]
@@ -1221,7 +1242,7 @@ def _tenant_launch_refusal(task: dict) -> str | None:
         login_env.tenant_env_path(task.get("test_env_file"), project.get("id"))
     except login_env.LoginEnvError:
         return "tenant test_env_file must live under the project's own directory"
-    return TENANT_WORKSPACE_GATE
+    return None
 
 
 def _run_user_home(run_user: str) -> str:
@@ -1321,7 +1342,7 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     # HZ-212: same session naming, same per-run log, fresh interpreter and
     # env on every step. HZ-371: one runner for both lanes — the lane only
     # decides the queue and the cap. HZ-663: a tenant run launches as its
-    # run_user instead (unreachable until _tenant_launch_refusal's gate goes).
+    # run_user instead, and (HZ-758) clones its own hub as that user.
     if _is_tenant(task):
         _launch_tenant_session(name, task, repo_root)
     else:
@@ -1783,7 +1804,9 @@ def _clone_hub(repo: str) -> None:
 
 def _start_async(project: dict, repos: list, token: str | None) -> None:
     try:
-        for entry in repos:
+        # HZ-758: a tenant project's hubs are its run user's own (step_agent's
+        # ensure_tenant_hub) — the farm user never clones or prunes them.
+        for entry in [] if credentials.is_tenant_project(project) else repos:
             try:
                 workspaces.ensure(entry["repo"], token)
                 # Drops worktree metadata for item worktrees whose directory
@@ -1999,7 +2022,7 @@ async def steps_run(request: Request):
         _log_isolation_refusal(body["run_id"], project, refusal)
         return JSONResponse({"error": "isolation_refused", "reason": refusal}, status_code=400)
     # HZ-663: a complete tenant task whose token or test-env file cannot be
-    # used — and, until part 2, every tenant task — is refused the same way.
+    # used is refused the same way.
     refusal = _tenant_launch_refusal(body)
     if refusal:
         _log_isolation_refusal(body["run_id"], project, refusal)
@@ -2007,9 +2030,17 @@ async def steps_run(request: Request):
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     if not _non_empty_str(item_repo):
         return JSONResponse({"error": "missing item.repo"}, status_code=400)
-    if not isinstance(body["step"], dict) or step_kind_mismatch(body["item"], body["step"]):
+    if not isinstance(body["step"], dict):
         return JSONResponse({"error": "step kind mismatch"}, status_code=400)
-    if not (workspaces.hub_path(item_repo) / ".git").exists():
+    # HZ-709: found by key; the index beside it is only a fallback.
+    keyed_step = step_by_key(body["step"])
+    if keyed_step is None:
+        return JSONResponse({"error": "unknown step key"}, status_code=400)
+    body["step"] = keyed_step
+    if step_kind_mismatch(body["item"], body["step"]):
+        return JSONResponse({"error": "step kind mismatch"}, status_code=400)
+    # HZ-758: never for a tenant task — its run user clones its own hub.
+    if not _is_tenant(body) and not (workspaces.hub_path(item_repo) / ".git").exists():
         _provision_hub(item_repo)
     # Plan/review-summary steps go to the PM lane (one at a time); everything
     # else to the ephemeral lane (bounded by FARM_MAX_EPHEMERAL). Both launch
@@ -2028,6 +2059,11 @@ async def steps_run(request: Request):
     view = steps.FARM_VIEWS[body["item"].get("kind") or "change"]
     queue = lane_for_index(view, body["step"].get("index", 99))
     if queue == "job":
+        # HZ-758: a job runs as the farm user (launch_job), so a tenant's is
+        # refused — never run outside its run user.
+        if _is_tenant(body):
+            _log_isolation_refusal(body["run_id"], project, TENANT_JOB_REFUSAL)
+            return JSONResponse({"error": "tenant_launch_refused", "reason": TENANT_JOB_REFUSAL}, status_code=400)
         if not _jobs_enabled():
             return JSONResponse({"error": "jobs_disabled"}, status_code=409)
         item_id = body["item"].get("id") or ""

@@ -58,6 +58,7 @@
       "abandoned_at": null,
       "currentStep": {
         "index": 3,
+        "key": "change.approve-prioritize",
         "label": "Approve & prioritize this work",
         "kind": "gate",
         "phase": "Plan",
@@ -78,6 +79,7 @@
       "abandoned_at": null,
       "currentStep": {
         "index": 3,
+        "key": "change.approve-prioritize",
         "label": "Approve & prioritize this work",
         "kind": "gate",
         "phase": "Plan",

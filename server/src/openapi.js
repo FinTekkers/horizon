@@ -27,7 +27,7 @@ import { SESSION_COOKIE_NAME } from './config.js'
 // read this one list, so a new /api/farm/* route is excluded with no edit here
 // and the test can never disagree with the spec about what is internal.
 //
-// These match REGISTERED ROUTE urls (`/api/items/:id/gates/:stepIndex/...`),
+// These match REGISTERED ROUTE urls (`/api/items/:id/gates/:step/...`),
 // not request paths — app.js's SESSION_EXEMPT is the list that matches those,
 // and its equivalent line can afford a stricter `\d+` where this one cannot.
 export const INTERNAL_PREFIXES = [

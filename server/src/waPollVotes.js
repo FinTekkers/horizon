@@ -31,7 +31,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { isClosed, isAbandoned } from '../../domain/js/lifecycle.js'
+import { isClosed, isAbandoned, stepIndexOf } from '../../domain/js/lifecycle.js'
 import { isAllowedApprover, normalizeJid } from './waApprovers.js'
 import { POLL_APPROVE, POLL_SEND_BACK, POLL_OPTIONS } from './waSend.js'
 
@@ -80,7 +80,7 @@ export function choiceFor(selectedOption) {
 // ---- registration, called from gateNotifier.js's sweep ----
 
 const insertPoll = db.prepare(
-  'INSERT INTO gate_poll (item_id, step_index, recipient, question) VALUES (?, ?, ?, ?)',
+  'INSERT INTO gate_poll (item_id, step_index, step_key, recipient, question) VALUES (?, ?, ?, ?, ?)',
 )
 const supersedeOpen = db.prepare(
   "UPDATE gate_poll SET superseded_at = datetime('now') WHERE item_id = ? AND superseded_at IS NULL",
@@ -107,8 +107,19 @@ export function supersedeOpenPolls(itemId) {
 // Returns the new gate_poll id. The caller runs this inside its own
 // transaction alongside the notice rows and the notified_step write, so a
 // crash between them cannot leave an arrival marked notified with no poll.
-export function registerPoll({ itemId, stepIndex, recipient, question }) {
-  return Number(insertPoll.run(itemId, stepIndex, recipient, question).lastInsertRowid)
+// HZ-709: stepKey names the gate by its permanent key; step_index is still
+// written beside it, so code from before the key reads the row unchanged.
+export function registerPoll({ itemId, stepIndex, stepKey = null, recipient, question }) {
+  return Number(insertPoll.run(itemId, stepIndex, stepKey, recipient, question).lastInsertRowid)
+}
+
+// HZ-709: the position of the gate a poll was sent for. The key wins, so a
+// poll sent before a step was inserted still names the same gate; a poll from
+// before keys (step_key NULL) falls back to its step_index. `indexOf` is the
+// key codec, injectable so a test can resolve against a shifted table.
+export function pollStepIndex(poll, indexOf = stepIndexOf) {
+  if (poll.step_key != null) return indexOf(poll.step_key)
+  return poll.step_index
 }
 
 // Called by the poll drain the moment the bridge confirms a send. Until this
@@ -181,7 +192,7 @@ function result(outcome, extra = {}) {
   return { outcome, status: OUTCOMES[outcome], ...extra }
 }
 
-const insertAck = db.prepare('INSERT INTO gate_notice (item_id, step_index, recipient, body) VALUES (?, ?, ?, ?)')
+const insertAck = db.prepare('INSERT INTO gate_notice (item_id, step_index, step_key, recipient, body) VALUES (?, ?, ?, ?, ?)')
 
 // Tells the voter their tap landed, by riding the text outbox that already
 // exists — so the ack inherits its backoff, its attempt cap and its
@@ -206,7 +217,7 @@ function enqueueAck(poll, choice, voterJid, held = false) {
         : held
           ? `${poll.item_id} — approved from your poll. Horizon is deploying, so it is queued to merge until the deploy ends. Thanks.`
           : `${poll.item_id} — approved from your poll. Thanks.`
-    insertAck.run(poll.item_id, poll.step_index, canonicalRecipient(poll, voterJid), body)
+    insertAck.run(poll.item_id, pollStepIndex(poll) ?? poll.step_index, poll.step_key ?? null, canonicalRecipient(poll, voterJid), body)
   } catch {
     // Deliberately swallowed. See above.
   }
@@ -249,18 +260,20 @@ export async function applyVote({ voteId, pollMsgId, voterJid, selectedOption },
   // 2. A poll this server actually sent, and the current one for its item.
   const poll = selectPollByMsgId.get(pollMsgId)
   if (!poll) return result('ignored_unknown_poll')
-  if (poll.superseded_at) return result('ignored_superseded', { itemId: poll.item_id, stepIndex: poll.step_index })
+  const stepIndex = pollStepIndex(poll)
+  if (poll.superseded_at) return result('ignored_superseded', { itemId: poll.item_id, stepIndex })
 
   const choice = choiceFor(selectedOption)
-  if (!choice) return result('ignored_unknown_option', { itemId: poll.item_id, stepIndex: poll.step_index })
+  if (!choice) return result('ignored_unknown_option', { itemId: poll.item_id, stepIndex })
 
   // 3. Guardrail 3. The cursor is the authority on where the item is now; a
   //    poll sent an hour ago says nothing about it. This is also what catches
   //    a gate already decided through the concierge's free-text path or
   //    through the browser — both move the cursor.
   const item = store.getItem(poll.item_id)
-  const at = { itemId: poll.item_id, stepIndex: poll.step_index, choice }
-  if (!item || item.cursor !== poll.step_index || isClosed(item) || isAbandoned(item)) {
+  const at = { itemId: poll.item_id, stepIndex, choice }
+  // A key the table no longer has resolves to null, which no cursor equals.
+  if (!item || item.cursor !== stepIndex || isClosed(item) || isAbandoned(item)) {
     return result('ignored_stale_gate', at)
   }
   // HZ-209: checked when the vote is applied, not only when the poll went out
@@ -279,7 +292,7 @@ export async function applyVote({ voteId, pollMsgId, voterJid, selectedOption },
     const actor = actorFor(voterJid)
     const res =
       choice === 'approve'
-        ? await approve(poll.item_id, poll.step_index, '', actor)
+        ? await approve(poll.item_id, stepIndex, '', actor)
         : await sendBack(poll.item_id, '', actor)
     if (res?.error) {
       outcome = 'failed'

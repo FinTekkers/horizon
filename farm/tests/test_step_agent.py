@@ -4485,6 +4485,46 @@ def test_code_only_deploy_fails_when_only_a_neighbour_tag_logged_deploy_ok(tmp_p
     assert "self-deploy.log" in result["artifacts"]["artifact_md"]
 
 
+def _tenant_deploy_task(monkeypatch, unreadable_dir, tag, **wait):
+    """A tenant step-14 task: its state dir is one the run user cannot read,
+    so any read of it would fail the test. The server's confirmation is all
+    the step has."""
+    monkeypatch.setattr(step_agent, "run_agent", lambda *a, **kw: pytest.fail("no agent runs for a code-only deploy"))
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda *a: pytest.fail("browser smoke check must not run"))
+    monkeypatch.setattr(step_agent, "wait_for_release", lambda *a: pytest.fail("a confirmed tenant release is not waited on"))
+    monkeypatch.setattr(step_agent, "_read_log_end", lambda *a: pytest.fail("the state dir is not read"))
+    task = make_task(14, "Deploy the changes", repo="ParvatiRealEstate/parvati-site")
+    task["item"]["release_tag"] = tag
+    task["deploy_wait"] = {"state_dir": str(unreadable_dir), "timeout_s": 5, "health_check_type": "deploy-log", **wait}
+    return task
+
+
+def test_tenant_deploy_confirmed_by_the_server_passes_without_reading_the_state_dir(tmp_path, monkeypatch):
+    task = _tenant_deploy_task(
+        monkeypatch,
+        tmp_path / "farm-user-only",
+        "deploy-parvati-site-b380",
+        confirmed_live=True,
+        deploy_ok_line="2026-11-04T20:59:12Z DEPLOY OK tag=refs/tags/deploy-parvati-site-b380 commit=4c34fd5",
+    )
+    result = execute(task)
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert "SMOKE_RESULT=pass" in result["artifacts"]["artifact_md"]
+
+
+def test_tenant_deploy_fails_when_the_server_line_names_another_tag(tmp_path, monkeypatch):
+    task = _tenant_deploy_task(
+        monkeypatch,
+        tmp_path / "farm-user-only",
+        "deploy-parvati-site-b38",
+        confirmed_live=True,
+        deploy_ok_line="2026-11-04T20:59:12Z DEPLOY OK tag=refs/tags/deploy-parvati-site-b380 commit=4c34fd5",
+    )
+    monkeypatch.setattr(step_agent, "_read_log_end", lambda *a: None)
+    result = execute(task)
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+
+
 # ---- HZ-431: Run plan's prompt names the interpreter Execute will use ----
 
 

@@ -199,18 +199,20 @@ def test_a_ref_that_is_not_a_reference_is_never_logged(farm, capsys):
 # ---- guardrail 4: no token injected, no switch to run_user (HZ-663) ----
 
 
-def test_a_complete_tenant_task_launches_as_the_farm_user_with_no_resolved_token(farm, fake_tmux, monkeypatch, tmp_path):
-    """HZ-663 part 1 replaced HZ-662's interim launch: a complete tenant task
-    is refused until part 2, and never launches as the farm user."""
+def test_a_complete_tenant_task_is_queued_with_no_resolved_token(farm, fake_tmux, monkeypatch, tmp_path):
+    """HZ-758 (HZ-663 part 2) removed part 1's gate: a complete tenant task is
+    queued. The queued task holds the reference only, never its value, and
+    nothing launches until the claim, which runs it as the run user
+    (test_tenant_session.py)."""
     monkeypatch.setenv("ACME_GITHUB_TOKEN", SECRET)
     monkeypatch.setattr(farmd.farm_config, "TENANT_ENV_ROOT", tmp_path / "tenants")
-    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: pytest.fail("a refused tenant task must never report started"))
-    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda *args, **kwargs: pytest.fail("a tenant task must never launch as the farm user"))
     task = make_task(6609, TENANT_COMPLETE)
     task["test_env_file"] = str(tmp_path / "tenants" / "7" / "e2e.env")
 
     res = client.post("/steps/run", json=task)
-    assert res.status_code == 400
-    assert res.json() == {"error": "tenant_launch_refused", "reason": farmd.TENANT_WORKSPACE_GATE}
-    assert queued_files() == []
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "queued": "runs"}
+    assert queued_files() == ["6609.json"]
     assert SECRET not in res.text
+    assert SECRET not in (QUEUE_DIR / "runs" / "6609.json").read_text()
+    assert [c for c in fake_tmux.calls if c[0] == "new-session"] == []

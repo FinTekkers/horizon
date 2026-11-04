@@ -64,16 +64,18 @@ from . import (
     run_plan_requires,
     screenshot_runner,
     screenshots_config,
+    targeted_checks,
     task_job,
 )
 from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
+from .credentials import is_tenant_project
 from .handoff import HandoffContext, HandoffGuard
 from .persona_tools import apply as apply_persona_tools
 from .personas import compose_role, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
-from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, hub_lock, item_lock
+from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, ensure_tenant_hub, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -2507,15 +2509,18 @@ def registry_publish_result(tag: str, state_dir: str) -> dict:
     )
 
 
-def deploy_log_result(tag: str, state_dir: str) -> dict:
+def deploy_log_result(tag: str, state_dir: str, server_ok_line: str | None = None) -> dict:
     """HZ-353: the Deploy step's result for a code-only target (health check
     type deploy-log, e.g. market-data-inputs). Its deploy script checks out the
     tag, installs and runs the repo's offline tests, and only then records
     DEPLOY OK for the tag; nothing restarts. Pass only on that line: without
-    it the verdict is a fail with the log tail."""
+    it the verdict is a fail with the log tail. A tenant step cannot read the
+    state dir, so the server sends the line it read (`server_ok_line`); it
+    still has to name this exact tag."""
     release = f"release {tag}" if tag else "the release"
     ok_line = _deploy_ok_line(tag)
-    if tag and any(ok_line.search(line) for line in _deploy_log_lines(tag, state_dir)):
+    lines = [server_ok_line] if isinstance(server_ok_line, str) and server_ok_line else _deploy_log_lines(tag, state_dir)
+    if tag and any(ok_line.search(line) for line in lines):
         return _verified_deploy_result(
             release, "deployed (code only)", "", "the deploy script installed it and its offline tests passed"
         )
@@ -2568,6 +2573,12 @@ def wait_until_release_live(task: dict) -> None:
         raise DeployNotLiveError(
             f"release {tag} cannot be verified: no deploy target for {item.get('repo')}, so there is no deploy to wait for"
         )
+    if wait.get("confirmed_live") is True:
+        # A tenant step runs as the project's run user, who cannot read the
+        # server user's state dir; the server confirmed the release live
+        # before dispatching it (server/src/deployWait.js).
+        log(f"release {tag} is live: confirmed by the server")
+        return
     bound = deploy_wait_bound(wait.get("timeout_s"))
     log(f"waiting up to {bound:g}s for release {tag} to go live ({state_dir})")
     result = wait_for_release(tag, state_dir, bound)
@@ -2877,6 +2888,60 @@ def _no_fix_reason(exc: CheckFailure, rounds: int, turns_used, max_turns: int, d
     return ""
 
 
+def _timed_checks(
+    ws: Path,
+    task: dict,
+    *,
+    only_slot: str | None = None,
+    child_env: dict[str, str] | None = None,
+    tests: int | None = None,
+) -> tuple[str | None, CheckFailure | None, float]:
+    """One run_checks() in its own checks window: (its note, or None; its
+    CheckFailure, or None; the seconds it took). The server pauses the step
+    clock for exactly this window, slot wait included, and the caller moves
+    the farm's agent deadline by the same span. only_slot (HZ-750) makes it
+    a targeted run of that slot. PauseRequested and any crash propagate."""
+    item = task["item"]
+    check_scope = "full" if only_slot is None else "targeted"
+    _notify_checks(task.get("run_id"), "start")
+    began = time.monotonic()
+    note, failure = None, None
+    try:
+        with pause.interruptible():
+            # HZ-245: the repo's Admin-configured commands, from the task dict
+            # parsed at startup — never re-read after the agent has run.
+            note = run_checks(
+                ws,
+                log,
+                run_id=task.get("run_id"),
+                item_id=item["id"],
+                configured=task.get("check_commands"),
+                repo=item.get("repo"),
+                # HZ-304: from the server, like check_commands.
+                checks_waiver=task.get("checks_waiver"),
+                # HZ-494: a path from the server; the file is read now.
+                test_env_file=task.get("test_env_file"),
+                # HZ-506: the farm's runner captures a configured repo's
+                # screens here only (never pre-merge, validate or conflicts).
+                # A targeted run never captures; its full run does.
+                capture_screenshots=only_slot is None,
+                only_slot=only_slot,
+                check_scope=check_scope,
+                child_env=child_env,
+                # HZ-327: flakes and per-test results ride on the result.
+                **_recording(),
+            )
+    except CheckFailure as exc:
+        failure = exc
+    finally:
+        spent = time.monotonic() - began
+        _notify_checks(task.get("run_id"), "end")
+    targeted = f" slot={only_slot} tests={tests}" if only_slot is not None else ""
+    result = "red" if failure is not None else "green"
+    log(f"checks: scope={check_scope}{targeted} duration_s={spent:.1f} result={result}")
+    return note, failure, spent
+
+
 def _check_until_green(
     ws: Path,
     task: dict,
@@ -2934,42 +2999,36 @@ def _check_until_green(
         checkpoint = _push_precheck_checkpoint(ws, item, branch, prepared, scope, lease_sha=lease)
         lease = checkpoint or lease
         unpushed = "" if checkpoint else (farm_commit or unpushed)
-        # The server pauses the step clock for exactly this window, slot wait
-        # included, and the farm's own agent deadline moves by the same span.
-        _notify_checks(task.get("run_id"), "start")
-        began = time.monotonic()
+        # HZ-750: an opted-in slot's fix round first re-runs that slot on last
+        # round's failing tests. Red is the round's result; green still needs
+        # the full run below. Part of this round: `rounds` is not touched.
+        targeted_slots = task.get("targeted_slots") or []
+        why = targeted_checks.skip_reason(failure, targeted_slots, rounds=rounds, ws=ws, fix_base=fix_base)
+        if why and targeted_slots:
+            log(f"targeted checks: skipped — {why}")
         try:
-            with pause.interruptible():
-                # HZ-245: the repo's Admin-configured commands, from the task dict
-                # parsed at startup — never re-read after the agent has run.
-                check_note = run_checks(
+            round_failure = None
+            if why is None:
+                value = targeted_checks.failed_tests_value(failure.failed_tests)
+                _, round_failure, spent = _timed_checks(
                     ws,
-                    log,
-                    run_id=task.get("run_id"),
-                    item_id=item["id"],
-                    configured=task.get("check_commands"),
-                    repo=item.get("repo"),
-                    # HZ-304: from the server, like check_commands.
-                    checks_waiver=task.get("checks_waiver"),
-                    # HZ-494: a path from the server; the file is read now.
-                    test_env_file=task.get("test_env_file"),
-                    # HZ-506: the farm's runner captures a configured repo's
-                    # screens here only (never pre-merge, validate or conflicts).
-                    capture_screenshots=True,
-                    # HZ-327: flakes and per-test results ride on the result.
-                    **_recording(),
+                    task,
+                    only_slot=failure.slot,
+                    child_env={targeted_checks.FAILED_TESTS_ENV: value},
+                    tests=len(value.splitlines()),
                 )
-            return CheckedWork(checked_sha, checked_tree, check_note, check_record.now_iso(), lease, rounds)
+                deadline += spent
+            if round_failure is None:
+                check_note, round_failure, spent = _timed_checks(ws, task)
+                deadline += spent
+                if round_failure is None:
+                    return CheckedWork(checked_sha, checked_tree, check_note, check_record.now_iso(), lease, rounds)
+            failure = round_failure
         except pause.PauseRequested:
             # HZ-194: the agent's work is finished but unchecked. The checks
             # are stopped and never count as a failure; the code is saved.
             pause.report(*_pause_checkpoint(ws, item, branch, conflicted, lease, scope, unpushed))
             raise
-        except CheckFailure as exc:
-            failure = exc
-        finally:
-            deadline += time.monotonic() - began
-            _notify_checks(task.get("run_id"), "end")
         why_not = _no_fix_reason(failure, rounds, turns_used, max_turns, deadline)
         if why_not:
             log(f"fix loop: no fix turn — {why_not}")
@@ -3086,6 +3145,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     bundle_step = _reads_bundle(kind, label)
     ws = None
     if item.get("repo") and not bundle_step:
+        # HZ-758: a tenant step runs as its run user, whose FARM_HOME farmd
+        # never clones into — it clones its own hub here. A failed clone
+        # fails the step (RuntimeError, repo named only), never ws = None.
+        if is_tenant_project(task.get("project")):
+            ensure_tenant_hub(item["repo"])
         try:
             ws = ensure_item_worktree(item["repo"], item["id"])
         except RuntimeError:
@@ -3475,7 +3539,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         if wait.get("health_check_type") == "registry-publish":
             return registry_publish_result(item.get("release_tag") or "", str(wait.get("state_dir") or ""))
         if wait.get("health_check_type") == "deploy-log":
-            return deploy_log_result(item.get("release_tag") or "", str(wait.get("state_dir") or ""))
+            return deploy_log_result(
+                item.get("release_tag") or "", str(wait.get("state_dir") or ""), wait.get("deploy_ok_line")
+            )
         grpc_url = wait.get("health_url") if wait.get("health_check_type") == "grpc-health" else None
 
         prompt = (
@@ -3828,6 +3894,10 @@ def main() -> int:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.
     result.update({key: value for key, value in recorded.items() if value and key not in ("branch_notes", "summary_notes")})
+    # HZ-709: the result names the step it ran by key (absent on a task queued
+    # before keys), so the server can tell a misrouted result from this run's.
+    if isinstance(task["step"].get("key"), str):
+        result["step_key"] = task["step"]["key"]
 
     if pause.pending() and not pause.reported():
         # The pause landed after the work's last interruptible region (e.g.

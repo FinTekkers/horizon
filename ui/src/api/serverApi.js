@@ -4,7 +4,7 @@
 // POSTs; the server sends what changed after every mutation (HZ-318: a full
 // `snapshot` event on connect, then `delta` events at most once a second).
 
-import { APPROVE_FILE_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+import { APPROVE_FILE_GATE_INDEX, stepKeyAt } from '../../../domain/js/lifecycle.js'
 
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
@@ -544,11 +544,13 @@ export async function setProjectDefinitionsEnabled(projectId, enabled, pin) {
 // HZ-245: a repo's check commands (install, test, lint, e2e, screenshots). Same PIN
 // handling as setProjectEnabled: asked for on every save, sent only in the
 // x-human-key header, never cached.
-export async function saveRepoChecks(projectId, repo, checks, pin) {
+// HZ-750: `targeted` (the slots opted into a fix round's targeted run) goes
+// beside the commands; undefined leaves the stored list unchanged.
+export async function saveRepoChecks(projectId, repo, checks, pin, targeted) {
   const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/checks`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ repo, ...checks }),
+    body: JSON.stringify({ repo, ...checks, ...(targeted === undefined ? {} : { targeted }) }),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -671,8 +673,14 @@ export function getTenantChecks(projectId, repo) {
 }
 
 // Saves install, test and e2e (null clears one). A gate action, like Admin's.
-export function saveTenantChecks(projectId, repo, { install, test, e2e }) {
-  return gateAction(`/tenant/projects/${encodeURIComponent(projectId)}/repos/checks`, { repo, install, test, e2e }, 'PUT')
+// HZ-750: `targeted`, when given, replaces the slots opted into a fix
+// round's targeted run.
+export function saveTenantChecks(projectId, repo, { install, test, e2e, targeted }) {
+  return gateAction(
+    `/tenant/projects/${encodeURIComponent(projectId)}/repos/checks`,
+    { repo, install, test, e2e, ...(targeted === undefined ? {} : { targeted }) },
+    'PUT',
+  )
 }
 
 // HZ-659: the projects the signed-in user belongs to (every project for the
@@ -801,7 +809,8 @@ export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}
     ...(item.goldenCases?.hash && !item.goldenCases.approved && item.cursor === item.goldenCases.gateIndex ? { goldenHash: item.goldenCases.hash } : {}),
     ...(item.cursor === APPROVE_FILE_GATE_INDEX ? { filedAutopilot } : {}),
   }
-  const res = await gatePost(`/items/${id}/gates/${item.cursor}/approve`, body)
+  // HZ-709: the gate by its permanent key, never its position.
+  const res = await gatePost(`/items/${id}/gates/${item.currentStepKey ?? stepKeyAt(item.cursor)}/approve`, body)
   if (!res) return { ok: false }
   const data = await res.json().catch(() => ({ ok: false }))
   if (!res.ok && res.status !== 401 && item.pr_url && !data.premerge) {
@@ -822,9 +831,10 @@ export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}
 // with `status` on a non-2xx — items are untouched either way. A 2xx answer's
 // item is applied at once, and its `restart` recorded for the step card.
 // HZ-540: targetSubstepId sends it back to that sub-step of targetStepIndex.
+// HZ-709: the composer picks a step by position; the server is sent its key.
 export async function requestChanges(id, target, feedback, targetStepIndex, targetSubstepId) {
   const body = { target: target || '', feedback: feedback || '' }
-  if (targetStepIndex != null) body.targetStepIndex = targetStepIndex
+  if (targetStepIndex != null) body.targetStep = stepKeyAt(targetStepIndex)
   if (targetSubstepId != null) body.targetSubstepId = targetSubstepId
   const res = await gatePost(`/items/${id}/reject`, body)
   if (!res) throw new Error('network')

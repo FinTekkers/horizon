@@ -32,7 +32,7 @@ const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
 const { PERSONAS } = await import('../src/personas.js')
 const { ensureUnlinkedProject } = await import('../src/membership.js')
-const { requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 
@@ -150,7 +150,7 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/screenshots/approve': { payload: { commit: 'abc123', all: true } },
   'POST /api/items/:id/job/stop': {},
   'POST /api/items/:id/job/resume': {},
-  'POST /api/items/:id/gates/:stepIndex/approve': { payload: {} },
+  'POST /api/items/:id/gates/:step/approve': { payload: {} },
   'POST /api/items/:id/reject': { payload: { feedback: 'no' } },
   'POST /api/items/:id/resolve-conflicts': {},
   'POST /api/items/:id/forward-to-accept': {},
@@ -165,7 +165,13 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/asks/:askId/file': { payload: {} },
   'POST /api/items/:id/asks/:askId/dismiss': { payload: { reason: 'covered elsewhere' } },
 }
-const fillUrl = (url, id) => url.replace(':id', id).replace(':stepIndex', String(PRIORITIZE_GATE)).replace(':phase', '1').replace(':askId', '1')
+const fillUrl = (url, id) =>
+  url
+    .replace(':id', id)
+    .replace(':stepIndex', String(PRIORITIZE_GATE))
+    .replace(/:step(?=\/)/, stepKeyAt(PRIORITIZE_GATE))
+    .replace(':phase', '1')
+    .replace(':askId', '1')
 
 test('overlap spy is live: a member sending their own item back to step 9 runs the overlap check', async () => {
   const res = await post(`/api/items/${ALPHA_REVIEW}/reject`, m, { feedback: 'redo the summary', targetStepIndex: SUMMARIZE })

@@ -33,7 +33,7 @@ test('the golden covers every Change and Task agent step, once each, Implement a
   assert.deepEqual(Object.keys(GOLDEN.steps), expected)
   for (const index of expected) {
     assert.equal(GOLDEN.steps[index].length, 1, `step ${index} dispatched once`)
-    assert.deepEqual(GOLDEN.steps[index][0].step, { index: Number(index), label: STEPS[index].label, agent: STEPS[index].agent })
+    assert.deepEqual(GOLDEN.steps[index][0].step, { key: STEPS[index].key, index: Number(index), label: STEPS[index].label, agent: STEPS[index].agent })
   }
   assert.ok(GOLDEN.steps[11][0].item.personas, 'Implement carries the item personas')
 })

@@ -37,6 +37,7 @@ import {
   laneCheckIndexes,
   nextCursor,
   isServerStep,
+  stepKeyAt,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -65,6 +66,7 @@ import {
   isProjectEnabled,
   setProjectEnabled as writeProjectEnabled,
   getRepoCheckCommands,
+  getRepoTargetedSlots,
   getRepoTestEnvFile,
   getRepoConfig,
   getPlanScope,
@@ -994,8 +996,13 @@ function projectPayload(projectId) {
   const project = db.prepare('SELECT * FROM project WHERE id = ?').get(projectId)
   const repos = db.prepare('SELECT repo, prefix FROM project_repo WHERE project_id = ?').all(projectId)
   // HZ-697: no tenant token goes to the farm — for a tenant project farmd
-  // resolves the project's own github_token_ref itself.
-  return { project: { id: project.id, name: project.name }, repos, token: project.isolation === 'tenant' ? null : getToken() }
+  // resolves the project's own github_token_ref itself. HZ-758: the isolation
+  // goes too, so farmd never clones a tenant project's repos as the farm user.
+  return {
+    project: { id: project.id, name: project.name, isolation: project.isolation },
+    repos,
+    token: project.isolation === 'tenant' ? null : getToken(),
+  }
 }
 
 async function waitForFarmRunning() {
@@ -1794,7 +1801,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // HZ-333: a deploy queue batch already published and deployed this
     // item's release; the wait bound counts from that deploy's start.
     releaseFields = { release_tag: shipped.tag, release_url: shipped.release_url }
-    deployWait = deployWaitFor(item.repo, { startedAt: shipped.startedAtMs })
+    deployWait = deployWaitFor(item.repo, { startedAt: shipped.startedAtMs, tag: shipped.tag })
   } else if (stepIndex === DEPLOY_STEP_INDEX && item.repo && item.issue != null) {
     try {
       const release = await createDeployRelease(item)
@@ -1973,7 +1980,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       },
       ...releaseFields,
     },
-    step: { index: stepIndex, label: step.label, agent: step.agent },
+    // HZ-709: the key names the step; farmd finds it by key and falls back
+    // to the index only for a task queued before keys.
+    step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
     // HZ-535: definitionsEnabled tells the farm to read the project's own
     // personas. Sent only when the switch is on AND the project's file loads,
     // so a project with no definitions gets exactly today's payload; a farm
@@ -2009,11 +2018,16 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
 // HZ-304: then the farm's checks fail by name, unless checks_waiver rides too.
 // HZ-494: the repo's test-login env file path rides beside them, whenever set
 // — on implement, deploy and conflict-resolve alike. Never its values.
+// HZ-750: targeted_slots rides beside check_commands when the owner opted a
+// slot into a fix round's targeted run; absent otherwise.
 export function checkCommandsField(item) {
   const testEnvFile = getRepoTestEnvFile(item.repo)
   const envField = testEnvFile ? { test_env_file: testEnvFile } : {}
   const checkCommands = getRepoCheckCommands(item.repo)
-  if (checkCommands) return { check_commands: checkCommands, ...envField }
+  if (checkCommands) {
+    const targeted = getRepoTargetedSlots(item.repo)
+    return { check_commands: checkCommands, ...(targeted.length ? { targeted_slots: targeted } : {}), ...envField }
+  }
   const waiver = checksWaiverFor(item)
   return { ...(waiver ? { checks_waiver: waiver } : {}), ...envField }
 }
@@ -2159,7 +2173,9 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     run_id: runId,
     attempt,
     item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
-    step: { index: stepIndex, label: step.label, agent: step.agent },
+    // HZ-709: the key names the step; farmd finds it by key and falls back
+    // to the index only for a task queued before keys.
+    step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
     ...(project ? { project: taskProject(project) } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
@@ -2999,9 +3015,19 @@ function recordAsks(item, runId, stepIndex, rawAsks, artifactMd, proposedSplit =
   return result.artifactMd
 }
 
-export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView }) {
+// HZ-709: a farm result names the step it ran by key (farmd forwards the
+// task's step.key as step_key). The run row's position stays the record's
+// authority; a result whose key names another step was misrouted and changes
+// nothing. A result with no key — a run dispatched before keys — is matched
+// by its run id alone, as before.
+function resultNamesAnotherStep(run, stepKey) {
+  return stepKey != null && stepKeyAt(run.step_index) !== stepKey
+}
+
+export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView, step_key: stepKey = null }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
   const item = getItem(id)
 
@@ -3290,9 +3316,10 @@ export const FAILED_OUTPUT_MAX_CHARS = 4000
 // detected the failure) or null/unrecognized — only a tagged reason, under
 // the cap, on a still-runnable item is ever auto-retried. Everything else
 // pauses for a human exactly as it always has (HZ-76's default-safe rule).
-export function failFarmRun(runId, error, reason = null, jobView = null, limit = null) {
+export function failFarmRun(runId, error, reason = null, jobView = null, limit = null, stepKey = null) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
 
   clearTimeout(timers[runId])
@@ -3584,9 +3611,10 @@ export function resumeJob(id) {
 // auto-retried. The block, its step_run row and the owner's one ping are
 // written in one transaction; inFlightRunnable then holds dispatch until
 // store.js releases the block. A repeat report for the run finds it closed.
-export function blockFarmRun(runId, { rule, needs }) {
+export function blockFarmRun(runId, { rule, needs, step_key: stepKey = null }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
   const item = getItem(id)
 

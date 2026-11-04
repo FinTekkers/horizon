@@ -57,6 +57,7 @@ echo '[{"state": "success"}]' >"$API_DIR/deployments/1/statuses"
 run release-1
 expect "live at the tag's commit: DEPLOY OK names the tag and commit" grep -q "DEPLOY OK tag=refs/tags/release-1 commit=$TAG_SHA" "$STATE/self-deploy.log"
 expect "live at the tag's commit: exit 0" grep -qx 'exit=0' "$STATE/self-deploy.log"
+expect "live at the tag's commit: last-good-tag names the tag and commit" grep -qx "refs/tags/release-1:$TAG_SHA" "$STATE/last-good-tag"
 
 # 2. A later commit on main is live (compare says ahead): DEPLOY OK.
 echo "[{\"id\": 2, \"sha\": \"$LATER_SHA\"}]" >"$API_DIR/deployments/index.html"
@@ -71,6 +72,7 @@ echo '[{"state": "in_progress"}]' >"$API_DIR/deployments/1/statuses"
 run release-1
 expect "no successful deployment in time: DEPLOY FAILED: pages is the last line" bash -c "[ \"\$(grep -v '^exit=' '$STATE/self-deploy.log' | tail -1 | cut -d' ' -f2-)\" = 'DEPLOY FAILED: pages (tag=release-1)' ]"
 expect "no successful deployment in time: exit non-zero" bash -c "! grep -qx 'exit=0' '$STATE/self-deploy.log'"
+expect "no successful deployment in time: no last-good-tag" test ! -e "$STATE/last-good-tag"
 
 # 4. An unknown tag fails at once.
 run no-such-tag

@@ -8,14 +8,19 @@
 // so it is the very HORIZON_STATE_DIR the deploy script writes to.
 
 import { DEPLOY_WAIT_MS } from './config.js'
-import { resolveTarget, spawnEnv } from './deploy.js'
+import { deployOkLine, deployOutcomeFor, resolveTarget, spawnEnv } from './deploy.js'
+import { isTenantRepo } from './tenantTokens.js'
 
 // Null when the repo has no deploy target. A grpc-health target also carries
 // its health URL, so the Deploy step checks gRPC health instead of loading a
 // web page (a gRPC-only port is not one).
 // HZ-333: `startedAt` (ms) is when a deploy queue batch's deploy started; the
 // wait bound then counts from it, not from this dispatch.
-export function deployWaitFor(repoFullName, { startedAt = null, now = Date.now() } = {}) {
+// A tenant's Deploy step runs as the project's run user, who cannot read this
+// server user's state dir (HZ-758). So when `tag` is already live here, a
+// tenant's wait says so (`confirmed_live`) and carries the release's DEPLOY OK
+// line; the farm then reads neither file. Internal repos never get these.
+export function deployWaitFor(repoFullName, { startedAt = null, now = Date.now(), tag = null } = {}) {
   const target = resolveTarget(repoFullName)
   if (!target) return null
   const waitMs = startedAt == null ? DEPLOY_WAIT_MS : Math.max(0, DEPLOY_WAIT_MS - (now - startedAt))
@@ -31,6 +36,11 @@ export function deployWaitFor(repoFullName, { startedAt = null, now = Date.now()
     // HZ-353: a code-only deploy restarts nothing; its script logs DEPLOY OK
     // only once the tag is installed and its offline tests passed.
     wait.health_check_type = 'deploy-log'
+  }
+  if (tag && isTenantRepo(repoFullName) && deployOutcomeFor(target, tag) === 'live') {
+    wait.confirmed_live = true
+    const okLine = deployOkLine(target, tag)
+    if (okLine) wait.deploy_ok_line = okLine
   }
   return wait
 }

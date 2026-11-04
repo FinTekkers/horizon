@@ -81,7 +81,7 @@ test('one message to the owner per arrival, naming the item and the gate; repeat
   arriveNeedingHuman('HP-10', 10)
   await tick()
   assert.deepEqual(sentFor('HP-10'), [
-    { to: OWNER, body: `Autopilot needs you: HP-10 "Fix HP-10" is waiting at step 10 (${STEPS[10].label}).` },
+    { to: OWNER, body: `Autopilot needs you: HP-10 "Fix HP-10" is waiting at "${STEPS[10].label}".` },
   ])
 
   for (let i = 0; i < 3; i++) await tick()
@@ -131,7 +131,7 @@ test('the body holds only the id, title, step and gate: no reason text, no secre
   arriveNeedingHuman('HP-leak', 5, { reason: 'artifact quoted tok123secret and a private note' })
   await tick()
   const [{ body }] = sentFor('HP-leak')
-  assert.equal(body, `Autopilot needs you: HP-leak "Fix HP-leak" is waiting at step 5 (${STEPS[5].label}).`)
+  assert.equal(body, `Autopilot needs you: HP-leak "Fix HP-leak" is waiting at "${STEPS[5].label}".`)
   for (const banned of ['tok123secret', 'private note', OWNER_NUMBER]) assert.ok(!body.includes(banned), banned)
 })
 

@@ -866,6 +866,17 @@ if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => colum
   db.exec('ALTER TABLE gate_decision ADD COLUMN substep_id TEXT')
 }
 
+// HZ-709: the step's permanent key (domain/steps.json), beside the unchanged
+// step_index, on the rows that name a step outside the item record. Additive
+// and nullable, never backfilled: NULL is a row from before this column, and
+// its reader falls back to step_index. work_item.cursor, step_run and
+// gate_decision keep their positions — the record is not migrated.
+for (const table of ['gate_poll', 'gate_notice', 'feedback']) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((column) => column.name === 'step_key')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN step_key TEXT`)
+  }
+}
+
 // HZ-245: per-repo check commands, set by a human in Admin. Additive and
 // nullable: NULL in every slot is "not configured", so the farm auto-detects
 // exactly as before. Deliberately no seed — not for FinTekkers/horizon, not
@@ -879,6 +890,9 @@ for (const column of ['check_install', 'check_test', 'check_lint', 'check_e2e', 
 // the farm reads the file at run time; no value is ever stored. NULL is "not
 // configured". No seed: an admin sets it once the host file exists.
 if (!projectRepoColumns.has('test_env_file')) db.exec('ALTER TABLE project_repo ADD COLUMN test_env_file TEXT')
+// HZ-750: the slots (a JSON array of 'test' / 'e2e') whose fix rounds first
+// re-run only the failed tests. NULL is none: every slot runs as before.
+if (!projectRepoColumns.has('check_targeted')) db.exec('ALTER TABLE project_repo ADD COLUMN check_targeted TEXT')
 
 // HZ-349: which run produced a test_result row — 'main' (the configured
 // commands) or 'branch' (the item's own changed scripts/checks/, run after

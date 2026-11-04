@@ -27,7 +27,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import * as github from './github.js'
 import { farmFetch } from './orchestrator.js'
-import { STEPS, requiredStepIndex } from '../../domain/js/lifecycle.js'
+import { STEPS, requiredStepIndex, stepKeyAt } from '../../domain/js/lifecycle.js'
 import { operatorDecideLines, redact } from './caretakerRules.js'
 import { loadPolicy } from './caretaker.js'
 import { ACTOR, ACTIONABLE_EVAL_SQL, STALL_TEXT, actionsInWindow, stallReason } from './caretakerActor.js'
@@ -127,7 +127,7 @@ async function ruleOn(c, { gateActions, log, now, propose }) {
   const leave = (outcome, code, text) => {
     finishRuling.run(outcome, code, claim)
     insertEvent.run(c.item_id, multiline(text))
-    log?.warn?.(`caretaker: no ruling on ${c.item_id} at step ${c.gate_index}: ${code}`)
+    log?.warn?.(`caretaker: no ruling on ${c.item_id} at ${stepKeyAt(c.gate_index)}: ${code}`)
     return outcome
   }
   const stall = stallReason(c)
@@ -195,7 +195,7 @@ async function ruleOn(c, { gateActions, log, now, propose }) {
     // A successful send-back's own event already carries the note.
     if (!ok) insertEvent.run(c.item_id, multiline(`caretaker ruled but could not send back (${error}) — left for a human\n${note}`))
   })()
-  log?.info?.(`caretaker: ruled (${verdict.kind}) on ${c.item_id} at step ${c.gate_index}`)
+  log?.info?.(`caretaker: ruled (${verdict.kind}) on ${c.item_id} at ${stepKeyAt(c.gate_index)}`)
   return 'applied'
 }
 

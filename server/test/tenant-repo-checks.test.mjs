@@ -61,10 +61,10 @@ const COMMANDS = { install: 'npm ci', test: 'npm test', e2e: 'npx playwright tes
 test('metric 4: a member saves install, test and e2e for their own project and reads them back; lint and screenshots survive', async () => {
   const res = await put(member, T, { repo: REPO, ...COMMANDS })
   assert.equal(res.statusCode, 200, res.body)
-  assert.deepEqual(res.json(), { ok: true, repo: REPO, checks: COMMANDS })
+  assert.deepEqual(res.json(), { ok: true, repo: REPO, checks: COMMANDS, targeted: [] })
   const back = await get(member, T)
   assert.equal(back.statusCode, 200, back.body)
-  assert.deepEqual(back.json(), { repo: REPO, checks: COMMANDS })
+  assert.deepEqual(back.json(), { repo: REPO, checks: COMMANDS, targeted: [] })
   assert.deepEqual(stored(REPO), {
     check_install: 'npm ci',
     check_test: 'npm test',
@@ -109,4 +109,17 @@ test('a save needs the gate PIN, and lint or screenshots cannot be set here', as
     assert.equal(res.statusCode, 400, `${slot}: ${res.body}`)
   }
   assert.deepEqual(stored(REPO), before)
+})
+
+// HZ-750: the member opts the e2e slot into a fix round's targeted run.
+test('HZ-750: a member opts e2e in and reads it back; omitting it keeps it; lint is 400', async () => {
+  const on = await put(member, T, { repo: REPO, ...COMMANDS, targeted: ['e2e'] })
+  assert.equal(on.statusCode, 200, on.body)
+  assert.deepEqual(on.json().targeted, ['e2e'])
+  assert.deepEqual((await get(member, T)).json().targeted, ['e2e'])
+  const kept = await put(member, T, { repo: REPO, ...COMMANDS })
+  assert.deepEqual(kept.json().targeted, ['e2e'])
+  assert.equal((await put(member, T, { repo: REPO, ...COMMANDS, targeted: ['lint'] })).statusCode, 400)
+  const off = await put(member, T, { repo: REPO, ...COMMANDS, targeted: [] })
+  assert.deepEqual(off.json().targeted, [])
 })
