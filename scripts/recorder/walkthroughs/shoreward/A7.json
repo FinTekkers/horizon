@@ -1,4 +1,10 @@
 {
+  "setup": [
+    {"action": "goto", "path": "/horizon/admin/account"},
+    {"action": "waitFor", "selector": "button:has-text(\"Regenerate my PIN\")", "timeoutMs": 30000},
+    {"action": "click", "selector": "button:has-text(\"Regenerate my PIN\")"},
+    {"action": "waitFor", "selector": ".admin-status", "timeoutMs": 30000}
+  ],
   "actions": [
     {"action": "caption", "text": "Connect your repo", "ms": 3500},
     {"action": "goto", "path": "/horizon/"},
@@ -14,7 +20,7 @@
     {"action": "click", "selector": ".connect-repo__primary"},
     {"action": "waitFor", "selector": ".repo-checks__form", "timeoutMs": 30000},
     {"action": "pause", "ms": 1500},
-    {"action": "type", "selector": ".repo-checks__form .field:has(.field__label:text-is(\"Test\")) input.field__input", "text": "npm test", "delayMs": 80},
+    {"action": "type", "selector": ".repo-checks__form .field:has(.field__label:text-is(\"Test\")) textarea.field__input", "text": "npm test", "delayMs": 80},
     {"action": "pause", "ms": 800},
     {"action": "click", "selector": ".repo-checks__form button.composer__submit"},
     {"action": "waitFor", "selector": ".gh-success", "timeoutMs": 30000},
