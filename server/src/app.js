@@ -2344,12 +2344,14 @@ export function buildApp({
     required: ['id', 'askId'],
     properties: { id: { type: 'string', minLength: 1 }, askId: { type: 'integer', minimum: 1 } },
   }
-  const ASK_RESPONSES = { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 422: ERROR_OBJECT, 502: ERROR_OBJECT }
+  // Each route lists only the codes it answers.
+  const FILE_ASK_RESPONSES = { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 422: ERROR_OBJECT, 502: ERROR_OBJECT }
+  const DISMISS_ASK_RESPONSES = { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT }
   const sendAsk = (reply, { status = 409, ...result }) => (result.error ? reply.code(status).send(result) : reply.send(result))
 
   fastify.post(
     '/api/items/:id/asks/:askId/file',
-    { config: { scope: 'member:item' }, schema: { params: askParams, response: ASK_RESPONSES, security: HUMAN_GATE_SECURITY } },
+    { config: { scope: 'member:item' }, schema: { params: askParams, response: FILE_ASK_RESPONSES, security: HUMAN_GATE_SECURITY } },
     async (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const item = store.getItem(request.params.id)
@@ -2376,7 +2378,7 @@ export function buildApp({
           required: ['reason'],
           properties: { reason: { type: 'string', maxLength: 500 } },
         },
-        response: ASK_RESPONSES,
+        response: DISMISS_ASK_RESPONSES,
         security: HUMAN_GATE_SECURITY,
       },
     },
