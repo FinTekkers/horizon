@@ -28,6 +28,7 @@ with zero literal indices in the test itself.
 """
 
 import json
+import re
 from pathlib import Path
 
 _SOURCE_PATH = Path(__file__).resolve().parent.parent / "steps.json"
@@ -138,8 +139,50 @@ def _validate_source(data: object, source: str) -> dict:
                 f'domain/py/steps.py: {source}: steps[{i}] ("{step["label"]}") declares phase '
                 f"{step['phase']}, but only {len(kind_phases)} phase(s) exist"
             )
+    _validate_step_keys(steps, source)
     _validate_lanes(data.get("lanes"), steps, kinds, source)
     return data
+
+
+# HZ-709: a step's permanent name, `<itemKind>.<slug>`, word-for-word with
+# domain/js/lifecycle.js's assertStepKeys. Checked wherever present; the schema
+# makes it required on the real table.
+_STEP_KEY_SHAPE = re.compile(r"^[a-z]+\.[a-z0-9-]+$")
+
+
+def _validate_step_keys(steps: list, source: str) -> None:
+    prefix = f"domain/py/steps.py: {source}"
+    keyed: dict[str, int] = {}
+    for i, step in enumerate(steps):
+        if "key" not in step:
+            continue
+        key = step["key"]
+        if not isinstance(key, str) or not _STEP_KEY_SHAPE.fullmatch(key):
+            raise RuntimeError(f'{prefix}: steps[{i}] ("{step["label"]}") has key "{key}" — expected <itemKind>.<slug>')
+        item_kind = _step_kind(step)
+        if key.split(".")[0] != item_kind:
+            raise RuntimeError(
+                f'{prefix}: steps[{i}] ("{step["label"]}") has key "{key}", which does not start with its item kind "{item_kind}"'
+            )
+        if key in keyed:
+            raise RuntimeError(f'domain/py/steps.py: {source} has duplicate step key "{key}"')
+        keyed[key] = i
+    for i, step in enumerate(steps):
+        if "sendBackTo" not in step:
+            continue
+        if step["kind"] != "gate":
+            raise RuntimeError(f'{prefix}: steps[{i}] ("{step["label"]}") declares sendBackTo, but only a gate sends back')
+        target = keyed.get(step["sendBackTo"]) if isinstance(step["sendBackTo"], str) else None
+        if (
+            target is None
+            or target >= i
+            or steps[target]["kind"] != "agent"
+            or _step_kind(steps[target]) != _step_kind(step)
+        ):
+            raise RuntimeError(
+                f'{prefix}: steps[{i}] ("{step["label"]}") sends back to "{step["sendBackTo"]}", '
+                "which is not an earlier agent step of its item kind"
+            )
 
 
 def _validate_lanes(lanes: object, steps: list, kinds: dict, source: str) -> None:
@@ -157,18 +200,19 @@ def _validate_lanes(lanes: object, steps: list, kinds: dict, source: str) -> Non
             raise RuntimeError(f'{prefix}: lanes.{lane}.itemKind names unknown item kind "{kind}"')
         rows = [(index, step) for index, step in enumerate(steps) if _step_kind(step) == kind]
 
-        def index_of(label: str) -> int:
+        # HZ-709: a lane names its rows by step key, never by label or position.
+        def index_of(key: str) -> int:
             for index, step in rows:
-                if step["label"] == label:
+                if step.get("key") == key:
                     return index
-            raise RuntimeError(f'{prefix}: lanes.{lane} names unknown step "{label}" for item kind "{kind}"')
+            raise RuntimeError(f'{prefix}: lanes.{lane} names unknown step "{key}" for item kind "{kind}"')
 
         for field in ("check", "skip"):
             values = entry.get(field)
             if not isinstance(values, list) or not values or not all(isinstance(v, str) and v for v in values):
-                raise RuntimeError(f"{prefix}: lanes.{lane}.{field} must be a non-empty array of step labels")
-        check = sorted(index_of(label) for label in entry["check"])
-        skip = {index_of(label) for label in entry["skip"]}
+                raise RuntimeError(f"{prefix}: lanes.{lane}.{field} must be a non-empty array of step keys")
+        check = sorted(index_of(key) for key in entry["check"])
+        skip = {index_of(key) for key in entry["skip"]}
         for n, index in enumerate(check):
             if steps[index]["kind"] != "agent":
                 raise RuntimeError(
@@ -239,6 +283,7 @@ def _project_farm_view(steps: list[dict], kind: str = "change") -> list[dict]:
     return [
         {
             "index": index,
+            "key": step.get("key"),
             "label": step["label"],
             "agent": step.get("agent"),
             "runsIn": step.get("runsIn"),
@@ -303,6 +348,29 @@ def first_step_index(kind: str = "change") -> int:
 # Safe .get()-only lookup — farmd's dispatch loop reads task payloads off the
 # network and must never raise on an unknown/stale index.
 STEP_BY_INDEX: dict[int, dict] = {entry["index"]: entry for entry in STEPS}
+
+
+def step_key_at(index, table: list[dict] | None = None) -> str | None:
+    """HZ-709: the permanent key of the authored row at that position, or None.
+    `table` defaults to the authored steps; a test passes its own (e.g. with a
+    step inserted) to prove keys follow their rows."""
+    rows = _SOURCE["steps"] if table is None else table
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(rows):
+        return None
+    key = rows[index].get("key")
+    return key if isinstance(key, str) else None
+
+
+def step_index_of(key, table: list[dict] | None = None) -> int | None:
+    """HZ-709: the position of the authored row with that key, or None. farmd
+    resolves a dispatched step by this, never trusting the index beside it."""
+    rows = _SOURCE["steps"] if table is None else table
+    if not isinstance(key, str):
+        return None
+    for index, step in enumerate(rows):
+        if step.get("key") == key:
+            return index
+    return None
 
 
 def _find_by_label(steps: list[dict], label: str) -> dict:

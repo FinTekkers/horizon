@@ -7,13 +7,13 @@
 // { subscribe, getItems } + the action functions, so nothing else changes.
 //
 //   GET  /items                                → getItems()
-//   POST /items/:id/gates/:stepIndex/approve   → approveGate(id)
+//   POST /items/:id/gates/:step/approve        → approveGate(id)
 //   POST /items/:id/reject                     → requestChanges(id, target, feedback)
 //   POST /items/:id/pause                      → setPaused(id, paused)
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
-import { STEPS, PHASES, isClosed, firstStepIndex, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
+import { STEPS, PHASES, isClosed, firstStepIndex, sendBackTargetOf } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 import { substepReworkTargets } from '../../../domain/js/substeps.js'
 import { PERSONAS, isPersona } from '../domain/personas'
@@ -344,7 +344,7 @@ export async function approveGate(id, notes, _options = {}) {
 // Mirrors the server's rework loop: rejection rolls back to the responsible
 // agent step and re-runs it instead of freezing the item. targetStepIndex
 // (HZ-51) lets a human pick an earlier agent step explicitly, same
-// validation and Accept-gate exception as store.js's requestChanges.
+// validation and declared default targets as store.js's requestChanges.
 //
 // HZ-389: async and answering like serverApi — rejects with the server's error
 // code, resolves with { ok, item, restart } — and numbers the restarted attempt
@@ -378,8 +378,9 @@ export async function requestChanges(id, target, feedback, targetStepIndex, targ
   if (atGate) {
     if (targetStepIndex != null) {
       reworkIdx = targetStepIndex
-    } else if (reworkIdx === ACCEPT_GATE_INDEX) {
-      reworkIdx = IMPLEMENT_STEP_INDEX
+    } else if (sendBackTargetOf(reworkIdx) !== null) {
+      // HZ-709: the gate's declared default (steps.json sendBackTo), as on the server.
+      reworkIdx = sendBackTargetOf(reworkIdx)
     } else {
       while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
     }

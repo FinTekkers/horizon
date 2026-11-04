@@ -34,7 +34,15 @@
         "a lane that skips the kind's last step is rejected",
         "a lane that checks a gate is rejected",
         "a lane naming an unknown step is rejected",
-        "a lane of an unknown item kind is rejected"
+        "a lane of an unknown item kind is rejected",
+        "HZ-709: keyed steps and a declared send-back target are accepted",
+        "HZ-709: a malformed step key is rejected",
+        "HZ-709: a step key without its item kind's prefix is rejected",
+        "HZ-709: a duplicate step key is rejected",
+        "HZ-709: a send-back target that is no step is rejected",
+        "HZ-709: a send-back target after the gate is rejected",
+        "HZ-709: a send-back target that is a gate is rejected",
+        "HZ-709: only a gate declares a send-back target"
       ]
     },
 
@@ -87,6 +95,7 @@
         "expect": [
           {
             "index": 0,
+            "key": null,
             "label": "First Farm Step",
             "agent": "Eng",
             "runsIn": "farm",
@@ -98,6 +107,7 @@
           },
           {
             "index": 2,
+            "key": null,
             "label": "Second Farm Step",
             "agent": "Eng",
             "runsIn": "farm",
@@ -118,6 +128,7 @@
         "expect": [
           {
             "index": 0,
+            "key": null,
             "label": "A PM Step",
             "agent": "PM",
             "runsIn": "pm",
@@ -152,6 +163,7 @@
         "expect": [
           {
             "index": 0,
+            "key": null,
             "label": "A Reviewer",
             "agent": "QA",
             "runsIn": "farm",
@@ -193,6 +205,7 @@
         "expect": [
           {
             "index": 0,
+            "key": null,
             "label": "A Farm Step",
             "agent": "Eng",
             "runsIn": "farm",
@@ -345,13 +358,14 @@
         "case": "a lane that skips only rows nobody notices is accepted",
         "input": {
           "phases": ["P"],
-          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Explore", "Design gate"] } },
+          "lanes": { "short": { "itemKind": "change", "check": ["change.write"], "skip": ["change.explore", "change.design-gate"] } },
           "steps": [
-            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
-            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "key": "change.explore", "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "key": "change.design-gate", "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
             {
+              "key": "change.build",
               "phase": 0,
               "kind": "agent",
               "agent": "Eng",
@@ -363,7 +377,7 @@
               "maxTurns": 10,
               "timeoutS": 100
             },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+            { "key": "change.close", "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
           ]
         },
         "expect": { "throws": false }
@@ -372,13 +386,14 @@
         "case": "a lane that skips a gate whose step still runs is rejected",
         "input": {
           "phases": ["P"],
-          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Design gate"] } },
+          "lanes": { "short": { "itemKind": "change", "check": ["change.write"], "skip": ["change.design-gate"] } },
           "steps": [
-            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
-            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "key": "change.explore", "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "key": "change.design-gate", "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
             {
+              "key": "change.build",
               "phase": 0,
               "kind": "agent",
               "agent": "Eng",
@@ -390,7 +405,7 @@
               "maxTurns": 10,
               "timeoutS": 100
             },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+            { "key": "change.close", "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
           ]
         },
         "expect": { "throws": true, "messageContains": "lanes.short may not skip the gate \"Design gate\": a step it gates still runs" }
@@ -399,13 +414,14 @@
         "case": "a lane that skips a workspace-mutating step is rejected",
         "input": {
           "phases": ["P"],
-          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Build"] } },
+          "lanes": { "short": { "itemKind": "change", "check": ["change.write"], "skip": ["change.build"] } },
           "steps": [
-            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
-            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "key": "change.explore", "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "key": "change.design-gate", "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
             {
+              "key": "change.build",
               "phase": 0,
               "kind": "agent",
               "agent": "Eng",
@@ -417,7 +433,7 @@
               "maxTurns": 10,
               "timeoutS": 100
             },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+            { "key": "change.close", "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
           ]
         },
         "expect": { "throws": true, "messageContains": "lanes.short may not skip \"Build\": it changes the workspace" }
@@ -426,13 +442,14 @@
         "case": "a lane that skips the kind's last step is rejected",
         "input": {
           "phases": ["P"],
-          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["Close"] } },
+          "lanes": { "short": { "itemKind": "change", "check": ["change.write"], "skip": ["change.close"] } },
           "steps": [
-            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
-            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "key": "change.explore", "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "key": "change.design-gate", "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
             {
+              "key": "change.build",
               "phase": 0,
               "kind": "agent",
               "agent": "Eng",
@@ -444,7 +461,7 @@
               "maxTurns": 10,
               "timeoutS": 100
             },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+            { "key": "change.close", "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
           ]
         },
         "expect": { "throws": true, "messageContains": "lanes.short may not skip \"Close\": it is the item kind's last step" }
@@ -453,13 +470,14 @@
         "case": "a lane that checks a gate is rejected",
         "input": {
           "phases": ["P"],
-          "lanes": { "short": { "itemKind": "change", "check": ["Approve"], "skip": ["Explore"] } },
+          "lanes": { "short": { "itemKind": "change", "check": ["change.approve"], "skip": ["change.explore"] } },
           "steps": [
-            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
-            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "key": "change.explore", "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "key": "change.design-gate", "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
             {
+              "key": "change.build",
               "phase": 0,
               "kind": "agent",
               "agent": "Eng",
@@ -471,7 +489,7 @@
               "maxTurns": 10,
               "timeoutS": 100
             },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+            { "key": "change.close", "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
           ]
         },
         "expect": { "throws": true, "messageContains": "lanes.short.check lists \"Approve\", which is not an agent step" }
@@ -480,13 +498,14 @@
         "case": "a lane naming an unknown step is rejected",
         "input": {
           "phases": ["P"],
-          "lanes": { "short": { "itemKind": "change", "check": ["Write"], "skip": ["No Such Row"] } },
+          "lanes": { "short": { "itemKind": "change", "check": ["change.write"], "skip": ["change.no-such-row"] } },
           "steps": [
-            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
-            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "key": "change.explore", "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "key": "change.design-gate", "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
             {
+              "key": "change.build",
               "phase": 0,
               "kind": "agent",
               "agent": "Eng",
@@ -498,22 +517,23 @@
               "maxTurns": 10,
               "timeoutS": 100
             },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+            { "key": "change.close", "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
           ]
         },
-        "expect": { "throws": true, "messageContains": "lanes.short names unknown step \"No Such Row\" for item kind \"change\"" }
+        "expect": { "throws": true, "messageContains": "lanes.short names unknown step \"change.no-such-row\" for item kind \"change\"" }
       },
       {
         "case": "a lane of an unknown item kind is rejected",
         "input": {
           "phases": ["P"],
-          "lanes": { "short": { "itemKind": "banana", "check": ["Write"], "skip": ["Explore"] } },
+          "lanes": { "short": { "itemKind": "banana", "check": ["change.write"], "skip": ["change.explore"] } },
           "steps": [
-            { "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
-            { "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve" },
+            { "key": "change.explore", "phase": 0, "kind": "agent", "agent": "Eng", "label": "Explore", "runsIn": "pm" },
+            { "key": "change.design-gate", "phase": 0, "kind": "gate", "gate": "required", "label": "Design gate" },
             {
+              "key": "change.build",
               "phase": 0,
               "kind": "agent",
               "agent": "Eng",
@@ -525,10 +545,87 @@
               "maxTurns": 10,
               "timeoutS": 100
             },
-            { "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
+            { "key": "change.close", "phase": 0, "kind": "gate", "gate": "required", "label": "Close" }
           ]
         },
         "expect": { "throws": true, "messageContains": "lanes.short.itemKind names unknown item kind \"banana\"" }
+      },
+      {
+        "case": "HZ-709: keyed steps and a declared send-back target are accepted",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.check", "phase": 0, "kind": "agent", "agent": "PM", "label": "Check", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve", "sendBackTo": "change.write" }
+          ]
+        },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "HZ-709: a malformed step key is rejected",
+        "input": { "phases": ["P"], "steps": [{ "key": "change.Write Up", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" }] },
+        "expect": { "throws": true, "messageContains": "has key \"change.Write Up\" — expected <itemKind>.<slug>" }
+      },
+      {
+        "case": "HZ-709: a step key without its item kind's prefix is rejected",
+        "input": { "phases": ["P"], "steps": [{ "key": "task.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" }] },
+        "expect": { "throws": true, "messageContains": "which does not start with its item kind \"change\"" }
+      },
+      {
+        "case": "HZ-709: a duplicate step key is rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Rewrite", "runsIn": "pm" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "has duplicate step key \"change.write\"" }
+      },
+      {
+        "case": "HZ-709: a send-back target that is no step is rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve", "sendBackTo": "change.nope" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "sends back to \"change.nope\", which is not an earlier agent step of its item kind" }
+      },
+      {
+        "case": "HZ-709: a send-back target after the gate is rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve", "sendBackTo": "change.write" },
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "sends back to \"change.write\", which is not an earlier agent step of its item kind" }
+      },
+      {
+        "case": "HZ-709: a send-back target that is a gate is rejected",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            { "key": "change.first", "phase": 0, "kind": "gate", "gate": "required", "label": "First gate" },
+            { "key": "change.approve", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve", "sendBackTo": "change.first" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "sends back to \"change.first\", which is not an earlier agent step of its item kind" }
+      },
+      {
+        "case": "HZ-709: only a gate declares a send-back target",
+        "input": {
+          "phases": ["P"],
+          "steps": [
+            { "key": "change.write", "phase": 0, "kind": "agent", "agent": "PM", "label": "Write", "runsIn": "pm" },
+            { "key": "change.check", "phase": 0, "kind": "agent", "agent": "PM", "label": "Check", "runsIn": "pm", "sendBackTo": "change.write" }
+          ]
+        },
+        "expect": { "throws": true, "messageContains": "declares sendBackTo, but only a gate sends back" }
       }
     ]
   },
@@ -758,6 +855,37 @@
       { "case": "the plan moves past the skipped architecture review", "item": { "cursor": 6, "lane": "trivial" }, "expectLabel": "QA reviews the test plan" },
       { "case": "the QA review moves past the skipped summary", "item": { "cursor": 8, "lane": "trivial" }, "expectLabel": "Review before execution" },
       { "case": "with no lane it is the next row", "item": { "cursor": 3 }, "expectLabel": "Plan options & trade-offs (pros / cons)" }
+    ],
+
+    "stepCodec": [
+      { "case": "a codec over a table with a step inserted resolves every key to the same label", "insertBeforeKey": "change.draft-plan" }
+    ],
+
+    "stepKeyAt": [
+      { "case": "the key at a real step's position", "label": "Draft implementation plan", "kind": "change", "expect": "change.draft-plan" },
+      { "case": "a position past the table has no key", "index": 9999, "expect": null },
+      { "case": "a non-integer position has no key", "index": "6", "expect": null }
+    ],
+
+    "stepIndexOf": [
+      { "case": "a key resolves to its step", "key": "task.run-plan", "expectLabel": "Run plan" },
+      { "case": "an unknown key is null", "key": "change.no-such-step", "expect": null },
+      { "case": "an inherited property name is null, never a prototype hit", "key": "constructor", "expect": null }
+    ],
+
+    "resolveStepRef": [
+      { "case": "a key resolves, not deprecated", "ref": "change.accept-code", "kind": "change", "expect": { "key": "change.accept-code", "deprecated": false }, "expectLabel": "Accept the code" },
+      { "case": "a numeric position still resolves, deprecated", "refLabel": "Accept the code", "expect": { "key": "change.accept-code", "deprecated": true }, "expectLabel": "Accept the code" },
+      { "case": "a digit string still resolves, deprecated", "refLabel": "Accept the code", "asString": true, "expect": { "key": "change.accept-code", "deprecated": true }, "expectLabel": "Accept the code" },
+      { "case": "an unknown key is unknown_step", "ref": "change.no-such-step", "kind": "change", "expect": { "error": "unknown_step" } },
+      { "case": "another kind's key is wrong_kind", "ref": "task.approve-run", "kind": "change", "expect": { "error": "wrong_kind" } }
+    ],
+
+    "sendBackTargetOf": [
+      { "case": "Accept the code sends back to the implement step", "gateKey": "change.accept-code", "expectKey": "change.implement" },
+      { "case": "Approve the run sends back to Run plan", "gateKey": "task.approve-run", "expectKey": "task.run-plan" },
+      { "case": "a gate with no declared target has none", "gateKey": "change.review-before-exec", "expect": null },
+      { "case": "an agent step has none", "gateKey": "change.implement", "expect": null }
     ]
   },
 
@@ -835,6 +963,18 @@
       { "case": "index, kind and label agree", "kind": "task", "label": "Run plan", "indexOffset": 0, "expect": { "ok": true } },
       { "case": "the right label at the wrong index raises", "kind": "task", "label": "Run plan", "indexOffset": 1, "expect": { "throws": true, "messageContains": "Run plan" } },
       { "case": "another kind's label raises", "kind": "change", "label": "Run plan", "indexOffset": 0, "expect": { "throws": true, "messageContains": "change" } }
+    ],
+
+    "step_key_at": [
+      { "case": "the key at a real step's position", "kind": "task", "label": "Run plan", "expect": "task.run-plan" },
+      { "case": "a position past the table has no key", "index": 9999, "expect": null },
+      { "case": "a bool is not a position", "index": true, "expect": null }
+    ],
+
+    "step_index_of": [
+      { "case": "a key resolves to its step", "key": "change.draft-plan", "expectLabel": "Draft implementation plan" },
+      { "case": "an unknown key is None", "key": "change.no-such-step", "expect": null },
+      { "case": "a step inserted before it shifts its position, not its key", "key": "change.draft-plan", "insertBeforeKey": "change.draft-plan", "expectLabel": "Draft implementation plan" }
     ]
   }
 }

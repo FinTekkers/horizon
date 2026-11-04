@@ -40,7 +40,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { gateStepIndexes, requiredStepIndex, isAbandoned, isClosed } from '../../domain/js/lifecycle.js'
+import { gateStepIndexes, requiredStepIndex, isAbandoned, isClosed, stepKeyAt } from '../../domain/js/lifecycle.js'
 import { stepLabel } from '../../domain/js/substeps.js'
 import { approverJids } from './waApprovers.js'
 import { sendWhatsApp, sendPoll } from './waSend.js'
@@ -193,7 +193,7 @@ export function sweepGates({ log, render = renderNotice, renderPoll = renderPoll
   const candidates = selectStale.all(...GATE_INDEXES)
   const recipients = approverJids()
   const insert = db.prepare(
-    'INSERT INTO gate_notice (item_id, step_index, recipient, body) VALUES (?, ?, ?, ?)',
+    'INSERT INTO gate_notice (item_id, step_index, step_key, recipient, body) VALUES (?, ?, ?, ?, ?)',
   )
   const setNotified = db.prepare('UPDATE work_item SET notified_step = ? WHERE id = ?')
   let enqueued = 0
@@ -261,16 +261,18 @@ export function sweepGates({ log, render = renderNotice, renderPoll = renderPoll
         // this runs even with polls disabled so a stale poll from a previous
         // arrival can never decide this one.
         supersedeOpenPolls(item.id)
+        // HZ-709: each row names its gate by key too; step_index stays.
+        const stepKey = stepKeyAt(item.cursor)
         for (const recipient of recipients) {
-          insert.run(item.id, item.cursor, recipient, body)
-          if (question !== null) registerPoll({ itemId: item.id, stepIndex: item.cursor, recipient, question })
+          insert.run(item.id, item.cursor, stepKey, recipient, body)
+          if (question !== null) registerPoll({ itemId: item.id, stepIndex: item.cursor, stepKey, recipient, question })
         }
         setNotified.run(item.cursor, item.id)
       })()
       enqueued += recipients.length
     } catch (err) {
       failed++
-      log?.error?.(`gate notifier: ${item.id} at step ${item.cursor} could not be queued: ${err.message}`)
+      log?.error?.(`gate notifier: ${item.id} at ${stepKeyAt(item.cursor) ?? `step ${item.cursor}`} could not be queued: ${err.message}`)
     }
   }
   return { enqueued, cleared, failed }

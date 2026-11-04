@@ -207,39 +207,37 @@ test('neither priority binding inlines a value — every priority, both files, i
   }
 })
 
-// The ONE place a label may legitimately appear in the JS binding: as the
-// argument to a requiredStepIndex() lookup for a derived index constant
-// (IMPLEMENT_STEP_INDEX and friends). That is a lookup BY label, which is
-// exactly the pattern this repo wants — the opposite of an inlined table. The
-// Python binding has no such lookup and gets no exemption. HZ-384: a
-// kindStepIndex('label', 'kind') lookup is the same thing, scoped to one kind.
-const LOOKUP_CALL = /requiredStepIndex\((['"])(?:(?!\1)[^\\]|\\.)*\1\)/g
-const KIND_LOOKUP_CALL = /kindStepIndex\((['"])(?:(?!\1)[^\\]|\\.)*\1, '[a-z]+'\)/g
+// HZ-709: the binding's derived index constants (IMPLEMENT_STEP_INDEX and
+// friends) look their step up BY KEY — keyIndex('change.implement') — so no
+// label appears in the JS binding at all any more. A key in a keyIndex() call
+// is the one place a key may appear: a lookup by permanent name, the opposite
+// of an inlined table. The Python binding has no such lookup and gets no
+// exemption for either.
+const KEY_LOOKUP_CALL = /keyIndex\('[a-z]+\.[a-z0-9-]+'\)/g
 
-test('neither binding inlines a second copy of the step table — every label, both files', () => {
+test('neither binding inlines a second copy of the step table — every label and key, both files', () => {
   assert.ok(binding.STEPS.length > 0, 'sanity: the JS binding exports an empty table')
-  const jsWithoutLookups = jsSource.replace(LOOKUP_CALL, 'requiredStepIndex()').replace(KIND_LOOKUP_CALL, 'kindStepIndex()')
+  const jsWithoutLookups = jsSource.replace(KEY_LOOKUP_CALL, 'keyIndex()')
   for (const step of binding.STEPS) {
-    assert.ok(!jsWithoutLookups.includes(step.label), `label "${step.label}" is inlined in domain/js/lifecycle.js`)
+    assert.ok(!jsSource.includes(step.label), `label "${step.label}" is inlined in domain/js/lifecycle.js`)
     assert.ok(!pySource.includes(step.label), `label "${step.label}" is inlined in domain/py/steps.py`)
+    assert.ok(!jsWithoutLookups.includes(`'${step.key}'`), `key "${step.key}" is inlined in domain/js/lifecycle.js`)
+    assert.ok(!pySource.includes(`"${step.key}"`), `key "${step.key}" is inlined in domain/py/steps.py`)
   }
-  // Positive controls. First: the labels DO exist, in steps.json — so the scan
-  // is not passing because binding.STEPS is empty or the labels are blank.
-  for (const step of binding.STEPS) assert.ok(stepsJson.includes(step.label))
+  // Positive controls. First: the labels and keys DO exist, in steps.json — so
+  // the scan is not passing because binding.STEPS is empty or they are blank.
+  for (const step of binding.STEPS) {
+    assert.ok(stepsJson.includes(step.label))
+    assert.ok(stepsJson.includes(`"${step.key}"`))
+  }
   // Second: the exemption above is narrow. Stripping the lookups removed only
-  // the four derived constants' arguments, not a table.
-  const stripped = (jsSource.match(LOOKUP_CALL) || []).length
-  assert.equal(stripped, 4, `expected exactly 4 requiredStepIndex() label lookups in the binding, found ${stripped}`)
-  const strippedKind = (jsSource.match(KIND_LOOKUP_CALL) || []).length
-  // HZ-378: the fourth is VERIFY_REPORT_STEP_INDEX, the same lookup BY label.
-  // HZ-446: the fifth is APPROVE_FILE_GATE_INDEX, a Plan's human-only gate.
-  // HZ-448: the sixth is PLAN_DRAFT_STEP_INDEX, the Plan's Draft items step.
-  // HZ-449: the seventh and eighth are FILE_ITEMS_STEP_INDEX and
-  // REVIEW_CLOSE_GATE_INDEX, the Plan's filing step and the gate after it.
-  // HZ-462: the ninth is PLAN_INVENTORY_STEP_INDEX, its Inventory step.
-  // HZ-463: the tenth and eleventh are PLAN_COVERAGE_REVIEW_STEP_INDEX and
-  // PLAN_METRICS_REVIEW_STEP_INDEX, its two draft reviews.
-  assert.equal(strippedKind, 11, `expected exactly 11 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
+  // the derived constants' arguments, not a table: four change constants
+  // (implement, review, accept, deploy), four task ones (run plan, approve the
+  // run, execute, verify & report — HZ-378/HZ-384) and seven plan ones
+  // (approve & file, draft items, file items, review & close, inventory and
+  // the two draft reviews — HZ-446/448/449/462/463).
+  const stripped = (jsSource.match(KEY_LOOKUP_CALL) || []).length
+  assert.equal(stripped, 15, `expected exactly 15 keyIndex() key lookups in the binding, found ${stripped}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {
@@ -550,10 +548,11 @@ const pythonSteps = JSON.parse(
   }),
 )
 
-test('SHAPE PIN (Python): every entry carries its own index, and has exactly the nine farm-view keys', () => {
+test('SHAPE PIN (Python): every entry carries its own index, and has exactly the ten farm-view keys (HZ-709: its step key)', () => {
   const EXPECTED_KEYS = [
     'agent',
     'index',
+    'key',
     'label',
     'maxTurns',
     'providerLocked',

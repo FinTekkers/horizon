@@ -145,7 +145,7 @@ test("approving a Task prompts for the PIN and sends the shown run plan's hash a
   await expect(serverApi.approveGate('TK-9', '')).resolves.toEqual({ ok: true, closed: false })
   expect(promptSpy).toHaveBeenCalledTimes(1)
   const [url, init] = fetchMock.mock.calls[0]
-  expect(url).toContain('/items/TK-9/gates/23/approve')
+  expect(url).toContain('/items/TK-9/gates/task.approve-run/approve')
   expect(init.headers['x-human-key']).toBe('271828')
   expect(JSON.parse(init.body)).toEqual({ planHash: 'plan-hash-1', runner: 'host' })
 })
@@ -191,11 +191,45 @@ test('approving Approve & file sends filedAutopilot, and no other gate does', as
   await serverApi.approveGate('PL-2', '')
   await serverApi.approveGate('CH-1', '', { filedAutopilot: 'off' })
   expect(fetchMock.mock.calls.map(([url]) => url.replace(serverApi.API_BASE, ''))).toEqual([
-    `/items/PL-1/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
-    `/items/PL-2/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
-    '/items/CH-1/gates/3/approve',
+    '/items/PL-1/gates/plan.approve-file/approve',
+    '/items/PL-2/gates/plan.approve-file/approve',
+    '/items/CH-1/gates/change.approve-prioritize/approve',
   ])
   expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body))).toEqual([{ filedAutopilot: 'off' }, { filedAutopilot: 'default' }, {}])
+})
+
+// HZ-709: a gate is named by its permanent key in the approve route — the
+// snapshot's currentStepKey — never by its position.
+test('approving posts to /gates/<currentStepKey>/approve, with no numeric step segment', async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  seedItem({ id: 'KEY-1', cursor: 13, currentStepKey: 'change.accept-code', pr_url: null })
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, closed: false }) }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await serverApi.approveGate('KEY-1', '')
+  const path = fetchMock.mock.calls[0][0].replace(serverApi.API_BASE, '')
+  expect(path).toBe('/items/KEY-1/gates/change.accept-code/approve')
+  expect(path.split('/').some((segment) => /^\d+$/.test(segment))).toBe(false)
+})
+
+// HZ-709: the composer picks a send-back target by position; the server is
+// sent its key as targetStep, never targetStepIndex. A sub-step rides along.
+test('a send-back sends targetStep as a key, keeps targetSubstepId, and sends no targetStepIndex', async () => {
+  const { stepIndexOf } = await import('../../../domain/js/lifecycle.js')
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  seedItem({ id: 'KEY-2', cursor: 13, pr_url: null })
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await serverApi.requestChanges('KEY-2', 'Eng', 'redo', stepIndexOf('change.draft-plan'), 'plan-audit')
+  const [url, init] = fetchMock.mock.calls[0]
+  expect(url.replace(serverApi.API_BASE, '')).toBe('/items/KEY-2/reject')
+  expect(JSON.parse(init.body)).toEqual({ target: 'Eng', feedback: 'redo', targetStep: 'change.draft-plan', targetSubstepId: 'plan-audit' })
+
+  await serverApi.requestChanges('KEY-2', 'Eng', 'redo')
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ target: 'Eng', feedback: 'redo' })
 })
 
 // HZ-179: the token client hits the server's routes with the right verbs, and

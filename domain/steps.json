@@ -20,16 +20,17 @@
   "lanes": {
     "trivial": {
       "itemKind": "change",
-      "check": ["Define the outcome", "Define how we measure success", "Set guardrails"],
-      "skip": ["Plan options & trade-offs (pros / cons)", "Approve the high-level design", "Architecture review", "Summarize reviews & recommend"]
+      "check": ["change.define-outcome", "change.define-success", "change.set-guardrails"],
+      "skip": ["change.plan-options", "change.approve-design", "change.arch-review", "change.summarize-reviews"]
     }
   },
   "steps": [
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define how we measure success", "runsIn": "pm", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize this work" },
+    { "key": "change.define-outcome", "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "providerOverrideEligible": true },
+    { "key": "change.define-success", "phase": 0, "kind": "agent", "agent": "PM", "label": "Define how we measure success", "runsIn": "pm", "providerOverrideEligible": true },
+    { "key": "change.set-guardrails", "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm", "providerOverrideEligible": true },
+    { "key": "change.approve-prioritize", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize this work" },
     {
+      "key": "change.plan-options",
       "phase": 1,
       "kind": "agent",
       "agent": "Ensemble",
@@ -42,8 +43,9 @@
       "maxTurns": 40,
       "timeoutS": 1140
     },
-    { "phase": 1, "kind": "gate", "gate": "required", "label": "Approve the high-level design" },
+    { "key": "change.approve-design", "phase": 1, "kind": "gate", "gate": "required", "label": "Approve the high-level design" },
     {
+      "key": "change.draft-plan",
       "phase": 1,
       "kind": "agent",
       "agent": "Eng",
@@ -57,6 +59,7 @@
       "timeoutS": 1140
     },
     {
+      "key": "change.arch-review",
       "phase": 1,
       "kind": "agent",
       "agent": "Architect",
@@ -71,6 +74,7 @@
       "requires": ["Draft implementation plan"]
     },
     {
+      "key": "change.qa-test-plan",
       "phase": 1,
       "kind": "agent",
       "agent": "QA",
@@ -84,9 +88,10 @@
       "timeoutS": 1140,
       "requires": ["Draft implementation plan"]
     },
-    { "phase": 1, "kind": "agent", "agent": "PM", "label": "Summarize reviews & recommend", "runsIn": "pm", "providerOverrideEligible": true },
-    { "phase": 1, "kind": "gate", "gate": "required", "label": "Review before execution" },
+    { "key": "change.summarize-reviews", "phase": 1, "kind": "agent", "agent": "PM", "label": "Summarize reviews & recommend", "runsIn": "pm", "providerOverrideEligible": true },
+    { "key": "change.review-before-exec", "phase": 1, "kind": "gate", "gate": "required", "label": "Review before execution" },
     {
+      "key": "change.implement",
       "phase": 2,
       "kind": "agent",
       "agent": "Eng",
@@ -99,6 +104,7 @@
       "timeoutS": 2700
     },
     {
+      "key": "change.auto-review",
       "phase": 2,
       "kind": "agent",
       "agent": "Review",
@@ -111,8 +117,9 @@
       "maxTurns": 60,
       "timeoutS": 1800
     },
-    { "phase": 2, "kind": "gate", "gate": "required", "label": "Accept the code" },
+    { "key": "change.accept-code", "phase": 2, "kind": "gate", "gate": "required", "label": "Accept the code", "sendBackTo": "change.implement" },
     {
+      "key": "change.deploy",
       "phase": 3,
       "kind": "agent",
       "agent": "DevOps",
@@ -124,12 +131,13 @@
       "maxTurns": 40,
       "timeoutS": 900
     },
-    { "phase": 4, "kind": "gate", "gate": "required", "label": "Review the work & close" },
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "How we'll verify", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Guardrails", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "task" },
+    { "key": "change.review-close", "phase": 4, "kind": "gate", "gate": "required", "label": "Review the work & close" },
+    { "key": "task.define-outcome", "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the outcome", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
+    { "key": "task.verify-plan", "phase": 0, "kind": "agent", "agent": "PM", "label": "How we'll verify", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
+    { "key": "task.guardrails", "phase": 0, "kind": "agent", "agent": "Architect", "label": "Guardrails", "runsIn": "pm", "itemKind": "task", "providerOverrideEligible": true },
+    { "key": "task.approve-prioritize", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "task" },
     {
+      "key": "task.assess",
       "phase": 1,
       "kind": "agent",
       "agent": "Eng",
@@ -146,6 +154,7 @@
       "spawnKind": "change"
     },
     {
+      "key": "task.run-plan",
       "phase": 1,
       "kind": "agent",
       "agent": "Eng",
@@ -161,6 +170,7 @@
       "awaitsSpawnedCode": true
     },
     {
+      "key": "task.impact-review",
       "phase": 1,
       "kind": "agent",
       "agent": "Architect",
@@ -175,9 +185,10 @@
       "timeoutS": 1140,
       "requires": ["Assess", "Run plan"]
     },
-    { "phase": 1, "kind": "gate", "gate": "required", "label": "Approve the run", "itemKind": "task", "humanOnly": true },
-    { "phase": 2, "kind": "agent", "agent": "DevOps", "label": "Execute", "runsIn": "job", "itemKind": "task" },
+    { "key": "task.approve-run", "phase": 1, "kind": "gate", "gate": "required", "label": "Approve the run", "itemKind": "task", "humanOnly": true, "sendBackTo": "task.run-plan" },
+    { "key": "task.execute", "phase": 2, "kind": "agent", "agent": "DevOps", "label": "Execute", "runsIn": "job", "itemKind": "task" },
     {
+      "key": "task.verify-report",
       "phase": 2,
       "kind": "agent",
       "agent": "QA",
@@ -191,11 +202,12 @@
       "maxTurns": 40,
       "timeoutS": 1140
     },
-    { "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task" },
-    { "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the question", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
-    { "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "plan" },
+    { "key": "task.review-close", "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task" },
+    { "key": "plan.define-question", "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the question", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
+    { "key": "plan.set-guardrails", "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
+    { "key": "plan.approve-prioritize", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "plan" },
     {
+      "key": "plan.inventory",
       "phase": 1,
       "kind": "agent",
       "agent": "Architect",
@@ -209,6 +221,7 @@
       "timeoutS": 1140
     },
     {
+      "key": "plan.design-options",
       "phase": 2,
       "kind": "agent",
       "agent": "Ensemble",
@@ -222,8 +235,9 @@
       "maxTurns": 40,
       "timeoutS": 1140
     },
-    { "phase": 2, "kind": "gate", "gate": "required", "label": "Approve the design", "itemKind": "plan" },
+    { "key": "plan.approve-design", "phase": 2, "kind": "gate", "gate": "required", "label": "Approve the design", "itemKind": "plan" },
     {
+      "key": "plan.draft-items",
       "phase": 3,
       "kind": "agent",
       "agent": "PM",
@@ -237,6 +251,7 @@
       "timeoutS": 1140
     },
     {
+      "key": "plan.review-coverage",
       "phase": 3,
       "kind": "agent",
       "agent": "Architect",
@@ -251,6 +266,7 @@
       "timeoutS": 1140
     },
     {
+      "key": "plan.review-metrics",
       "phase": 3,
       "kind": "agent",
       "agent": "QA",
@@ -264,8 +280,8 @@
       "maxTurns": 40,
       "timeoutS": 1140
     },
-    { "phase": 3, "kind": "gate", "gate": "required", "label": "Approve & file", "itemKind": "plan", "humanOnly": true },
-    { "phase": 4, "kind": "agent", "label": "File items", "runsIn": "server", "itemKind": "plan" },
-    { "phase": 4, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "plan" }
+    { "key": "plan.approve-file", "phase": 3, "kind": "gate", "gate": "required", "label": "Approve & file", "itemKind": "plan", "humanOnly": true },
+    { "key": "plan.file-items", "phase": 4, "kind": "agent", "label": "File items", "runsIn": "server", "itemKind": "plan" },
+    { "key": "plan.review-close", "phase": 4, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "plan" }
   ]
 }

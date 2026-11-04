@@ -51,10 +51,11 @@ function schemesOn(route) {
 
 // A registered route url is exempt if the login gate would let it through. The
 // gate matches request paths, and SESSION_EXEMPT's gate-approval entry uses
-// \d+ for the step index, so the route form (:stepIndex) is substituted with a
-// digit before testing — same path the server sees at request time.
+// \d+ or a step key for the step, so the route form (:stepIndex, or HZ-709's
+// :step) is substituted with a digit before testing — same path the server
+// sees at request time.
 function gateWouldExempt(url) {
-  const asRequested = url.replace(/:stepIndex/g, '0').replace(/:([^/]+)/g, 'x')
+  const asRequested = url.replace(/:step(?:Index)?(?=\/|$)/g, '0').replace(/:([^/]+)/g, 'x')
   return SESSION_EXEMPT.some((re) => re.test(asRequested))
 }
 
@@ -141,7 +142,7 @@ test('the three routes the metric names by hand are among them', () => {
   // the real gate; this pins the named three so a refactor cannot satisfy the
   // count while losing one of them.
   for (const url of [
-    '/api/items/:id/gates/:stepIndex/approve',
+    '/api/items/:id/gates/:step/approve',
     '/api/items/:id/reject',
     '/api/items/:id/resolve-conflicts',
   ]) {
@@ -208,7 +209,7 @@ test('the token management routes are documented, cookie only', () => {
 test('no gate route offers the bearer token', () => {
   const offending = PUBLIC_ROUTES.filter((r) => schemesOn(r).has('humanGateKey') && schemesOn(r).has('bearerToken'))
   assert.deepEqual(offending.map((r) => r.label), [])
-  for (const url of ['/api/items/:id/gates/:stepIndex/approve', '/api/items/:id/reject', '/api/items/:id/resolve-conflicts']) {
+  for (const url of ['/api/items/:id/gates/:step/approve', '/api/items/:id/reject', '/api/items/:id/resolve-conflicts']) {
     assert.equal(schemesOn({ method: 'POST', url }).has('bearerToken'), false, `${url} documents bearerToken`)
   }
 })

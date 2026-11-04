@@ -30,7 +30,7 @@ process.env.FARM_SHARED_SECRET = 'farm-shared-secret-for-tests'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const { FARM_SHARED_SECRET, WA_APPROVAL_SECRET } = await import('../src/config.js')
 const store = await import('../src/store.js')
 const premerge = await import('../src/premerge.js')
@@ -263,4 +263,54 @@ test('the approval credential does NOT open /api/farm/snapshot', async () => {
     headers: { 'x-farm-secret': WA_APPROVAL_SECRET },
   })
   assert.equal(res.statusCode, 401)
+})
+
+// ---- HZ-709: the gate by key, behind the same ladder ----
+// A second app, its warn lines captured, so the deprecation line is countable.
+
+const warnings = []
+const keyedApp = buildApp({ logger: { level: 'warn', stream: { write: (line) => warnings.push(JSON.parse(line).msg) } } })
+for (const id of ['W-KEY', 'W-KEYNUM', 'W-KEYAUTH']) {
+  db.prepare('INSERT INTO work_item (id, title, priority, cursor) VALUES (?, ?, ?, ?)').run(id, `WhatsApp key fixture ${id}`, 'Medium', GATE_INDEX)
+}
+const keyedPost = (id, step, payload, headers = {}) =>
+  keyedApp.inject({ method: 'POST', url: `/api/items/${id}/gates/${step}/approve-via-whatsapp`, payload, headers })
+
+test('HZ-709: an unknown step key is refused by the auth ladder first — 401/403, never a 404 oracle', async () => {
+  const unknown = 'change.no-such-step'
+  for (const [headers, status] of [
+    [{}, 401],
+    [{ 'x-wa-approval-secret': 'wrong' }, 401],
+    [{ 'x-wa-approval-secret': FARM_SHARED_SECRET }, 401],
+  ]) {
+    const res = await assertNothingChanged('W-KEYAUTH', () => keyedPost('W-KEYAUTH', unknown, { senderJid: DAVID }, headers))
+    assert.equal(res.statusCode, status)
+  }
+  const stranger = await assertNothingChanged('W-KEYAUTH', () =>
+    keyedPost('W-KEYAUTH', unknown, { senderJid: STRANGER }, { 'x-wa-approval-secret': WA_SECRET }),
+  )
+  assert.equal(stranger.statusCode, 403)
+  // Positive control: past the ladder, the same key is the 404 it really is.
+  const past = await assertNothingChanged('W-KEYAUTH', () =>
+    keyedPost('W-KEYAUTH', unknown, { senderJid: DAVID }, { 'x-wa-approval-secret': WA_SECRET }),
+  )
+  assert.equal(past.statusCode, 404)
+  assert.deepEqual(past.json(), { error: 'unknown_step' })
+})
+
+test('HZ-709: with the credential, a step key approves the gate and logs no deprecation', async () => {
+  const res = await keyedPost('W-KEY', stepKeyAt(GATE_INDEX), { senderJid: DAVID, sender: 'David' }, { 'x-wa-approval-secret': WA_SECRET })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(cursorOf('W-KEY'), GATE_INDEX + 1)
+  assert.deepEqual(warnings.filter((msg) => msg.includes('item=W-KEY ')), [])
+})
+
+test('HZ-709: with the credential, a number still approves for one release and logs one deprecation line', async () => {
+  const res = await keyedPost('W-KEYNUM', GATE_INDEX, { senderJid: DAVID, sender: 'David' }, { 'x-wa-approval-secret': WA_SECRET })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(cursorOf('W-KEYNUM'), GATE_INDEX + 1)
+  assert.deepEqual(
+    warnings.filter((msg) => msg.includes('item=W-KEYNUM ')),
+    [`deprecated: numeric step ref route=approve-via-whatsapp item=W-KEYNUM step=${GATE_INDEX}`],
+  )
 })

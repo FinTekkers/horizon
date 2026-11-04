@@ -74,9 +74,19 @@
     },
     "step": {
       "type": "object",
-      "required": ["phase", "kind", "label"],
+      "required": ["key", "phase", "kind", "label"],
       "additionalProperties": false,
       "properties": {
+        "key": {
+          "$comment": "HZ-709: the step's permanent name, `<itemKind>.<slug>`. Routes, the item snapshot, farm messages, polls and defaults name a step by it, never by its position. Once shipped a key is never renamed or reused (server/test/domain-step-keys.test.mjs freezes the list). The subset has no `pattern`, so the shape ^[a-z]+\\.[a-z0-9-]+$, uniqueness and the kind prefix are asserted at load time by assertLifecycleShape() and _validate_source().",
+          "type": "string",
+          "minLength": 3
+        },
+        "sendBackTo": {
+          "$comment": "HZ-709: a gate's default send-back target, by key — an earlier agent step of the same item kind. Without it a send-back walks back to the nearest earlier agent step.",
+          "type": "string",
+          "minLength": 1
+        },
         "phase": { "type": "integer", "minimum": 0 },
         "kind": { "type": "string", "enum": ["agent", "gate"] },
         "label": { "type": "string", "minLength": 1 },
