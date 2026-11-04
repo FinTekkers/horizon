@@ -842,11 +842,11 @@ export function buildApp({
     properties: { id: { type: 'string', minLength: 1 } },
   }
 
-  // HZ-709: a gate route's :step — a step key such as change.accept-code, or
-  // a position (deprecated for one release). gateStepOf() resolves it.
   // HZ-709: the step key a farm result carries.
   const STEP_KEY_BODY = { type: 'string', minLength: 1, maxLength: 80 }
 
+  // HZ-709: a gate route's :step — a step key such as change.accept-code, or
+  // a position (deprecated for one release). gateStepOf() resolves it.
   const STEP_REF_PARAM = {
     type: 'string',
     minLength: 1,
@@ -1937,7 +1937,7 @@ export function buildApp({
   // HZ-709: the /reject body's send-back target — `targetStep` (a key), or the
   // deprecated `targetStepIndex`. Both, naming different steps, is ambiguous.
   // { index } (null for no target) or { error, status }.
-  function sendBackTargetOf(request, id) {
+  function rejectTargetOf(request, id) {
     const { targetStep, targetStepIndex } = request.body ?? {}
     if (targetStep == null) {
       if (targetStepIndex != null) {
@@ -2177,7 +2177,7 @@ export function buildApp({
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const { id } = request.params
-      const targetStep = sendBackTargetOf(request, id)
+      const targetStep = rejectTargetOf(request, id)
       if (targetStep.error) return reply.code(targetStep.status).send({ error: targetStep.error })
       const result = gateActions.sendBack(
         id,

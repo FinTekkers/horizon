@@ -185,6 +185,7 @@ test("the item stream opens with the item's outputs, sends them again when they 
       artifact: '# first',
       attemptCount: 1,
       label: STEPS[1].label,
+      key: STEPS[1].key, // HZ-709: the step's permanent key
       provider: null, // HZ-357: no provider recorded for this run
       model: null, // HZ-398: nor a model
       verdict: null, // HZ-429: only Verify & report records one

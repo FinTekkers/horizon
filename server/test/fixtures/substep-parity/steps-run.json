@@ -1,5 +1,5 @@
 {
-  "commit": "d46a5ee",
+  "commit": "fea70fc",
   "steps": {
     "0": [
       {
@@ -25,6 +25,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.define-outcome",
           "index": 0,
           "label": "Define the outcome",
           "agent": "PM"
@@ -72,6 +73,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.define-success",
           "index": 1,
           "label": "Define how we measure success",
           "agent": "PM"
@@ -130,6 +132,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.set-guardrails",
           "index": 2,
           "label": "Set guardrails",
           "agent": "Architect"
@@ -198,6 +201,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.plan-options",
           "index": 4,
           "label": "Plan options & trade-offs (pros / cons)",
           "agent": "Ensemble"
@@ -253,6 +257,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.draft-plan",
           "index": 6,
           "label": "Draft implementation plan",
           "agent": "Eng"
@@ -312,6 +317,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.arch-review",
           "index": 7,
           "label": "Architecture review",
           "agent": "Architect"
@@ -375,6 +381,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.qa-test-plan",
           "index": 8,
           "label": "QA reviews the test plan",
           "agent": "QA"
@@ -446,6 +453,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.summarize-reviews",
           "index": 9,
           "label": "Summarize reviews & recommend",
           "agent": "PM"
@@ -564,6 +572,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.implement",
           "index": 11,
           "label": "Specialist agent implements",
           "agent": "Eng"
@@ -646,6 +655,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.auto-review",
           "index": 12,
           "label": "Automated review (code + QA)",
           "agent": "Review"
@@ -728,6 +738,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "change.deploy",
           "index": 14,
           "label": "Deploy the changes",
           "agent": "DevOps"
@@ -766,6 +777,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "task.define-outcome",
           "index": 16,
           "label": "Define the outcome",
           "agent": "PM"
@@ -874,6 +886,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "task.verify-plan",
           "index": 17,
           "label": "How we'll verify",
           "agent": "PM"
@@ -986,6 +999,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "task.guardrails",
           "index": 18,
           "label": "Guardrails",
           "agent": "Architect"
@@ -1102,6 +1116,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "task.assess",
           "index": 20,
           "label": "Assess",
           "agent": "Eng"
@@ -1157,6 +1172,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "task.run-plan",
           "index": 21,
           "label": "Run plan",
           "agent": "Eng"
@@ -1222,6 +1238,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "task.impact-review",
           "index": 22,
           "label": "Impact review",
           "agent": "Architect"
@@ -1246,6 +1263,7 @@
           "repo": null
         },
         "step": {
+          "key": "task.execute",
           "index": 24,
           "label": "Execute",
           "agent": "DevOps"
@@ -1320,6 +1338,7 @@
           "providerChoices": {}
         },
         "step": {
+          "key": "task.verify-report",
           "index": 25,
           "label": "Verify & report",
           "agent": "QA"
