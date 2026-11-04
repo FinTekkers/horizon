@@ -7,7 +7,8 @@
 #
 # It resolves the tag to a commit through GitHub's public API, waits until a
 # successful github-pages deployment holds that commit (the same commit, or a
-# later one on main), then fetches the site and records DEPLOY OK in
+# later one on main), then fetches the site, writes $STATE_DIR/last-good-tag
+# (what Horizon's deploy queue reads as live) and records DEPLOY OK in
 # $STATE_DIR/self-deploy.log. Any failure logs DEPLOY FAILED: <stage> as the
 # last line. No checkout, no install, no sudo, no token: the repo is public.
 #
@@ -81,4 +82,5 @@ done
 STAGE="site"
 curl -fsS --max-time 20 -o /dev/null "$DEPLOY_PAGES_URL"
 log "site ok ${DEPLOY_PAGES_URL}"
+printf '%s:%s\n' "refs/tags/${TAG}" "$COMMIT" >"$STATE_DIR/last-good-tag"
 log "DEPLOY OK tag=refs/tags/${TAG} commit=${COMMIT}"
