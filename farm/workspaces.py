@@ -28,7 +28,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .config import QUEUE_DIR, WORKSPACES_DIR
+from .config import FARM_HOME, QUEUE_DIR, WORKSPACES_DIR
 
 # Bounded pool of live item worktrees per repo. Without a bound, every item
 # ever dispatched would keep its own node_modules-sized checkout on disk
@@ -211,6 +211,64 @@ def ensure(repo_full: str, token: str | None) -> Path:
         if result.returncode != 0:
             raise RuntimeError(f"clone of {repo_full} failed: {result.stderr.strip()[:200]}")
     return path
+
+
+# HZ-758: how a tenant hub authenticates. The text holds no value: git runs
+# it on each fetch or push and it prints the calling session's own
+# $GITHUB_TOKEN — the run user's, set from its project's token ref. With the
+# variable unset or empty it prints nothing, and git (GIT_TERMINAL_PROMPT=0)
+# fails. Always set after an empty entry, which drops any helper from the
+# run user's ~/.gitconfig or /etc/gitconfig.
+TENANT_CREDENTIAL_HELPER = (
+    '!f() { test "$1" = get || exit 0; test -n "$GITHUB_TOKEN" || exit 0; '
+    "echo username=x-access-token; printf 'password=%s\\n' \"$GITHUB_TOKEN\"; }; f"
+)
+TENANT_CLONE_TIMEOUT_S = 600
+
+
+def _tenant_provision_lock_path(repo_full: str) -> Path:
+    # Beside the hub, not in it: hub_lock() creates hub/.git, which would
+    # leave the clone target non-empty.
+    return WORKSPACES_DIR / f".{repo_full.replace('/', '__')}.provision.lock"
+
+
+def ensure_tenant_hub(repo_full: str) -> Path:
+    """HZ-758: a tenant step's own hub, cloned by the run user into its own
+    FARM_HOME. FARM_HOME and WORKSPACES_DIR are made mode 0700 every call.
+    The clone URL holds no credential; the token reaches git only through
+    TENANT_CREDENTIAL_HELPER, written to the hub's config so later fetches
+    and pushes (step_agent's and the agent's own) use it too. Returns at
+    once when the hub exists. On failure the partial hub is removed and a
+    RuntimeError names the repo only — never git's output."""
+    for directory in (FARM_HOME, WORKSPACES_DIR):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+    path = hub_path(repo_full)
+    with open(_tenant_provision_lock_path(repo_full), "a") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            if (path / ".git").exists():
+                return path
+            if path.exists():
+                shutil.rmtree(path)
+            env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+            try:
+                subprocess.run(
+                    [
+                        "git", "-c", "credential.helper=", "-c", f"credential.helper={TENANT_CREDENTIAL_HELPER}",
+                        "clone", f"https://github.com/{repo_full}.git", str(path),
+                    ],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=TENANT_CLONE_TIMEOUT_S, env=env, check=True,
+                )
+                _git(path, "config", "--replace-all", "credential.helper", "")
+                _git(path, "config", "--add", "credential.helper", TENANT_CREDENTIAL_HELPER)
+            except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+                shutil.rmtree(path, ignore_errors=True)
+                raise RuntimeError(f"tenant hub clone of {repo_full} failed ({type(exc).__name__})") from None
+            return path
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def _active_item_ids(strict: bool = False) -> set[str]:

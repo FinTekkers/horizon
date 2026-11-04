@@ -72,8 +72,8 @@ test('the sources are the switched-on project persona references, with the slug 
   assert.equal(res.statusCode, 200)
   assert.deepEqual(res.json(), {
     sources: [
-      { projectId: ON, slug: OWN_SLUG, repo: 'Acme/app', path: 'docs/specs/Bond-Spec.pdf', lastSha: null, status: null },
-      { projectId: ON, slug: DOCS_SLUG, repo: 'Acme/handbooks', path: 'pricing.pdf', lastSha: null, status: null },
+      { projectId: ON, slug: OWN_SLUG, repo: 'Acme/app', path: 'docs/specs/Bond-Spec.pdf', isolation: 'internal', lastSha: null, status: null },
+      { projectId: ON, slug: DOCS_SLUG, repo: 'Acme/handbooks', path: 'pricing.pdf', isolation: 'internal', lastSha: null, status: null },
     ],
   })
   assert.equal(knowledgeDocs.knowledgeSlug('Acme/handbooks', 'pricing.pdf'), DOCS_SLUG)
@@ -176,6 +176,19 @@ test('Unlinked items lists no source and takes no report, even switched on', asy
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM knowledge_doc WHERE project_id = ?').get(unlinked).n, 0)
   } finally {
     db.prepare('UPDATE project SET definitions_enabled = 0 WHERE id = ?').run(unlinked)
+  }
+})
+
+// HZ-758: each source carries its project's isolation, which farmd reads to
+// skip a tenant's (it clones as the farm user, with $GITHUB_TOKEN).
+test("a tenant project's sources carry isolation tenant", async () => {
+  db.prepare("UPDATE project SET isolation = 'tenant' WHERE id = ?").run(ON)
+  try {
+    const listed = (await sources()).json().sources.filter((s) => s.projectId === ON)
+    assert.ok(listed.length > 0)
+    assert.ok(listed.every((s) => s.isolation === 'tenant'), JSON.stringify(listed))
+  } finally {
+    db.prepare("UPDATE project SET isolation = 'internal' WHERE id = ?").run(ON)
   }
 })
 

@@ -68,12 +68,13 @@ from . import (
 )
 from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
+from .credentials import is_tenant_project
 from .handoff import HandoffContext, HandoffGuard
 from .persona_tools import apply as apply_persona_tools
 from .personas import compose_role, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
-from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, hub_lock, item_lock
+from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, ensure_tenant_hub, hub_lock, item_lock
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -3086,6 +3087,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     bundle_step = _reads_bundle(kind, label)
     ws = None
     if item.get("repo") and not bundle_step:
+        # HZ-758: a tenant step runs as its run user, whose FARM_HOME farmd
+        # never clones into — it clones its own hub here. A failed clone
+        # fails the step (RuntimeError, repo named only), never ws = None.
+        if is_tenant_project(task.get("project")):
+            ensure_tenant_hub(item["repo"])
         try:
             ws = ensure_item_worktree(item["repo"], item["id"])
         except RuntimeError:

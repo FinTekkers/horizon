@@ -117,15 +117,17 @@ def load_login_env(path: str, *, workspace: Path | None = None) -> dict[str, str
     return _parse(path, text)
 
 
-def tenant_env_path(path: str | None, project_id) -> str:
+def tenant_env_path(path: str | None, project_id) -> str | None:
     """HZ-663: a tenant project's test-env file path, checked as a string.
     Returns `path` only when it is absolute, normalised (no `..` or `.`) and
     sits under config.TENANT_ENV_ROOT/<project id>/. Raises LoginEnvError
-    otherwise, None included. Nothing is opened or stat'ed: the file lives in
-    the run user's own directory, which farmd cannot read; tenant-entry
-    checks it exists as the run user."""
-    if not isinstance(path, str) or not path:
-        raise LoginEnvError(str(path), "a tenant project needs a test-env file")
+    otherwise. HZ-758: None or "" is no file, and returns None. Nothing is
+    opened or stat'ed: the file lives in the run user's own directory, which
+    farmd cannot read; tenant-entry checks it exists as the run user."""
+    if path is None or path == "":
+        return None
+    if not isinstance(path, str):
+        raise LoginEnvError(str(path), "the test-env path must be a string")
     if not os.path.isabs(path) or os.path.normpath(path) != path:
         raise LoginEnvError(path, "the path must be absolute and normalised")
     if isinstance(project_id, bool) or not isinstance(project_id, (int, str)) or not str(project_id).isdigit():

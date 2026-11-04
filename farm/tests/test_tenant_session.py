@@ -4,9 +4,10 @@ its own project's token and test-env file.
 farmd builds the session env from empty (credentials.tenant_session_env),
 spools it 0600, and launches `env -i … farm.tenant_launch` in tmux; that execs
 `sudo -n -u <run_user> <TENANT_ENTRY>` with the spool on stdin, and
-infra/host/tenant-entry execs step_agent with exactly that env. Until part 2
-moves the workspace, _tenant_launch_refusal refuses every tenant launch, so
-the launch tests below drive _launch_tenant_session directly."""
+infra/host/tenant-entry execs step_agent with exactly that env. HZ-758 (part
+2) removed the gate that refused every tenant launch: a valid tenant task now
+launches, on /steps/run and at the claim, and its test-env file is optional.
+farm/tests/test_tenant_workspace.py covers the run user's own workspace."""
 
 import importlib.machinery
 import importlib.util
@@ -117,8 +118,7 @@ def a_file(root):
 
 
 def launch(task, tmp_path, fake_tmux):
-    """The tenant launch below the part 1 gate: spool + tmux, as
-    _claim_and_launch will call it once the gate goes."""
+    """The tenant launch itself: spool + tmux, as _claim_and_launch calls it."""
     farmd._launch_tenant_session("farm-run-ac-1-s10-a1", task, tmp_path)
     [call] = new_sessions(fake_tmux)
     return call
@@ -149,6 +149,7 @@ def test_tenant_session_runs_as_run_user_with_only_its_token(farm, root, tmp_pat
     assert env["GITHUB_TOKEN"] == env["GH_TOKEN"] == A_TOKEN
     assert env["HOME"] == "/home/acme_run"
     assert env["FARM_HOME"] == "/home/acme_run/.horizon-farm"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
     for value in NEVER_IN_SPOOL:
         assert value not in text
     assert payload["test_env_file"] == a_file(root)
@@ -240,6 +241,31 @@ def test_tenant_entry_refuses_a_missing_test_env_file(entry, capsys):
     assert A_TOKEN not in capsys.readouterr().err
 
 
+def test_tenant_entry_with_no_test_env_file_execs_step_agent_with_none(entry):
+    """HZ-758: null names no file; the task then carries no test_env_file."""
+    module, execs, payload, farm_home = entry
+    payload["test_env_file"] = None
+    payload["task"]["test_env_file"] = ""
+    module.main(io.StringIO(json.dumps(payload)))
+
+    [(path, argv, env)] = execs
+    assert env == payload["env"]
+    task_file = farm_home / "runs" / "66302.json"
+    assert argv == [sys.executable, "-m", "farm.step_agent", "--task", str(task_file)]
+    assert "test_env_file" not in json.loads(task_file.read_text())
+
+
+@pytest.mark.parametrize("value", ["", "relative/e2e.env", 7], ids=["empty", "relative", "int"])
+def test_tenant_entry_refuses_a_test_env_file_that_is_not_null_or_absolute(entry, value):
+    module, execs, payload, farm_home = entry
+    payload["test_env_file"] = value
+    with pytest.raises(SystemExit) as exc:
+        module.main(io.StringIO(json.dumps(payload)))
+    assert exc.value.code != 0
+    assert execs == []
+    assert not farm_home.exists()
+
+
 # ---- metric 2: project A loads only A's test-env file ----
 
 REFUSED_PATHS = {
@@ -248,7 +274,6 @@ REFUSED_PATHS = {
     "relative": lambda root: "tenants/7/e2e.env",
     "dotdot": lambda root: f"{root}/7/../8/e2e.env",
     "sibling-prefix": lambda root: str(root / "77" / "e2e.env"),
-    "none": lambda root: None,
 }
 
 
@@ -268,11 +293,9 @@ def open_spy(monkeypatch):
 def test_tenant_a_loads_only_its_own_test_env_file(farm, root, tmp_path, fake_tmux, open_spy, case):
     path = a_file(root) if case == "project-a" else REFUSED_PATHS[case](root)
     task = make_task(66303, test_env_file=path)
-    if path is None:
-        task.pop("test_env_file", None)
 
     if case == "project-a":
-        assert farmd._tenant_launch_refusal(task) == farmd.TENANT_WORKSPACE_GATE, "the path check passed"
+        assert farmd._tenant_launch_refusal(task) is None, "the path check passed"
         launch(task, tmp_path, fake_tmux)
         spool = json.loads((QUEUE_DIR / "runs" / "active" / "66303.tenant.json").read_text())
         assert spool["test_env_file"] == a_file(root)
@@ -293,7 +316,7 @@ def test_projects_sharing_a_run_user_still_resolve_only_their_own_test_env_file(
     a = make_task(66304, project_id=7, run_user="shared_run", test_env_file=str(root / "8" / "e2e.env"))
     b = make_task(66305, project_id=8, run_user="shared_run", test_env_file=str(root / "8" / "e2e.env"))
     assert farmd._tenant_launch_refusal(a) == "tenant test_env_file must live under the project's own directory"
-    assert farmd._tenant_launch_refusal(b) == farmd.TENANT_WORKSPACE_GATE
+    assert farmd._tenant_launch_refusal(b) is None
     with pytest.raises(login_env.LoginEnvError):
         login_env.tenant_env_path(str(root / "8" / "e2e.env"), 7)
     assert login_env.tenant_env_path(str(root / "8" / "e2e.env"), 8) == str(root / "8" / "e2e.env")
@@ -306,12 +329,19 @@ FAIL_CLOSED = {
     "unset-ref": ({"ref": "$NOT_SET_ANYWHERE_TOKEN"}, "tenant_launch_refused", "tenant project needs a resolvable github_token_ref"),
     "empty-ref": ({"ref": "$EMPTY_TENANT_TOKEN"}, "tenant_launch_refused", "tenant project needs a resolvable github_token_ref"),
     "out-of-root-test-env": ({"test_env_file": "/etc/fintekkers/ui-e2e.env"}, "tenant_launch_refused", "tenant test_env_file must live under the project's own directory"),
-    "complete-valid": ({}, "tenant_launch_refused", "tenant workspace not supported yet: the farm will not run tenant items until it is"),
 }
 
 
+@pytest.fixture
+def provisions(monkeypatch):
+    """Every repo farmd asked to clone as the farm user."""
+    calls = []
+    monkeypatch.setattr(farmd, "_provision_hub", lambda repo: calls.append(repo) or True)
+    return calls
+
+
 @pytest.mark.parametrize("case", FAIL_CLOSED, ids=list(FAIL_CLOSED))
-def test_a_tenant_launch_fails_closed(farm, root, fake_tmux, monkeypatch, case):
+def test_a_tenant_launch_fails_closed(farm, root, fake_tmux, monkeypatch, provisions, case):
     monkeypatch.setenv("EMPTY_TENANT_TOKEN", "")
     overrides, error, reason = FAIL_CLOSED[case]
     task = make_task(66306, **{"test_env_file": a_file(root), **overrides})
@@ -322,21 +352,113 @@ def test_a_tenant_launch_fails_closed(farm, root, fake_tmux, monkeypatch, case):
     assert queued_files() == []
     assert new_sessions(fake_tmux) == []
     assert not list((QUEUE_DIR / "runs" / "active").glob("*.tenant.json*"))
+    # $GITHUB_TOKEN is set in farmd's env (FARMD_ENV): still no farm-user clone.
+    assert provisions == []
 
 
-def test_a_queued_tenant_task_is_refused_at_the_claim_too(farm, root, tmp_path, fake_tmux, monkeypatch):
-    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: pytest.fail("a refused task must never report started"))
-    forwarded = []
-    monkeypatch.setattr(farmd, "_forward_result", lambda body: forwarded.append(body) or 200)
+def assert_launched_as_run_user(call, run_id):
+    words = shlex.split(call[-1])
+    assert words[3:6] == [sys.executable, "-m", "farm.tenant_launch"]
+    assert words[-2:] == ["--run-user", "acme_run"]
+    assert "farm.step_agent" not in call[-1], "never as the farm user"
+    assert Path(words[words.index("--spool") + 1]) == farmd._tenant_spool_path(run_id)
+
+
+# ---- HZ-758 metric 1: a valid tenant task launches, as its run_user ----
+
+
+def test_a_valid_tenant_task_is_queued_and_launches_as_its_run_user(farm, root, fake_tmux, monkeypatch, provisions):
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd, "_refresh_rules", lambda task: False)
+    res = client.post("/steps/run", json=make_task(66314, test_env_file=a_file(root)))
+    assert res.status_code == 200
+    assert res.json() == {"ok": True, "queued": "runs"}
+    assert provisions == [], "the run user clones its own hub — farmd never does"
+    assert A_TOKEN not in (QUEUE_DIR / "runs" / "66314.json").read_text()
+
+    name = farmd._claim_and_launch(QUEUE_DIR / "runs" / "66314.json", QUEUE_DIR / "runs", REPO_ROOT)
+    assert name is not None
+    [call] = new_sessions(fake_tmux)
+    assert_launched_as_run_user(call, 66314)
+    assert A_TOKEN not in call[-1]
+
+
+def test_a_queued_tenant_task_launches_as_its_run_user_at_the_claim(farm, root, tmp_path, fake_tmux, monkeypatch):
+    started = []
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: started.append(run_id) or True)
+    monkeypatch.setattr(farmd, "_refresh_rules", lambda task: False)
+    monkeypatch.setattr(farmd, "_forward_result", lambda body: pytest.fail(f"a valid tenant task is never refused: {body}"))
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
     task_path = runs_dir / "66307.json"
     task_path.write_text(json.dumps(make_task(66307, test_env_file=a_file(root))))
 
-    assert farmd._claim_and_launch(task_path, runs_dir, tmp_path) is None
-    assert forwarded == [{"run_id": 66307, "ok": False, "error": f"the farm refused this tenant item: {farmd.TENANT_WORKSPACE_GATE}"}]
+    assert farmd._claim_and_launch(task_path, runs_dir, tmp_path) == "farm-run-ac-1-s10-a1"
+    assert started == [66307]
+    [call] = new_sessions(fake_tmux)
+    assert_launched_as_run_user(call, 66307)
+    assert (runs_dir / "active" / "66307.json").exists()
+
+
+def test_the_part_1_gate_is_gone_from_the_farm():
+    farm_dir = REPO_ROOT / "farm"
+    hits = [
+        p.relative_to(REPO_ROOT)
+        for p in farm_dir.rglob("*.py")
+        if "tests" not in p.parts and "TENANT_WORKSPACE_GATE" in p.read_text()
+    ]
+    assert hits == []
+    assert not hasattr(farmd, "TENANT_WORKSPACE_GATE")
+
+
+# ---- HZ-758 metric 2: no test-env file is no file ----
+
+
+@pytest.mark.parametrize("value", [None, ""], ids=["null", "empty"])
+def test_a_tenant_task_with_no_test_env_file_launches_with_none(farm, root, tmp_path, fake_tmux, monkeypatch, value):
+    task = make_task(66315)
+    task["test_env_file"] = value
+    assert farmd._tenant_launch_refusal(task) is None
+    assert login_env.tenant_env_path(value, 7) is None
+    res = client.post("/steps/run", json=task)
+    assert res.status_code == 200
+    launch(task, tmp_path, fake_tmux)
+    spool = json.loads((QUEUE_DIR / "runs" / "active" / "66315.tenant.json").read_text())
+    assert spool["test_env_file"] is None
+
+
+def test_a_tenant_task_with_no_test_env_key_launches_with_none(farm, root, tmp_path, fake_tmux):
+    task = make_task(66316)
+    assert "test_env_file" not in task
+    assert farmd._tenant_launch_refusal(task) is None
+    launch(task, tmp_path, fake_tmux)
+    assert json.loads((QUEUE_DIR / "runs" / "active" / "66316.tenant.json").read_text())["test_env_file"] is None
+
+
+@pytest.mark.parametrize("value", [7, ["/x"], {"p": 1}], ids=["int", "list", "dict"])
+def test_a_test_env_file_that_is_not_a_string_is_still_refused(farm, root, value):
+    task = make_task(66317)
+    task["test_env_file"] = value
+    assert farmd._tenant_launch_refusal(task) == "tenant test_env_file must live under the project's own directory"
+
+
+def test_a_tenant_job_step_is_refused_and_never_runs_as_the_farm_user(farm, root, fake_tmux, monkeypatch):
+    """launch_job runs as the farm user, so a tenant's job step stays refused."""
+    from domain.py import steps
+
+    monkeypatch.setattr(farmd, "_jobs_enabled", lambda: True)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: pytest.fail("a refused job must never report started"))
+    monkeypatch.setattr(farmd, "launch_job", lambda task: pytest.fail("a tenant job must never launch"))
+    job = make_task(66318, test_env_file=a_file(root), item_id="AC-2")
+    job["item"]["kind"] = "task"
+    job["step"] = {"index": steps.by_kind_label("task", "Execute")["index"], "label": "Execute"}
+    job.update(plan_artifact="plan", approved_hash="h", runner="host", repo_dir="/tmp")
+
+    res = client.post("/steps/run", json=job)
+    assert res.status_code == 400
+    assert res.json() == {"error": "tenant_launch_refused", "reason": farmd.TENANT_JOB_REFUSAL}
+    assert queued_files() == []
     assert new_sessions(fake_tmux) == []
-    assert not (runs_dir / "active").exists()
 
 
 # ---- guardrail 2: no token value in any outward channel ----
@@ -346,14 +468,19 @@ def test_no_token_in_any_outward_channel(farm, root, tmp_path, fake_tmux, monkey
     caplog.set_level(logging.DEBUG)
     forwarded = []
     monkeypatch.setattr(farmd, "_forward_result", lambda body: forwarded.append(body) or 200)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd, "_refresh_rules", lambda task: False)
     task = make_task(66308, test_env_file=a_file(root))
 
     res = client.post("/steps/run", json=task)
-    assert res.status_code == 400
+    assert res.status_code == 200
+    queued = (QUEUE_DIR / "runs" / "66308.json").read_text()
+    (QUEUE_DIR / "runs" / "66308.json").unlink()
 
+    # A refused claim (its ref no longer resolves) reaches the forwarded error.
     runs_dir = tmp_path / "runs"
     runs_dir.mkdir()
-    (runs_dir / "66308.json").write_text(json.dumps(task))
+    (runs_dir / "66308.json").write_text(json.dumps(make_task(66308, ref="$NOT_SET_ANYWHERE_TOKEN", test_env_file=a_file(root))))
     farmd._claim_and_launch(runs_dir / "66308.json", runs_dir, tmp_path)
 
     errors = []
@@ -371,7 +498,8 @@ def test_no_token_in_any_outward_channel(farm, root, tmp_path, fake_tmux, monkey
 
     out = capsys.readouterr()
     channels = {
-        "400 body": res.text,
+        "/steps/run body": res.text,
+        "queued task file": queued,
         "forwarded error": json.dumps(forwarded),
         "stdout/stderr": out.out + out.err,
         "log records": caplog.text,
