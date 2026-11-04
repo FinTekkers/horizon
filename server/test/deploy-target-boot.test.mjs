@@ -42,6 +42,7 @@ test('M1: starting the server on an upgraded DB seeds both targets once and keep
   assert.deepEqual(rows, [
     { key: 'horizon', repo: 'FinTekkers/horizon' },
     { key: 'market-data-inputs', repo: 'FinTekkers/market-data-inputs' },
+    { key: 'parvati-site', repo: 'ParvatiRealEstate/parvati-site' },
     { key: 'ui-service', repo: 'FinTekkers/ui-service' },
   ])
   assert.equal(db.prepare("SELECT value FROM setting WHERE key = 'deploy_target_seed'").get()?.value, 'done')
@@ -52,5 +53,5 @@ test('M1: starting the server on an upgraded DB seeds both targets once and keep
   const { cookie } = loginFixtureUser(auth, config)
   const res = await app.inject({ method: 'GET', url: '/api/admin/deploy-targets', headers: { cookie } })
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(JSON.parse(res.body).targets.map((t) => t.key), ['horizon', 'ui-service', 'market-data-inputs'])
+  assert.deepEqual(JSON.parse(res.body).targets.map((t) => t.key), ['horizon', 'ui-service', 'market-data-inputs', 'parvati-site'])
 })

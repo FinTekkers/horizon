@@ -69,6 +69,24 @@ export const CODE_ONLY_SEED_TARGETS = Object.freeze([
 
 const CODE_ONLY_SEED_MARKER = 'deploy_target_seed_hz353'
 
+// The Shoreward video's tenant site, published by GitHub Pages: its deploy
+// script (deploy-github-pages.sh) waits for Pages to publish the release and
+// runs nothing of the repo here, so service and repoDir are placeholders.
+export const PAGES_SEED_TARGETS = Object.freeze([
+  Object.freeze({
+    key: 'parvati-site',
+    repo: 'ParvatiRealEstate/parvati-site',
+    script: 'deploy-parvati-site.sh',
+    service: '',
+    repoDir: '/opt/tenants/parvati-site',
+    stateKey: 'parvati-site',
+    healthUrl: 'https://parvatirealestate.github.io/parvati-site/',
+    healthCheckType: 'deploy-log',
+  }),
+])
+
+const PAGES_SEED_MARKER = 'deploy_target_seed_parvati_pages'
+
 // Read on every call, not at import, so a test can point it at a stub dir
 // whenever it likes. In production nothing sets it: infra/host/.
 export function scriptsDir() {
@@ -155,17 +173,21 @@ export function seedDeployTargets(database = db, targets = SEED_DEPLOY_TARGETS, 
 // clears its repo's no_deploy flag (set while the repo had no deploy type),
 // in the same transaction. Clear-only, once, and never for a row that already
 // existed: an Admin-made row keeps no_deploy for the owner's PIN action.
-export function seedCodeOnlyTargets(database = db, targets = CODE_ONLY_SEED_TARGETS) {
+export function seedCodeOnlyTargets(database = db, targets = CODE_ONLY_SEED_TARGETS, marker = CODE_ONLY_SEED_MARKER) {
   // Failures are logged like the first seed's: a rollback by
   // seedDeployTargets, a non-runnable row here.
   return seedDeployTargets(database, targets, {
-    marker: CODE_ONLY_SEED_MARKER,
+    marker,
     onInserted: (target) => {
       const check = checkRunnable(target)
       if (check.ok) database.prepare('UPDATE project_repo SET no_deploy = 0 WHERE repo = ?').run(target.repo)
-      else console.error(`${CODE_ONLY_SEED_MARKER}: ${target.key} is not runnable (${check.reason}); no_deploy left set`)
+      else console.error(`${marker}: ${target.key} is not runnable (${check.reason}); no_deploy left set`)
     },
   })
+}
+
+export function seedPagesTargets(database = db, targets = PAGES_SEED_TARGETS) {
+  return seedCodeOnlyTargets(database, targets, PAGES_SEED_MARKER)
 }
 
 export function listTargets(database = db) {
@@ -418,3 +440,4 @@ export function deleteTarget(key, database = db) {
 // release resolves to no target (fails closed).
 seedDeployTargets()
 seedCodeOnlyTargets()
+seedPagesTargets()

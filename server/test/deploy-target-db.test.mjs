@@ -98,9 +98,10 @@ function withScriptsDir(dir, fn) {
 // Restores the seeded state after a test that rewrites the table.
 function reseedFresh() {
   db.prepare('DELETE FROM deploy_target').run()
-  db.prepare("DELETE FROM setting WHERE key IN ('deploy_target_seed', 'deploy_target_seed_hz353')").run()
+  db.prepare("DELETE FROM setting WHERE key IN ('deploy_target_seed', 'deploy_target_seed_hz353', 'deploy_target_seed_parvati_pages')").run()
   deployTargets.seedDeployTargets()
   deployTargets.seedCodeOnlyTargets()
+  deployTargets.seedPagesTargets()
 }
 
 // ---- metric 1: the migration ----
@@ -137,7 +138,7 @@ test('M1: a second run changes nothing; an edited row and a human-made row are k
     db.prepare("DELETE FROM setting WHERE key = 'deploy_target_seed'").run()
     assert.deepEqual(deployTargets.seedDeployTargets(), { seeded: 0 })
     assert.deepEqual(allRows(), edited)
-    assert.equal(allRows().length, 4) // the two seeded, market-data-inputs (HZ-353) and the human row
+    assert.equal(allRows().length, 5) // the two seeded, market-data-inputs (HZ-353), parvati-site and the human row
     assert.equal(marker()?.value, 'done')
   } finally {
     reseedFresh()
@@ -409,6 +410,18 @@ test('deploy-log: a code-only row with no service is runnable and the Deploy ste
   assert.equal(wait.health_check_type, 'deploy-log')
   assert.equal(Object.hasOwn(wait, 'health_url'), false)
   assert.equal(deploy.resolveTarget('FinTekkers/market-data-inputs')?.key, 'market-data-inputs')
+})
+
+test('the Pages seed adds parvati-site once, runnable, with a script in infra/host', async () => {
+  const fresh = await freshDb()
+  addRepo(fresh, 'ParvatiRealEstate/parvati-site', 1)
+  assert.deepEqual(deployTargets.seedPagesTargets(fresh), { seeded: 1 })
+  const row = deployTargets.findTargetByRepo('ParvatiRealEstate/parvati-site', fresh)
+  assert.equal(row.key, 'parvati-site')
+  assert.equal(row.healthCheckType, 'deploy-log')
+  assert.deepEqual(deployTargets.checkRunnable(row), { ok: true })
+  assert.ok(existsSync(join(deployTargets.scriptsDir(), row.script)), row.script)
+  assert.deepEqual(deployTargets.seedPagesTargets(fresh), { seeded: 0, skipped: 'already_seeded' })
 })
 
 test('M3: the code-only seed reaches a DB that already ran the first seed, clears no_deploy once, and keeps an Admin row', async () => {
