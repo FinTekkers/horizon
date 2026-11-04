@@ -2509,15 +2509,18 @@ def registry_publish_result(tag: str, state_dir: str) -> dict:
     )
 
 
-def deploy_log_result(tag: str, state_dir: str) -> dict:
+def deploy_log_result(tag: str, state_dir: str, server_ok_line: str | None = None) -> dict:
     """HZ-353: the Deploy step's result for a code-only target (health check
     type deploy-log, e.g. market-data-inputs). Its deploy script checks out the
     tag, installs and runs the repo's offline tests, and only then records
     DEPLOY OK for the tag; nothing restarts. Pass only on that line: without
-    it the verdict is a fail with the log tail."""
+    it the verdict is a fail with the log tail. A tenant step cannot read the
+    state dir, so the server sends the line it read (`server_ok_line`); it
+    still has to name this exact tag."""
     release = f"release {tag}" if tag else "the release"
     ok_line = _deploy_ok_line(tag)
-    if tag and any(ok_line.search(line) for line in _deploy_log_lines(tag, state_dir)):
+    lines = [server_ok_line] if isinstance(server_ok_line, str) and server_ok_line else _deploy_log_lines(tag, state_dir)
+    if tag and any(ok_line.search(line) for line in lines):
         return _verified_deploy_result(
             release, "deployed (code only)", "", "the deploy script installed it and its offline tests passed"
         )
@@ -2570,6 +2573,12 @@ def wait_until_release_live(task: dict) -> None:
         raise DeployNotLiveError(
             f"release {tag} cannot be verified: no deploy target for {item.get('repo')}, so there is no deploy to wait for"
         )
+    if wait.get("confirmed_live") is True:
+        # A tenant step runs as the project's run user, who cannot read the
+        # server user's state dir; the server confirmed the release live
+        # before dispatching it (server/src/deployWait.js).
+        log(f"release {tag} is live: confirmed by the server")
+        return
     bound = deploy_wait_bound(wait.get("timeout_s"))
     log(f"waiting up to {bound:g}s for release {tag} to go live ({state_dir})")
     result = wait_for_release(tag, state_dir, bound)
@@ -3530,7 +3539,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         if wait.get("health_check_type") == "registry-publish":
             return registry_publish_result(item.get("release_tag") or "", str(wait.get("state_dir") or ""))
         if wait.get("health_check_type") == "deploy-log":
-            return deploy_log_result(item.get("release_tag") or "", str(wait.get("state_dir") or ""))
+            return deploy_log_result(
+                item.get("release_tag") or "", str(wait.get("state_dir") or ""), wait.get("deploy_ok_line")
+            )
         grpc_url = wait.get("health_url") if wait.get("health_check_type") == "grpc-health" else None
 
         prompt = (
