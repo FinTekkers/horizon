@@ -88,6 +88,7 @@ def _changed_files(ws: Path, since: str) -> list[str] | None:
             ["git", "-C", str(ws), "diff", "--name-only", since, "HEAD"],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=GIT_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired):
