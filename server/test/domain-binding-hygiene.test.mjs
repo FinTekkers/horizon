@@ -239,7 +239,9 @@ test('neither binding inlines a second copy of the step table — every label, b
   // HZ-462: the ninth is PLAN_INVENTORY_STEP_INDEX, its Inventory step.
   // HZ-463: the tenth and eleventh are PLAN_COVERAGE_REVIEW_STEP_INDEX and
   // PLAN_METRICS_REVIEW_STEP_INDEX, its two draft reviews.
-  assert.equal(strippedKind, 11, `expected exactly 11 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
+  // HZ-738: the twelfth and thirteenth are ASSESS_STEP_INDEX and
+  // IMPACT_REVIEW_STEP_INDEX, the Task steps that fast-forward the task clone.
+  assert.equal(strippedKind, 13, `expected exactly 13 kindStepIndex() label lookups in the binding, found ${strippedKind}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {
