@@ -18,6 +18,10 @@ vi.mock('./api', () => ({
   getItems: () => items,
   getCurrentUser: vi.fn(async () => currentUser),
   getFarmHealth: vi.fn(() => new Promise(() => {})),
+  // HZ-704: Your PIN and API tokens reads the session's PIN state.
+  pinSessionLikelyVerified: () => false,
+  getPinVerifiedUntil: () => null,
+  lockPinSession: vi.fn(),
   getSync: () => ({ connected: false }),
   getProjects: () => [{ id: 1, name: 'Fintekkers', enabled: true, repos: [{ repo: 'FinTekkers/ui-service', prefix: 'US' }] }],
   getActiveProjectId: () => null,

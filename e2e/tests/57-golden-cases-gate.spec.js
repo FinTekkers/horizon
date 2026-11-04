@@ -10,8 +10,12 @@
 // Seeded straight into the DB: the project, its knowledge_doc row (HZ-537's
 // index), the item's snapshot and the sub-step's done run. GitHub is never
 // reached: the source's PDF link is answered by a route.
+//
+// HZ-704: each test sets the spec's own PIN first, which locks the shared
+// session, so its approve opens the PIN dialog; the last answer leaves the
+// session verified for the specs after this one.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 import { kindStepIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -36,7 +40,6 @@ const ITEMS = [
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
-    setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
     // beforeAll re-runs in a fresh worker after a failed test; seed once.
     if (db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(ITEMS[0].id)) return
     const projectId = insertProject(db, { name: PROJECT })
@@ -53,6 +56,16 @@ test.beforeAll(() => {
         "INSERT INTO step_run (item_id, step_index, substep_id, attempt, agent, status, artifact, started_at, ended_at) VALUES (?, ?, 'golden-cases', 1, 'PM', 'done', ?, datetime('now'), datetime('now'))",
       ).run(item.id, item.anchor, '## Golden cases\n\n```json golden-cases\n' + JSON.stringify({ cases: CASES }) + '\n```')
     }
+  } finally {
+    db.close()
+  }
+})
+
+// Every test's approve asks for the PIN, whichever test runs first.
+test.beforeEach(() => {
+  const db = openDb(DB_PATH)
+  try {
+    setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
     db.close()
   }
@@ -91,11 +104,10 @@ for (const item of ITEMS) {
     await expect(page.locator('#metric-line-2')).toContainText('golden_cases')
 
     // One action approves the whole set.
-    await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
-    page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
     await page.getByRole('button', { name: `Approve all ${CASES.length} cases` }).click()
     await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
     await page.locator('.composer__submit').click()
+    await answerPinDialog(page, GATE_PIN)
     await expect(page.getByRole('button', { name: /Approve all/ })).toHaveCount(0, { timeout: 15_000 })
     await expect(page.getByTestId('golden-cases')).toContainText('approved by', { timeout: 15_000 })
 
@@ -103,5 +115,6 @@ for (const item of ITEMS) {
     await expect(page.getByTestId('golden-cases')).toContainText('approved by', { timeout: 15_000 })
     await expect(page.getByRole('table', { name: 'Golden cases' }).locator('tbody tr')).toHaveCount(CASES.length)
     await expect(page.getByRole('button', { name: /Approve all/ })).toHaveCount(0)
+    expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
   })
 }

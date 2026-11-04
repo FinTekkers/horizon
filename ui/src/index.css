@@ -1290,6 +1290,8 @@ button { font-family: var(--font-sans); }
 
 /* ===== Composer modal ===== */
 .composer { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 24px; }
+/* HZ-704: the gate PIN dialog opens over whichever dialog sent the request. */
+.composer--pin { z-index: 70; }
 .composer__scrim { position: absolute; inset: 0; background: rgba(var(--scrim-rgb), 0.4); animation: auraFade 0.15s ease; }
 .composer__panel {
   position: relative; width: 460px; max-width: 94vw; background: var(--surface);

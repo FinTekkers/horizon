@@ -42,7 +42,7 @@ vi.mock('../api', () => ({
   outputUrl: () => 'https://example.test/output',
   runLogViewUrl: () => 'https://example.test/log',
   subscribeStepOutputs: () => () => {},
-  hasGatePin: () => true,
+  pinSessionLikelyVerified: () => true,
 }))
 
 import * as api from '../api'

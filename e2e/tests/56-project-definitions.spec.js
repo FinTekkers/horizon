@@ -2,9 +2,10 @@
 // sits right after the Autopilot control, starts on, refuses a request with no
 // gate PIN (401, value unchanged), and with the right PIN turns off and stays
 // off after a reload. A wrong PIN is refused by the route too
-// (server/test/gate-pin-routes.test.mjs).
+// (server/test/gate-pin-routes.test.mjs). HZ-704: setting the spec's own PIN
+// locks the shared session, so Save opens the PIN dialog.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -44,10 +45,10 @@ test('the definitions switch sits next to Autopilot; no PIN is 401, the right PI
   await expect(page.getByLabel(`${PROJECT} project definitions`, { exact: true })).toBeChecked()
 
   await definitions.click()
-  // The box shows the server's value while the PIN is asked for.
+  // The box shows the server's value while the change is confirmed.
   await expect(definitions).toBeChecked()
-  await page.getByLabel(`Gate PIN to turn ${PROJECT} project definitions off`).fill(GATE_PIN)
   await block.getByRole('button', { name: 'Save', exact: true }).click()
+  await answerPinDialog(page, GATE_PIN)
   await expect(definitions).not.toBeChecked()
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 

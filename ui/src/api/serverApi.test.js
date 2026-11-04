@@ -58,7 +58,6 @@ beforeEach(() => {
   MockEventSource.instances = []
   MockEventSource.log = []
   vi.stubGlobal('EventSource', MockEventSource)
-  localStorage.setItem('horizon_gate_pin', 'test-pin')
   const add = document.addEventListener.bind(document)
   vi.spyOn(document, 'addEventListener').mockImplementation((type, fn, options) => {
     documentListeners.push([type, fn, options])
@@ -66,7 +65,8 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
+afterEach(async () => {
+  ;(await import('./serverApi')).setPinRequester(null)
   documentListeners.forEach(([type, fn, options]) => document.removeEventListener(type, fn, options))
   documentListeners = []
   vi.useRealTimers()
@@ -75,6 +75,25 @@ afterEach(() => {
   localStorage.clear()
   vi.resetModules()
 })
+
+// HZ-704: the server's 401 to a protected request that carried no PIN, or a
+// wrong one.
+const pinRequired = () => ({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })
+
+// HZ-704: the PIN dialog, answering `pins` in turn and then cancelling (null).
+function answerPins(serverApi, ...pins) {
+  const requester = vi.fn()
+  pins.forEach((pin) => requester.mockResolvedValueOnce(pin))
+  requester.mockResolvedValue(null)
+  serverApi.setPinRequester(requester)
+  return requester
+}
+
+// HZ-704: a protected request goes out first with no PIN, same-origin marked.
+function expectPinless(opts) {
+  expect(opts.headers['x-horizon-csrf']).toBe('1')
+  expect(opts.headers).not.toHaveProperty('x-human-key')
+}
 
 test('a fetch rejection during approve resolves to { ok: false } instead of throwing', async () => {
   const serverApi = await import('./serverApi')
@@ -137,14 +156,19 @@ test("approving a Task prompts for the PIN and sends the shown run plan's hash a
   const serverApi = await import('./serverApi')
   serverApi.subscribe(() => {})
   seedItem({ id: 'TK-9', kind: 'task', cursor: 23, pr_url: null, runPlan: { commands: 3, budgetMinutes: 20, hash: 'plan-hash-1', runner: 'host' } })
-  localStorage.clear()
-  const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => '271828')
-  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, closed: false }) }))
+  const requester = answerPins(serverApi, '271828')
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValueOnce(pinRequired())
+    .mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, closed: false }) })
   vi.stubGlobal('fetch', fetchMock)
 
   await expect(serverApi.approveGate('TK-9', '')).resolves.toEqual({ ok: true, closed: false })
-  expect(promptSpy).toHaveBeenCalledTimes(1)
-  const [url, init] = fetchMock.mock.calls[0]
+  expect(requester).toHaveBeenCalledTimes(1)
+  expect(requester).toHaveBeenCalledWith({ retry: false })
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expectPinless(fetchMock.mock.calls[0][1])
+  const [url, init] = fetchMock.mock.calls[1]
   expect(url).toContain('/items/TK-9/gates/23/approve')
   expect(init.headers['x-human-key']).toBe('271828')
   expect(JSON.parse(init.body)).toEqual({ planHash: 'plan-hash-1', runner: 'host' })
@@ -223,16 +247,23 @@ test('the API token client calls GET/POST/DELETE /api/tokens and stores nothing'
 })
 
 // HZ-208: the enabled switch's client. POST with the PIN in the header only —
-// never the URL, never localStorage (gatePost would have cached it there).
+// never the URL, never storage. HZ-704: the PIN comes from the dialog, asked
+// only after the first, PIN-less request is refused.
 test('setProjectEnabled POSTs {enabled} with the PIN in x-human-key only, and stores nothing', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true, enabled: false }) }))
+  const requester = answerPins(serverApi, 'pin-1234')
+  const fetchSpy = vi
+    .fn()
+    .mockResolvedValueOnce(pinRequired())
+    .mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, enabled: false }) })
   vi.stubGlobal('fetch', fetchSpy)
 
-  await expect(serverApi.setProjectEnabled(7, false, 'pin-1234')).resolves.toEqual({ ok: true, enabled: false })
-  expect(fetchSpy).toHaveBeenCalledTimes(1)
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await expect(serverApi.setProjectEnabled(7, false)).resolves.toEqual({ ok: true, enabled: false })
+  expect(requester).toHaveBeenCalledTimes(1)
+  expect(fetchSpy).toHaveBeenCalledTimes(2)
+  expectPinless(fetchSpy.mock.calls[0][1])
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/projects/7/enabled`)
   expect(String(url)).not.toContain('pin-1234')
   expect(opts.method).toBe('POST')
@@ -246,13 +277,15 @@ test('setProjectEnabled POSTs {enabled} with the PIN in x-human-key only, and st
 test('saveRepoChecks PUTs {repo, ...checks} with the PIN in x-human-key only, and stores nothing', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')
+  answerPins(serverApi, 'pin-1234')
   const reply = { ok: true, repo: 'acme/web', checks: { install: 'npm ci', test: 'npm test', lint: null, e2e: null } }
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  const fetchSpy = vi.fn().mockResolvedValueOnce(pinRequired()).mockResolvedValue({ ok: true, status: 200, json: async () => reply })
   vi.stubGlobal('fetch', fetchSpy)
 
   const checks = { install: 'npm ci', test: 'npm test', lint: '', e2e: '' }
-  await expect(serverApi.saveRepoChecks(7, 'acme/web', checks, 'pin-1234')).resolves.toEqual(reply)
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await expect(serverApi.saveRepoChecks(7, 'acme/web', checks)).resolves.toEqual(reply)
+  expectPinless(fetchSpy.mock.calls[0][1])
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/projects/7/repos/checks`)
   expect(String(url)).not.toContain('pin-1234')
   expect(opts.method).toBe('PUT')
@@ -265,12 +298,14 @@ test('saveRepoChecks PUTs {repo, ...checks} with the PIN in x-human-key only, an
 test('saveRepoMarks PUTs {repo, ...marks} with the PIN in x-human-key only, stores nothing, and throws 401s', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')
+  answerPins(serverApi, 'pin-1234')
   const reply = { ok: true, repo: 'acme/web', marks: { noChecks: true, noDeploy: false } }
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  const fetchSpy = vi.fn().mockResolvedValueOnce(pinRequired()).mockResolvedValue({ ok: true, status: 200, json: async () => reply })
   vi.stubGlobal('fetch', fetchSpy)
 
-  await expect(serverApi.saveRepoMarks(7, 'acme/web', { noChecks: true }, 'pin-1234')).resolves.toEqual(reply)
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await expect(serverApi.saveRepoMarks(7, 'acme/web', { noChecks: true })).resolves.toEqual(reply)
+  expectPinless(fetchSpy.mock.calls[0][1])
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/projects/7/repos/marks`)
   expect(String(url)).not.toContain('pin-1234')
   expect(opts.method).toBe('PUT')
@@ -280,25 +315,26 @@ test('saveRepoMarks PUTs {repo, ...marks} with the PIN in x-human-key only, stor
   expect(localStorage.length).toBe(0)
   expect(sessionStorage.length).toBe(0)
 
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })),
-  )
-  const err = await serverApi.saveRepoMarks(7, 'acme/web', { noDeploy: true }, 'bad').catch((e) => e)
-  expect(err.message).toBe('human_gate_key_required')
-  expect(err.status).toBe(401)
+  // A wrong PIN, then a cancelled dialog: rejects with the 401 on the error.
+  answerPins(serverApi, 'bad')
+  vi.stubGlobal('fetch', vi.fn(async () => pinRequired()))
+  const err = await serverApi.saveRepoMarks(7, 'acme/web', { noDeploy: true }).catch((e) => e)
+  expect(err.message).toBe('pin_needed')
+  expect(err.response.status).toBe(401)
 })
 
 // HZ-494: the test-login env file — a path only, the PIN in x-human-key only.
 test('saveRepoTestEnvFile PUTs {repo, path} with the PIN in x-human-key only, and throws 400s', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')
+  answerPins(serverApi, 'pin-1234')
   const reply = { ok: true, repo: 'acme/web', testEnvFile: '/etc/acme/e2e.env' }
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  const fetchSpy = vi.fn().mockResolvedValueOnce(pinRequired()).mockResolvedValue({ ok: true, status: 200, json: async () => reply })
   vi.stubGlobal('fetch', fetchSpy)
 
-  await expect(serverApi.saveRepoTestEnvFile(7, 'acme/web', '/etc/acme/e2e.env', 'pin-1234')).resolves.toEqual(reply)
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await expect(serverApi.saveRepoTestEnvFile(7, 'acme/web', '/etc/acme/e2e.env')).resolves.toEqual(reply)
+  expectPinless(fetchSpy.mock.calls[0][1])
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/projects/7/repos/test-env`)
   expect(opts.method).toBe('PUT')
   expect(opts.headers['x-human-key']).toBe('pin-1234')
@@ -309,7 +345,7 @@ test('saveRepoTestEnvFile PUTs {repo, path} with the PIN in x-human-key only, an
     'fetch',
     vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: 'Path must be absolute and normalised' }) })),
   )
-  const err = await serverApi.saveRepoTestEnvFile(7, 'acme/web', 'relative.env', 'pin-1234').catch((e) => e)
+  const err = await serverApi.saveRepoTestEnvFile(7, 'acme/web', 'relative.env').catch((e) => e)
   expect(err.message).toBe('Path must be absolute and normalised')
   expect(err.status).toBe(400)
 })
@@ -317,12 +353,14 @@ test('saveRepoTestEnvFile PUTs {repo, path} with the PIN in x-human-key only, an
 test('dryRunDeployTarget POSTs an empty body with the PIN in x-human-key only, and throws 401s', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')
+  answerPins(serverApi, '1234')
   const reply = { key: 'horizon', ranAt: '2026-10-03T12:00:00.000Z', results: [] }
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => reply }))
+  const fetchSpy = vi.fn().mockResolvedValueOnce(pinRequired()).mockResolvedValue({ ok: true, status: 200, json: async () => reply })
   vi.stubGlobal('fetch', fetchSpy)
 
-  await expect(serverApi.dryRunDeployTarget('horizon', '1234')).resolves.toEqual(reply)
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await expect(serverApi.dryRunDeployTarget('horizon')).resolves.toEqual(reply)
+  expectPinless(fetchSpy.mock.calls[0][1])
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets/horizon/dry-run`)
   expect(String(url)).not.toContain('1234')
   expect(opts.method).toBe('POST')
@@ -330,25 +368,27 @@ test('dryRunDeployTarget POSTs an empty body with the PIN in x-human-key only, a
   expect(JSON.parse(opts.body)).toEqual({})
   expect(localStorage.length).toBe(0)
 
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })),
-  )
-  const err = await serverApi.dryRunDeployTarget('horizon', 'bad').catch((e) => e)
-  expect(err.message).toBe('human_gate_key_required')
-  expect(err.status).toBe(401)
+  // A wrong PIN, then a cancelled dialog: rejects with the 401 on the error.
+  answerPins(serverApi, 'bad')
+  vi.stubGlobal('fetch', vi.fn(async () => pinRequired()))
+  const err = await serverApi.dryRunDeployTarget('horizon').catch((e) => e)
+  expect(err.message).toBe('pin_needed')
+  expect(err.response.status).toBe(401)
 })
 
+// A 401 no PIN can answer (a lost login) never opens the dialog.
 test('setProjectEnabled throws the server’s error text on a 401', async () => {
   localStorage.clear()
   const serverApi = await import('./serverApi')
+  const requester = answerPins(serverApi, 'pin-1234')
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })),
+    vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'login_required' }) })),
   )
-  const err = await serverApi.setProjectEnabled(7, true, 'bad').catch((e) => e)
-  expect(err.message).toBe('human_gate_key_required')
+  const err = await serverApi.setProjectEnabled(7, true).catch((e) => e)
+  expect(err.message).toBe('login_required')
   expect(err.status).toBe(401)
+  expect(requester).not.toHaveBeenCalled()
   expect(localStorage.length).toBe(0)
 })
 
@@ -365,7 +405,11 @@ const DOCS_FIELDS = {
   healthCheckType: 'http-200',
 }
 
-function expectPinInHeaderOnly(url, opts) {
+// HZ-704: the first request carries no PIN; the one after its 401 carries the
+// dialog's PIN, in the header only.
+function expectPinInHeaderOnly(fetchSpy) {
+  expectPinless(fetchSpy.mock.calls[0][1])
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(opts.headers['x-human-key']).toBe(PIN)
   expect(String(url)).not.toContain(PIN)
   expect(String(opts.body ?? '')).not.toContain(PIN)
@@ -393,50 +437,53 @@ test('createDeployTarget POSTs the target with the PIN in x-human-key only', asy
   localStorage.clear()
   sessionStorage.clear()
   const serverApi = await import('./serverApi')
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ ok: true }) }))
+  answerPins(serverApi, PIN)
+  const fetchSpy = vi.fn().mockResolvedValueOnce(pinRequired()).mockResolvedValue({ ok: true, status: 201, json: async () => ({ ok: true }) })
   vi.stubGlobal('fetch', fetchSpy)
 
   const target = { key: 'docs', ...DOCS_FIELDS }
-  await expect(serverApi.createDeployTarget(target, PIN)).resolves.toEqual({ ok: true })
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await expect(serverApi.createDeployTarget(target)).resolves.toEqual({ ok: true })
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets`)
   expect(opts.method).toBe('POST')
   expect(JSON.parse(opts.body)).toEqual(target)
-  expectPinInHeaderOnly(url, opts)
-  await expectPinlessError(() => serverApi.createDeployTarget(target, PIN))
+  expectPinInHeaderOnly(fetchSpy)
+  await expectPinlessError(() => serverApi.createDeployTarget(target))
 })
 
 test('updateDeployTarget PUTs the fields to the key path with the PIN in x-human-key only', async () => {
   localStorage.clear()
   sessionStorage.clear()
   const serverApi = await import('./serverApi')
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }))
+  answerPins(serverApi, PIN)
+  const fetchSpy = vi.fn().mockResolvedValueOnce(pinRequired()).mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
   vi.stubGlobal('fetch', fetchSpy)
 
-  await serverApi.updateDeployTarget('docs', DOCS_FIELDS, PIN)
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await serverApi.updateDeployTarget('docs', DOCS_FIELDS)
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets/docs`)
   expect(opts.method).toBe('PUT')
   expect(JSON.parse(opts.body)).toEqual(DOCS_FIELDS)
-  expectPinInHeaderOnly(url, opts)
-  await expectPinlessError(() => serverApi.updateDeployTarget('docs', DOCS_FIELDS, PIN))
+  expectPinInHeaderOnly(fetchSpy)
+  await expectPinlessError(() => serverApi.updateDeployTarget('docs', DOCS_FIELDS))
 })
 
 test('deleteDeployTarget sends DELETE with no body and the PIN in x-human-key only', async () => {
   localStorage.clear()
   sessionStorage.clear()
   const serverApi = await import('./serverApi')
-  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }))
+  answerPins(serverApi, PIN)
+  const fetchSpy = vi.fn().mockResolvedValueOnce(pinRequired()).mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
   vi.stubGlobal('fetch', fetchSpy)
 
-  await serverApi.deleteDeployTarget('docs', PIN)
-  const [url, opts] = fetchSpy.mock.calls[0]
+  await serverApi.deleteDeployTarget('docs')
+  const [url, opts] = fetchSpy.mock.calls[1]
   expect(url).toBe(`${serverApi.API_BASE}/admin/deploy-targets/docs`)
   expect(opts.method).toBe('DELETE')
   expect(opts.body).toBeUndefined()
   expect(opts.headers['Content-Type']).toBeUndefined()
-  expectPinInHeaderOnly(url, opts)
-  await expectPinlessError(() => serverApi.deleteDeployTarget('docs', PIN))
+  expectPinInHeaderOnly(fetchSpy)
+  await expectPinlessError(() => serverApi.deleteDeployTarget('docs'))
 })
 
 // HZ-230: the Board's usual-duration hint reads HZ-229's durationEstimates
@@ -763,21 +810,25 @@ function gateAnswer(status, body) {
 
 for (const [name, call, path] of GATE_ACTIONS) {
   test(`${name} resolves with the body on a 2xx, sending the PIN once`, async () => {
-    localStorage.setItem('horizon_gate_pin', GATE_PIN)
     const serverApi = await import('./serverApi')
-    const fetchSpy = vi.fn(gateAnswer(200, { ok: true }))
+    const requester = answerPins(serverApi, GATE_PIN)
+    const fetchSpy = vi.fn().mockImplementationOnce(gateAnswer(401, { error: 'human_gate_key_required' })).mockImplementation(gateAnswer(200, { ok: true }))
     vi.stubGlobal('fetch', fetchSpy)
 
     await expect(call(serverApi)).resolves.toEqual({ ok: true })
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-    const [url, opts] = fetchSpy.mock.calls[0]
+    expect(requester).toHaveBeenCalledTimes(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expectPinless(fetchSpy.mock.calls[0][1])
+    const [url, opts] = fetchSpy.mock.calls[1]
     expect(url).toBe(`${serverApi.API_BASE}${path}`)
     expect(opts.headers['x-human-key']).toBe(GATE_PIN)
+    expect(opts.headers['x-horizon-csrf']).toBe('1')
+    expect(localStorage.getItem('horizon_gate_pin')).toBeNull()
   })
 
   test(`${name} rejects with 'network' when fetch rejects, after exactly one request`, async () => {
-    localStorage.setItem('horizon_gate_pin', GATE_PIN)
     const serverApi = await import('./serverApi')
+    answerPins(serverApi, GATE_PIN)
     const fetchSpy = vi.fn(() => Promise.reject(new Error('network down')))
     vi.stubGlobal('fetch', fetchSpy)
 
@@ -794,8 +845,8 @@ for (const [name, call, path] of GATE_ACTIONS) {
     [500, {}, 'HTTP 500'],
   ]) {
     test(`${name} rejects with '${message}' and status ${status} on a ${status}, after exactly one request`, async () => {
-      localStorage.setItem('horizon_gate_pin', GATE_PIN)
       const serverApi = await import('./serverApi')
+      answerPins(serverApi, GATE_PIN)
       const fetchSpy = vi.fn(gateAnswer(status, body))
       vi.stubGlobal('fetch', fetchSpy)
 
@@ -807,63 +858,65 @@ for (const [name, call, path] of GATE_ACTIONS) {
     })
   }
 
-  test(`${name} rejects with status 401 when the PIN retry prompt is cancelled, after exactly one request`, async () => {
-    localStorage.setItem('horizon_gate_pin', GATE_PIN)
+  test(`${name} rejects with 'pin_needed' when the PIN retry dialog is cancelled, re-sending nothing`, async () => {
     const serverApi = await import('./serverApi')
-    const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => null)
+    const requester = answerPins(serverApi, 'wrong')
     const fetchSpy = vi.fn(gateAnswer(401, { error: 'bad_human_gate_key' }))
     vi.stubGlobal('fetch', fetchSpy)
 
     const err = await call(serverApi).catch((e) => e)
-    expect(err.status).toBe(401)
-    expect(err.message).toBe('bad_human_gate_key')
+    expect(err.message).toBe('pin_needed')
+    expect(err.response.status).toBe(401)
     expect(err.message).not.toContain(GATE_PIN)
-    expect(promptSpy).toHaveBeenCalledTimes(1)
-    // The one 401 re-prompt was cancelled, so nothing was re-sent.
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(requester.mock.calls).toEqual([[{ retry: false }], [{ retry: true }]])
+    // The PIN-less request, then the wrong PIN; the retry was cancelled.
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
-  test(`${name} retries once with the re-entered PIN after a 401, and rejects if that fails too`, async () => {
-    localStorage.setItem('horizon_gate_pin', 'stale')
+  test(`${name} asks again with retry while the PIN is wrong, then sends the right one`, async () => {
     const serverApi = await import('./serverApi')
-    vi.spyOn(window, 'prompt').mockImplementation(() => GATE_PIN)
-    const fetchSpy = vi.fn(gateAnswer(401, { error: 'bad_human_gate_key' }))
+    const requester = answerPins(serverApi, 'stale', GATE_PIN)
+    const fetchSpy = vi
+      .fn()
+      .mockImplementationOnce(gateAnswer(401, { error: 'human_gate_key_required' }))
+      .mockImplementationOnce(gateAnswer(401, { error: 'bad_human_gate_key' }))
+      .mockImplementation(gateAnswer(200, { ok: true }))
     vi.stubGlobal('fetch', fetchSpy)
 
-    const err = await call(serverApi).catch((e) => e)
-    expect(err.status).toBe(401)
-    expect(err.message).not.toContain(GATE_PIN)
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    await expect(call(serverApi)).resolves.toEqual({ ok: true })
+    expect(requester.mock.calls).toEqual([[{ retry: false }], [{ retry: true }]])
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy.mock.calls.map(([, opts]) => opts.headers['x-human-key'])).toEqual([undefined, 'stale', GATE_PIN])
   })
 
   for (const [label, entered] of [
     ['cancelled', null],
     ['empty', ''],
   ]) {
-    test(`${name} with no stored PIN and a ${label} prompt rejects with 'pin_needed' and sends nothing`, async () => {
-      localStorage.removeItem('horizon_gate_pin')
+    test(`${name} with a ${label} PIN dialog after the 401 rejects with 'pin_needed' and sends nothing more`, async () => {
       const serverApi = await import('./serverApi')
-      const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => entered)
-      const fetchSpy = vi.fn(gateAnswer(200, { ok: true }))
+      const requester = vi.fn(async () => entered)
+      serverApi.setPinRequester(requester)
+      const fetchSpy = vi.fn().mockImplementationOnce(gateAnswer(401, { error: 'human_gate_key_required' })).mockImplementation(gateAnswer(200, { ok: true }))
       vi.stubGlobal('fetch', fetchSpy)
 
       await expect(call(serverApi)).rejects.toThrow('pin_needed')
-      expect(promptSpy).toHaveBeenCalledTimes(1)
-      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(requester).toHaveBeenCalledTimes(1)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expectPinless(fetchSpy.mock.calls[0][1])
     })
   }
 
-  test(`${name} with no stored PIN prompts once, then sends the entered PIN`, async () => {
-    localStorage.removeItem('horizon_gate_pin')
+  test(`${name} on a PIN-verified session sends once with no PIN and asks nothing`, async () => {
     const serverApi = await import('./serverApi')
-    const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => GATE_PIN)
+    const requester = answerPins(serverApi, GATE_PIN)
     const fetchSpy = vi.fn(gateAnswer(200, { ok: true }))
     vi.stubGlobal('fetch', fetchSpy)
 
     await expect(call(serverApi)).resolves.toEqual({ ok: true })
-    expect(promptSpy).toHaveBeenCalledTimes(1)
+    expect(requester).not.toHaveBeenCalled()
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(fetchSpy.mock.calls[0][1].headers['x-human-key']).toBe(GATE_PIN)
+    expectPinless(fetchSpy.mock.calls[0][1])
   })
 }
 
@@ -871,7 +924,7 @@ for (const [name, call, path] of GATE_ACTIONS) {
 
 const pngResponse = () => ({ ok: true, status: 200, blob: () => Promise.resolve(new Blob(['png'])) })
 
-test('getScreenshotImage sends a GET with the stored PIN and no body, and returns an object URL', async () => {
+test('getScreenshotImage sends a GET with no PIN and no body, and returns an object URL', async () => {
   const serverApi = await import('./serverApi')
   const fetchSpy = vi.fn(() => Promise.resolve(pngResponse()))
   vi.stubGlobal('fetch', fetchSpy)
@@ -882,11 +935,11 @@ test('getScreenshotImage sends a GET with the stored PIN and no body, and return
   const [url, init] = fetchSpy.mock.calls[0]
   expect(url).toMatch(/\/items\/HZ-1\/screenshots\/board\/diff$/)
   expect(init.method).toBe('GET')
-  expect(init.headers).toEqual({ 'x-human-key': 'test-pin' })
+  expect(init.headers).toEqual({ 'x-horizon-csrf': '1' })
   expect(init).not.toHaveProperty('body')
 })
 
-test('getScreenshotImage re-prompts once on a 401 and retries with the new PIN', async () => {
+test('getScreenshotImage asks for the PIN on a 401 and retries with it', async () => {
   const serverApi = await import('./serverApi')
   const fetchSpy = vi
     .fn()
@@ -894,12 +947,12 @@ test('getScreenshotImage re-prompts once on a 401 and retries with the new PIN',
     .mockResolvedValueOnce(pngResponse())
   vi.stubGlobal('fetch', fetchSpy)
   vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:shot') })
-  const promptSpy = vi.spyOn(window, 'prompt').mockImplementation(() => '271828')
+  const requester = answerPins(serverApi, '271828')
 
   await expect(serverApi.getScreenshotImage('HZ-1', 'board', 'new')).resolves.toBe('blob:shot')
-  expect(promptSpy).toHaveBeenCalledTimes(1)
+  expect(requester).toHaveBeenCalledTimes(1)
   expect(fetchSpy).toHaveBeenCalledTimes(2)
-  expect(fetchSpy.mock.calls[1][1].headers).toEqual({ 'x-human-key': '271828' })
+  expect(fetchSpy.mock.calls[1][1].headers).toEqual({ 'x-horizon-csrf': '1', 'x-human-key': '271828' })
   expect(fetchSpy.mock.calls[1][1]).not.toHaveProperty('body')
 })
 

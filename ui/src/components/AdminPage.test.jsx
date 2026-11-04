@@ -20,6 +20,9 @@ vi.mock('../api', () => ({
   addRepoToProject: vi.fn(),
   disconnectRepo: vi.fn(),
   regenerateGatePin: vi.fn(),
+  lockPinSession: vi.fn(),
+  getPinVerifiedUntil: () => null,
+  pinSessionLikelyVerified: () => false,
   listApiTokens: vi.fn(async () => ({ tokens: [] })),
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(async () => ({ ok: true })),
@@ -97,7 +100,7 @@ test('renders one row per deploy target with repo, service, tag, and result', as
   expect(scoped.getByText(/^never/)).toBeTruthy()
 })
 
-test('the deploy-targets panel has no form or target field — only Dry run, its PIN and Run (read-only guardrail)', async () => {
+test('the deploy-targets panel has no form or target field — only Dry run and Run (read-only guardrail)', async () => {
   const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'deploys' }} />)
   await findByText('FinTekkers/horizon')
 
@@ -109,18 +112,13 @@ test('the deploy-targets panel has no form or target field — only Dry run, its
   expect(toggles.map((b) => b.textContent)).toEqual(['▸ Dry run', '▸ Dry run'])
 
   for (const toggle of toggles) fireEvent.click(toggle)
-  const inputs = Array.from(panel.querySelectorAll('input'))
-  expect(inputs.map((i) => i.getAttribute('aria-label'))).toEqual([
-    'Gate PIN to dry-run FinTekkers/horizon',
-    'Gate PIN to dry-run FinTekkers/ui-service',
-  ])
-  expect(inputs.every((i) => i.type === 'password')).toBe(true)
+  expect(panel.querySelectorAll('input').length).toBe(0)
   expect(scoped.getAllByRole('button').map((b) => b.textContent)).toEqual(['▾ Dry run', 'Run', '▾ Dry run', 'Run'])
   for (const field of [/^script/i, /^service/i, /^health/i, /^repo dir/i]) expect(scoped.queryByLabelText(field)).toBeNull()
   expect(panel.querySelectorAll('form, textarea, select').length).toBe(0)
 })
 
-test('Dry run with the PIN shows all five checks, each with pass/fail and its reason', async () => {
+test('Dry run shows all five checks, each with pass/fail and its reason', async () => {
   const results = [
     { check: 'script', pass: true, reason: 'script found in infra/host and executable' },
     { check: 'repo dir', pass: true, reason: 'git work tree, origin is FinTekkers/horizon' },
@@ -134,12 +132,10 @@ test('Dry run with the PIN shows all five checks, each with pass/fail and its re
   const panel = within(findDeployTargetsPanel(container))
 
   fireEvent.click(panel.getAllByRole('button', { name: /Dry run/ })[0])
-  const pinInput = panel.getByLabelText('Gate PIN to dry-run FinTekkers/horizon')
-  fireEvent.change(pinInput, { target: { value: '1234' } })
   fireEvent.click(panel.getByRole('button', { name: 'Run' }))
 
   const list = await panel.findByRole('list', { name: 'Dry run results for FinTekkers/horizon' })
-  expect(api.dryRunDeployTarget).toHaveBeenCalledWith('horizon', '1234')
+  expect(api.dryRunDeployTarget).toHaveBeenCalledWith('horizon')
   const items = within(list).getAllByRole('listitem')
   expect(items).toHaveLength(5)
   items.forEach((item, i) => {
@@ -147,20 +143,18 @@ test('Dry run with the PIN shows all five checks, each with pass/fail and its re
     expect(within(item).getByText(results[i].pass ? 'pass' : 'fail')).toBeTruthy()
     expect(within(item).getByText(results[i].reason)).toBeTruthy()
   })
-  expect(pinInput.value).toBe('')
 })
 
-test('a wrong PIN on Dry run says so and shows no results', async () => {
-  api.dryRunDeployTarget.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
+test('a cancelled PIN prompt on Dry run says so and shows no results', async () => {
+  api.dryRunDeployTarget.mockRejectedValueOnce(Object.assign(new Error('pin_needed')))
   const { findByText, container } = render(<AdminPage sync={{}} projects={[]} onBack={() => {}} route={{ section: 'deploys' }} />)
   await findByText('FinTekkers/horizon')
   const panel = within(findDeployTargetsPanel(container))
 
   fireEvent.click(panel.getAllByRole('button', { name: /Dry run/ })[0])
-  fireEvent.change(panel.getByLabelText('Gate PIN to dry-run FinTekkers/horizon'), { target: { value: 'bad' } })
   fireEvent.click(panel.getByRole('button', { name: 'Run' }))
 
-  await panel.findByText('Gate PIN incorrect')
+  await panel.findByText('Gate PIN needed — nothing was run')
   expect(panel.queryByRole('list')).toBeNull()
 })
 
@@ -316,46 +310,37 @@ test('Admin lists every project with its enabled state', () => {
   expect(gamma.getByText('Disabled')).toBeTruthy()
 })
 
-test('flipping asks for the PIN: none sends nothing, a wrong one leaves the state, a correct one calls setProjectEnabled once', async () => {
+test('flipping asks to confirm: a cancelled PIN prompt leaves the state, a confirmed one calls setProjectEnabled once', async () => {
   const { container, rerender } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
   const gamma = within(projectBlock(container, 'Gamma'))
   fireEvent.click(gamma.getByRole('switch', { name: 'Gamma enabled' }))
-  const pinInput = gamma.getByLabelText('Gate PIN to enable Gamma')
-  expect(pinInput.getAttribute('type')).toBe('password')
-
-  // Missing PIN: the confirm button is disabled and submitting does nothing.
-  const confirm = gamma.getByRole('button', { name: 'Enable' })
-  expect(confirm.disabled).toBe(true)
-  fireEvent.submit(pinInput.closest('form'))
+  expect(gamma.queryByLabelText('Gate PIN to enable Gamma')).toBeNull()
   expect(api.setProjectEnabled).not.toHaveBeenCalled()
 
-  // Wrong PIN: the server refuses; the switch still shows Disabled.
-  api.setProjectEnabled.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
-  fireEvent.change(pinInput, { target: { value: 'wrong-pin' } })
+  // Cancelled PIN prompt: nothing saved; the switch still shows Disabled.
+  const confirm = gamma.getByRole('button', { name: 'Enable' })
+  expect(confirm.disabled).toBe(false)
+  api.setProjectEnabled.mockRejectedValueOnce(Object.assign(new Error('pin_needed')))
   fireEvent.click(confirm)
-  await gamma.findByText('Gate PIN incorrect')
+  await gamma.findByText('Gate PIN needed — nothing was saved')
   expect(gamma.getByRole('switch', { name: 'Gamma enabled' }).getAttribute('aria-checked')).toBe('false')
-  expect(gamma.getByLabelText('Gate PIN to enable Gamma').value).toBe('')
 
-  // Correct PIN: exactly one call with the PIN; the state comes from the next snapshot.
+  // Confirmed: exactly one call; the state comes from the next snapshot.
   api.setProjectEnabled.mockClear()
-  fireEvent.change(gamma.getByLabelText('Gate PIN to enable Gamma'), { target: { value: 'right-pin' } })
   fireEvent.click(gamma.getByRole('button', { name: 'Enable' }))
   await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledTimes(1))
-  expect(api.setProjectEnabled).toHaveBeenCalledWith(2, true, 'right-pin')
-  await waitFor(() => expect(gamma.queryByLabelText('Gate PIN to enable Gamma')).toBeNull())
+  expect(api.setProjectEnabled).toHaveBeenCalledWith(2, true)
+  await waitFor(() => expect(gamma.queryByRole('button', { name: 'Enable' })).toBeNull())
   rerender(<AdminPage sync={{}} projects={[PROJECTS[0], { ...PROJECTS[1], enabled: true }]} onBack={() => {}} />)
   expect(gamma.getByRole('switch', { name: 'Gamma enabled' }).getAttribute('aria-checked')).toBe('true')
-  expect(Object.values({ ...localStorage })).not.toContain('right-pin')
 })
 
-test('disabling asks for the PIN too', async () => {
+test('disabling asks to confirm too', async () => {
   const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
   const alpha = within(projectBlock(container, 'Alpha'))
   fireEvent.click(alpha.getByRole('switch', { name: 'Alpha enabled' }))
-  fireEvent.change(alpha.getByLabelText('Gate PIN to disable Alpha'), { target: { value: 'right-pin' } })
   fireEvent.click(alpha.getByRole('button', { name: 'Disable' }))
-  await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledWith(1, false, 'right-pin'))
+  await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledWith(1, false))
 })
 
 // ---- HZ-245: per-repo check commands, gate-PIN protected ----
@@ -395,24 +380,21 @@ test('check commands show the saved values, and detected defaults as placeholder
   expect(fin.getByLabelText('Install command for acme/api').value).toBe('')
 })
 
-test('saving check commands needs the PIN and sends the edited slots with it', async () => {
+test('saving check commands sends the edited slots', async () => {
   const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
   const fin = within(projectBlock(container, 'Fin'))
   fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
   fireEvent.change(fin.getByLabelText('Lint command for acme/web'), { target: { value: 'npm run lint' } })
 
-  const pinInput = fin.getByLabelText('Gate PIN to save check commands for acme/web')
-  expect(pinInput.getAttribute('type')).toBe('password')
+  expect(fin.queryByLabelText('Gate PIN to save check commands for acme/web')).toBeNull()
   const save = fin.getByRole('button', { name: 'Save commands' })
-  expect(save.disabled).toBe(true)
-  fireEvent.submit(pinInput.closest('form'))
+  expect(save.disabled).toBe(false)
   expect(api.saveRepoChecks).not.toHaveBeenCalled()
 
-  // Wrong PIN: an error, and the typed values stay.
-  api.saveRepoChecks.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
-  fireEvent.change(pinInput, { target: { value: 'wrong-pin' } })
+  // Cancelled PIN prompt: an error, and the typed values stay.
+  api.saveRepoChecks.mockRejectedValueOnce(Object.assign(new Error('pin_needed')))
   fireEvent.click(save)
-  await fin.findByText('Gate PIN incorrect')
+  await fin.findByText('Gate PIN needed — nothing was saved')
   expect(fin.getByLabelText('Lint command for acme/web').value).toBe('npm run lint')
   expect(fin.queryByText('Check commands saved.')).toBeNull()
 
@@ -421,25 +403,21 @@ test('saving check commands needs the PIN and sends the edited slots with it', a
     repo: 'acme/web',
     checks: { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: null, screenshots: null },
   })
-  fireEvent.change(fin.getByLabelText('Gate PIN to save check commands for acme/web'), { target: { value: 'right-pin' } })
   fireEvent.click(fin.getByRole('button', { name: 'Save commands' }))
   await fin.findByText('Check commands saved.')
   expect(api.saveRepoChecks).toHaveBeenLastCalledWith(
     3,
     'acme/web',
     { install: 'npm install --ignore-scripts', test: 'npm test', lint: 'npm run lint', e2e: '', screenshots: '' },
-    'right-pin',
     [],
   )
-  expect(fin.getByLabelText('Gate PIN to save check commands for acme/web').value).toBe('')
-  expect(Object.values({ ...localStorage })).not.toContain('right-pin')
 })
 
 // ---- HZ-750: opting a test slot into a fix round's targeted run ----
 
 const TARGETED = 'On a fix round, re-run only the failed tests first'
 
-test('the targeted-run box is disabled while its slot has no command, and is sent with the PIN once ticked', async () => {
+test('the targeted-run box is disabled while its slot has no command, and is sent once ticked', async () => {
   api.saveRepoChecks.mockResolvedValueOnce({
     ok: true,
     repo: 'acme/web',
@@ -458,14 +436,12 @@ test('the targeted-run box is disabled while its slot has no command, and is sen
   expect(e2eBox.disabled).toBe(false)
   fireEvent.click(e2eBox)
   expect(e2eBox.checked).toBe(true)
-  fireEvent.change(fin.getByLabelText('Gate PIN to save check commands for acme/web'), { target: { value: 'right-pin' } })
   fireEvent.click(fin.getByRole('button', { name: 'Save commands' }))
   await fin.findByText('Check commands saved.')
   expect(api.saveRepoChecks).toHaveBeenLastCalledWith(
     3,
     'acme/web',
     { install: 'npm install --ignore-scripts', test: 'npm test', lint: '', e2e: 'npm run e2e', screenshots: '' },
-    'right-pin',
     ['e2e'],
   )
   expect(fin.getByLabelText(`E2E: ${TARGETED} (acme/web)`).checked).toBe(true)
@@ -482,20 +458,18 @@ test('a saved opt-in shows ticked from the snapshot', () => {
 
 // ---- HZ-505: the screenshots slot ----
 
-test('the Screenshots slot is a fifth command box, saved with the PIN like the others', async () => {
+test('the Screenshots slot is a fifth command box, saved like the others', async () => {
   api.saveRepoChecks.mockResolvedValueOnce({ ok: true, repo: 'acme/web', checks: {} })
   const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
   const fin = within(projectBlock(container, 'Fin'))
   fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
   fireEvent.change(fin.getByLabelText('Screenshots command for acme/web'), { target: { value: 'node scripts/shots.mjs' } })
-  fireEvent.change(fin.getByLabelText('Gate PIN to save check commands for acme/web'), { target: { value: 'right-pin' } })
   fireEvent.click(fin.getByRole('button', { name: 'Save commands' }))
   await fin.findByText('Check commands saved.')
   expect(api.saveRepoChecks).toHaveBeenLastCalledWith(
     3,
     'acme/web',
     { install: 'npm install --ignore-scripts', test: 'npm test', lint: '', e2e: '', screenshots: 'node scripts/shots.mjs' },
-    'right-pin',
     [],
   )
 })
@@ -556,40 +530,33 @@ test('a mismatched hook on another host is labelled so', async () => {
   expect(await repoRow(container).findByText('Webhook: mismatched (other host)')).toBeTruthy()
 })
 
-test('Fix webhook asks for the PIN: none sends nothing, a wrong one shows Gate PIN incorrect, a right one fixes and re-reads status', async () => {
+test('Fix webhook asks to confirm: a cancelled PIN prompt says nothing was saved, a confirmed one fixes and re-reads status', async () => {
   api.getRepoWebhooks.mockResolvedValue({
     webhooks: [{ repo: 'FinTekkers/ui-service', status: 'missing', lastResponseCode: null, reason: null }],
   })
   const { container } = render(<AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} />)
   const block = within(projectBlock(container, 'Hooks'))
   fireEvent.click(await block.findByText('Fix webhook'))
-  const pinInput = block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook')
-  expect(pinInput.getAttribute('type')).toBe('password')
-
-  const confirm = block.getByRole('button', { name: 'Fix' })
-  expect(confirm.disabled).toBe(true)
-  fireEvent.submit(pinInput.closest('form'))
+  expect(block.queryByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook')).toBeNull()
   expect(api.fixRepoWebhook).not.toHaveBeenCalled()
 
-  api.fixRepoWebhook.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
-  fireEvent.change(pinInput, { target: { value: 'wrong-pin' } })
+  const confirm = block.getByRole('button', { name: 'Fix' })
+  expect(confirm.disabled).toBe(false)
+  api.fixRepoWebhook.mockRejectedValueOnce(Object.assign(new Error('pin_needed')))
   fireEvent.click(confirm)
-  await block.findByText('Gate PIN incorrect')
-  expect(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook').value).toBe('')
+  await block.findByText('Gate PIN needed — nothing was saved')
 
   api.fixRepoWebhook.mockClear()
   api.getRepoWebhooks.mockClear()
   api.getRepoWebhooks.mockResolvedValue({
     webhooks: [{ repo: 'FinTekkers/ui-service', status: 'ok', lastResponseCode: null, reason: null }],
   })
-  fireEvent.change(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook'), { target: { value: 'right-pin' } })
   fireEvent.click(block.getByRole('button', { name: 'Fix' }))
   await waitFor(() => expect(api.fixRepoWebhook).toHaveBeenCalledTimes(1))
-  expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service', 'right-pin')
+  expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service')
   await block.findByText('Webhook: ok')
   expect(api.getRepoWebhooks).toHaveBeenCalledTimes(1)
   expect(block.queryByText('Fix webhook')).toBeNull()
-  expect(Object.values({ ...localStorage })).not.toContain('right-pin')
 })
 
 // ---- HZ-413: a Task's steps 0-2 take a project default of their own ----
@@ -608,14 +575,11 @@ test('Admin shows one select per item kind for the shared first step, and a Task
   }
 
   fireEvent.change(task, { target: { value: 'muse' } })
-  fireEvent.change(alpha.getByLabelText(`Gate PIN to set Alpha Task ${shared} to muse`), {
-    target: { value: 'right-pin' },
-  })
   fireEvent.click(alpha.getByRole('button', { name: 'Save' }))
   const taskOutcome = firstStepIndex('task')
   expect(STEPS[taskOutcome].label).toBe(shared)
   expect(STEPS[taskOutcome].itemKind).toBe('task')
-  await waitFor(() => expect(api.setProjectStepProvider).toHaveBeenCalledWith(1, taskOutcome, 'muse', 'right-pin'))
+  await waitFor(() => expect(api.setProjectStepProvider).toHaveBeenCalledWith(1, taskOutcome, 'muse'))
 })
 
 // ---- HZ-425: each connected repo shows its GitHub default branch ----

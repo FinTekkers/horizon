@@ -8,9 +8,12 @@
 // intake leaves it; its labels appear in no project file. An open dependency
 // holds the item once it is back at implement, so the mock pipeline does not
 // walk it on before the reload.
+//
+// HZ-704: setting the spec's own PIN locks the shared session, so the
+// send-back opens the PIN dialog.
 
 import { existsSync, readFileSync } from 'node:fs'
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertDependency, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS, PHASES, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -67,14 +70,13 @@ test('the board and tracker show the snapshot’s sub-steps, and a send-back to 
   }
 
   // Send back to the audit sub-step, picked by its label.
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
-  page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
   await page.locator('.step-card--awaiting').getByRole('button', { name: 'Send back with feedback' }).click()
   const picker = page.getByLabel('Send back to')
   const option = picker.locator('option', { hasText: 'Audit the change' })
   await picker.selectOption(await option.getAttribute('value'))
   await page.locator('.composer__input').fill('Tighten the audit.')
   await page.locator('.composer__submit').click()
+  await answerPinDialog(page, GATE_PIN)
   await expect(page.locator('.composer')).toHaveCount(0, { timeout: 15_000 })
 
   await page.reload()

@@ -1,7 +1,7 @@
 // Render tests for the agent-definitions editor (HZ-9): the hierarchy tree,
 // the effective-prompt preview, and inline save-error display (QA conditions
 // replace any "manually verified" claim). HZ-246: project and repo rules load,
-// save and restore as DB versions (saveRule/restoreRule) with the gate PIN,
+// save and restore as DB versions (saveRule/restoreRule), gate-PIN protected,
 // never through saveDefinition, which would rewrite the .md default in git.
 
 import { expect, test, vi, afterEach } from 'vitest'
@@ -93,36 +93,33 @@ test('a rejected save renders the error inline and keeps the editor content', as
   fireEvent.click(await findByText('FinTekkers__ui-service'))
   await waitFor(() => expect(getByLabelText('Definition content').value).not.toBe(''))
   fireEvent.change(getByLabelText('Definition content'), { target: { value: 'password=hunter2' } })
-  fireEvent.change(getByLabelText('Gate PIN to save or restore rules'), { target: { value: '1234' } })
   fireEvent.click(await findByText('Save new version'))
   await findByText(/Looks like a credential/)
   expect(getByLabelText('Definition content').value).toBe('password=hunter2')
 })
 
-test('saving project rules stores a DB version with the PIN, never a git commit of the file', async () => {
-  const { findByText, getByLabelText } = render(<AgentDefinitionsPage onBack={() => {}} />)
+test('saving project rules stores a DB version, never a git commit of the file', async () => {
+  const { findByText, getByLabelText, queryByLabelText } = render(<AgentDefinitionsPage onBack={() => {}} />)
   fireEvent.click(await findByText('fintekkers'))
   await waitFor(() => expect(getByLabelText('Definition content').value).not.toBe(''))
   fireEvent.change(getByLabelText('Definition content'), { target: { value: 'new rules' } })
-  expect((await findByText('Save new version')).disabled).toBe(true) // no PIN yet
-  fireEvent.change(getByLabelText('Gate PIN to save or restore rules'), { target: { value: '1234' } })
+  expect((await findByText('Save new version')).disabled).toBe(false) // no inline PIN needed
+  expect(queryByLabelText('Gate PIN to save or restore rules')).toBeNull()
   fireEvent.click(await findByText('Save new version'))
   await findByText(/Saved as version 2/)
-  expect(api.saveRule).toHaveBeenCalledWith('project', 'fintekkers', 'new rules', '1234')
+  expect(api.saveRule).toHaveBeenCalledWith('project', 'fintekkers', 'new rules')
   expect(api.saveDefinition).not.toHaveBeenCalled()
-  expect(getByLabelText('Gate PIN to save or restore rules').value).toBe('') // never kept
 })
 
-test('saving repo rules goes through saveRule too, and a wrong PIN says so', async () => {
-  api.saveRule.mockRejectedValueOnce(Object.assign(new Error('human_gate_key_required'), { status: 401 }))
+test('saving repo rules goes through saveRule too, and a cancelled PIN prompt says so', async () => {
+  api.saveRule.mockRejectedValueOnce(Object.assign(new Error('pin_needed')))
   const { findByText, getByLabelText } = render(<AgentDefinitionsPage onBack={() => {}} />)
   fireEvent.click(await findByText('FinTekkers__ui-service'))
   await waitFor(() => expect(getByLabelText('Definition content').value).not.toBe(''))
   fireEvent.change(getByLabelText('Definition content'), { target: { value: 'repo rules' } })
-  fireEvent.change(getByLabelText('Gate PIN to save or restore rules'), { target: { value: '0000' } })
   fireEvent.click(await findByText('Save new version'))
-  await findByText('Gate PIN incorrect')
-  expect(api.saveRule).toHaveBeenCalledWith('repo', 'FinTekkers__ui-service', 'repo rules', '0000')
+  await findByText('Gate PIN needed — nothing was saved')
+  expect(api.saveRule).toHaveBeenCalledWith('repo', 'FinTekkers__ui-service', 'repo rules')
   expect(api.saveDefinition).not.toHaveBeenCalled()
 })
 
@@ -137,7 +134,7 @@ test('a global definition still saves through git and reports the commit hash', 
   expect(api.saveRule).not.toHaveBeenCalled()
 })
 
-test('the versions list shows every saved version and Restore calls restoreRule with the PIN', async () => {
+test('the versions list shows every saved version and Restore calls restoreRule', async () => {
   const listed = {
     scope: 'project',
     key: 'fintekkers',
@@ -155,10 +152,9 @@ test('the versions list shows every saved version and Restore calls restoreRule 
   await findByText('Agents get saved version 2.')
   expect(getByTestId('rule-version-1').textContent).toContain('Owner')
   expect(getByTestId('rule-version-2').textContent).toContain('serving')
-  fireEvent.change(getByLabelText('Gate PIN to save or restore rules'), { target: { value: '1234' } })
   fireEvent.click(getByLabelText('Restore version 1'))
   await findByText('Restored version 1 as version 3')
-  expect(api.restoreRule).toHaveBeenCalledWith('project', 'fintekkers', 1, '1234')
+  expect(api.restoreRule).toHaveBeenCalledWith('project', 'fintekkers', 1)
 })
 
 test('the preview button renders the merged effective prompt', async () => {

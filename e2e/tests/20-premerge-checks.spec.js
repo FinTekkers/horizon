@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -104,7 +104,8 @@ test.beforeAll(() => {
     const project = insertProject(db, { name: 'E2E Premerge Fixture', enabled: false })
     db.prepare("INSERT INTO project_repo (project_id, repo, prefix, check_test) VALUES (?, ?, 'EPM', 'npm test --silent')").run(project, REPO)
     // 10-gate-key.spec.js rewrites the account's PIN directly in the DB, so
-    // this spec sets its own and answers the prompt, like that one does.
+    // this spec sets its own (which locks the shared session, HZ-704) and
+    // answers the PIN dialog, like that one does.
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
     db.close()
@@ -129,12 +130,11 @@ test('a red check on the test-merge keeps Accept the code open and names the fai
   await page.goto('/pmc-1')
   const gate = page.locator('.step-card--awaiting', { hasText: 'Accept the code' })
   await expect(gate.locator('.btn-gate-approve')).toBeVisible({ timeout: 10_000 })
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
 
   await gate.locator('.btn-gate-approve').click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
-  page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
   await page.locator('.composer__submit').click()
+  await answerPinDialog(page, GATE_PIN)
 
   // Told it's running before it finishes, so nobody clicks again.
   const activity = page.locator('.tracker__activity')
@@ -149,7 +149,8 @@ test('a red check on the test-merge keeps Accept the code open and names the fai
   await expect(activity).toContainText('fixture-line-60')
   await expect(activity).not.toContainText('fixture-line-01')
   await expect(activity).not.toContainText(`merged PR #${PR}`)
-  expect(approves).toEqual([502])
+  // The locked session's PIN-less try (401), then the one with the PIN.
+  expect(approves).toEqual([401, 502])
 
   // HZ-605: the failing tests, each with its first failure-message line, are
   // listed above the log tail — and still there after a reload.

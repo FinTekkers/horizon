@@ -3,14 +3,15 @@
 // shows "none". A service horizon-deploy.sudoers does not permit stores
 // nothing (a wrong PIN is refused by the route: server/test/gate-pin-routes.test.mjs);
 // a valid save survives a reload and gets its Dry
-// run; edit and delete need the PIN too. HZ-440: the optional Task dir is
+// run; edit and delete need the PIN too (HZ-704: asked once, in the PIN
+// dialog, which verifies the session for the rest). HZ-440: the optional Task dir is
 // refused inside the repo dir, survives a reload, and clears to none. HZ-442:
 // the optional Build command survives a reload and clears to none. The server uses the real infra/host
 // scripts and sudoers. The seeded horizon and ui-service rows are never
 // touched. Repos are inserted directly (connecting through the API purges the
 // demo items other specs read); this spec runs last.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -41,9 +42,8 @@ const targetsPanel = (page) =>
   page.locator('.admin__panel').filter({ has: page.locator('.panel__title', { hasText: /^Deploy targets$/ }) })
 const row = (page, repo) => overrides(page).getByRole('group', { name: `Deploy target for ${repo}` })
 
-async function confirmSave(page, pin) {
+async function confirmSave(page) {
   await row(page, REPO).getByRole('button', { name: 'Save', exact: true }).click()
-  await page.getByLabel(`Gate PIN to save deploy target for ${REPO}`).fill(pin)
   await page.getByRole('button', { name: 'Confirm save' }).click()
 }
 
@@ -65,12 +65,14 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
   await form.getByLabel('Health check type', { exact: true }).fill('http-200')
 
   await form.getByLabel('Service', { exact: true }).fill('not-a-service')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
+  // beforeAll's setGatePinDirect locked the session: the first save asks.
+  await answerPinDialog(page, GATE_PIN)
   await expect(form.getByText(/not in horizon-deploy\.sudoers/)).toBeVisible()
   await form.getByRole('button', { name: 'Cancel' }).last().click()
 
   await form.getByLabel('Service', { exact: true }).fill('fintekkers-ui')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
   await expect(row(page, REPO).getByText('e2e-site', { exact: true })).toBeVisible()
   await expect(row(page, REPO).getByText('deploy-ui-service.sh')).toBeVisible()
   await expect(row(page, REPO).getByText('fintekkers-ui', { exact: true })).toBeVisible()
@@ -86,7 +88,6 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
     .filter({ has: page.getByRole('button', { name: /Dry run/ }) })
     .last()
   await dryRun.getByRole('button', { name: /Dry run/ }).click()
-  await page.getByLabel(`Gate PIN to dry-run ${REPO}`).fill(GATE_PIN)
   await dryRun.getByRole('button', { name: 'Run', exact: true }).click()
   const results = page.getByRole('list', { name: `Dry run results for ${REPO}` }).getByRole('listitem')
   await expect(results).toHaveCount(5, { timeout: 15_000 })
@@ -97,7 +98,7 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
 
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click()
   await row(page, REPO).getByLabel('Health check type', { exact: true }).fill('json-health')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
   await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click()
   await expect(row(page, REPO).getByLabel('Health check type', { exact: true })).toHaveValue('json-health')
@@ -108,17 +109,17 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
   const taskDir = () => row(page, REPO).getByLabel('Task dir (optional)', { exact: true })
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click()
   await taskDir().fill('/tmp/e2e-deploy-site/tasks')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
   await expect(row(page, REPO).getByText('Not saved — taskDir is inside repoDir.')).toBeVisible()
   await row(page, REPO).getByRole('button', { name: 'Cancel' }).last().click()
   await taskDir().fill('/tmp/e2e-deploy-site-tasks')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
   await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
   await page.reload()
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
   await expect(taskDir()).toHaveValue('/tmp/e2e-deploy-site-tasks')
   await taskDir().fill('')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
   await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
   await page.reload()
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
@@ -130,13 +131,13 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
   const buildCommand = () => row(page, REPO).getByLabel('Build command (optional)', { exact: true })
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click()
   await buildCommand().fill('python build.py --local')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
   await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
   await page.reload()
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
   await expect(buildCommand()).toHaveValue('python build.py --local')
   await buildCommand().fill('')
-  await confirmSave(page, GATE_PIN)
+  await confirmSave(page)
   await expect(row(page, REPO).getByRole('button', { name: 'Edit' })).toBeVisible()
   await page.reload()
   await row(page, REPO).getByRole('button', { name: 'Edit' }).click({ timeout: 10_000 })
@@ -145,7 +146,6 @@ test('the owner creates, edits and deletes a deploy target in Admin, each behind
 
   await row(page, REPO).getByRole('button', { name: 'Delete', exact: true }).click()
   await expect(row(page, REPO).getByRole('alert')).toContainText(`Releases of ${REPO} will no longer deploy`)
-  await page.getByLabel(`Gate PIN to delete deploy target for ${REPO}`).fill(GATE_PIN)
   await page.getByRole('button', { name: 'Delete target' }).click()
   await expect(row(page, REPO).getByText('none', { exact: true })).toBeVisible()
   await expect(targetsPanel(page).getByText(REPO, { exact: true })).toHaveCount(0)

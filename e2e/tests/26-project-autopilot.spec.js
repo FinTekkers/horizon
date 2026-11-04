@@ -1,10 +1,10 @@
 // HZ-270: Admin's per-project Autopilot setting, end to end. It starts off,
-// offers exactly off/shadow/on, asks for the gate PIN on every change, and the
-// saved value survives a reload, with the change listed in the project's
+// offers exactly off/shadow/on, every change is confirmed and gate-PIN
+// protected (HZ-704: the PIN dialog), and the saved value survives a reload, with the change listed in the project's
 // Autopilot history. A wrong PIN is refused by the route
 // (server/test/gate-pin-routes.test.mjs).
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -29,9 +29,8 @@ test('Autopilot defaults to off; the right PIN saves it and it survives a reload
   await expect(select.locator('option')).toHaveText(['off', 'shadow', 'on'])
 
   await select.selectOption('shadow')
-  const pin = page.getByLabel(`Gate PIN to set ${PROJECT} Autopilot to shadow`)
-  await pin.fill(GATE_PIN)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await answerPinDialog(page, GATE_PIN)
   await expect(select).toHaveValue('shadow')
   const history = page.getByRole('list', { name: `${PROJECT} Autopilot history` })
   await expect(history).toContainText('off → shadow')

@@ -1,6 +1,6 @@
-// HZ-659: Disconnect asks for the gate PIN first, like Fix webhook. The PIN
-// goes to disconnectRepo(projectId, repo, pin) and nowhere else; a wrong PIN
-// says so and the repo row stays.
+// HZ-659: Disconnect is confirmed first, like Fix webhook, and is gate-PIN
+// protected (HZ-704: the PIN dialog in serverApi asks for it). A cancelled PIN
+// prompt says so and the repo row stays.
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { render, cleanup, fireEvent, waitFor } from '@testing-library/react'
@@ -12,6 +12,9 @@ vi.mock('../api', () => ({
   addRepoToProject: vi.fn(),
   disconnectRepo: vi.fn(),
   regenerateGatePin: vi.fn(),
+  lockPinSession: vi.fn(),
+  getPinVerifiedUntil: () => null,
+  pinSessionLikelyVerified: () => false,
   listApiTokens: vi.fn(async () => ({ tokens: [] })),
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(async () => ({ ok: true })),
@@ -41,40 +44,34 @@ function renderPage() {
   return render(<AdminPage sync={{}} projects={projects} onBack={() => {}} route={{ section: 'projects' }} />)
 }
 
-function wrongPin() {
-  const err = new Error('human_gate_key_required')
-  err.status = 401
-  return err
+function pinNeeded() {
+  return Object.assign(new Error('pin_needed'))
 }
 
-test('Disconnect asks for the PIN and sends it to disconnectRepo(projectId, repo, pin)', async () => {
+test('Disconnect asks for confirmation and calls disconnectRepo(projectId, repo)', async () => {
   api.disconnectRepo.mockResolvedValue({ ok: true })
-  const { getByRole, getByLabelText } = renderPage()
-  fireEvent.click(getByRole('button', { name: `Disconnect ${REPO}` }))
-  expect(api.disconnectRepo).not.toHaveBeenCalled()
-
-  fireEvent.change(getByLabelText(`Gate PIN to disconnect ${REPO}`), { target: { value: '424242' } })
-  fireEvent.click(getByRole('button', { name: 'Disconnect' }))
-  await waitFor(() => expect(api.disconnectRepo).toHaveBeenCalledWith(7, REPO, '424242'))
-  expect(JSON.stringify({ ...localStorage })).not.toContain('424242')
-  expect(JSON.stringify({ ...sessionStorage })).not.toContain('424242')
-})
-
-test('a 401 shows "Wrong PIN" and the repo row stays', async () => {
-  api.disconnectRepo.mockRejectedValue(wrongPin())
-  const { getByRole, getByLabelText, findByText, container } = renderPage()
-  fireEvent.click(getByRole('button', { name: `Disconnect ${REPO}` }))
-  fireEvent.change(getByLabelText(`Gate PIN to disconnect ${REPO}`), { target: { value: '000000' } })
-  fireEvent.click(getByRole('button', { name: 'Disconnect' }))
-  expect(await findByText('Wrong PIN')).toBeTruthy()
-  expect(container.querySelector('.repo-row__name').textContent).toBe(REPO)
-  expect(getByLabelText(`Gate PIN to disconnect ${REPO}`).value).toBe('')
-})
-
-test('Cancel closes the PIN form without calling disconnectRepo', () => {
   const { getByRole, queryByLabelText } = renderPage()
   fireEvent.click(getByRole('button', { name: `Disconnect ${REPO}` }))
-  fireEvent.click(getByRole('button', { name: 'Cancel' }))
+  expect(api.disconnectRepo).not.toHaveBeenCalled()
   expect(queryByLabelText(`Gate PIN to disconnect ${REPO}`)).toBeNull()
+
+  fireEvent.click(getByRole('button', { name: 'Disconnect' }))
+  await waitFor(() => expect(api.disconnectRepo).toHaveBeenCalledWith(7, REPO))
+})
+
+test('a cancelled PIN prompt says nothing was changed and the repo row stays', async () => {
+  api.disconnectRepo.mockRejectedValue(pinNeeded())
+  const { getByRole, findByText, container } = renderPage()
+  fireEvent.click(getByRole('button', { name: `Disconnect ${REPO}` }))
+  fireEvent.click(getByRole('button', { name: 'Disconnect' }))
+  expect(await findByText('Gate PIN needed — nothing was changed')).toBeTruthy()
+  expect(container.querySelector('.repo-row__name').textContent).toBe(REPO)
+})
+
+test('Cancel closes the confirm form without calling disconnectRepo', () => {
+  const { getByRole, queryByRole } = renderPage()
+  fireEvent.click(getByRole('button', { name: `Disconnect ${REPO}` }))
+  fireEvent.click(getByRole('button', { name: 'Cancel' }))
+  expect(queryByRole('button', { name: 'Disconnect' })).toBeNull()
   expect(api.disconnectRepo).not.toHaveBeenCalled()
 })

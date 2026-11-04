@@ -1,4 +1,4 @@
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { openDb, setGatePinDirect } from '../fixtures/seed.js'
 
@@ -9,7 +9,9 @@ import { openDb, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ADMIN_EMAIL = 'admin@example.com'
-// Earlier specs rotate the admin's gate PIN, so this one sets its own.
+// Earlier specs rotate the admin's gate PIN, so this one sets its own. Setting
+// it locks the shared session (HZ-704), so the approve below opens the PIN
+// dialog, and answering it verifies the session again.
 const GATE_PIN = '318318'
 
 const ITEM = {
@@ -102,7 +104,6 @@ test('a step that finishes while its item is open shows its output with no reloa
   }
 
   await page.goto(`/${id.toLowerCase()}`)
-  await page.evaluate((pin) => localStorage.setItem('horizon_gate_pin', pin), GATE_PIN)
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve & prioritize this work', {
     timeout: 10_000,
   })
@@ -111,6 +112,7 @@ test('a step that finishes while its item is open shows its output with no reloa
 
   await page.locator('.btn-gate-approve').click()
   await page.locator('.composer__submit').click()
+  await answerPinDialog(page, GATE_PIN)
 
   // The next agent steps run while the page stays open; their outputs arrive
   // through the item's own stream.

@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { test as base, expect } from '@playwright/test'
+import { test as base, expect, request } from '@playwright/test'
 
 // HZ-328: the test inventory (scripts/tests/inventory.mjs) runs one spec at a
 // time with this set, to learn which /api/ routes and ui/src components each
@@ -76,4 +76,34 @@ export const test = base.extend({
 })
 
 export { expect }
+
+// HZ-704: answers the in-page gate PIN dialog. Call it only where the dialog
+// is certain to open — the first gate or Admin change after setGatePinDirect
+// locked the session, or after Lock — never as "answer it if it shows up":
+// it waits for the dialog, so a spec that expects one fails when it does not.
+// Answering it verifies the shared session again for the specs after it.
+export async function answerPinDialog(page, pin) {
+  const dialog = page.getByRole('dialog', { name: 'Enter your gate PIN' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByLabel('Gate PIN').fill(pin)
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await expect(dialog).toBeHidden()
+}
+
+// HZ-704: PIN-verifies the shared session (playwright.config.js's
+// storageState) with one protected request, for a spec that locked it — by
+// setGatePinDirect or Lock — and opened no dialog to verify it again. A GET of
+// an unknown item's screenshot: humanAuthorized runs first, then a 404.
+export async function verifySharedSession(pin) {
+  const api = await request.newContext({
+    baseURL: process.env.HORIZON_E2E_BASE_URL,
+    storageState: process.env.HORIZON_E2E_STORAGE_STATE,
+  })
+  try {
+    const res = await api.get('/api/items/E2E-NO-SUCH-ITEM/screenshots/home/new', { headers: { 'x-human-key': pin } })
+    if (res.status() === 401 || res.status() === 403) throw new Error(`verifySharedSession: the PIN was refused (${res.status()})`)
+  } finally {
+    await api.dispose()
+  }
+}
 

@@ -19,7 +19,7 @@ import { mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 import base from '../playwright.config.js'
 
@@ -187,8 +187,10 @@ test('step 3 — set the check commands', async ({ page }) => {
   await block.getByLabel(`Install command for ${REPO}`).fill('npm ci')
   await block.getByLabel(`Test command for ${REPO}`).fill('npm test')
   await block.getByLabel(`Lint command for ${REPO}`).fill('npm run lint')
-  await block.getByLabel(`Gate PIN to save check commands for ${REPO}`).fill(GATE_PIN)
   await block.getByRole('button', { name: 'Save commands' }).click()
+  // HZ-704: the first change after setGatePinDirect asks for the PIN once;
+  // the session then stays verified for the steps after it.
+  await answerPinDialog(page, GATE_PIN)
   await expect(block.getByText('Check commands saved.')).toBeVisible()
   await expect(block.getByText('no checks configured: items in this repo will fail at implement')).toHaveCount(0)
   await shot(page, '03-check-commands', block)
@@ -203,7 +205,6 @@ async function saveRules(page, group, key, text, name) {
     .click()
   await expect(page.getByText('No rules — no file and no saved version.')).toBeVisible({ timeout: 10_000 })
   await page.getByLabel('Definition content').fill(text)
-  await page.getByLabel('Gate PIN to save or restore rules').fill(GATE_PIN)
   await page.getByRole('button', { name: 'Save new version' }).click()
   await expect(page.getByText('Saved as version 1')).toBeVisible()
   await expect(page.getByText('Agents get saved version 1.')).toBeVisible()
@@ -255,7 +256,6 @@ test('step 8 — enable the project; Autopilot stays off', async ({ page }) => {
   await openAdmin(page)
   const block = projectBlock(page)
   await block.getByRole('switch', { name: `${PROJECT} enabled` }).click()
-  await block.getByLabel(`Gate PIN to enable ${PROJECT}`).fill(GATE_PIN)
   await block.getByRole('button', { name: 'Enable', exact: true }).click()
   await expect(block.getByText('Enabled', { exact: true })).toBeVisible()
   await expect(block.getByRole('switch', { name: `${PROJECT} enabled` })).toHaveAttribute('aria-checked', 'true')
@@ -279,7 +279,6 @@ test('step 5 — add the deploy target and Dry run it (after step 8)', async ({ 
   await row.getByLabel('Health check type', { exact: true }).fill('http-200')
   await shot(page, '05-deploy-target-form', row)
   await row.getByRole('button', { name: 'Save', exact: true }).click()
-  await page.getByLabel(`Gate PIN to save deploy target for ${REPO}`).fill(GATE_PIN)
   await page.getByRole('button', { name: 'Confirm save' }).click()
   await expect(row.getByText('example-app', { exact: true })).toBeVisible()
   await expect(row.getByText('deploy-ui-service.sh')).toBeVisible()
@@ -291,7 +290,6 @@ test('step 5 — add the deploy target and Dry run it (after step 8)', async ({ 
     .filter({ has: page.getByRole('button', { name: /Dry run/ }) })
     .last()
   await target.getByRole('button', { name: /Dry run/ }).click()
-  await page.getByLabel(`Gate PIN to dry-run ${REPO}`).fill(GATE_PIN)
   await target.getByRole('button', { name: 'Run', exact: true }).click()
   const results = page.getByRole('list', { name: `Dry run results for ${REPO}` }).getByRole('listitem')
   await expect(results).toHaveCount(5, { timeout: 15_000 })

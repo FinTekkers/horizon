@@ -8,7 +8,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { useState } from 'react'
 
 import ConnectRepoCard from './ConnectRepoCard'
-import { API_BASE, connectTenantRepo } from '../api/serverApi'
+import { API_BASE, connectTenantRepo, setPinRequester } from '../api/serverApi'
 
 const TOKEN = 'github_pat_11ABCDEFG0secretSECRETsecret42'
 const PROJECT = { id: 7, name: 'Acme', enabled: true, repos: [] }
@@ -23,12 +23,16 @@ const SUCCESS = {
 }
 
 let consoleSpies
+let requester
 beforeEach(() => {
-  localStorage.setItem('horizon_gate_pin', '123456')
+  // HZ-704: the PIN dialog, asked only when the server answers 401.
+  requester = vi.fn(async () => '123456')
+  setPinRequester(requester)
   consoleSpies = ['log', 'info', 'warn', 'error', 'debug'].map((level) => vi.spyOn(console, level))
 })
 
 afterEach(() => {
+  setPinRequester(null)
   cleanup()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -67,17 +71,23 @@ const consoleText = () => consoleSpies.flatMap((spy) => spy.mock.calls.flat().ma
 
 test('metric 1: submitting owner/name and a token POSTs exactly both, then shows repo connected, webhook created and run user ready', async () => {
   const fetch = stubFetch(200, SUCCESS)
+  fetch.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ error: 'human_gate_key_required' }) })
   render(<Harness />)
   expect(screen.getByRole('heading', { name: 'Connect your repository' })).toBeTruthy()
   submit()
 
   expect(await screen.findByRole('heading', { name: 'Repository connected' })).toBeTruthy()
-  expect(fetch).toHaveBeenCalledTimes(1)
-  const [url, opts] = fetch.mock.calls[0]
+  expect(requester).toHaveBeenCalledTimes(1)
+  // The PIN-less first request, then the PIN from the dialog after its 401.
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(fetch.mock.calls[0][1].headers['x-horizon-csrf']).toBe('1')
+  expect(fetch.mock.calls[0][1].headers).not.toHaveProperty('x-human-key')
+  const [url, opts] = fetch.mock.calls[1]
   expect(url).toBe(`${API_BASE}/tenant/projects/7/repos`)
   expect(opts.method).toBe('POST')
   expect(opts.headers['x-human-key']).toBe('123456')
   expect(JSON.parse(opts.body)).toEqual({ repo: 'Acme/site', token: TOKEN })
+  expect(localStorage.getItem('horizon_gate_pin')).toBeNull()
 
   const rows = screen.getAllByRole('listitem').map((li) => li.textContent)
   expect(rows).toEqual([

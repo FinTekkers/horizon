@@ -6,8 +6,13 @@
 // publish's results.json, its tree and the blob bytes), as 20-premerge-checks
 // does for the PR. The list, the PIN-gated image and approve routes, the
 // stored approvals and the panel all run as in production.
+//
+// HZ-704: setting the spec's own PIN locks the shared session, so the first
+// test's panel waits for "Show images", whose image requests open the PIN
+// dialog; answering it verifies the session, and from then on (reloads and
+// the later tests) the panel shows its images at once.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 import { blobsOf, clearScreenshotSnapshot, publication, seedScreenshotSnapshot } from '../fixtures/screenshot-snapshot.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
@@ -60,10 +65,6 @@ test.beforeAll(() => {
   }
 })
 
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript((pin) => localStorage.setItem('horizon_gate_pin', pin), GATE_PIN)
-})
-
 test.afterAll(async ({ request }) => {
   await clearScreenshotSnapshot(request)
 })
@@ -86,6 +87,10 @@ test('the owner reviews each shot, approves one and then all, and a republish re
   await page.goto(`/${ITEMS.journey.toLowerCase()}`)
   const panel = panelOf(page)
   await expect(panel.getByRole('listitem')).toHaveCount(3)
+  // The session is locked: no image is fetched until asked, then the PIN.
+  await expect(panel.getByRole('img')).toHaveCount(0)
+  await panel.getByRole('button', { name: 'Show images' }).click()
+  await answerPinDialog(page, GATE_PIN)
   await expectImagesRendered(rowOf(page, 'board'), ['Baseline', 'Current', 'Diff'])
   await expectImagesRendered(rowOf(page, 'gates'), ['Current'])
   await expectImagesRendered(rowOf(page, 'old'), ['Baseline'])
@@ -113,6 +118,7 @@ test('the owner reviews each shot, approves one and then all, and a republish re
   await expect(rowOf(page, 'board').getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
   await expect(rowOf(page, 'gates')).toContainText('✓ Approved')
   await expect(rowOf(page, 'old')).toContainText('✓ Approved')
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 })
 
 test('at 375px the panel fits the screen, its images stack, and Approve all works', async ({ page, request }) => {

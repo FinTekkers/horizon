@@ -5,8 +5,11 @@
 // reconnect's snapshot are dropped and counted, so nothing but the answer can
 // change the page. The fixtures are written straight to the DB (fixtures/
 // seed.js), so no mock agent touches them before the action.
+//
+// HZ-704: setting the spec's own PIN locks the shared session, so line 1's
+// send-back (the spec's one gate action) opens the PIN dialog.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent, insertStepRun, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -37,9 +40,8 @@ test.beforeAll(() => {
 // Wraps EventSource: every stream works normally until window.__hzCut is set;
 // from then on each event, of any name and on any stream (a reconnect's
 // included), is dropped and counted instead of delivered.
-async function installStreamCut(page, pin) {
-  await page.addInitScript((gatePin) => {
-    localStorage.setItem('horizon_gate_pin', gatePin)
+async function installStreamCut(page) {
+  await page.addInitScript(() => {
     const Native = window.EventSource
     window.__streams = []
     window.__hzCut = false
@@ -70,7 +72,7 @@ async function installStreamCut(page, pin) {
         }
       }
     }
-  }, pin)
+  })
 }
 
 async function cutStreams(page) {
@@ -112,7 +114,7 @@ function stepCard(page, label) {
 test('line 1: a note on a paused, failed step shows Pause work and the step running within 2 s, from the answer alone', async ({
   page,
 }) => {
-  await installStreamCut(page, GATE_PIN)
+  await installStreamCut(page)
   const navigations = watchNavigations(page)
   await page.goto('/note-389')
   await expect(page.locator('.tracker__id')).toHaveText('NOTE-389')
@@ -125,8 +127,13 @@ test('line 1: a note on a paused, failed step shows Pause work and the step runn
   navigations.arm()
   await card.getByRole('button', { name: 'Request changes' }).click()
   await page.getByRole('dialog').getByRole('textbox').fill('try the other fixture')
-  const answer = page.waitForResponse((res) => res.url().endsWith('/api/items/NOTE-389/reject') && res.request().method() === 'POST')
+  // The send-back's first try is refused (the session is locked); the answer
+  // that counts is the one sent with the PIN from the dialog.
+  const answer = page.waitForResponse(
+    (res) => res.url().endsWith('/api/items/NOTE-389/reject') && res.request().method() === 'POST' && res.status() !== 401,
+  )
   await page.getByRole('dialog').getByRole('button', { name: 'Send back' }).click()
+  await answerPinDialog(page, GATE_PIN)
   const res = await answer
   expect(res.status()).toBe(200)
   const body = await res.json()
@@ -145,7 +152,7 @@ test('line 1: a note on a paused, failed step shows Pause work and the step runn
 test('line 2: Pause work shows Resume work within 2 s, and Resume work brings Pause work back, from the answers alone', async ({
   page,
 }) => {
-  await installStreamCut(page, GATE_PIN)
+  await installStreamCut(page)
   const navigations = watchNavigations(page)
   await page.goto('/run-389')
   await expect(page.locator('.tracker__id')).toHaveText('RUN-389')

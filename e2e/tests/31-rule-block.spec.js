@@ -9,7 +9,7 @@
 // kicked the same way: once the mock farm has finished its step, the blocked
 // item has had the same chance to be dispatched, with no fixed sleep.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent, insertStepRun, insertDependency, setGatePinDirect } from '../fixtures/seed.js'
 import { IMPLEMENT_STEP_INDEX, STEPS, endIndex } from '../../domain/js/lifecycle.js'
 
@@ -177,22 +177,16 @@ test('HZ-365: Amend the rule asks for the gate PIN, then clears the block and re
   }
   await page.goto('/rule-amend')
   await expect(page.locator('.tracker__id')).toHaveText('RULE-AMEND')
-  // A cached PIN from storageState would skip the prompt (see 10-abandon.spec.js).
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
-
-  const prompts = []
-  page.on('dialog', (dialog) => {
-    prompts.push(dialog.message())
-    dialog.accept('365365')
-  })
 
   await page.locator('#rule-block').getByRole('button', { name: 'Amend the rule' }).click()
   await expect(page.locator('.composer__title')).toHaveText('Amend the rule · RULE-AMEND')
   await page.locator('.composer__input').fill('A local shim is allowed until LM-42 ships.')
   await page.getByRole('button', { name: 'Send ruling' }).click()
 
-  await expect.poll(() => prompts.length, { timeout: 10_000 }).toBe(1)
-  expect(prompts[0]).toMatch(/gate PIN/)
+  // setGatePinDirect locked the session (HZ-704), so the ruling opens the
+  // gate PIN dialog; answering it verifies the session again.
+  await answerPinDialog(page, '365365')
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('365365')
   await expect(page.locator('#rule-block')).toHaveCount(0)
   await expect(page.locator('.tracker__status')).not.toHaveText('Blocked by a rule')
   await expect.poll(() => ruleBlockJson('RULE-AMEND'), { timeout: 10_000 }).toBeNull()

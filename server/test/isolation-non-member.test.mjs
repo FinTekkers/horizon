@@ -350,6 +350,7 @@ const WRITE_CASES = {
   'POST /api/projects/:id/repos/disconnect': { expect: '404', url: `/api/projects/${B}/repos/disconnect`, body: { repo: REPO_B }, owner: 200 },
   // After every PIN route: a new PIN would refuse the rest.
   'POST /api/auth/gate-pin/regenerate': { expect: 'exempt', url: '/api/auth/gate-pin/regenerate', readsSession: true, freshSession: true, self: { session: 200 }, own: { status: 401 }, owner: 200 },
+  'POST /api/auth/pin/lock': { expect: 'exempt', url: '/api/auth/pin/lock', readsSession: true, self: { session: 200 }, own: { status: 401 }, owner: 200 },
   'POST /api/auth/logout': { expect: 'exempt', url: '/api/auth/logout', readsSession: true, freshSession: true, self: { session: 200 }, own: { status: 200 }, owner: 200 },
 }
 

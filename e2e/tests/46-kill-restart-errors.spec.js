@@ -5,9 +5,11 @@
 // phase labels on the page are unchanged — before and after a reload.
 //
 // The 500 is a page.route stub, so the real server never sees either request.
-// Sets its own PIN anyway (earlier specs rotate it), so no prompt fires.
+// Sets its own PIN anyway (earlier specs rotate it). HZ-704: that locks the
+// shared session, but the stub answers 500, never a PIN 401, so no PIN dialog
+// opens; afterAll PIN-verifies the session again for the specs after this one.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, verifySharedSession } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 import { phasesFor } from '../../domain/js/lifecycle.js'
 
@@ -29,6 +31,8 @@ test.beforeAll(() => {
     db.close()
   }
 })
+
+test.afterAll(() => verifySharedSession(GATE_PIN))
 
 async function pageState(page) {
   return {
@@ -65,7 +69,6 @@ const DIALOGS = [
 
 for (const dialog of DIALOGS) {
   test(`${dialog.name}: a 500 keeps the dialog open with the error and leaves the item as it was`, async ({ page }) => {
-    await page.addInitScript((pin) => localStorage.setItem('horizon_gate_pin', pin), GATE_PIN)
     let hits = 0
     await page.route(dialog.route, (route) => {
       hits += 1

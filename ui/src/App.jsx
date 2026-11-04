@@ -81,9 +81,9 @@ const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, ta
 // HZ-389: why a send-back did not go through, in words. HZ-470: Kill (abandon)
 // and Restart phase use the same map. serverApi.requestChanges, abandonItem
 // and restartPhase reject with Error('network') when no answer came, else the
-// server's error code with the HTTP status (401: the PIN was wrong or not
-// entered). abandonItem and restartPhase also reject with Error('pin_needed')
-// when the PIN prompt was cancelled or left empty, before anything is sent.
+// server's error code with the HTTP status (401: the PIN dialog was cancelled
+// on a send-back). abandonItem and restartPhase reject with Error('pin_needed')
+// when the PIN dialog was cancelled (HZ-704); nothing went through.
 const SEND_BACK_ERRORS = {
   network: 'The server did not answer — nothing was sent. Try again.',
   pin_needed: 'Gate PIN needed',

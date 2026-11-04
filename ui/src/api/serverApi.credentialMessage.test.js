@@ -11,12 +11,12 @@ const EXPECTED = 'Looks like a credential — move it to an $ENV_VAR reference (
 let fetchMock
 
 beforeEach(() => {
-  localStorage.setItem('horizon_gate_pin', 'test-pin')
   fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve(REFUSAL) }))
   vi.stubGlobal('fetch', fetchMock)
 })
 
-afterEach(() => {
+afterEach(async () => {
+  ;(await import('./serverApi')).setPinRequester(null)
   vi.unstubAllGlobals()
   localStorage.clear()
   vi.resetModules()
@@ -24,18 +24,24 @@ afterEach(() => {
 
 test('saveProjectDefinition, saveDefinition and saveRule refuse a credential with the same text', async () => {
   const serverApi = await import('./serverApi')
+  // HZ-704: a PIN-verified session — the 400 comes back to the PIN-less
+  // request, so the dialog is never asked.
+  const requester = vi.fn(async () => 'test-pin')
+  serverApi.setPinRequester(requester)
   expect(serverApi.credentialMessage(['GitHub token'])).toBe(EXPECTED)
 
   const errors = await Promise.all([
     serverApi.saveProjectDefinition('acme', 'personas.json', { personas: [] }).catch((err) => err.message),
     serverApi.saveDefinition('project', 'acme', 'text').catch((err) => err.message),
-    serverApi.saveRule('project', 'acme', 'text', 'test-pin').catch((err) => err.message),
+    serverApi.saveRule('project', 'acme', 'text').catch((err) => err.message),
   ])
   expect(errors).toEqual([EXPECTED, EXPECTED, EXPECTED])
 
   const [url, init] = fetchMock.mock.calls[0]
   expect(url).toMatch(/\/api\/projects\/acme\/definitions\/personas\.json$/)
   expect(init.method).toBe('PUT')
-  expect(init.headers['x-human-key']).toBe('test-pin')
+  expect(init.headers['x-horizon-csrf']).toBe('1')
+  expect(init.headers).not.toHaveProperty('x-human-key')
+  expect(requester).not.toHaveBeenCalled()
   expect(JSON.parse(init.body)).toEqual({ content: { personas: [] } })
 })

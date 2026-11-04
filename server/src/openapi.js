@@ -109,6 +109,10 @@ export const API_SECURITY = [{ sessionCookie: [] }, { bearerToken: [] }]
 // routes that call humanAuthorized() — the PIN is a second, separate blocker
 // (auth.verifyGatePin), so both schemes are required together rather than being
 // alternatives.
+//
+// HZ-704: a correct PIN marks the session PIN-verified for 12 hours, after
+// which x-human-key may be left off as long as x-horizon-csrf: 1 is sent. A
+// cross-site request (Origin or Sec-Fetch-Site) gets 403 cross_site_refused.
 export const HUMAN_GATE_SECURITY = [{ sessionCookie: [], humanGateKey: [] }]
 
 // Fresh object per call: @fastify/swagger mutates the options it is handed
@@ -156,7 +160,11 @@ export function swaggerOptions() {
             type: 'apiKey',
             in: 'header',
             name: 'x-human-key',
-            description: 'Per-account human gate PIN. Required on gate approvals, rejections and the other human-only mutations.',
+            description:
+              'Per-account human gate PIN. Required on gate approvals, rejections and the other human-only mutations, ' +
+              'from a browser session only. A correct PIN verifies the session for 12 hours (until POST /api/auth/pin/lock, ' +
+              'sign-out or a new PIN); a verified session may then omit it and send `x-horizon-csrf: 1` instead. ' +
+              'A cross-site request (Origin or Sec-Fetch-Site) gets 403 cross_site_refused.',
           },
         },
       },

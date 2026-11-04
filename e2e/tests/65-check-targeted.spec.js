@@ -2,9 +2,11 @@
 // The box is disabled while the slot has no command; once ticked and saved
 // behind the gate PIN it is still ticked after a reload, and unticking saves
 // too. The repo is inserted directly (connecting through the API purges the
-// demo items other specs read) and deleted again in afterAll.
+// demo items other specs read) and deleted again in afterAll. HZ-704: setting
+// the spec's own PIN locks the shared session, so the first save opens the
+// PIN dialog.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -42,10 +44,14 @@ async function openChecks(page) {
   await block(page).getByRole('button', { name: /Check commands/ }).click({ timeout: 10_000 })
 }
 
-async function save(page) {
-  await page.getByLabel(`Gate PIN to save check commands for ${REPO}`).fill(GATE_PIN)
-  const saved = page.waitForResponse((res) => res.url().includes('/repos/checks') && res.request().method() === 'PUT')
+// `pin`: the session is locked, so the PIN dialog opens and is answered; the
+// reply that counts is the one sent with it, not the first try's 401.
+async function save(page, { pin } = {}) {
+  const saved = page.waitForResponse(
+    (res) => res.url().includes('/repos/checks') && res.request().method() === 'PUT' && res.status() !== 401,
+  )
   await block(page).getByRole('button', { name: 'Save commands' }).click()
+  if (pin) await answerPinDialog(page, pin)
   expect((await saved).status()).toBe(200)
   await expect(block(page).getByText('Check commands saved.')).toBeVisible()
 }
@@ -60,7 +66,7 @@ test('the owner opts the E2E slot into targeted re-runs, and the choice survives
   await e2eSlot.fill(E2E_COMMAND)
   await expect(box).toBeEnabled()
   await box.check()
-  await save(page)
+  await save(page, { pin: GATE_PIN })
 
   await page.reload()
   await openChecks(page)

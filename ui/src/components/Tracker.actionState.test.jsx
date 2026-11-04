@@ -9,7 +9,7 @@
 // with fetch and EventSource stubbed: the stream sends one snapshot, then only
 // the deltas a test dispatches itself.
 
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest'
+import { afterEach, beforeAll, expect, test, vi } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
 import { useSyncExternalStore } from 'react'
 import { IMPLEMENT_STEP_INDEX, STEPS } from '../../../domain/js/lifecycle.js'
@@ -44,11 +44,8 @@ beforeAll(async () => {
   Tracker = (await import('./Tracker')).default
 })
 
-beforeEach(() => {
-  localStorage.setItem('horizon_gate_pin', 'test-pin')
-})
-
 afterEach(() => {
+  serverApi.setPinRequester(null)
   cleanup()
   vi.unstubAllGlobals()
   vi.stubGlobal('EventSource', MockEventSource)
@@ -245,10 +242,12 @@ test('R11: a 409, no answer, a cancelled PIN retry and a failed pause each leave
   await expect(serverApi.requestChanges('AS-11', 'Eng', 'x')).rejects.toThrow('network')
   expect(cached()).toBe(original)
 
-  // Wrong PIN, and the retry prompt is cancelled: the 401 is what comes back.
+  // Wrong PIN, and the retry dialog is cancelled: the 401 is what comes back.
   vi.stubGlobal('fetch', vi.fn(() => reply({ error: 'bad_human_gate_key' }, 401)))
-  vi.spyOn(window, 'prompt').mockReturnValue(null)
+  const requester = vi.fn().mockResolvedValueOnce('wrong').mockResolvedValue(null)
+  serverApi.setPinRequester(requester)
   await expect(serverApi.requestChanges('AS-11', 'Eng', 'x')).rejects.toMatchObject({ status: 401 })
+  expect(requester.mock.calls).toEqual([[{ retry: false }], [{ retry: true }]])
   expect(cached()).toBe(original)
   expect(serverApi.getRestartSent('AS-11')).toBeNull()
 

@@ -10,8 +10,11 @@
 // one connected repo for the draft to name. The e2e server has no GitHub
 // token and the Plan has no repo of its own, so filing takes the local path.
 // The spec sets its own gate PIN: 23-project-enabled rotates the shared one.
+// HZ-704: that locks the shared session, so the first draft save opens the
+// PIN dialog; answering it verifies the session for the rest of the spec
+// (the second tab and Approve & file included).
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 import { APPROVE_FILE_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -68,15 +71,15 @@ const dependsOn = (page, id) => row(page, id).getByRole('cell').nth(3)
 
 async function openTable(page) {
   await page.goto(`/${ID.toLowerCase()}`)
-  await page.evaluate((pin) => localStorage.setItem('horizon_gate_pin', pin), GATE_PIN)
   await expect(itemsTable(page)).toBeVisible({ timeout: 10_000 })
 }
 
-async function edit(page, id, fill) {
+async function edit(page, id, fill, { pin } = {}) {
   await row(page, id).getByRole('button', { name: `Edit ${id}` }).click()
   const form = page.getByRole('form', { name: `Edit ${id}` })
   await fill(form)
   await form.getByRole('button', { name: 'Save' }).click()
+  if (pin) await answerPinDialog(page, pin)
   return form
 }
 
@@ -89,8 +92,9 @@ test('edit, drop and a refused cycle survive a reload; a stale tab reloads; Appr
   await expect(itemsTable(page).getByRole('columnheader')).toHaveText(['#', 'Repo', 'Title', 'Depends on', 'Must also cover', 'Edit'])
   await expect(itemsTable(page).getByRole('button', { name: /^Edit #/ })).toHaveCount(3)
 
-  // A title edit is saved and survives a reload.
-  await edit(page, '#2', (form) => form.getByLabel('Title').fill('Read the schema, twice'))
+  // A title edit is saved and survives a reload. The first save since
+  // setGatePinDirect locked the session asks for the PIN.
+  await edit(page, '#2', (form) => form.getByLabel('Title').fill('Read the schema, twice'), { pin: GATE_PIN })
   await expect(row(page, '#2')).toContainText('Read the schema, twice')
   await page.reload()
   await expect(row(page, '#2')).toContainText('Read the schema, twice')
@@ -124,7 +128,7 @@ test('edit, drop and a refused cycle survive a reload; a stale tab reloads; Appr
 
   await itemsTable(page).scrollIntoViewIfNeeded()
 
-  // Approve & file, with the PIN: the same table turns read-only.
+  // Approve & file (the session is PIN-verified): the same table turns read-only.
   await page.getByRole('button', { name: 'Approve & file', exact: true }).click()
   await page.getByRole('button', { name: 'Approve', exact: true }).click()
   await expect
@@ -140,6 +144,7 @@ test('edit, drop and a refused cycle survive a reload; a stale tab reloads; Appr
   await page.reload()
   await expect(itemsTable(page).getByRole('columnheader').last()).toHaveText('Filed as')
   for (const [i, id] of ['#1', '#2'].entries()) await expect(row(page, id).getByRole('link')).toHaveText(filed[i])
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 
   await itemsTable(page).scrollIntoViewIfNeeded()
 

@@ -1,6 +1,6 @@
 // HZ-259: the Deploy target overrides panel. One row per repo connected to an
 // enabled project, joined to its deploy_target row or "none"; create, edit and
-// delete each ask for the gate PIN before any request; errors in plain words;
+// delete each ask to confirm before any request; errors in plain words;
 // and a new target shows up in the Deploy targets panel with its Dry run.
 
 import { expect, test, vi, afterEach } from 'vitest'
@@ -33,6 +33,9 @@ vi.mock('../api', () => ({
   addRepoToProject: vi.fn(),
   disconnectRepo: vi.fn(),
   regenerateGatePin: vi.fn(),
+  lockPinSession: vi.fn(),
+  getPinVerifiedUntil: () => null,
+  pinSessionLikelyVerified: () => false,
   listApiTokens: vi.fn(async () => ({ tokens: [] })),
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(),
@@ -105,7 +108,7 @@ test('healthCheckType help says it does not change how real deploys run', async 
   expect(docs.getByText(/does not change how real deploys run/)).toBeTruthy()
 })
 
-test('create asks for the PIN before any request, sends it as the last argument only, then refetches', async () => {
+test('create asks to confirm before any request, sends only the target, then refetches', async () => {
   const { container, onChanged } = await renderPanel()
   const docs = within(rowOf(container, 'FinTekkers/docs'))
   fireEvent.click(docs.getByRole('button', { name: 'Add target' }))
@@ -118,12 +121,10 @@ test('create asks for the PIN before any request, sends it as the last argument 
   fireEvent.click(docs.getByRole('button', { name: 'Save' }))
 
   expect(api.createDeployTarget).not.toHaveBeenCalled()
-  const pinInput = docs.getByLabelText('Gate PIN to save deploy target for FinTekkers/docs')
-  expect(pinInput.type).toBe('password')
+  expect(docs.queryByLabelText('Gate PIN to save deploy target for FinTekkers/docs')).toBeNull()
 
   api.createDeployTarget.mockResolvedValueOnce({ ok: true })
   api.getDeployTargetConfig.mockResolvedValue({ targets: [HORIZON, { ...HORIZON, key: 'docs', repo: 'FinTekkers/docs', script: 'deploy-docs.sh', service: 'fintekkers-docs' }] })
-  fireEvent.change(pinInput, { target: { value: '4321' } })
   fireEvent.click(docs.getByRole('button', { name: 'Confirm save' }))
 
   await waitFor(() => expect(onChanged).toHaveBeenCalled())
@@ -144,9 +145,7 @@ test('create asks for the PIN before any request, sends it as the last argument 
       healthUrl: 'https://docs.example/',
       healthCheckType: 'http-200',
     },
-    '4321',
   )
-  expect(JSON.stringify(api.createDeployTarget.mock.calls[0][0])).not.toContain('4321')
   expect(api.getDeployTargetConfig).toHaveBeenCalledTimes(2)
   await within(rowOf(container, 'FinTekkers/docs')).findByText('fintekkers-docs')
   expect(container.querySelectorAll('input[type=password]').length).toBe(0)
@@ -166,36 +165,34 @@ test('edit sends the key from the row and the edited fields; the key field is re
   expect(api.updateDeployTarget).not.toHaveBeenCalled()
 
   api.updateDeployTarget.mockResolvedValueOnce({ ok: true })
-  fireEvent.change(row.getByLabelText('Gate PIN to save deploy target for FinTekkers/horizon'), { target: { value: '9' } })
   fireEvent.click(row.getByRole('button', { name: 'Confirm save' }))
   await waitFor(() => expect(onChanged).toHaveBeenCalled())
-  const [key, fields, pin] = api.updateDeployTarget.mock.calls[0]
+  expect(api.updateDeployTarget.mock.calls[0]).toHaveLength(2)
+  const [key, fields] = api.updateDeployTarget.mock.calls[0]
   expect(key).toBe('horizon')
   expect(fields.service).toBe('horizon-server-2')
   expect(fields.taskDir).toBe('/opt/horizon-tasks')
   expect(fields.buildCommand).toBe('python build.py --local')
   expect(fields.extraServices).toEqual(['horizon-farm'])
   expect(fields).not.toHaveProperty('key')
-  expect(pin).toBe('9')
 })
 
-test('cancelling the PIN prompt sends nothing, clears the PIN and keeps the form values', async () => {
+test('cancelling the confirm step sends nothing and keeps the form values', async () => {
   const { container } = await renderPanel()
   const row = within(rowOf(container, 'FinTekkers/horizon'))
   fireEvent.click(row.getByRole('button', { name: 'Edit' }))
   fireEvent.change(row.getByLabelText('Service'), { target: { value: 'edited-svc' } })
   fireEvent.click(row.getByRole('button', { name: 'Save' }))
-  fireEvent.change(row.getByLabelText('Gate PIN to save deploy target for FinTekkers/horizon'), { target: { value: '1111' } })
   fireEvent.click(row.getAllByRole('button', { name: 'Cancel' }).at(-1))
 
   expect(api.updateDeployTarget).not.toHaveBeenCalled()
-  expect(row.queryByLabelText('Gate PIN to save deploy target for FinTekkers/horizon')).toBeNull()
+  expect(row.queryByRole('button', { name: 'Confirm save' })).toBeNull()
   expect(row.getByLabelText('Service').value).toBe('edited-svc')
   fireEvent.click(row.getByRole('button', { name: 'Save' }))
-  expect(row.getByLabelText('Gate PIN to save deploy target for FinTekkers/horizon').value).toBe('')
+  expect(row.getByRole('button', { name: 'Confirm save' })).toBeTruthy()
 })
 
-test('delete shows its warning and asks for the PIN before any request', async () => {
+test('delete shows its warning and asks to confirm before any request', async () => {
   const { container, onChanged } = await renderPanel()
   const row = within(rowOf(container, 'FinTekkers/horizon'))
   fireEvent.click(row.getByRole('button', { name: 'Delete' }))
@@ -210,10 +207,9 @@ test('delete shows its warning and asks for the PIN before any request', async (
   fireEvent.click(row.getByRole('button', { name: 'Delete' }))
   api.deleteDeployTarget.mockResolvedValueOnce({ ok: true })
   api.getDeployTargetConfig.mockResolvedValue({ targets: [] })
-  fireEvent.change(row.getByLabelText('Gate PIN to delete deploy target for FinTekkers/horizon'), { target: { value: '77' } })
   fireEvent.click(row.getByRole('button', { name: 'Delete target' }))
   await waitFor(() => expect(onChanged).toHaveBeenCalled())
-  expect(api.deleteDeployTarget).toHaveBeenCalledWith('horizon', '77')
+  expect(api.deleteDeployTarget).toHaveBeenCalledWith('horizon')
   await within(rowOf(container, 'FinTekkers/horizon')).findByText('none')
 })
 
@@ -224,22 +220,18 @@ test.each([
     apiError(400, 'deploy_target_invalid', 'service not-a-service not in horizon-deploy.sudoers'),
     'Not saved — service not-a-service not in horizon-deploy.sudoers.',
   ],
-  ['a 401', apiError(401, 'human_gate_key_required'), 'Gate PIN incorrect.'],
+  ['a cancelled PIN prompt', Object.assign(new Error('pin_needed')), 'Gate PIN needed — nothing was saved.'],
   ['a 404', apiError(404, 'deploy_target_not_found'), 'That target no longer exists.'],
   ['a 409', apiError(409, 'deploy_target_conflict'), 'Another target already uses that key or repo.'],
-])('%s is shown in plain words and the PIN is cleared', async (_label, error, message) => {
+])('%s is shown in plain words', async (_label, error, message) => {
   const { container, onChanged } = await renderPanel()
   const row = within(rowOf(container, 'FinTekkers/horizon'))
   fireEvent.click(row.getByRole('button', { name: 'Edit' }))
   fireEvent.click(row.getByRole('button', { name: 'Save' }))
   api.updateDeployTarget.mockRejectedValueOnce(error)
-  const pinInput = row.getByLabelText('Gate PIN to save deploy target for FinTekkers/horizon')
-  fireEvent.change(pinInput, { target: { value: 'secret-pin' } })
   fireEvent.click(row.getByRole('button', { name: 'Confirm save' }))
 
   expect(await row.findByText(message)).toBeTruthy()
-  expect(pinInput.value).toBe('')
-  expect(container.textContent).not.toContain('secret-pin')
   expect(container.textContent).not.toContain('human_gate_key_required')
   expect(onChanged).not.toHaveBeenCalled()
 })
@@ -268,7 +260,6 @@ test('after a create the Deploy targets panel lists the new key with its Dry run
   api.getDeployTargets.mockResolvedValue({
     targets: [...statuses, { key: 'docs', repo: 'FinTekkers/docs', service: 'fintekkers-docs', lastTag: null, lastCommit: null, lastResult: 'never', lastAt: null }],
   })
-  fireEvent.change(docs.getByLabelText('Gate PIN to save deploy target for FinTekkers/docs'), { target: { value: '1' } })
   fireEvent.click(docs.getByRole('button', { name: 'Confirm save' }))
 
   await targetsPanel().findByText('FinTekkers/docs')

@@ -289,13 +289,25 @@ export function adminUser() {
 
 // ---- sessions ----
 
+// HZ-704: the clock the session functions read, so a test can move time
+// without waiting. setClockForTests(null) restores Date.now.
+let clock = Date.now
+
+export function setClockForTests(fn) {
+  clock = typeof fn === 'function' ? fn : Date.now
+}
+
+function now() {
+  return clock()
+}
+
 function sha256(s) {
   return crypto.createHash('sha256').update(s).digest('hex')
 }
 
 export function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex')
-  const expiresAt = new Date(Date.now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  const expiresAt = new Date(now() + SESSION_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString()
   db.prepare('INSERT INTO session (id, user_id, expires_at) VALUES (?, ?, ?)').run(sha256(token), userId, expiresAt)
   return token
 }
@@ -304,7 +316,7 @@ export function getSessionUser(token) {
   if (!token) return null
   const session = db.prepare('SELECT * FROM session WHERE id = ?').get(sha256(token))
   if (!session) return null
-  if (new Date(session.expires_at).getTime() <= Date.now()) {
+  if (new Date(session.expires_at).getTime() <= now()) {
     db.prepare('DELETE FROM session WHERE id = ?').run(session.id)
     return null
   }
@@ -430,8 +442,45 @@ export function verifyGatePin(userId, pin) {
 }
 
 // Returns the new plaintext PIN — shown once, same as account creation.
+// HZ-704: every session of the user is locked too, so the old PIN's
+// verification does not outlive it.
 export function regenerateGatePin(userId) {
   const pin = generatePin()
-  db.prepare('UPDATE user SET gate_pin_hash = ? WHERE id = ?').run(hashSecret(pin), userId)
+  db.transaction(() => {
+    db.prepare('UPDATE user SET gate_pin_hash = ? WHERE id = ?').run(hashSecret(pin), userId)
+    db.prepare('UPDATE session SET pin_verified_until = NULL WHERE user_id = ?').run(userId)
+  })()
   return pin
+}
+
+// ---- PIN-verified sessions (HZ-704) ----
+// A correct PIN marks the login session (never a token) as verified for 12
+// hours, so later gate and Admin changes from that browser need no PIN. Only
+// the expiry is stored, on the session row — never the PIN. Lock, sign-out
+// (the row is deleted) and regenerateGatePin end it early.
+
+export const PIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
+
+// Returns the new pin_verified_until (ISO-8601 UTC).
+export function markSessionPinVerified(token) {
+  const until = new Date(now() + PIN_SESSION_TTL_MS).toISOString()
+  if (token) db.prepare('UPDATE session SET pin_verified_until = ? WHERE id = ?').run(until, sha256(token))
+  return until
+}
+
+// The session's pin_verified_until while it is still in the future, else null.
+export function sessionPinVerifiedUntil(token) {
+  if (!token) return null
+  const row = db.prepare('SELECT pin_verified_until FROM session WHERE id = ?').get(sha256(token))
+  const until = row?.pin_verified_until
+  return until && new Date(until).getTime() > now() ? until : null
+}
+
+export function isSessionPinVerified(token) {
+  return sessionPinVerifiedUntil(token) !== null
+}
+
+export function lockSession(token) {
+  if (!token) return
+  db.prepare('UPDATE session SET pin_verified_until = NULL WHERE id = ?').run(sha256(token))
 }

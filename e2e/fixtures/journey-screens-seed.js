@@ -148,7 +148,7 @@ function seedLifecycle(db) {
   })
 
   // gate-key: the intake gate was approved with the gate PIN; the item waits
-  // at the next gate, as the old shot caught it after the PIN prompt.
+  // at the next gate, as the old shot caught it after the PIN dialog.
   item(db, { id: KEY_ID, title: 'Journey fixture — approved with the gate PIN', cursor: DESIGN_GATE })
   ran(db, KEY_ID, agentSteps(0, INTAKE_GATE))
   approved(db, KEY_ID, INTAKE_GATE)

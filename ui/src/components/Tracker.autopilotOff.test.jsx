@@ -1,11 +1,11 @@
 // HZ-544: the item page's "Turn off Autopilot for <id>" checkbox. Ticking it
-// posts { off: true } with no gate PIN; unticking goes through the PIN prompt
-// and sends the PIN. The box and the "Autopilot off" chip show the server's
+// posts { off: true } with no gate PIN; unticking goes through the PIN dialog
+// (HZ-704: asked after the server's 401) and sends the PIN. The box and the "Autopilot off" chip show the server's
 // answer (data.item), never an optimistic flip, so a refused or cancelled
 // change leaves both as they were, with the reason on screen.
 //
 // The real serverApi and the real Tracker, wired as App.jsx wires them, with
-// fetch, EventSource and window.prompt stubbed.
+// fetch, EventSource and the PIN dialog (setPinRequester) stubbed.
 
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
@@ -42,14 +42,15 @@ beforeAll(async () => {
   Tracker = (await import('./Tracker')).default
 })
 
-let prompt
+let requester
 beforeEach(() => {
   localStorage.clear()
-  prompt = vi.fn(() => null)
-  vi.stubGlobal('prompt', prompt)
+  requester = vi.fn(async () => null)
+  serverApi.setPinRequester(requester)
 })
 
 afterEach(() => {
+  serverApi.setPinRequester(null)
   cleanup()
   vi.unstubAllGlobals()
   vi.stubGlobal('EventSource', MockEventSource)
@@ -149,25 +150,27 @@ test('ticking adds the label with no PIN, and the chip and gate note appear from
   expect(url).toMatch(new RegExp(`/items/${item.id}/autopilot-off$`))
   expect(JSON.parse(init.body)).toEqual({ off: true })
   expect(init.headers['x-human-key']).toBeUndefined()
-  expect(prompt).not.toHaveBeenCalled()
+  expect(requester).not.toHaveBeenCalled()
   expect(box(view, item).checked).toBe(true)
   expect(chip(view)?.textContent).toBe('Autopilot off')
   expect(acceptMeta(view)).toContain('Autopilot is off for this item')
   expect(view.container.textContent).toContain(`Every gate on ${item.id} waits for you`)
 })
 
-test('unticking prompts for the gate PIN, sends it, and the chip goes', async () => {
+test('unticking asks for the gate PIN, sends it, and the chip goes', async () => {
   const item = atAccept({ autopilotOff: true })
   const view = open(item)
   expect(chip(view)).not.toBeNull()
-  prompt.mockImplementation(() => '4321')
-  const fetch = stubRoute(() => reply({ ok: true, autopilotOff: false, item: answered(item, false) }))
+  requester.mockImplementation(async () => '4321')
+  const fetch = stubRoute(vi.fn().mockReturnValueOnce(reply({ error: 'human_gate_key_required' }, 401)).mockReturnValue(reply({ ok: true, autopilotOff: false, item: answered(item, false) })))
 
   await click(box(view, item))
 
-  expect(prompt).toHaveBeenCalled()
-  expect(fetch).toHaveBeenCalledTimes(1)
-  const [, init] = fetch.mock.calls[0]
+  expect(requester).toHaveBeenCalledTimes(1)
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(fetch.mock.calls[0][1].headers['x-horizon-csrf']).toBe('1')
+  expect(fetch.mock.calls[0][1].headers['x-human-key']).toBeUndefined()
+  const [, init] = fetch.mock.calls[1]
   expect(init.headers['x-human-key']).toBe('4321')
   expect(JSON.parse(init.body)).toEqual({ off: false })
   expect(box(view, item).checked).toBe(false)
@@ -175,31 +178,37 @@ test('unticking prompts for the gate PIN, sends it, and the chip goes', async ()
   expect(acceptMeta(view)).not.toContain('Autopilot is off')
 })
 
-test('a cancelled PIN prompt sends nothing: the box stays ticked and the chip stays', async () => {
+test('a cancelled PIN dialog sends nothing more: the box stays ticked and the chip stays', async () => {
   const item = atAccept({ autopilotOff: true })
   const view = open(item)
-  const fetch = stubRoute(() => reply({}))
+  const fetch = stubRoute(() => reply({ error: 'human_gate_key_required' }, 401))
 
   await click(box(view, item))
 
-  expect(fetch).not.toHaveBeenCalled()
+  expect(requester).toHaveBeenCalledTimes(1)
+  // Only the PIN-less first request went out.
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(fetch.mock.calls[0][1].headers['x-human-key']).toBeUndefined()
   expect(box(view, item).checked).toBe(true)
   expect(chip(view)).not.toBeNull()
   expect(toggleError(view).textContent).toContain('needs your gate PIN')
 })
 
-test('a wrong PIN (401) leaves the item off and says so', async () => {
+test('a wrong PIN (401) asks again, and cancelling leaves the item off and says so', async () => {
   const item = atAccept({ autopilotOff: true })
   const view = open(item)
-  // The first prompt answers; the retry prompt after the 401 is cancelled.
-  prompt.mockImplementationOnce(() => 'wrong')
-  stubRoute(() => reply({ error: 'human_gate_key_required' }, 401))
+  // The first dialog answers; the retry dialog after the 401 is cancelled.
+  requester.mockResolvedValueOnce('wrong')
+  const fetch = stubRoute(() => reply({ error: 'human_gate_key_required' }, 401))
 
   await click(box(view, item))
 
+  expect(requester.mock.calls).toEqual([[{ retry: false }], [{ retry: true }]])
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(fetch.mock.calls[1][1].headers['x-human-key']).toBe('wrong')
   expect(box(view, item).checked).toBe(true)
   expect(chip(view)).not.toBeNull()
-  expect(toggleError(view).textContent).toContain('Gate PIN incorrect')
+  expect(toggleError(view).textContent).toContain('needs your gate PIN')
 })
 
 test('a GitHub refusal (502) leaves the box unticked, with no chip, and shows an error', async () => {

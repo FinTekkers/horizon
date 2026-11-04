@@ -43,36 +43,31 @@ export function TargetedBox({ slotLabel, repo, command, checked, onChange }) {
 export const targetedToSend = (targeted, values) =>
   TARGETABLE_SLOTS.filter((slot) => targeted.includes(slot) && values[slot]?.trim())
 
-// HZ-304: a repo's 'no checks' or 'no deploy' mark. Every flip asks for the
-// gate PIN, exactly like ProjectEnabledToggle: the PIN lives in this form's
-// state only until the request settles and goes out in a header
-// (saveRepoMarks). The switch shows the server's value from the snapshot, so
-// a refused PIN leaves it as it was.
+// HZ-304: a repo's 'no checks' or 'no deploy' mark. Every flip is confirmed,
+// exactly like ProjectEnabledToggle. The switch shows the server's value from
+// the snapshot, so a refused change leaves it as it was.
 function RepoMarkToggle({ projectId, repo, mark, label, on }) {
   const [asking, setAsking] = useState(false)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const verb = on ? 'Clear' : 'Set'
 
   const cancel = () => {
     setAsking(false)
-    setPin('')
     setError(null)
   }
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await saveRepoMarks(projectId, repo, { [mark]: !on }, pin)
+      await saveRepoMarks(projectId, repo, { [mark]: !on })
       setAsking(false)
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -94,17 +89,7 @@ function RepoMarkToggle({ projectId, repo, mark, label, on }) {
       </div>
       {asking && (
         <form className="project-block__add" style={{ flexBasis: '100%' }} onSubmit={submit}>
-          <input
-            className="field__input"
-            type="password"
-            autoComplete="off"
-            aria-label={`Gate PIN to change ${label.toLowerCase()} for ${repo}`}
-            placeholder={`Gate PIN to ${verb.toLowerCase()} '${label.toLowerCase()}'`}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            autoFocus
-          />
-          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
             {busy ? 'Saving…' : verb}
           </button>
           <button type="button" className="composer__cancel" onClick={cancel}>
@@ -143,8 +128,8 @@ export function RepoMarks({ projectId, repoConn }) {
 }
 
 // HZ-245: the commands the farm's checks run for this repo, in implement and
-// pre-merge. Saving asks for the gate PIN every time (saveRepoChecks sends it
-// in a header only): these commands judge every agent's work. The detected
+// pre-merge. Saving is gate-PIN protected (saveRepoChecks): these commands
+// judge every agent's work. The detected
 // defaults load only when the block is opened, so a down farm never slows
 // the page.
 export function RepoChecks({ projectId, repoConn }) {
@@ -152,7 +137,6 @@ export function RepoChecks({ projectId, repoConn }) {
   const [values, setValues] = useState(() => savedChecks(repoConn))
   const [targeted, setTargeted] = useState(() => repoConn.targeted ?? [])
   const [defaults, setDefaults] = useState(null)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -172,19 +156,18 @@ export function RepoChecks({ projectId, repoConn }) {
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     setSaved(false)
     try {
-      const result = await saveRepoChecks(projectId, repoConn.repo, values, pin, targetedToSend(targeted, values))
+      const result = await saveRepoChecks(projectId, repoConn.repo, values, targetedToSend(targeted, values))
       setValues(Object.fromEntries(CHECK_SLOTS.map(({ key }) => [key, result.checks?.[key] ?? ''])))
       setTargeted(result.targeted ?? [])
       setSaved(true)
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -243,16 +226,7 @@ export function RepoChecks({ projectId, repoConn }) {
             command reads that variable.
           </div>
           <div className="project-block__add">
-            <input
-              className="field__input"
-              type="password"
-              autoComplete="off"
-              aria-label={`Gate PIN to save check commands for ${repoConn.repo}`}
-              placeholder="Gate PIN to save"
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-            />
-            <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+            <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
               {busy ? 'Saving…' : 'Save commands'}
             </button>
           </div>
@@ -266,30 +240,28 @@ export function RepoChecks({ projectId, repoConn }) {
 }
 
 // HZ-494: the host path of a file of test-login variables that the farm loads
-// into this repo's test/e2e checks and deploy smoke check. Saving asks for
-// the gate PIN every time, like the commands above. Horizon stores the path
+// into this repo's test/e2e checks and deploy smoke check. Saving is gate-PIN
+// protected, like the commands above. Horizon stores the path
 // only; the farm reads the file at run time, so no value reaches this page.
 function RepoTestEnvFile({ projectId, repoConn }) {
   const [value, setValue] = useState(repoConn.testEnvFile ?? '')
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     setSaved(false)
     try {
-      const result = await saveRepoTestEnvFile(projectId, repoConn.repo, value.trim(), pin)
+      const result = await saveRepoTestEnvFile(projectId, repoConn.repo, value.trim())
       setValue(result.testEnvFile ?? '')
       setSaved(true)
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -319,16 +291,7 @@ function RepoTestEnvFile({ projectId, repoConn }) {
         Validate does not use this file yet, so a green Validate says nothing about logged-in coverage.
       </div>
       <div className="project-block__add">
-        <input
-          className="field__input"
-          type="password"
-          autoComplete="off"
-          aria-label={`Gate PIN to save the test credentials env file for ${repoConn.repo}`}
-          placeholder="Gate PIN to save"
-          value={pin}
-          onChange={(e) => setPin(e.target.value)}
-        />
-        <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+        <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
           {busy ? 'Saving…' : 'Save env file path'}
         </button>
       </div>

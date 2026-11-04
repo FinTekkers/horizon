@@ -1,8 +1,8 @@
-// HZ-208: Admin's per-project enabled switch, end to end. Every flip asks for
-// the gate PIN; the right one flips the project and the board picks its items
-// up. A wrong PIN is refused by the route (server/test/gate-pin-routes.test.mjs).
+// HZ-208: Admin's per-project enabled switch, end to end. Every flip is
+// confirmed and gate-PIN protected (HZ-704: the PIN dialog); the right PIN
+// flips the project and the board picks its items up. A wrong PIN is refused by the route (server/test/gate-pin-routes.test.mjs).
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -34,9 +34,8 @@ test('flipping a project on with the gate PIN enables it and the board picks its
   await expect(toggle).toHaveAttribute('aria-checked', 'false')
 
   await toggle.click()
-  const pin = page.getByLabel(`Gate PIN to enable ${DELTA}`)
-  await pin.fill(GATE_PIN)
   await page.getByRole('button', { name: 'Enable', exact: true }).click()
+  await answerPinDialog(page, GATE_PIN)
   await expect(toggle).toHaveAttribute('aria-checked', 'true')
   expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 

@@ -2,14 +2,13 @@ import { Fragment, useState } from 'react'
 import { setProjectEnabled, setProjectAutopilot, setProjectDefinitionsEnabled, setProjectStepProvider } from '../../api'
 import { ITEM_KINDS, STEPS, itemKindInfo } from '../../../../domain/js/lifecycle.js'
 
-// HZ-208: a project's dispatch on/off switch. Every flip, both ways, asks for
-// the gate PIN; it lives in this form's state only until the request settles,
-// and goes out in a header (setProjectEnabled), never a URL or a log line.
-// The switch shows the server's state from the snapshot — never an
-// optimistic guess — so a refused PIN leaves it exactly as it was.
+// HZ-208: a project's dispatch on/off switch. Every flip, both ways, is
+// confirmed here; HZ-704: the PIN dialog asks for the gate PIN only when the
+// session is not PIN-verified. The switch shows the server's state from the
+// snapshot — never an optimistic guess — so a refused change leaves it
+// exactly as it was.
 export function ProjectEnabledToggle({ project }) {
   const [asking, setAsking] = useState(false)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const next = !project.enabled
@@ -17,22 +16,20 @@ export function ProjectEnabledToggle({ project }) {
 
   const cancel = () => {
     setAsking(false)
-    setPin('')
     setError(null)
   }
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await setProjectEnabled(project.id, next, pin)
+      await setProjectEnabled(project.id, next)
       setAsking(false)
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -54,17 +51,7 @@ export function ProjectEnabledToggle({ project }) {
       </div>
       {asking && (
         <form className="project-block__add" style={{ flexBasis: '100%' }} onSubmit={submit}>
-          <input
-            className="field__input"
-            type="password"
-            autoComplete="off"
-            aria-label={`Gate PIN to ${verb.toLowerCase()} ${project.name}`}
-            placeholder={`Gate PIN to ${verb.toLowerCase()} this project`}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            autoFocus
-          />
-          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
             {busy ? `${verb.replace(/e$/, '')}ing…` : verb}
           </button>
           <button type="button" className="composer__cancel" onClick={cancel}>
@@ -79,11 +66,9 @@ export function ProjectEnabledToggle({ project }) {
 
 // HZ-535: the switch for the project's own definitions
 // (farm/projects/<slug>/personas.json), next to Autopilot. The box shows the
-// server's value: a click asks for the gate PIN, and only a saved change moves
-// it. The PIN is held for this one request, never stored.
+// server's value: a click asks to save, and only a saved change moves it.
 export function ProjectDefinitions({ project }) {
   const [asking, setAsking] = useState(false)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const enabled = project.definitionsEnabled !== false
@@ -91,22 +76,20 @@ export function ProjectDefinitions({ project }) {
 
   const cancel = () => {
     setAsking(false)
-    setPin('')
     setError(null)
   }
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await setProjectDefinitionsEnabled(project.id, !enabled, pin)
+      await setProjectDefinitionsEnabled(project.id, !enabled)
       setAsking(false)
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -124,17 +107,7 @@ export function ProjectDefinitions({ project }) {
       </label>
       {asking && (
         <form className="project-block__add" onSubmit={submit}>
-          <input
-            className="field__input"
-            type="password"
-            autoComplete="off"
-            aria-label={`Gate PIN to turn ${project.name} project definitions ${next}`}
-            placeholder={`Gate PIN to turn project definitions ${next}`}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            autoFocus
-          />
-          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
             {busy ? 'Saving…' : 'Save'}
           </button>
           <button type="button" className="composer__cancel" onClick={cancel}>
@@ -147,36 +120,33 @@ export function ProjectDefinitions({ project }) {
   )
 }
 
-// HZ-270: a project's Autopilot mode. Picking a mode asks for the gate PIN,
-// exactly like ProjectEnabledToggle; the select always shows the server's
-// value, so a refused PIN leaves it as it was. The last few changes show
+// HZ-270: a project's Autopilot mode. Picking a mode asks to save, exactly
+// like ProjectEnabledToggle; the select always shows the server's value, so a
+// refused change leaves it as it was. The last few changes show
 // underneath, from the project_event audit trail.
 const AUTOPILOT_MODES = ['off', 'shadow', 'on']
 
 export function ProjectAutopilot({ project }) {
   const [pending, setPending] = useState(null)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const cancel = () => {
     setPending(null)
-    setPin('')
     setError(null)
   }
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await setProjectAutopilot(project.id, pending, pin)
+      await setProjectAutopilot(project.id, pending)
       setPending(null)
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -200,17 +170,7 @@ export function ProjectAutopilot({ project }) {
       </label>
       {pending && (
         <form className="project-block__add" onSubmit={submit}>
-          <input
-            className="field__input"
-            type="password"
-            autoComplete="off"
-            aria-label={`Gate PIN to set ${project.name} Autopilot to ${pending}`}
-            placeholder={`Gate PIN to set Autopilot to ${pending}`}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            autoFocus
-          />
-          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
             {busy ? 'Saving…' : 'Save'}
           </button>
           <button type="button" className="composer__cancel" onClick={cancel}>
@@ -235,9 +195,9 @@ export function ProjectAutopilot({ project }) {
 // HZ-370: the project's default "Runs on" per step, for items with no choice
 // of their own — steps 0-2 run before anyone opens a new item. Only steps
 // domain/steps.json marks providerOverrideEligible get a select, so deploy
-// has none (and the server refuses it anyway). Saving asks for the gate PIN
-// like Autopilot; the select shows the server's value, so a refused PIN
-// leaves it as it was.
+// has none (and the server refuses it anyway). Saving works like Autopilot;
+// the select shows the server's value, so a refused change leaves it as it
+// was.
 const STEP_PROVIDER_OPTIONS = [
   { value: 'default', label: 'Default' },
   { value: 'claude', label: 'Claude' },
@@ -258,29 +218,26 @@ const providerSelectName = (project, step) =>
 
 export function ProjectStepProviders({ project }) {
   const [pending, setPending] = useState(null)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const savedFor = (index) => project.providerDefaults?.[index] ?? 'default'
 
   const cancel = () => {
     setPending(null)
-    setPin('')
     setError(null)
   }
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await setProjectStepProvider(project.id, pending.index, pending.provider, pin)
+      await setProjectStepProvider(project.id, pending.index, pending.provider)
       setPending(null)
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -314,17 +271,7 @@ export function ProjectStepProviders({ project }) {
       ))}
       {pending && (
         <form className="project-block__add" onSubmit={submit}>
-          <input
-            className="field__input"
-            type="password"
-            autoComplete="off"
-            aria-label={`Gate PIN to set ${providerSelectName(project, STEPS[pending.index])} to ${pending.provider}`}
-            placeholder={`Gate PIN to set ${STEPS[pending.index].label} to ${pending.provider}`}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            autoFocus
-          />
-          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
             {busy ? 'Saving…' : 'Save'}
           </button>
           <button type="button" className="composer__cancel" onClick={cancel}>
