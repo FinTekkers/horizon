@@ -232,12 +232,13 @@ test('neither binding inlines a second copy of the step table — every label an
   }
   // Second: the exemption above is narrow. Stripping the lookups removed only
   // the derived constants' arguments, not a table: four change constants
-  // (implement, review, accept, deploy), four task ones (run plan, approve the
-  // run, execute, verify & report — HZ-378/HZ-384) and seven plan ones
+  // (implement, review, accept, deploy), six task ones (run plan, approve the
+  // run, execute, verify & report — HZ-378/HZ-384 — and assess and impact
+  // review — HZ-738) and seven plan ones
   // (approve & file, draft items, file items, review & close, inventory and
   // the two draft reviews — HZ-446/448/449/462/463).
   const stripped = (jsSource.match(KEY_LOOKUP_CALL) || []).length
-  assert.equal(stripped, 15, `expected exactly 15 keyIndex() key lookups in the binding, found ${stripped}`)
+  assert.equal(stripped, 17, `expected exactly 17 keyIndex() key lookups in the binding, found ${stripped}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {

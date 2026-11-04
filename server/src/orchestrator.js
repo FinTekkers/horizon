@@ -28,6 +28,8 @@ import {
   kindStepIndex,
   EXECUTE_STEP_INDEX,
   RUN_PLAN_STEP_INDEX,
+  ASSESS_STEP_INDEX,
+  IMPACT_REVIEW_STEP_INDEX,
   VERIFY_REPORT_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
   APPROVE_FILE_GATE_INDEX,
@@ -2006,6 +2008,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
     ...(stepIndex === RUN_PLAN_STEP_INDEX ? { ...jobEnvFields(item.repo), runner: defaultRunnerFor(item.repo) } : {}),
+    // HZ-738: Assess and Impact review get the same checkout fields when the
+    // target has a task clone, so they fast-forward it before they read
+    // (never runner: only Run plan's prompt names it). Without one their
+    // payload is unchanged.
+    ...((stepIndex === ASSESS_STEP_INDEX || stepIndex === IMPACT_REVIEW_STEP_INDEX) && findTargetByRepo(item.repo)?.taskDir
+      ? jobEnvFields(item.repo)
+      : {}),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
@@ -2129,8 +2138,10 @@ const FARM_REFUSALS = {
 // farm bounds inside that checkout.
 // HZ-440: a target's taskDir, when set, replaces repoDir here — a separate
 // clone, never the deploy checkout — and task_clone tells the Execute runner
-// to fast-forward it first. Run plan gets the same fields for its prompt but
-// only reads them: it must never fast-forward the clone.
+// to fast-forward it first. HZ-738: Assess, Run plan and Impact review get
+// the same fields and fast-forward the clone too, before they read it, under
+// an exclusive lock that Execute holds shared for its whole run — so a step
+// never moves HEAD under a live job (farm/task_clone.py clone_lock).
 // HZ-416: plus the throwaway container's pinned image and CPU/memory limits.
 // HZ-491: a repo with no image pinned runs a plan that sets no runner on the
 // host (store.js defaultRunnerFor). Only a plan that asks for the container

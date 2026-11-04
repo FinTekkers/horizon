@@ -410,6 +410,10 @@ export const APPROVE_RUN_GATE_INDEX = keyIndex('task.approve-run')
 export const EXECUTE_STEP_INDEX = keyIndex('task.execute')
 // HZ-378: the read-only QA step that judges a finished job against the metric.
 export const VERIFY_REPORT_STEP_INDEX = keyIndex('task.verify-report')
+// HZ-738: the other two read-only Task steps that fast-forward the target's
+// task clone before they read it, as RUN_PLAN_STEP_INDEX's step does.
+export const ASSESS_STEP_INDEX = keyIndex('task.assess')
+export const IMPACT_REVIEW_STEP_INDEX = keyIndex('task.impact-review')
 // HZ-446: a Plan's human-only gate. Approving it files the drafted items
 // (HZ-449); until then the server step after it is a no-op.
 export const APPROVE_FILE_GATE_INDEX = keyIndex('plan.approve-file')
