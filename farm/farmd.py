@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -2149,6 +2149,32 @@ async def caretaker_ruling_route(request: Request):
     return await asyncio.to_thread(
         caretaker_ruling.propose, body["item_id"], body["request"], body["metric"], body["guardrails"]
     )
+
+
+@app.post("/ask/review")
+async def ask_review_route(request: Request):
+    """HZ-729: one bounded agent call reviewing one ask, on the provider the
+    server names — never the ask author's — returned directly, with no tmux
+    session, queue file or run row. 400 for a missing key; 503 when that
+    provider is not authenticated or hits a usage limit, so the server keeps
+    the ask awaiting review. An unusable model reply is a 200 escalate marked
+    "unusable"."""
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "a JSON object is required"}, status_code=400)
+    for key in ask_review.REQUIRED_KEYS:
+        value = body.get(key)
+        wanted = dict if key == "draft" else int if key == "ask_id" else str
+        if not isinstance(value, wanted) or isinstance(value, bool) or (wanted is str and not value.strip()):
+            return JSONResponse({"error": f"missing {key}"}, status_code=400)
+    try:
+        assert_provider_auth(body["provider"])
+    except Exception as exc:
+        return JSONResponse({"error": f"provider not authenticated: {exc}"[:300]}, status_code=503)
+    try:
+        return await asyncio.to_thread(ask_review.review, body)
+    except ask_review.ReviewUnavailable as exc:
+        return JSONResponse({"error": str(exc)[:300]}, status_code=503)
 
 
 # HZ-256: the only farmd route that checks its caller itself. farmd binds to

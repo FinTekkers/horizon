@@ -145,11 +145,14 @@ def _selected_provider(name: str | None = None, *, provider_locked: bool = False
     return name, provider
 
 
-def assert_provider_auth() -> None:
+def assert_provider_auth(name: str | None = None) -> None:
     """The HZ-5 boot-time/request-time cost guardrail, for whichever
     provider is configured — farmd calls this instead of a Claude-specific
-    check so the guarantee holds no matter which provider is selected."""
-    _, provider = _selected_provider()
+    check so the guarantee holds no matter which provider is selected.
+
+    name (HZ-729) checks that one provider instead, e.g. the ask reviewer's;
+    an unknown name raises AgentError."""
+    _, provider = _selected_provider(name)
     provider.assert_subscription_auth()
 
 

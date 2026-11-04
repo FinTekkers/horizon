@@ -34,16 +34,24 @@ export function setComputeOverlapForTest(fn) {
   computeOverride = fn
 }
 
+// HZ-729: the footprint of an item's newest done artifact at `stepIndex`, as
+// { plan, fp } — fp null when there is no artifact or it names nothing. A
+// Plan's drafts are read with PLAN_DRAFT_STEP_INDEX (server/src/askReview.js).
+export function planFootprintOf(row, stepIndex = PLAN_STEP_INDEX) {
+  const plan = latestArtifact(row.id, stepIndex)
+  const fp = plan ? extractPlanFootprint(plan) : null
+  return { plan, fp: fp && !isEmptyFootprint(fp) ? fp : null }
+}
+
 // An item's footprint from its newest done step-6 plan, else its PR diff.
 // Returns { fp, sourceLabel } or { reason } — never an empty footprint, so an
 // unreadable item is reported as not checked instead of as `none`.
 // HZ-466: `preferPr` (a peer that can be linked to) reads the PR diff first —
 // real code, not intent — and falls back to the plan if the read fails or
 // names nothing.
-async function footprintOf(row, { preferPr = false } = {}) {
-  const plan = latestArtifact(row.id, PLAN_STEP_INDEX)
-  const planFp = plan ? extractPlanFootprint(plan) : null
-  const fromPlan = planFp && !isEmptyFootprint(planFp) ? { fp: planFp, sourceLabel: 'step-6 plan' } : null
+export async function footprintOf(row, { preferPr = false } = {}) {
+  const { plan, fp: planFp } = planFootprintOf(row)
+  const fromPlan = planFp ? { fp: planFp, sourceLabel: 'step-6 plan' } : null
   if (fromPlan && !preferPr) return fromPlan
   if (row.pr != null) {
     let files
