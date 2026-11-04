@@ -681,6 +681,35 @@ Tested by `infra/host/test/horizon-provision-run-user.test.sh`. Rollback:
 `sudo rm /etc/sudoers.d/horizon-tenant`, then per tenant
 `sudo userdel -r hz-p<id>` and `sudo rm /etc/horizon/tenant-tokens/<id>`.
 
+### Tenant items run (HZ-758)
+
+farmd no longer refuses every tenant launch. Each tenant step runs as its
+project's `hz-p<id>` and clones its own hub into
+`/home/hz-p<id>/.horizon-farm/workspaces` (mode `0700`), authenticating with
+the project's own token through a git credential helper — never a token in a
+URL. A tenant project may have no test-env file. A tenant's job step
+(a Task's Execute) is still refused. There is no sudoers change, but
+`tenant-entry` changed, so after this release re-run:
+
+```bash
+sudo bash infra/host/install-tenant-host.sh
+```
+
+Then check, as a run user, that other sessions and the farm user's workspaces
+are out of reach (both must print `Permission denied`), and that the farm
+user's home is `750` or tighter:
+
+```bash
+sudo -u hz-p4 cat /proc/<farm-user pid>/environ
+sudo -u hz-p4 ls /home/ubuntu/.horizon-farm/workspaces
+stat -c %a /home/ubuntu
+```
+
+Rollback: revert the release (tenant launches are refused again) and re-run
+`install-tenant-host.sh` from it to put the old `tenant-entry` back. Hubs left
+under `/home/hz-p*/.horizon-farm/workspaces` are harmless; remove them as root
+if wanted.
+
 ## 2m. farmd under systemd (HZ-714)
 
 **Rollback warning first.** Once the new unit is installed, rolling back the

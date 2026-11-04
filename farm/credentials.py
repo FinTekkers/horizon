@@ -83,8 +83,15 @@ TENANT_FORWARD = frozenset(
     }
 )
 # The names a tenant session holds beyond TENANT_FORWARD. Both token names are
-# set to the project's own github_token_ref value.
-TENANT_SET = frozenset({"HOME", "FARM_HOME", "GITHUB_TOKEN", "GH_TOKEN"})
+# set to the project's own github_token_ref value. HZ-758: GIT_TERMINAL_PROMPT=0
+# makes a clone or push with a bad token fail at once, never wait on a prompt.
+TENANT_SET = frozenset({"HOME", "FARM_HOME", "GITHUB_TOKEN", "GH_TOKEN", "GIT_TERMINAL_PROMPT"})
+
+
+def is_tenant_project(project) -> bool:
+    """HZ-758: the one is-tenant test on a task's `project` dict, shared by
+    farmd and step_agent. Read from `isolation` only."""
+    return isinstance(project, dict) and project.get("isolation") == "tenant"
 
 
 class TenantEnvError(Exception):
@@ -164,4 +171,5 @@ def tenant_session_env(
     env["FARM_HOME"] = f"{home}/.horizon-farm"
     env["GITHUB_TOKEN"] = token
     env["GH_TOKEN"] = token
+    env["GIT_TERMINAL_PROMPT"] = "0"
     return env

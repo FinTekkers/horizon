@@ -994,8 +994,13 @@ function projectPayload(projectId) {
   const project = db.prepare('SELECT * FROM project WHERE id = ?').get(projectId)
   const repos = db.prepare('SELECT repo, prefix FROM project_repo WHERE project_id = ?').all(projectId)
   // HZ-697: no tenant token goes to the farm — for a tenant project farmd
-  // resolves the project's own github_token_ref itself.
-  return { project: { id: project.id, name: project.name }, repos, token: project.isolation === 'tenant' ? null : getToken() }
+  // resolves the project's own github_token_ref itself. HZ-758: the isolation
+  // goes too, so farmd never clones a tenant project's repos as the farm user.
+  return {
+    project: { id: project.id, name: project.name, isolation: project.isolation },
+    repos,
+    token: project.isolation === 'tenant' ? null : getToken(),
+  }
 }
 
 async function waitForFarmRunning() {

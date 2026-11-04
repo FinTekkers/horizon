@@ -34,16 +34,18 @@ export function knowledgeSlug(repo, path) {
   return `${readable}-${hash}`
 }
 
-const selectSwitchedOnProjects = db.prepare('SELECT id, name, definitions_enabled FROM project WHERE definitions_enabled = 1 ORDER BY id')
+const selectSwitchedOnProjects = db.prepare('SELECT id, name, definitions_enabled, isolation FROM project WHERE definitions_enabled = 1 ORDER BY id')
 // HZ-654: never `Unlinked items`, whose items read their personas as no project's.
 const switchedOnProjects = () => selectSwitchedOnProjects.all().filter((p) => !hasNoProject(db, p.id))
 const selectFirstRepo = db.prepare('SELECT repo FROM project_repo WHERE project_id = ? ORDER BY id LIMIT 1')
 const selectDoc = db.prepare('SELECT * FROM knowledge_doc WHERE project_id = ? AND slug = ?')
 const selectProjectDocs = db.prepare('SELECT * FROM knowledge_doc WHERE project_id = ? ORDER BY slug')
 
-// [{ projectId, slug, repo, path }] for one project row, in persona order. A
-// repo-path source in a project with no connected repo is skipped, and so is
-// a second reference that lands on a slug already listed.
+// [{ projectId, slug, repo, path, isolation }] for one project row, in persona
+// order. A repo-path source in a project with no connected repo is skipped, and
+// so is a second reference that lands on a slug already listed. HZ-758:
+// `isolation` is the project's own; farmd extracts only `internal` sources,
+// since it clones as the farm user.
 function projectSources(project) {
   const overlay = projectPersonaOverlay(project)
   if (!overlay) return []
@@ -57,7 +59,7 @@ function projectSources(project) {
       const slug = knowledgeSlug(repo, ref.path)
       if (seen.has(slug) || !SLUG_SHAPE.test(slug)) continue
       seen.add(slug)
-      sources.push({ projectId: project.id, slug, repo, path: ref.path })
+      sources.push({ projectId: project.id, slug, repo, path: ref.path, isolation: project.isolation })
     }
   }
   return sources
