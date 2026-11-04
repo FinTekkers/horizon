@@ -107,3 +107,22 @@ test('a sub-step id that is not an id is refused before the store sees it', asyn
   assert.equal(res.statusCode, 400)
   assert.deepEqual(row('B-pattern'), { cursor: ACCEPT_GATE_INDEX, substep_cursor: null })
 })
+
+// HZ-709: the same pair named by key — targetStep — lands exactly where the
+// position form does, at the same sub-step, with the same event.
+test('targetStep (a key) plus targetSubstepId lands where targetStepIndex plus targetSubstepId does', async () => {
+  seed('K-IDX')
+  seed('K-KEY')
+  assert.equal((await reject('K-IDX', { targetStepIndex: IMPLEMENT_STEP_INDEX, targetSubstepId: 'impl-audit' })).statusCode, 200)
+  assert.equal((await reject('K-KEY', { targetStep: 'change.implement', targetSubstepId: 'impl-audit' })).statusCode, 200)
+  assert.deepEqual(row('K-KEY'), row('K-IDX'))
+  assert.deepEqual(row('K-KEY'), { cursor: IMPLEMENT_STEP_INDEX, substep_cursor: 'impl-audit' })
+  assert.equal(lastEvent('K-KEY'), lastEvent('K-IDX'))
+
+  // A key whose step does not offer that sub-step is refused, as by position.
+  seed('K-BAD')
+  const res = await reject('K-BAD', { targetStep: 'change.draft-plan', targetSubstepId: 'impl-audit' })
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().error, 'invalid_target')
+  assert.deepEqual(row('K-BAD'), { cursor: ACCEPT_GATE_INDEX, substep_cursor: null })
+})

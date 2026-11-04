@@ -19,6 +19,7 @@ Three vacuity holes are closed deliberately, matching the JS half:
 
 import inspect
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -285,6 +286,70 @@ def test_py_entry_for_dispatch(case):
         assert case["expect"]["messageContains"] in str(exc.value)
     else:
         assert steps.entry_for_dispatch(index, case["kind"], case["label"])["index"] == index
+
+
+# ---- step keys (HZ-709) ----
+
+
+def _with_inserted_step(key: str) -> list[dict]:
+    """The authored rows with one dummy agent step inserted before `key`, in
+    the same kind and phase — validated, as the real table is at import."""
+    table = json.loads((REPO_ROOT / "domain" / "steps.json").read_text())
+    at = next(i for i, step in enumerate(table["steps"]) if step["key"] == key)
+    item_kind = table["steps"][at].get("itemKind")
+    dummy = {
+        "key": f"{item_kind or 'change'}.inserted-dummy",
+        "phase": table["steps"][at]["phase"],
+        "kind": "agent",
+        "agent": "PM",
+        "label": "Inserted dummy step",
+        "runsIn": "pm",
+    }
+    if item_kind:
+        dummy["itemKind"] = item_kind
+    table["steps"].insert(at, dummy)
+    return steps._validate_source(table, "domain/steps.json")["steps"]
+
+
+def test_every_real_step_has_a_unique_well_formed_key_and_every_send_back_target_resolves():
+    """HZ-709 metric 1, Python side (server/test/domain-step-keys.test.mjs is
+    the JS side): the real table, all three kinds."""
+    authored = json.loads((REPO_ROOT / "domain" / "steps.json").read_text())["steps"]
+    assert {steps._step_kind(step) for step in authored} == {"change", "task", "plan"}
+    keys = [step.get("key") for step in authored]
+    for step, key in zip(authored, keys):
+        assert isinstance(key, str) and re.fullmatch(r"[a-z]+\.[a-z0-9-]+", key), step["label"]
+        assert key.split(".")[0] == steps._step_kind(step)
+    assert len(set(keys)) == len(keys)
+    declared = [(i, step) for i, step in enumerate(authored) if "sendBackTo" in step]
+    assert declared, "positive control: no gate declares a send-back target"
+    for i, step in declared:
+        target = steps.step_index_of(step["sendBackTo"])
+        assert target is not None and target < i
+        assert authored[target]["kind"] == "agent"
+        assert steps._step_kind(authored[target]) == steps._step_kind(step)
+
+
+@pytest.mark.parametrize("case", PY["step_key_at"], ids=lambda c: c["case"])
+def test_py_step_key_at(case):
+    index = steps.by_kind_label(case["kind"], case["label"])["index"] if "label" in case else case["index"]
+    assert steps.step_key_at(index) == case["expect"]
+
+
+@pytest.mark.parametrize("case", PY["step_index_of"], ids=lambda c: c["case"])
+def test_py_step_index_of(case):
+    if "insertBeforeKey" in case:
+        table = _with_inserted_step(case["insertBeforeKey"])
+        index = steps.step_index_of(case["key"], table)
+        assert index == steps.step_index_of(case["key"]) + 1
+        assert table[index]["label"] == case["expectLabel"]
+        return
+    index = steps.step_index_of(case["key"])
+    if "expectLabel" in case:
+        assert steps.step_key_at(index) == case["key"]
+        assert steps._SOURCE["steps"][index]["label"] == case["expectLabel"]
+    else:
+        assert index == case["expect"]
 
 
 # ---- the manifest: this suite really ran every shared case ----

@@ -39,6 +39,7 @@ import {
   laneCheckIndexes,
   nextCursor,
   isServerStep,
+  stepKeyAt,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -1981,7 +1982,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       },
       ...releaseFields,
     },
-    step: { index: stepIndex, label: step.label, agent: step.agent },
+    // HZ-709: the key names the step; farmd finds it by key and falls back
+    // to the index only for a task queued before keys.
+    step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
     // HZ-535: definitionsEnabled tells the farm to read the project's own
     // personas. Sent only when the switch is on AND the project's file loads,
     // so a project with no definitions gets exactly today's payload; a farm
@@ -2181,7 +2184,9 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     run_id: runId,
     attempt,
     item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
-    step: { index: stepIndex, label: step.label, agent: step.agent },
+    // HZ-709: the key names the step; farmd finds it by key and falls back
+    // to the index only for a task queued before keys.
+    step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
     ...(project ? { project: taskProject(project) } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
@@ -3021,9 +3026,19 @@ function recordAsks(item, runId, stepIndex, rawAsks, artifactMd, proposedSplit =
   return result.artifactMd
 }
 
-export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView }) {
+// HZ-709: a farm result names the step it ran by key (farmd forwards the
+// task's step.key as step_key). The run row's position stays the record's
+// authority; a result whose key names another step was misrouted and changes
+// nothing. A result with no key — a run dispatched before keys — is matched
+// by its run id alone, as before.
+function resultNamesAnotherStep(run, stepKey) {
+  return stepKey != null && stepKeyAt(run.step_index) !== stepKey
+}
+
+export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView, step_key: stepKey = null }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
   const item = getItem(id)
 
@@ -3312,9 +3327,10 @@ export const FAILED_OUTPUT_MAX_CHARS = 4000
 // detected the failure) or null/unrecognized — only a tagged reason, under
 // the cap, on a still-runnable item is ever auto-retried. Everything else
 // pauses for a human exactly as it always has (HZ-76's default-safe rule).
-export function failFarmRun(runId, error, reason = null, jobView = null, limit = null) {
+export function failFarmRun(runId, error, reason = null, jobView = null, limit = null, stepKey = null) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
 
   clearTimeout(timers[runId])
@@ -3606,9 +3622,10 @@ export function resumeJob(id) {
 // auto-retried. The block, its step_run row and the owner's one ping are
 // written in one transaction; inFlightRunnable then holds dispatch until
 // store.js releases the block. A repeat report for the run finds it closed.
-export function blockFarmRun(runId, { rule, needs }) {
+export function blockFarmRun(runId, { rule, needs, step_key: stepKey = null }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
   const item = getItem(id)
 

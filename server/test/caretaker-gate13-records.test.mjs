@@ -162,7 +162,7 @@ const probeOf = (id) => db.prepare('SELECT * FROM caretaker_mergeable_probe WHER
 const wouldPing = (id) => db.prepare("SELECT text FROM event WHERE item_id = ? AND text LIKE '%would ping the human%'").all(id)
 const sessionHeaders = { cookie: alice.cookie, 'x-human-key': alice.pin }
 const ACCEPT_TEXT = 'caretaker pressed Accept (automated review passed, PR merges cleanly)'
-const helpBody = (id) => `Autopilot needs you: ${id} "fixture ${id}" is waiting at step 13 (Accept the code).`
+const helpBody = (id) => `Autopilot needs you: ${id} "fixture ${id}" is waiting at "Accept the code".`
 
 // Advances the clock in one-minute ticks until `pr` has been re-read `n`
 // times (bounded, so a broken probe fails rather than hangs).

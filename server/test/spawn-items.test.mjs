@@ -25,7 +25,7 @@ const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const spawn = await import('../src/spawn.js')
-const { kindStepIndex, endIndex } = await import('../../domain/js/lifecycle.js')
+const { kindStepIndex, endIndex, stepIndexOf } = await import('../../domain/js/lifecycle.js')
 
 const REPO = 'FinTekkers/horizon'
 const RUN_PLAN = kindStepIndex('Run plan', 'task')
@@ -147,4 +147,31 @@ test('requestKeyFor: a retry while the child is open reuses the key; after it sh
   closeLocal(filed.children[0])
   assert.notEqual(spawn.requestKeyFor('T-KEY', 4), key, 'a new key once it has shipped')
   orchestrator.cancel('T-KEY')
+})
+
+// HZ-709: a step's request key names it by step key now. A request filed
+// under the old position form before the deploy is read in the same pass: a
+// re-dispatch while its child is open reuses it (no second child), and once it
+// has shipped it counts toward the next key's generation.
+test('requestKeyFor: a step:<key>: key, and a legacy step:<index>: request still open files no second child', async () => {
+  const ASSESS = stepIndexOf('task.assess')
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind) VALUES ('T-LEGACY', 'legacy', 'Medium', ?, 'task')").run(RUN_PLAN)
+  const legacyKey = `step:${ASSESS}:0`
+  const filed = await spawn.spawnItems(store.getItem('T-LEGACY'), [SPECS[0]], { requestKey: legacyKey, kind: 'change' })
+  orchestrator.cancel(filed.children[0])
+  const rowsBefore = db.prepare("SELECT COUNT(*) AS n FROM item_spawn WHERE parent_id = 'T-LEGACY'").get().n
+
+  assert.equal(spawn.requestKeyFor('T-LEGACY', ASSESS), legacyKey, 'the open legacy request keeps its key')
+  const again = await spawn.spawnItems(store.getItem('T-LEGACY'), [SPECS[0]], {
+    requestKey: spawn.requestKeyFor('T-LEGACY', ASSESS),
+    kind: 'change',
+  })
+  assert.deepEqual(again.children, filed.children, 'a re-dispatch filed a second child')
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM item_spawn WHERE parent_id = 'T-LEGACY'").get().n, rowsBefore)
+
+  closeLocal(filed.children[0])
+  assert.equal(spawn.requestKeyFor('T-LEGACY', ASSESS), 'step:task.assess:1', 'the shipped legacy request counts toward gen')
+  // A fresh item gets the key form from its first request.
+  assert.equal(spawn.requestKeyFor('T-FRESH', ASSESS), 'step:task.assess:0')
+  orchestrator.cancel('T-LEGACY')
 })

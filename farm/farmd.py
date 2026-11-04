@@ -475,6 +475,21 @@ def step_kind_mismatch(item: dict, step: dict) -> bool:
     return False
 
 
+# HZ-709: a dispatched step is named by its permanent key. The server sends
+# `step.key` beside `step.index`; the key wins, so a task never runs as the
+# wrong step after one was inserted. Returns the step with its index taken
+# from the key, the step unchanged when it carries no key (a task queued by a
+# server from before keys), or None for a key this table does not have.
+def step_by_key(step: dict) -> dict | None:
+    key = step.get("key")
+    if key is None:
+        return step
+    index = steps.step_index_of(key)
+    if index is None:
+        return None
+    return {**step, "index": index}
+
+
 WORKSPACE_MUTATING_STEPS = frozenset(workspace_mutating_indexes(steps.STEPS))
 _WORKSPACE_MUTATING_STEP_STRS = frozenset(str(i) for i in WORKSPACE_MUTATING_STEPS)
 
@@ -622,6 +637,9 @@ def _forward_result(body: dict) -> int | None:
     # run and stores the view in one write — a late nudge can't be lost to it.
     if isinstance(body.get("job_view"), dict) and path in ("complete", "fail"):
         payload["job_view"] = body["job_view"]
+    # HZ-709: the result names the step it ran by key, on every path.
+    if isinstance(body.get("step_key"), str) and body["step_key"]:
+        payload["step_key"] = body["step_key"][:80]
     url = f"{HORIZON_URL}/api/farm/steps/{run_id}/{path}"
     status = None
     for attempt in (1, 2):
@@ -2012,7 +2030,14 @@ async def steps_run(request: Request):
     item_repo = body["item"].get("repo") if isinstance(body["item"], dict) else None
     if not _non_empty_str(item_repo):
         return JSONResponse({"error": "missing item.repo"}, status_code=400)
-    if not isinstance(body["step"], dict) or step_kind_mismatch(body["item"], body["step"]):
+    if not isinstance(body["step"], dict):
+        return JSONResponse({"error": "step kind mismatch"}, status_code=400)
+    # HZ-709: found by key; the index beside it is only a fallback.
+    keyed_step = step_by_key(body["step"])
+    if keyed_step is None:
+        return JSONResponse({"error": "unknown step key"}, status_code=400)
+    body["step"] = keyed_step
+    if step_kind_mismatch(body["item"], body["step"]):
         return JSONResponse({"error": "step kind mismatch"}, status_code=400)
     # HZ-758: never for a tenant task — its run user clones its own hub.
     if not _is_tenant(body) and not (workspaces.hub_path(item_repo) / ".git").exists():

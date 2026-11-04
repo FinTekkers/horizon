@@ -31,7 +31,7 @@ const { buildApp } = await import('../src/app.js')
 const store = await import('../src/store.js')
 const votes = await import('../src/waPollVotes.js')
 const { POLL_APPROVE, POLL_SEND_BACK } = await import('../src/waSend.js')
-const { STEPS, gateStepIndexes } = await import('../../domain/js/lifecycle.js')
+const { STEPS, gateStepIndexes, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const { FARM_SHARED_SECRET, WA_APPROVAL_SECRET } = await import('../src/config.js')
 
 store.purgeDemoItems()
@@ -84,7 +84,7 @@ test('the dedicated approval credential plus an allowlisted voter decides the ga
   const msgId = fixture('V-OK')
   const res = await withSecret(body(msgId))
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.json(), { ok: true, outcome: 'applied', itemId: 'V-OK', stepIndex: GATE, choice: 'approve' })
+  assert.deepEqual(res.json(), { ok: true, outcome: 'applied', itemId: 'V-OK', stepIndex: GATE, stepKey: stepKeyAt(GATE), choice: 'approve' })
   assert.equal(cursorOf('V-OK'), GATE + 1)
 })
 

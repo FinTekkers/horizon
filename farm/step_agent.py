@@ -3940,6 +3940,10 @@ def main() -> int:
         _RECORDED.reset(token)
     # A flake on one command survives a real failure on a later one.
     result.update({key: value for key, value in recorded.items() if value and key not in ("branch_notes", "summary_notes")})
+    # HZ-709: the result names the step it ran by key (absent on a task queued
+    # before keys), so the server can tell a misrouted result from this run's.
+    if isinstance(task["step"].get("key"), str):
+        result["step_key"] = task["step"]["key"]
 
     if pause.pending() and not pause.reported():
         # The pause landed after the work's last interruptible region (e.g.

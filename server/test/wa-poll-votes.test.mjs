@@ -29,7 +29,7 @@ const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const votes = await import('../src/waPollVotes.js')
 const { POLL_APPROVE, POLL_SEND_BACK } = await import('../src/waSend.js')
-const { STEPS, gateStepIndexes, requiredStepIndex, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, gateStepIndexes, requiredStepIndex, ACCEPT_GATE_INDEX, stepKeyAt, stepIndexOf } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 
@@ -471,4 +471,45 @@ test('nothing on the vote path reached the agent runner except the store calls t
   for (const [name] of runnerCalls) {
     assert.ok(['kick', 'cancel'].includes(name), `unexpected runner call ${name}`)
   }
+})
+
+// ---- HZ-709: a poll names its gate by key ----
+
+test('HZ-709: a poll registered with its step key decides that gate', async () => {
+  const id = makeItem('P-KEYED', GATE)
+  votes.supersedeOpenPolls(id)
+  const pollId = votes.registerPoll({ itemId: id, stepIndex: GATE, stepKey: stepKeyAt(GATE), recipient: DAVID, question: `${id} — ${STEPS[GATE].label}` })
+  votes.attachPollMessageId(pollId, 'MSG-KEYED')
+  assert.equal(db.prepare('SELECT step_key FROM gate_poll WHERE id = ?').get(pollId).step_key, stepKeyAt(GATE))
+  const result = await vote('MSG-KEYED', POLL_APPROVE)
+  assert.equal(result.outcome, 'applied')
+  assert.equal(cursorOf(id), GATE + 1)
+})
+
+test('HZ-709 guardrail 2: a poll from before keys (step_key NULL) still decides the right gate', async () => {
+  const id = makeItem('P-NULLKEY', GATE)
+  const { pollId, msgId } = makePoll(id, GATE)
+  assert.equal(db.prepare('SELECT step_key FROM gate_poll WHERE id = ?').get(pollId).step_key, null)
+  const result = await vote(msgId, POLL_APPROVE)
+  assert.equal(result.outcome, 'applied')
+  assert.equal(result.stepIndex, GATE)
+  assert.equal(cursorOf(id), GATE + 1)
+})
+
+test('HZ-709 guardrail 3: a keyed poll whose item has moved on is ignored, exactly as before', async () => {
+  const id = makeItem('P-KEYMOVED', GATE)
+  votes.supersedeOpenPolls(id)
+  const pollId = votes.registerPoll({ itemId: id, stepIndex: GATE, stepKey: stepKeyAt(GATE), recipient: DAVID, question: `${id} — ${STEPS[GATE].label}` })
+  votes.attachPollMessageId(pollId, 'MSG-KEYMOVED')
+  db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(LATER_GATE, id)
+  const result = await assertNothingChanged(id, () => vote('MSG-KEYMOVED', POLL_APPROVE))
+  assert.equal(result.outcome, 'ignored_stale_gate')
+  assert.equal(cursorOf(id), LATER_GATE)
+})
+
+test('HZ-709: pollStepIndex resolves the key first, then falls back to step_index', () => {
+  assert.equal(votes.pollStepIndex({ step_key: stepKeyAt(GATE), step_index: 999 }), GATE)
+  assert.equal(votes.pollStepIndex({ step_key: null, step_index: GATE }), GATE)
+  assert.equal(votes.pollStepIndex({ step_key: 'change.no-such-step', step_index: GATE }), null)
+  assert.equal(votes.pollStepIndex({ step_key: stepKeyAt(GATE), step_index: GATE }, (key) => stepIndexOf(key) + 1), GATE + 1)
 })

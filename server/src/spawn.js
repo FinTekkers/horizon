@@ -33,7 +33,7 @@ import { UI_URL } from './config.js'
 import { redact } from './caretakerRules.js'
 import { HOST_PATH } from './split.js'
 import { resolveTarget } from './deploy.js'
-import { isClosed, isItemKind } from '../../domain/js/lifecycle.js'
+import { isClosed, isItemKind, stepKeyAt } from '../../domain/js/lifecycle.js'
 import { criteriaLines, fieldByName } from '../../domain/js/fields.js'
 
 // ---- the step flags ----
@@ -100,21 +100,30 @@ function settled(rows) {
   })
 }
 
-// The key a step's run files under: `step:<index>:<gen>`, gen counting this
-// step's earlier requests that have settled. A retry while the child is open
-// gets the same key (nothing new is filed); a later run of the step, after
-// its child shipped, gets a new one.
+// The key a step's run files under: `step:<key>:<gen>` (HZ-709: the step's
+// permanent key — before it, `step:<index>:<gen>`), gen counting this step's
+// earlier requests that have settled. A retry while the child is open gets
+// the same key (nothing new is filed); a later run of the step, after its
+// child shipped, gets a new one. Rows filed under the old index form are read
+// in the same pass, so they count toward gen, and an index-form request still
+// open keeps its own key — a retry across the deploy never files a second child.
 export function requestKeyFor(parentId, stepIndex) {
-  const prefix = `step:${stepIndex}:`
+  const stepKey = stepKeyAt(stepIndex)
+  const legacyPrefix = `step:${stepIndex}:`
+  const prefix = stepKey ? `step:${stepKey}:` : legacyPrefix
   const byKey = new Map()
   for (const row of selectRows.all(parentId)) {
-    if (!row.request_key.startsWith(prefix)) continue
+    if (!row.request_key.startsWith(prefix) && !row.request_key.startsWith(legacyPrefix)) continue
     if (!byKey.has(row.request_key)) byKey.set(row.request_key, [])
     byKey.get(row.request_key).push(row)
   }
   let gen = 0
-  for (const rows of byKey.values()) if (settled(rows)) gen++
-  return `${prefix}${gen}`
+  let openLegacy = null
+  for (const [requestKey, rows] of byKey) {
+    if (settled(rows)) gen++
+    else if (requestKey.startsWith(legacyPrefix)) openLegacy ??= requestKey
+  }
+  return openLegacy ?? `${prefix}${gen}`
 }
 
 // ---- filing ----

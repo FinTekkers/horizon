@@ -26,11 +26,13 @@
   "cursor": 11,
   "currentStep": {
     "index": 11,
+    "key": "change.implement",
     "label": "Specialist agent implements",
     "kind": "agent",
     "phase": "Execute",
     "gate": false
   },
+  "currentStepKey": "change.implement",
   "paused": false,
   "rejected": false,
   "last_activity_at": "2026-10-01T10:00:00Z",

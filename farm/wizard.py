@@ -411,7 +411,8 @@ def _approve_gate(base_url: str, option: dict, sender: str, sender_jid: str) -> 
         return False, "the approval credential isn't configured on this host"
     try:
         res = httpx.post(
-            f"{base_url}/api/items/{option['item_id']}/gates/{option['step_index']}/approve-via-whatsapp",
+            # HZ-709: by step key; an option offered before keys has only the index.
+            f"{base_url}/api/items/{option['item_id']}/gates/{option.get('step_key') or option['step_index']}/approve-via-whatsapp",
             json={"sender": sender, "senderJid": sender_jid},
             headers={"x-wa-approval-secret": config.WA_APPROVAL_SECRET},
             timeout=15,

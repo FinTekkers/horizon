@@ -269,7 +269,7 @@ for (const [n, stepIndex] of TASK_STEPS.entries()) {
     const override = await putItemProvider(`T-OVR-${n}`, stepIndex, MUSE_MODEL)
     assert.equal(override.statusCode, 200, override.body)
     const overrideBody = await dispatchedChoices(`T-OVR-${n}`)
-    assert.deepEqual(overrideBody.step, { index: stepIndex, label, agent: STEPS[stepIndex].agent })
+    assert.deepEqual(overrideBody.step, { key: STEPS[stepIndex].key, index: stepIndex, label, agent: STEPS[stepIndex].agent })
     assert.deepEqual(overrideBody.item.providerChoices, { [stepIndex]: MUSE_MODEL })
 
     // Default only.

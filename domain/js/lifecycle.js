@@ -113,8 +113,50 @@ export function assertLifecycleShape(data, source = 'domain/steps.json') {
     }
   }
 
+  assertStepKeys(steps, source)
   assertLanes(data.lanes, steps, kinds, source)
   return data
+}
+
+// HZ-709: a step's permanent name, `<itemKind>.<slug>`. The schema makes it
+// required on the real table; here it is checked wherever it is present, so a
+// fabricated table in a test may still omit it. A key is unique across every
+// kind, so one string names one step with no kind beside it.
+const STEP_KEY_PATTERN = /^[a-z]+\.[a-z0-9-]+$/
+
+function assertStepKeys(steps, source) {
+  const keyed = new Map()
+  for (const [i, step] of steps.entries()) {
+    if (step.key === undefined) continue
+    if (typeof step.key !== 'string' || !STEP_KEY_PATTERN.test(step.key)) {
+      throw new Error(`${source}: steps[${i}] ("${step.label}") has key "${step.key}" — expected <itemKind>.<slug>`)
+    }
+    const itemKind = step.itemKind ?? 'change'
+    if (step.key.split('.')[0] !== itemKind) {
+      throw new Error(`${source}: steps[${i}] ("${step.label}") has key "${step.key}", which does not start with its item kind "${itemKind}"`)
+    }
+    if (keyed.has(step.key)) throw new Error(`${source} has duplicate step key "${step.key}"`)
+    keyed.set(step.key, i)
+  }
+  // A gate's default send-back target: an earlier agent step of its own kind,
+  // the same rule an explicit send-back target meets.
+  for (const [i, step] of steps.entries()) {
+    if (step.sendBackTo === undefined) continue
+    const target = keyed.get(step.sendBackTo)
+    if (step.kind !== 'gate') {
+      throw new Error(`${source}: steps[${i}] ("${step.label}") declares sendBackTo, but only a gate sends back`)
+    }
+    if (
+      target === undefined ||
+      target >= i ||
+      steps[target].kind !== 'agent' ||
+      (steps[target].itemKind ?? 'change') !== (step.itemKind ?? 'change')
+    ) {
+      throw new Error(
+        `${source}: steps[${i}] ("${step.label}") sends back to "${step.sendBackTo}", which is not an earlier agent step of its item kind`,
+      )
+    }
+  }
 }
 
 // Lanes (HZ-435): an opt-in overlay on one kind's rows. A lane may only skip
@@ -134,15 +176,16 @@ function assertLanes(lanes, steps, kinds, source) {
       throw new Error(`${source}: lanes.${lane}.itemKind names unknown item kind "${kind}"`)
     }
     const rows = steps.flatMap((step, index) => ((step.itemKind ?? 'change') === kind ? [{ step, index }] : []))
-    const indexOf = (label) => {
-      const row = rows.find(({ step }) => step.label === label)
-      if (!row) throw new Error(`${source}: lanes.${lane} names unknown step "${label}" for item kind "${kind}"`)
+    // HZ-709: a lane names its rows by step key, never by label or position.
+    const indexOf = (key) => {
+      const row = rows.find(({ step }) => step.key === key)
+      if (!row) throw new Error(`${source}: lanes.${lane} names unknown step "${key}" for item kind "${kind}"`)
       return row.index
     }
     for (const field of ['check', 'skip']) {
       const list = entry[field]
       if (!Array.isArray(list) || list.length === 0 || !list.every((l) => typeof l === 'string' && l.length > 0)) {
-        throw new Error(`${source}: lanes.${lane}.${field} must be a non-empty array of step labels`)
+        throw new Error(`${source}: lanes.${lane}.${field} must be a non-empty array of step keys`)
       }
     }
     const check = entry.check.map(indexOf).sort((a, b) => a - b)
@@ -295,39 +338,97 @@ export function requiredStepIndex(label, steps = STEPS) {
   return index
 }
 
-export const IMPLEMENT_STEP_INDEX = requiredStepIndex('Specialist agent implements')
+// ---- step keys (HZ-709) ----
+// Anything outside the item record names a step by its key; the record keeps
+// its position. This codec is the one place the two meet, and only boundary
+// code (routes, the snapshot, farm messages, polls) calls it. It is built from
+// a table, not read off a module global, so a test can hand it a table with a
+// step inserted and prove every key still names the same step.
+//
+//   stepKeyAt(index)        the key at that position, or null
+//   stepIndexOf(key)        the position of that key, or null
+//   resolveStepRef(ref, kind)
+//                           a route's step: a key, or (deprecated, one release)
+//                           a position. { index, key, deprecated } or
+//                           { error: 'unknown_step' | 'wrong_kind' }
+//   sendBackTargetOf(index) the position the gate there sends back to by
+//                           default (its steps.json sendBackTo), or null
+//   laneRows(lane)          { kind, check, skip } — the lane's rows as Sets of
+//                           positions, or null for an undeclared lane
+export function stepCodec(table = source) {
+  const steps = table.steps
+  const byKey = new Map()
+  for (const [index, step] of steps.entries()) if (typeof step.key === 'string') byKey.set(step.key, index)
+  const stepKeyAt = (index) => (Number.isInteger(index) && typeof steps[index]?.key === 'string' ? steps[index].key : null)
+  const stepIndexOf = (key) => (typeof key === 'string' && byKey.has(key) ? byKey.get(key) : null)
+  const resolveStepRef = (ref, kind = null) => {
+    if (Number.isInteger(ref) || (typeof ref === 'string' && /^[0-9]{1,6}$/.test(ref))) {
+      const index = Number(ref)
+      return { index, key: stepKeyAt(index), deprecated: true }
+    }
+    const index = stepIndexOf(ref)
+    if (index === null) return { error: 'unknown_step' }
+    if (kind != null && stepKindOf(steps[index]) !== kind) return { error: 'wrong_kind' }
+    return { index, key: ref, deprecated: false }
+  }
+  const sendBackTargetOf = (index) =>
+    Number.isInteger(index) && steps[index]?.kind === 'gate' ? stepIndexOf(steps[index].sendBackTo) : null
+  const lanes = table.lanes ?? {}
+  const laneRows = (lane) => {
+    if (typeof lane !== 'string' || !Object.prototype.hasOwnProperty.call(lanes, lane)) return null
+    const entry = lanes[lane]
+    return {
+      kind: entry.itemKind,
+      check: new Set(entry.check.map(stepIndexOf)),
+      skip: new Set(entry.skip.map(stepIndexOf)),
+    }
+  }
+  return { stepKeyAt, stepIndexOf, resolveStepRef, sendBackTargetOf, laneRows }
+}
+
+const CODEC = stepCodec(source)
+export const { stepKeyAt, stepIndexOf, resolveStepRef, sendBackTargetOf } = CODEC
+
+// A key the code itself names: throws, rather than yielding null, if it is
+// ever missing — a shipped key is never renamed, so this only fires on a typo.
+function keyIndex(key) {
+  const index = CODEC.stepIndexOf(key)
+  if (index === null) throw new Error(`lifecycle: no step keyed "${key}" in domain/steps.json`)
+  return index
+}
+
+export const IMPLEMENT_STEP_INDEX = keyIndex('change.implement')
 // HZ-467: the kind whose items have an implement step and a PR to merge.
 export const IMPLEMENT_ITEM_KIND = stepKindOf(STEPS[IMPLEMENT_STEP_INDEX])
-export const REVIEW_STEP_INDEX = requiredStepIndex('Automated review (code + QA)')
-export const ACCEPT_GATE_INDEX = requiredStepIndex('Accept the code')
-export const DEPLOY_STEP_INDEX = requiredStepIndex('Deploy the changes')
+export const REVIEW_STEP_INDEX = keyIndex('change.auto-review')
+export const ACCEPT_GATE_INDEX = keyIndex('change.accept-code')
+export const DEPLOY_STEP_INDEX = keyIndex('change.deploy')
 // HZ-384: a Task's run plan, the human-only gate that approves it, and the
-// step that may only start on the plan that gate approved. Looked up within
-// the task kind, the same lookup BY label the constants above use.
-export const RUN_PLAN_STEP_INDEX = kindStepIndex('Run plan', 'task')
-export const APPROVE_RUN_GATE_INDEX = kindStepIndex('Approve the run', 'task')
-export const EXECUTE_STEP_INDEX = kindStepIndex('Execute', 'task')
+// step that may only start on the plan that gate approved.
+export const RUN_PLAN_STEP_INDEX = keyIndex('task.run-plan')
+export const APPROVE_RUN_GATE_INDEX = keyIndex('task.approve-run')
+export const EXECUTE_STEP_INDEX = keyIndex('task.execute')
 // HZ-378: the read-only QA step that judges a finished job against the metric.
-export const VERIFY_REPORT_STEP_INDEX = kindStepIndex('Verify & report', 'task')
+export const VERIFY_REPORT_STEP_INDEX = keyIndex('task.verify-report')
 // HZ-738: the other two read-only Task steps that fast-forward the target's
 // task clone before they read it, as RUN_PLAN_STEP_INDEX's step does.
-export const ASSESS_STEP_INDEX = kindStepIndex('Assess', 'task')
-export const IMPACT_REVIEW_STEP_INDEX = kindStepIndex('Impact review', 'task')
+export const ASSESS_STEP_INDEX = keyIndex('task.assess')
+export const IMPACT_REVIEW_STEP_INDEX = keyIndex('task.impact-review')
 // HZ-446: a Plan's human-only gate. Approving it files the drafted items
 // (HZ-449); until then the server step after it is a no-op.
-export const APPROVE_FILE_GATE_INDEX = kindStepIndex('Approve & file', 'plan')
+export const APPROVE_FILE_GATE_INDEX = keyIndex('plan.approve-file')
 // HZ-448: the Plan step whose reply is the item drafts (server/src/planDraft.js).
-export const PLAN_DRAFT_STEP_INDEX = kindStepIndex('Draft items', 'plan')
+export const PLAN_DRAFT_STEP_INDEX = keyIndex('plan.draft-items')
 // HZ-463: the two steps that review the drafts (server/src/planReview.js).
-export const PLAN_COVERAGE_REVIEW_STEP_INDEX = kindStepIndex('Review drafts: coverage & overlap', 'plan')
-export const PLAN_METRICS_REVIEW_STEP_INDEX = kindStepIndex('Review drafts: metrics & size', 'plan')
+export const PLAN_COVERAGE_REVIEW_STEP_INDEX = keyIndex('plan.review-coverage')
+export const PLAN_METRICS_REVIEW_STEP_INDEX = keyIndex('plan.review-metrics')
 // HZ-449: the server step that files the drafts, and the gate after it whose
 // card shows what was filed.
-export const FILE_ITEMS_STEP_INDEX = kindStepIndex('File items', 'plan')
-export const REVIEW_CLOSE_GATE_INDEX = kindStepIndex('Review & close', 'plan')
+export const FILE_ITEMS_STEP_INDEX = keyIndex('plan.file-items')
+export const REVIEW_CLOSE_GATE_INDEX = keyIndex('plan.review-close')
 // HZ-462: the Plan step whose artifact carries the Inventory block
 // (domain/js/planInventory.js), rendered as tables on the item page.
-export const PLAN_INVENTORY_STEP_INDEX = kindStepIndex('Inventory current state', 'plan')
+export const PLAN_INVENTORY_STEP_INDEX = keyIndex('plan.inventory')
 
 // HZ-446: a step Horizon runs itself, in the server process (runsIn 'server').
 // It names no agent, so it is never dispatched, never a send-back target and
@@ -371,16 +472,7 @@ export function gateStepIndexes(steps = STEPS, kind = 'change') {
 // index and renders as skipped, and the cursor simply steps over it. An item
 // with no lane — every Task, every unlabelled change — reads an empty set
 // everywhere below, so its pipeline is exactly what it was.
-const LANE_ROWS = new Map(
-  Object.entries(source.lanes ?? {}).map(([lane, entry]) => [
-    lane,
-    {
-      kind: entry.itemKind,
-      check: new Set(entry.check.map((label) => kindStepIndex(label, entry.itemKind))),
-      skip: new Set(entry.skip.map((label) => kindStepIndex(label, entry.itemKind))),
-    },
-  ]),
-)
+const LANE_ROWS = new Map(Object.keys(source.lanes ?? {}).map((lane) => [lane, CODEC.laneRows(lane)]))
 const NO_ROWS = new Set()
 
 export const LANES = [...LANE_ROWS.keys()]
@@ -519,8 +611,9 @@ export function reworkTargets(gateIndex, kind = stepKindOf(STEPS[gateIndex]), it
 // server-side when no target is sent.
 export function defaultReworkTarget(gateIndex, kind = stepKindOf(STEPS[gateIndex]), item = null) {
   assertItemKind(kind)
-  if (gateIndex === ACCEPT_GATE_INDEX) return IMPLEMENT_STEP_INDEX
-  if (gateIndex === APPROVE_RUN_GATE_INDEX) return RUN_PLAN_STEP_INDEX
+  // HZ-709: a gate's declared default (steps.json sendBackTo), by key.
+  const declared = sendBackTargetOf(gateIndex)
+  if (declared !== null) return declared
   const first = firstStepIndex(kind)
   const skips = laneSkips(item)
   let idx = gateIndex
