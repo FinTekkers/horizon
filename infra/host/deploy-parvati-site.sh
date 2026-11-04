@@ -4,4 +4,6 @@
 export DEPLOY_NAME=parvati-site
 export DEPLOY_PAGES_REPO=ParvatiRealEstate/parvati-site
 export DEPLOY_PAGES_URL=https://parvatirealestate.github.io/parvati-site/
+# The tenant's own token (project 4's repo connect), for GitHub's API limits.
+export DEPLOY_PAGES_TOKEN_FILE=/etc/horizon/tenant-tokens/4
 exec "$(dirname "${BASH_SOURCE[0]}")/deploy-github-pages.sh" "$@"
