@@ -1,0 +1,5 @@
+{
+  "$comment": "HZ-709: one farm dispatch's item and step, shared by both sides of the farm contract. server/test/farm-step-key.test.mjs asserts the orchestrator's real /steps/run payload names this step exactly so (plus its current index); farm/tests/test_farmd_step_keys.py feeds the same payload to farmd with the index deliberately wrong and asserts farmd still finds this step, by key. No index here: a position is what a key replaces.",
+  "item": { "kind": "change", "repo": "acme/demo" },
+  "step": { "key": "change.summarize-reviews", "label": "Summarize reviews & recommend", "agent": "PM" }
+}

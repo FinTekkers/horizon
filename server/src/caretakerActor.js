@@ -33,7 +33,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX, humanOnlyGateIndexes, gateStepIndexes } from '../../domain/js/lifecycle.js'
+import { STEPS, requiredStepIndex, ACCEPT_GATE_INDEX, humanOnlyGateIndexes, gateStepIndexes, stepKeyAt } from '../../domain/js/lifecycle.js'
 import { ACTOR, redact } from './caretakerRules.js'
 import { CHECK_HEADLINE_PREFIX, capWords } from './checkHeadline.js'
 import { loadPolicy, REPEAT_SEND_BACK_RULE } from './caretaker.js'
@@ -169,7 +169,8 @@ export function queueHelpPings({ now = Date.now, owner = ownerJid } = {}) {
   let queued = 0
   for (const c of selectHelpCandidates.all()) {
     let body = redact(
-      `Autopilot needs you: ${c.item_id} "${c.title}" is waiting at step ${c.gate_index} (${STEPS[c.gate_index].label}).`,
+      // HZ-709: the gate by its label, never its position.
+      `Autopilot needs you: ${c.item_id} "${c.title}" is waiting at "${STEPS[c.gate_index].label}".`,
     )
     if (c.rule_id === REPEAT_SEND_BACK_RULE) {
       body += ` Blocker: ${redact(c.reason, { oneLine: false }).replace(/\s+/g, ' ').trim()}`
@@ -361,7 +362,7 @@ export async function actOnDecisions({
           if (recordStall(c, stall, nowMs, owner())) {
             counts.stalled++
             changed = true
-            log?.warn?.(`caretaker: stopped on ${c.item_id} at step ${c.gate_index}: ${STALL_TEXT[stall]}`)
+            log?.warn?.(`caretaker: stopped on ${c.item_id} at ${stepKeyAt(c.gate_index)}: ${STALL_TEXT[stall]}`)
           }
           continue
         }
@@ -426,12 +427,12 @@ export async function actOnDecisions({
           finishAction.run('ok', null, claim)
           insertEvent.run(c.item_id, c.decision === 'approve' ? `auto-approved by caretaker (${reason})` : `sent back by caretaker (${reason})`)
           counts.acted++
-          log?.info?.(`caretaker: ${c.decision} on ${c.item_id} at step ${c.gate_index}`)
+          log?.info?.(`caretaker: ${c.decision} on ${c.item_id} at ${stepKeyAt(c.gate_index)}`)
         } else {
           const error = redact(result?.error ?? 'no result')
           finishAction.run('failed', error, claim)
           insertEvent.run(c.item_id, `caretaker could not act (${error}) — left for a human`)
-          log?.warn?.(`caretaker: could not ${c.decision} ${c.item_id} at step ${c.gate_index}: ${error}`)
+          log?.warn?.(`caretaker: could not ${c.decision} ${c.item_id} at ${stepKeyAt(c.gate_index)}: ${error}`)
         }
       } catch (err) {
         log?.error?.(`caretaker: ${c.item_id} could not be acted on: ${redact(err?.message)}`)

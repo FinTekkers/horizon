@@ -18,6 +18,19 @@ test('routeKey names an API request by method and path, with id-like segments as
   assert.equal(routeKey('GET', 'not a url'), null)
 })
 
+// HZ-709: the gate routes name a step by key; every step maps to one route key.
+test('routeKey names a step key after /gates/ as :step, and nothing else', () => {
+  assert.equal(
+    routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/change.accept-code/approve'),
+    'route:POST /api/items/:id/gates/:step/approve',
+  )
+  assert.equal(
+    routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/task.approve-run/approve'),
+    'route:POST /api/items/:id/gates/:step/approve',
+  )
+  assert.equal(routeKey('GET', 'http://localhost:4351/api/openapi.json'), 'route:GET /api/openapi.json')
+})
+
 test('without HORIZON_E2E_COVERAGE_DIR the fixture touches nothing on the page and writes nothing', async () => {
   const page = new Proxy({}, { get: (_, prop) => { throw new Error(`page.${String(prop)} used`) } })
   const recording = await startCoverage(page, {})

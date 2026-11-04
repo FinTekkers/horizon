@@ -170,7 +170,7 @@ for (const gate of [5, 10]) {
         ['ping_human', 'repeat_send_back'],
       ],
     )
-    assert.equal(evals[1].reason, `sent back twice in a row at step ${gate}: ${BLOCKER[gate]}`)
+    assert.equal(evals[1].reason, `sent back twice in a row at "${LABEL[gate]}": ${BLOCKER[gate]}`)
     assert.deepEqual(
       actionsOf(id).map((a) => [a.action, a.outcome]),
       [['send_back', 'ok']],
@@ -184,7 +184,7 @@ for (const gate of [5, 10]) {
     assert.deepEqual(sentFor(id), [
       {
         to: OWNER,
-        body: `Autopilot needs you: ${id} "fixture ${id}" is waiting at step ${gate} (${LABEL[gate]}). Blocker: sent back twice in a row at step ${gate}: ${BLOCKER[gate]}`,
+        body: `Autopilot needs you: ${id} "fixture ${id}" is waiting at "${LABEL[gate]}". Blocker: sent back twice in a row at "${LABEL[gate]}": ${BLOCKER[gate]}`,
       },
     ])
   })
@@ -203,7 +203,7 @@ test('a long title and a long blocker: the prefix is unchanged and the blocker s
 
   const [{ body }] = sentFor(id)
   // Today's help-ping prefix, capped at 200 characters as before.
-  const prefix = `Autopilot needs you: ${id} "${title}" is waiting at step 5 (Approve the high-level design).`
+  const prefix = `Autopilot needs you: ${id} "${title}" is waiting at "Approve the high-level design".`
   assert.ok(prefix.length > 200)
   assert.ok(body.startsWith(`${prefix.slice(0, 199)}… Blocker: `), body)
   assert.ok(body.includes(blocker.slice(0, 80)), body)
@@ -405,7 +405,7 @@ test('secret env values quoted in the blocker never reach the ping, the eval or 
       assert.ok(!text.includes('gcs-value-0123456789'), text)
       assert.ok(!text.includes('digest-token-abcdef'), text)
     }
-    assert.ok(body.endsWith('Blocker: sent back twice in a row at step 5: open blocker: OAuth fails with [redacted] and [redacted] (short abc1234)'), body)
+    assert.ok(body.endsWith('Blocker: sent back twice in a row at "Approve the high-level design": open blocker: OAuth fails with [redacted] and [redacted] (short abc1234)'), body)
 
     // The existing keys and the gh*_ pattern behave as before.
     process.env.GITHUB_TOKEN = 'tok1'

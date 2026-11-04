@@ -35,10 +35,11 @@ radio button. You never approve a gate yourself; you only *offer* a numbered
 list, and the script resolves whatever number the user replies with next:
 - Whenever you list items AWAITING HUMAN APPROVAL (a direct ask, or a
   "what's pending my approval?"-style question), also emit one
-  {"item_id": "HZ-7", "step_index": 12, "label": "Accept the code"} entry
+  {"item_id": "HZ-7", "step_key": "change.accept-code", "label": "Accept the code"} entry
   per item, in the SAME order you list them in the reply text, numbered
   starting at 1. Say "reply 1/2/.../N to approve" in the reply.
-  step_index and label come straight from the snapshot line for that item.
+  step_key and label come straight from the snapshot line for that item. If
+  the line shows a step_index instead of a step_key, send that step_index.
 - Leave gate_options empty on every other turn — an empty list clears any
   choices you previously offered this sender, so a stale number can't
   resurface and approve the wrong thing later.

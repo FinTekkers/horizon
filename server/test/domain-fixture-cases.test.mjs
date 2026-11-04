@@ -471,3 +471,67 @@ test('MANIFEST: the JS suite executed exactly the shared cases the fixture pins'
     )
   }
 })
+
+// ---- step keys (HZ-709) ----
+
+const AUTHORED = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/steps.json'), 'utf8'))
+
+// The authored table with one dummy agent step inserted before `key`, in the
+// same kind and phase — the shape of every past step insertion.
+function withInsertedStep(key) {
+  const table = structuredClone(AUTHORED)
+  const at = table.steps.findIndex((s) => s.key === key)
+  const { itemKind, phase } = table.steps[at]
+  table.steps.splice(at, 0, {
+    ...FABRICATED[0],
+    key: `${itemKind ?? 'change'}.inserted-dummy`,
+    phase,
+    label: 'Inserted dummy step',
+    ...(itemKind ? { itemKind } : {}),
+  })
+  return binding.assertLifecycleShape(table)
+}
+
+test('js/stepCodec: a codec over a table with a step inserted resolves every key to the same label', () => {
+  for (const c of js.stepCodec) {
+    const shifted = withInsertedStep(c.insertBeforeKey)
+    const codec = binding.stepCodec(shifted)
+    assert.equal(codec.stepIndexOf(c.insertBeforeKey), binding.stepIndexOf(c.insertBeforeKey) + 1, c.case)
+    for (const step of AUTHORED.steps) {
+      assert.equal(shifted.steps[codec.stepIndexOf(step.key)].label, step.label, `${c.case}: ${step.key}`)
+    }
+  }
+})
+
+test('js/stepKeyAt', () => {
+  for (const c of js.stepKeyAt) {
+    const index = c.label ? binding.kindStepIndex(c.label, c.kind) : c.index
+    assert.equal(binding.stepKeyAt(index), c.expect, c.case)
+  }
+})
+
+test('js/stepIndexOf', () => {
+  for (const c of js.stepIndexOf) {
+    const index = binding.stepIndexOf(c.key)
+    if (c.expectLabel) assert.equal(binding.STEPS[index].label, c.expectLabel, c.case)
+    else assert.equal(index, c.expect, c.case)
+  }
+})
+
+test('js/resolveStepRef: a key, or a deprecated position', () => {
+  for (const c of js.resolveStepRef) {
+    let ref = c.ref
+    if (c.refLabel) ref = c.asString ? String(binding.requiredStepIndex(c.refLabel)) : binding.requiredStepIndex(c.refLabel)
+    const got = binding.resolveStepRef(ref, c.kind ?? null)
+    for (const [field, value] of Object.entries(c.expect)) assert.equal(got[field], value, `${c.case}: ${field}`)
+    if (c.expectLabel) assert.equal(binding.STEPS[got.index].label, c.expectLabel, c.case)
+  }
+})
+
+test('js/sendBackTargetOf: a gate\'s declared default, by key', () => {
+  for (const c of js.sendBackTargetOf) {
+    const target = binding.sendBackTargetOf(binding.stepIndexOf(c.gateKey))
+    if (c.expectKey) assert.equal(binding.stepKeyAt(target), c.expectKey, c.case)
+    else assert.equal(target, c.expect, c.case)
+  }
+})

@@ -574,6 +574,37 @@ def test_approval_sends_the_dedicated_credential_and_the_sender_jid(monkeypatch)
         stub.close()
 
 
+# ---- HZ-709: the gate by its step key ----
+
+
+def test_an_option_with_a_step_key_approves_by_key_and_an_index_only_option_by_index(monkeypatch):
+    """An option the concierge offers now names its gate by key; one offered
+    before the deploy (index only) is still in a sender's choice store and
+    must keep working through the deprecated numeric route."""
+    monkeypatch.setattr(config, "FARM_WA_SENDER_NAMES", {"15550001111": "David"})
+    t = FakeTransport()
+    state = make_state(t, "approve-by-key")
+    stub = StubHorizon(items=[{"id": "HZ-7"}, {"id": "HZ-9"}])
+    try:
+        wizard.offer_gate_choices(
+            DAVID,
+            DAVID,
+            [
+                {"item_id": "HZ-7", "step_key": "change.accept-code", "label": "Accept the code"},
+                {"item_id": "HZ-9", "step_index": 12, "label": "Accept the code"},
+            ],
+            state.choice_store,
+        )
+        assert wizard.try_handle_gate_choice(t.seed("1", sender=DAVID, chat=DAVID), t, state.choice_store, state, stub.url)
+        assert stub.approvals[-1][:2] == ("HZ-7", "change.accept-code")
+
+        wizard.offer_gate_choices(DAVID, DAVID, [{"item_id": "HZ-9", "step_index": 12, "label": "Accept the code"}], state.choice_store)
+        assert wizard.try_handle_gate_choice(t.seed("1", sender=DAVID, chat=DAVID), t, state.choice_store, state, stub.url)
+        assert stub.approvals[-1][:2] == ("HZ-9", 12)
+    finally:
+        stub.close()
+
+
 def test_an_unconfigured_approval_credential_sends_nothing_at_all(monkeypatch):
     """Fail closed and locally: no unauthenticated request the server would
     only answer 401 to, and no credential name in the reply text."""

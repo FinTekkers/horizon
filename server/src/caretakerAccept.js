@@ -46,7 +46,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { STEPS, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
+import { STEPS, ACCEPT_GATE_INDEX, stepKeyAt } from '../../domain/js/lifecycle.js'
 import { redact } from './caretakerRules.js'
 import { isDeployBlocked } from './deployDrain.js'
 import * as heldAccept from './heldAccept.js'
@@ -320,7 +320,7 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
           if (recordStop(row, decision.reason, nowMs, owner())) {
             counts.stopped++
             changed = true
-            log?.warn?.(`caretaker: stopped on ${row.item_id} at step ${ACCEPT_GATE_INDEX}: ${ACCEPT_STOP_TEXT[decision.reason]}`)
+            log?.warn?.(`caretaker: stopped on ${row.item_id} at ${stepKeyAt(ACCEPT_GATE_INDEX)}: ${ACCEPT_STOP_TEXT[decision.reason]}`)
           }
           continue
         }
@@ -337,7 +337,7 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
           continue
         }
         if (countWindow.get(row.project_id, nowMs - HOUR_MS).n >= limit) {
-          if (recordLimitHit(row, nowMs, owner(), limit)) log?.warn?.(`caretaker: hourly limit (${limit}) hit at step ${ACCEPT_GATE_INDEX} on project ${row.project_id}`)
+          if (recordLimitHit(row, nowMs, owner(), limit)) log?.warn?.(`caretaker: hourly limit (${limit}) hit at ${stepKeyAt(ACCEPT_GATE_INDEX)} on project ${row.project_id}`)
           continue
         }
         if (decision.kind === 'accept') {
@@ -356,7 +356,7 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
           settle(claimId, row, 'resolve', () => gateActions.resolveConflicts(row.item_id, actor, { startedBy: 'caretaker' }), log)
         }
       } catch (err) {
-        log?.error?.(`caretaker: ${row.item_id} could not be acted on at step ${ACCEPT_GATE_INDEX}: ${redact(err?.message)}`)
+        log?.error?.(`caretaker: ${row.item_id} could not be acted on at ${stepKeyAt(ACCEPT_GATE_INDEX)}: ${redact(err?.message)}`)
       }
     }
     for (const row of selectEscalated.all()) {

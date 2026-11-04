@@ -37,6 +37,8 @@ import {
   laneSkips,
   nextCursor,
   kindStepIndex,
+  stepKeyAt,
+  sendBackTargetOf,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 import { isPriority } from '../../domain/js/priorities.js'
@@ -1171,6 +1173,8 @@ function stepOutputs(itemId) {
       artifact: row.artifact || null,
       attemptCount: attemptCounts[row.step_index] || 0,
       label: STEPS[row.step_index]?.label ?? null,
+      // HZ-709: the step's permanent key, so a client names it without a position.
+      key: stepKeyAt(row.step_index),
       // HZ-357: the provider this attempt ran on, so the item page can show
       // "Ran on …". NULL for runs before the farm recorded it.
       provider: row.provider || null,
@@ -1197,7 +1201,10 @@ function stepOutputs(itemId) {
   if (jobRow?.job_view) {
     try {
       const job = JSON.parse(jobRow.job_view)
-      map[EXECUTE_STEP_INDEX] = { ...(map[EXECUTE_STEP_INDEX] ?? { label: STEPS[EXECUTE_STEP_INDEX]?.label ?? null }), job }
+      map[EXECUTE_STEP_INDEX] = {
+        ...(map[EXECUTE_STEP_INDEX] ?? { label: STEPS[EXECUTE_STEP_INDEX]?.label ?? null, key: stepKeyAt(EXECUTE_STEP_INDEX) }),
+        job,
+      }
     } catch {
       // an unreadable view shows no panel
     }
@@ -1797,7 +1804,15 @@ function currentStepOf(row) {
   if (isClosed(row)) return { index: row.cursor, label: 'Closed', kind: 'done', phase: 'Done', gate: false }
   const step = STEPS[row.cursor]
   const kind = itemKindOf(row)
-  return { index: row.cursor, label: step.label, kind: step.kind, phase: phasesFor(kind)[step.phase], gate: step.kind === 'gate' }
+  // HZ-709: key is the step's permanent name; index stays for older readers.
+  return {
+    index: row.cursor,
+    key: stepKeyAt(row.cursor),
+    label: step.label,
+    kind: step.kind,
+    phase: phasesFor(kind)[step.phase],
+    gate: step.kind === 'gate',
+  }
 }
 
 // Which items a snapshot carries. scope 'active' (the default) is the active
@@ -2166,6 +2181,19 @@ function substepFields(row, overlay) {
   }
 }
 
+// HZ-709: one kind's steps as the snapshot lists them. Built once per kind —
+// the table never changes at runtime — and shared by every item view.
+const STEP_VIEWS = new Map()
+function stepViewsFor(kind) {
+  if (!STEP_VIEWS.has(kind)) {
+    STEP_VIEWS.set(
+      kind,
+      stepsFor(kind).map((step) => ({ index: step.index, key: step.key, label: step.label, kind: step.kind })),
+    )
+  }
+  return STEP_VIEWS.get(kind)
+}
+
 function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
   const noProject = hasNoProject(db, row.project_id)
   const activeRun = withRunState(selectActiveRun.get(row.id) || null)
@@ -2208,6 +2236,11 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     autopilotWouldHave: autopilotWouldHave(row),
     cursor: row.cursor,
     currentStep: currentStepOf(row),
+    // HZ-709: the current step's permanent key (null once closed), and every
+    // step of the item's kind with its key — what a client names a step by
+    // in a route. The record keeps its position (cursor).
+    currentStepKey: stepKeyAt(row.cursor),
+    steps: stepViewsFor(itemKindOf(row)),
     paused: !!row.paused,
     rejected: !!row.rejected,
     // Last progress on this item, for the board's staleness filter (HZ-80) —
@@ -2633,16 +2666,14 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
     )
     if (targetStepIndex != null) {
       reworkIdx = targetStepIndex
-    } else if (it.cursor === ACCEPT_GATE_INDEX) {
-      // The automated Review step immediately precedes this gate, but
-      // rejecting the code means the CODE is wrong — walking back to the
-      // nearest agent step would land on Review, which would just re-judge
-      // the same unchanged diff. Send the human's rejection to Eng instead.
-      reworkIdx = IMPLEMENT_STEP_INDEX
-    } else if (it.cursor === APPROVE_RUN_GATE_INDEX) {
-      // HZ-384: Impact review sits right before this gate, but rejecting the
-      // run means the PLAN is wrong — send it back to Run plan to redo it.
-      reworkIdx = RUN_PLAN_STEP_INDEX
+    } else if (sendBackTargetOf(it.cursor) !== null) {
+      // HZ-709: the gate's declared default, by key (steps.json sendBackTo).
+      // Accept the code sends back to the implement step: the automated
+      // Review step precedes it, but rejecting the code means the CODE is
+      // wrong, and walking back would only re-judge the same unchanged diff.
+      // HZ-384: Approve the run sends back to Run plan — Impact review sits
+      // right before it, but rejecting the run means the PLAN is wrong.
+      reworkIdx = sendBackTargetOf(it.cursor)
     } else {
       // HZ-435: never onto a row the item's lane skips. HZ-446: nor onto a
       // server step — it has no agent to take the feedback, and HZ-449's File
@@ -2655,10 +2686,12 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
 
-  db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
+  // HZ-709: the row names the step it was sent back to by key, too.
+  db.prepare('INSERT INTO feedback (item_id, target, message, step_key) VALUES (?, ?, ?, ?)').run(
     id,
     reworkAgent || target || '',
     feedbackText || '(no notes)',
+    stepKeyAt(reworkIdx),
   )
   // A human-directed rework gets a fresh set of automated review cycles —
   // otherwise a prior automated cap-out could falsely cap this new attempt.

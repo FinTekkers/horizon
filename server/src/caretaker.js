@@ -39,7 +39,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { listTargetStatuses } from './deploy.js'
 import { readFarmFile } from './definitions.js'
-import { gateStepIndexes, requiredStepIndex, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
+import { STEPS, gateStepIndexes, requiredStepIndex, stepKeyAt, ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { ACTOR, DECISIONS, decide, parsePolicy, redact } from './caretakerRules.js'
 import { MERGEABLE_DEFER_CAP_MS, mergeableProbeState, reviewPassed } from './caretakerMergeable.js'
 import { deploySkipReason } from './deploySkip.js'
@@ -153,7 +153,7 @@ export function evaluateArrival(item, gateIndex, policyOrError, sourceRun = null
     if (policyOrError instanceof Error) throw policyOrError
     return decide(gateIndex, gatherFacts(item, gateIndex, sourceRun), policyOrError)
   } catch (err) {
-    log?.warn?.(`caretaker: ${item.id} at step ${gateIndex} could not be judged: ${redact(err.message)}`)
+    log?.warn?.(`caretaker: ${item.id} at ${stepKeyAt(gateIndex)} could not be judged: ${redact(err.message)}`)
     return { decision: 'wait', ruleId: null, reason: redact(`caretaker error: ${err.message}`), comment: null }
   }
 }
@@ -191,7 +191,8 @@ export function applyRepeatGuard(item, gateIndex, result) {
     ruleId: REPEAT_SEND_BACK_RULE,
     // Uncapped: result.reason is already one capped line, and the prefix must
     // not push the blocker out of the owner's ping.
-    reason: redact(`sent back twice in a row at step ${gateIndex}: ${result.reason}`, { oneLine: false }),
+    // HZ-709: named by the gate's label, never its position.
+    reason: redact(`sent back twice in a row at "${STEPS[gateIndex].label}": ${result.reason}`, { oneLine: false }),
     comment: null,
   }
 }

@@ -141,7 +141,7 @@ test('the three routes the metric names by hand are among them', () => {
   // the real gate; this pins the named three so a refactor cannot satisfy the
   // count while losing one of them.
   for (const url of [
-    '/api/items/:id/gates/:stepIndex/approve',
+    '/api/items/:id/gates/:step/approve',
     '/api/items/:id/reject',
     '/api/items/:id/resolve-conflicts',
   ]) {
