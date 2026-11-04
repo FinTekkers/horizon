@@ -38,6 +38,7 @@ enabled, gets a question back instead of a guess.
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import time
@@ -71,6 +72,8 @@ ALLOWED_ACTIONS = ("set_priority", "feedback")
 PROCESSED_KEEP = 500  # msg_id dedupe window persisted across restarts
 MAX_ACTIONS = 3
 MAX_GATE_OPTIONS = 9
+# HZ-709: a step key, as domain/steps.json declares it (e.g. change.accept-code).
+STEP_KEY_SHAPE = re.compile(r"^[a-z]+\.[a-z0-9-]+$")
 # HZ-209: the one concierge's state-file key, whatever the active project.
 # A leading "_" is something slugify() never emits, so no project slug can
 # collide with it.
@@ -207,9 +210,13 @@ def _item_line(item: dict) -> str:
         if item.get("pr"):
             conflicts = ", has merge conflicts" if item.get("pr_mergeable") is False else ""
             status += f" (PR #{item['pr']}{conflicts})"
-        # step_index feeds gate_options — the only way the model can tell the
+        # step_key feeds gate_options — the only way the model can tell the
         # script *which* step a later numbered approval reply resolves to.
-        status += f" (step_index {step.get('index')})"
+        # HZ-709: by key; a server from before keys sends only the index.
+        if step.get("key"):
+            status += f" (step_key {step['key']})"
+        else:
+            status += f" (step_index {step.get('index')})"
     else:
         status = f'queued at "{label}"' if label else "waiting"
     return f"- {item['id']} [{item.get('priority')}] {item.get('title')} — {status}"
@@ -302,11 +309,17 @@ def validate_reply(parsed: dict) -> tuple[str, list[dict], list[str], list[dict]
     for opt in (raw_gates if isinstance(raw_gates, list) else [])[:MAX_GATE_OPTIONS]:
         item_id = str(opt.get("item_id", "")).strip() if isinstance(opt, dict) else ""
         label = str(opt.get("label", "")).strip() if isinstance(opt, dict) else ""
+        # HZ-709: a step_key names the gate; a step_index is the form from
+        # before keys, still read so a snapshot without keys keeps working.
+        step_key = opt.get("step_key") if isinstance(opt, dict) else None
         step_index = opt.get("step_index") if isinstance(opt, dict) else None
-        if not item_id or not label or not isinstance(step_index, int) or isinstance(step_index, bool) or step_index < 0:
+        has_key = isinstance(step_key, str) and STEP_KEY_SHAPE.fullmatch(step_key) is not None
+        has_index = isinstance(step_index, int) and not isinstance(step_index, bool) and step_index >= 0
+        if not item_id or not label or not (has_key or has_index):
             notes.append("(dropped a malformed gate_options entry)")
             continue
-        gate_options.append({"item_id": item_id, "step_index": step_index, "label": label[:200]})
+        step = {"step_key": step_key} if has_key else {"step_index": step_index}
+        gate_options.append({"item_id": item_id, **step, "label": label[:200]})
 
     return reply[:1500], actions, notes, gate_options
 

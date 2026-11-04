@@ -873,6 +873,17 @@ if (!db.prepare('PRAGMA table_info(session)').all().some((column) => column.name
   db.exec('ALTER TABLE session ADD COLUMN pin_verified_until TEXT')
 }
 
+// HZ-709: the step's permanent key (domain/steps.json), beside the unchanged
+// step_index, on the rows that name a step outside the item record. Additive
+// and nullable, never backfilled: NULL is a row from before this column, and
+// its reader falls back to step_index. work_item.cursor, step_run and
+// gate_decision keep their positions — the record is not migrated.
+for (const table of ['gate_poll', 'gate_notice', 'feedback']) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((column) => column.name === 'step_key')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN step_key TEXT`)
+  }
+}
+
 // HZ-245: per-repo check commands, set by a human in Admin. Additive and
 // nullable: NULL in every slot is "not configured", so the farm auto-detects
 // exactly as before. Deliberately no seed — not for FinTekkers/horizon, not

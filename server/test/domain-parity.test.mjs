@@ -54,6 +54,7 @@ function expectedFarmViewOf(steps) {
     .filter((s) => s.kind === 'agent' && !OFF_FARM_LANES.includes(s.runsIn))
     .map((s) => ({
       index: s.index,
+      key: s.key ?? null,
       label: s.label,
       agent: s.agent,
       runsIn: s.runsIn,

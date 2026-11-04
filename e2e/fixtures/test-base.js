@@ -8,7 +8,8 @@ import { test as base, expect, request } from '@playwright/test'
 export const COVERAGE_DIR_ENV = 'HORIZON_E2E_COVERAGE_DIR'
 
 // 'route:GET /api/items/:id' for a request to the API, null for anything else.
-// A path segment holding a digit (HZ-12, 42, a sha) is an id.
+// A path segment holding a digit (HZ-12, 42, a sha) is an id. HZ-709: a step
+// key after /gates/ (change.accept-code) is a step, so one route stays one key.
 export function routeKey(method, url) {
   let pathname
   try {
@@ -19,7 +20,10 @@ export function routeKey(method, url) {
   if (!pathname.startsWith('/api/')) return null
   const path = pathname
     .split('/')
-    .map((segment) => (/\d/.test(segment) ? ':id' : segment))
+    .map((segment, i, segments) => {
+      if (segments[i - 1] === 'gates' && /^[a-z]+\.[a-z0-9-]+$/.test(segment)) return ':step'
+      return /\d/.test(segment) ? ':id' : segment
+    })
     .join('/')
   return `route:${method.toUpperCase()} ${path}`
 }

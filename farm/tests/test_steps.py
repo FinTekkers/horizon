@@ -15,6 +15,7 @@ from domain.py import steps
 
 _ENTRY_KEYS = {
     "index",
+    "key",
     "label",
     "agent",
     "runsIn",

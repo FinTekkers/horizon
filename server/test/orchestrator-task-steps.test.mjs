@@ -68,7 +68,7 @@ test('Assess is handed to the farm, and the payload names the item kind and the 
   insertTask.run('T-ASSESS', 'Backfill', ASSESS)
   const dispatch = await dispatchFor('T-ASSESS')
   assert.equal(dispatch.body.item.kind, 'task')
-  assert.deepEqual(dispatch.body.step, { index: ASSESS, label: 'Assess', agent: 'Eng' })
+  assert.deepEqual(dispatch.body.step, { key: 'task.assess', index: ASSESS, label: 'Assess', agent: 'Eng' })
 })
 
 // HZ-413: a new Task's first step reaches the farm as a PM step at its own
@@ -79,7 +79,7 @@ test("a new Task at its first step is handed to the farm once, as the Task row o
   assert.equal(STEPS[TASK_OUTCOME].label, STEPS[0].label, 'the Task shares its first label with change step 0')
   assert.equal(STEPS[TASK_OUTCOME].runsIn, 'pm')
   assert.equal(dispatch.body.item.kind, 'task')
-  assert.deepEqual(dispatch.body.step, { index: TASK_OUTCOME, label: STEPS[0].label, agent: 'PM' })
+  assert.deepEqual(dispatch.body.step, { key: 'task.define-outcome', index: TASK_OUTCOME, label: STEPS[0].label, agent: 'PM' })
   // Only a PM-lane step is sent the project context.
   assert.ok(dispatch.body.project_context, 'a PM-lane dispatch carries project_context')
   assert.equal(dispatches.filter((d) => d.url.includes('/steps/run') && d.body?.item?.id === 'T-OUTCOME').length, 1)

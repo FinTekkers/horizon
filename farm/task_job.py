@@ -24,6 +24,7 @@ ends `stopped`, never `done`; Resume runs it again.
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -167,7 +168,9 @@ def _oom_reason(memory_limit: str | None) -> str:
 def run_job(**kwargs) -> dict:
     """Runs the approved plan's commands in order (see _run_job). HZ-416: a
     container run's container is killed and removed, and its scratch and
-    /tmp dirs wiped, however _run_job ends — the reports were read first."""
+    /tmp dirs wiped, however _run_job ends — the reports were read first.
+    HZ-738: a task clone's run holds clone_lock shared throughout, so a
+    read-only step never fast-forwards the clone under it."""
     started: list = []
     # HZ-569: a host command's processes carry this run's tag, so the ones
     # that leave its process group (a test's servers, its browsers) are
@@ -175,13 +178,27 @@ def run_job(**kwargs) -> dict:
     run_tag: dict[str, str] = {}
     with run_reaper.run_scope(
         run_tag, item_id=kwargs.get("item_id"), caller="job", worktree=kwargs.get("repo_dir"), prefix="job"
-    ):
+    ), contextlib.ExitStack() as stack:
+        if kwargs.get("task_clone"):
+            _hold_clone_lock(stack, kwargs.get("repo_dir"))
         try:
             return _run_job(started=started, run_tag=run_tag, **kwargs)
         finally:
             if started:
                 container_runner.stop_and_remove(started[0])
                 wipe_throwaway(kwargs["state_path"], kwargs["log_path"])
+
+
+def _hold_clone_lock(stack: contextlib.ExitStack, repo_dir: str | None) -> None:
+    """HZ-738: Execute's shared clone_lock, released when `stack` closes. A
+    clone that fails the HZ-415 guard is never written to, not even the lock
+    file; that clone, or one whose lock cannot open, runs without it, and
+    _run_job's own refusal reports it exactly as before."""
+    try:
+        run_plan.resolve_cwd(repo_dir, ".", forbid=str(HORIZON_ROOT))
+        stack.enter_context(task_clone_mod.clone_lock(repo_dir, shared=True))
+    except run_plan.CwdRefused:
+        return
 
 
 def _run_job(

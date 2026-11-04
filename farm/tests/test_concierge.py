@@ -804,3 +804,33 @@ def test_both_concierge_calls_on_muse_receive_muses_own_default(stub, monkeypatc
 
     # HZ-398: Muse's pinned default, never the Claude override.
     assert [(c["provider"], c["model"]) for c in recorder.calls] == [("muse", MUSE_DEFAULT), ("muse", MUSE_DEFAULT)]
+
+
+# ---- HZ-709: the gate by its step key ----
+
+
+def test_item_line_names_an_awaiting_gate_by_its_step_key():
+    line = _line(currentStep={"index": 13, "key": "change.accept-code", "label": "Accept the code", "kind": "gate", "gate": True})
+    assert "(step_key change.accept-code)" in line
+    assert "step_index" not in line
+
+
+def test_item_line_falls_back_to_the_step_index_from_a_server_without_keys():
+    line = _line(currentStep={"index": 13, "label": "Accept the code", "kind": "gate", "gate": True})
+    assert "(step_index 13)" in line
+
+
+def test_validate_reply_accepts_a_gate_option_by_step_key_and_drops_a_malformed_key():
+    _, _, notes, gate_options = ca.validate_reply(
+        {
+            "reply": "ok",
+            "actions": [],
+            "gate_options": [
+                {"item_id": "HZ-7", "step_key": "change.accept-code", "label": "Accept the code"},
+                {"item_id": "HZ-8", "step_key": "Accept the code", "label": "x"},  # a label, not a key
+                {"item_id": "HZ-9", "step_key": "change.accept-code/../x", "label": "x"},  # not a key shape
+            ],
+        }
+    )
+    assert gate_options == [{"item_id": "HZ-7", "step_key": "change.accept-code", "label": "Accept the code"}]
+    assert len(notes) == 2 and all("malformed gate_options" in n for n in notes)

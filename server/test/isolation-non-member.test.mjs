@@ -289,7 +289,7 @@ const WRITE_CASES = {
   'POST /api/items/:id/resolve-conflicts': { expect: '404', url: `${ITEM}/resolve-conflicts`, owner: 409 },
   'POST /api/items/:id/screenshots/approve': { expect: '404', url: `${ITEM}/screenshots/approve`, body: { commit: SHOT_COMMIT, all: true }, owner: 200 },
   'POST /api/items/:id/phases/:phase/restart': { expect: '404', url: '/api/items/ISOA-2/phases/0/restart', body: {}, owner: 200 },
-  'POST /api/items/:id/gates/:stepIndex/approve': { expect: '404', url: `${ITEM}/gates/${ACCEPT_INDEX}/approve`, body: {}, owner: 200 },
+  'POST /api/items/:id/gates/:step/approve': { expect: '404', url: `${ITEM}/gates/${ACCEPT_INDEX}/approve`, body: {}, owner: 200 },
   'POST /api/items/:id/reject': { expect: '404', url: `${ITEM}/reject`, body: {}, owner: 200 },
   'POST /api/projects/:id/activate': { expect: '404', url: `/api/projects/${B}/activate`, owner: 200 },
   'POST /api/projects/:id/autopilot': { expect: '404', url: `/api/projects/${A}/autopilot`, body: { mode: 'off' }, owner: 200 },
@@ -322,7 +322,7 @@ const WRITE_CASES = {
   'POST /api/webhooks/github': { expect: 'exempt', url: '/api/webhooks/github', body: GITHUB_PING.body, own: { headers: GITHUB_PING.headers, status: 204 } },
   'POST /api/billing/stripe-webhook': { expect: 'exempt', url: '/api/billing/stripe-webhook', body: STRIPE_PING.body, own: { headers: STRIPE_PING.headers, status: 200 } },
   // exempt: wa. Step 0 is not ISOA-1's gate, so its own credential approves nothing.
-  'POST /api/items/:id/gates/:stepIndex/approve-via-whatsapp': { expect: 'exempt', url: `${ITEM}/gates/0/approve-via-whatsapp`, body: { senderJid: WA_JID }, own: { headers: WA, status: 409 } },
+  'POST /api/items/:id/gates/:step/approve-via-whatsapp': { expect: 'exempt', url: `${ITEM}/gates/0/approve-via-whatsapp`, body: { senderJid: WA_JID }, own: { headers: WA, status: 409 } },
   'POST /api/wa/poll-vote': { expect: 'exempt', url: '/api/wa/poll-vote', body: { voteId: 'iso-vote', pollMessageId: 'iso-poll', voterJid: WA_JID, selectedOption: 'Approve' }, own: { headers: WA, status: 404 } }, // ignored_unknown_poll, past the secret and the allowlist
   'POST /api/projects/autopilot-off-via-whatsapp': { expect: 'exempt', url: '/api/projects/autopilot-off-via-whatsapp', body: { project: 'ISO Alpha', senderJid: WA_JID }, own: { headers: WA, status: 200 } },
   // exempt: farm

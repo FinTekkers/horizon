@@ -202,7 +202,7 @@ test('the trivial lane in steps.json skips 4, 5, 7 and 9, checks 0-2, and never 
 test('guardrail 2: a lane that skips gate 3, 10, 13 or 15 or step 12 fails at load', () => {
   for (const banned of [APPROVE, PLAN_GATE, REVIEW, ACCEPT, CLOSE]) {
     const tampered = structuredClone(domainSource)
-    tampered.lanes.trivial.skip.push(label(banned))
+    tampered.lanes.trivial.skip.push(lifecycle.stepKeyAt(banned))
     assert.throws(() => lifecycle.assertLifecycleShape(tampered), /lanes\.trivial may not skip/, label(banned))
   }
   assert.equal(lifecycle.assertLifecycleShape(structuredClone(domainSource)).lanes.trivial.itemKind, 'change')

@@ -55,6 +55,7 @@ const LABEL_MENTIONS_ALLOWED = {
   'domain/fixtures/productivity.json': "HZ-549: the design's model x step matrix, one row per step label — report data, not a declaration",
   'server/src/orchestrator.js': "MOCK_STEP_BEHAVIOR key — guarded by mock-step-behavior-drift.test.mjs",
   'server/test/domain-step-pins.test.mjs': 'the permanent hand-written label pin (guardrail 9)',
+  'server/test/domain-step-keys.test.mjs': 'HZ-709: the frozen list of shipped step keys, each with the label it names (guardrail 4)',
   'server/test/lifecycle-renamed-label.test.mjs': 'fabricated 2-step fixture',
   'server/test/personas.test.mjs': 'MOCK_STEP_BEHAVIOR lookup key',
   'server/test/store.test.mjs': 'expected label in an item payload assertion',

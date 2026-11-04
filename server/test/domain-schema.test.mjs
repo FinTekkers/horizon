@@ -26,9 +26,10 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 const schema = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/steps.schema.json'), 'utf8'))
 const source = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/steps.json'), 'utf8'))
 
-const AGENT_STEP = { phase: 0, kind: 'agent', agent: 'PM', label: 'A PM Step', runsIn: 'pm' }
-const GATE_STEP = { phase: 0, kind: 'gate', gate: 'required', label: 'A Gate' }
+const AGENT_STEP = { key: 'change.a-pm-step', phase: 0, kind: 'agent', agent: 'PM', label: 'A PM Step', runsIn: 'pm' }
+const GATE_STEP = { key: 'change.a-gate', phase: 0, kind: 'gate', gate: 'required', label: 'A Gate' }
 const FARM_STEP = {
+  key: 'change.a-farm-step',
   phase: 1,
   kind: 'agent',
   agent: 'Eng',
@@ -52,7 +53,7 @@ test('the real domain/steps.json satisfies its own schema', () => {
 // ---- positive controls (a broken validator cannot pass these) ----
 
 test('POSITIVE CONTROL: a minimal valid table with requires validates clean', () => {
-  const valid = table(FARM_STEP, { ...FARM_STEP, label: 'A Reviewer', requires: ['A Farm Step'] })
+  const valid = table(FARM_STEP, { ...FARM_STEP, key: 'change.a-reviewer', label: 'A Reviewer', requires: ['A Farm Step'] })
   assert.deepEqual(validate(schema, valid), [])
 })
 
@@ -61,7 +62,7 @@ test('POSITIVE CONTROL: a gate declaring none of the farm fields validates clean
 })
 
 test('POSITIVE CONTROL: a runsIn none agent step without an agent, beside a kinds map, validates clean', () => {
-  const runnerless = { phase: 0, kind: 'agent', label: 'A Runnerless Step', runsIn: 'none', itemKind: 'task' }
+  const runnerless = { key: 'task.a-runnerless-step', phase: 0, kind: 'agent', label: 'A Runnerless Step', runsIn: 'none', itemKind: 'task' }
   const kinds = { change: { phases: ['Plan', 'Technical Plan'] }, task: { phases: ['Plan'] } }
   assert.deepEqual(validate(schema, { ...table(AGENT_STEP, runnerless), kinds }), [])
 })
@@ -81,6 +82,8 @@ function expectInvalid(name, data, fragment) {
   })
 }
 
+expectInvalid('a step with no key (HZ-709, required)', table(omit(GATE_STEP, 'key')), 'key')
+expectInvalid('a non-string sendBackTo (HZ-709, type)', table({ ...GATE_STEP, sendBackTo: 6 }), 'sendBackTo')
 expectInvalid('a step with no label (required)', table({ phase: 0, kind: 'gate', gate: 'required' }), 'label')
 expectInvalid('an unknown kind (enum)', table({ ...GATE_STEP, kind: 'banana' }), 'banana')
 expectInvalid('a non-integer maxTurns (type)', table({ ...FARM_STEP, maxTurns: 'forty' }), 'maxTurns')

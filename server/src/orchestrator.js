@@ -28,6 +28,8 @@ import {
   kindStepIndex,
   EXECUTE_STEP_INDEX,
   RUN_PLAN_STEP_INDEX,
+  ASSESS_STEP_INDEX,
+  IMPACT_REVIEW_STEP_INDEX,
   VERIFY_REPORT_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
   APPROVE_FILE_GATE_INDEX,
@@ -37,6 +39,7 @@ import {
   laneCheckIndexes,
   nextCursor,
   isServerStep,
+  stepKeyAt,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
@@ -1979,7 +1982,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       },
       ...releaseFields,
     },
-    step: { index: stepIndex, label: step.label, agent: step.agent },
+    // HZ-709: the key names the step; farmd finds it by key and falls back
+    // to the index only for a task queued before keys.
+    step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
     // HZ-535: definitionsEnabled tells the farm to read the project's own
     // personas. Sent only when the switch is on AND the project's file loads,
     // so a project with no definitions gets exactly today's payload; a farm
@@ -2003,6 +2008,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
     ...(stepIndex === RUN_PLAN_STEP_INDEX ? { ...jobEnvFields(item.repo), runner: defaultRunnerFor(item.repo) } : {}),
+    // HZ-738: Assess and Impact review get the same checkout fields when the
+    // target has a task clone, so they fast-forward it before they read
+    // (never runner: only Run plan's prompt names it). Without one their
+    // payload is unchanged.
+    ...((stepIndex === ASSESS_STEP_INDEX || stepIndex === IMPACT_REVIEW_STEP_INDEX) && findTargetByRepo(item.repo)?.taskDir
+      ? jobEnvFields(item.repo)
+      : {}),
   }).catch((err) => {
     // A refused task is not an unreachable farm: say why, and don't retry.
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
@@ -2126,8 +2138,10 @@ const FARM_REFUSALS = {
 // farm bounds inside that checkout.
 // HZ-440: a target's taskDir, when set, replaces repoDir here — a separate
 // clone, never the deploy checkout — and task_clone tells the Execute runner
-// to fast-forward it first. Run plan gets the same fields for its prompt but
-// only reads them: it must never fast-forward the clone.
+// to fast-forward it first. HZ-738: Assess, Run plan and Impact review get
+// the same fields and fast-forward the clone too, before they read it, under
+// an exclusive lock that Execute holds shared for its whole run — so a step
+// never moves HEAD under a live job (farm/task_clone.py clone_lock).
 // HZ-416: plus the throwaway container's pinned image and CPU/memory limits.
 // HZ-491: a repo with no image pinned runs a plan that sets no runner on the
 // host (store.js defaultRunnerFor). Only a plan that asks for the container
@@ -2170,7 +2184,9 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     run_id: runId,
     attempt,
     item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
-    step: { index: stepIndex, label: step.label, agent: step.agent },
+    // HZ-709: the key names the step; farmd finds it by key and falls back
+    // to the index only for a task queued before keys.
+    step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
     ...(project ? { project: taskProject(project) } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
@@ -3010,9 +3026,19 @@ function recordAsks(item, runId, stepIndex, rawAsks, artifactMd, proposedSplit =
   return result.artifactMd
 }
 
-export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView }) {
+// HZ-709: a farm result names the step it ran by key (farmd forwards the
+// task's step.key as step_key). The run row's position stays the record's
+// authority; a result whose key names another step was misrouted and changes
+// nothing. A result with no key — a run dispatched before keys — is matched
+// by its run id alone, as before.
+function resultNamesAnotherStep(run, stepKey) {
+  return stepKey != null && stepKeyAt(run.step_index) !== stepKey
+}
+
+export async function completeFarmRun(runId, { summary, patch, artifacts, job_view: jobView, step_key: stepKey = null }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
   const item = getItem(id)
 
@@ -3301,9 +3327,10 @@ export const FAILED_OUTPUT_MAX_CHARS = 4000
 // detected the failure) or null/unrecognized — only a tagged reason, under
 // the cap, on a still-runnable item is ever auto-retried. Everything else
 // pauses for a human exactly as it always has (HZ-76's default-safe rule).
-export function failFarmRun(runId, error, reason = null, jobView = null, limit = null) {
+export function failFarmRun(runId, error, reason = null, jobView = null, limit = null, stepKey = null) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
 
   clearTimeout(timers[runId])
@@ -3595,9 +3622,10 @@ export function resumeJob(id) {
 // auto-retried. The block, its step_run row and the owner's one ping are
 // written in one transaction; inFlightRunnable then holds dispatch until
 // store.js releases the block. A repeat report for the run finds it closed.
-export function blockFarmRun(runId, { rule, needs }) {
+export function blockFarmRun(runId, { rule, needs, step_key: stepKey = null }) {
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   if (!run || run.status !== 'active') return { ok: true, stale: true }
+  if (resultNamesAnotherStep(run, stepKey)) return { ok: true, stale: true }
   const id = run.item_id
   const item = getItem(id)
 

@@ -52,7 +52,7 @@ import { memberProject, viewSnapshot } from './boardView.js'
 import { googleAuth } from './googleAuth.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
-import { STEPS, endIndex, isItemKind, itemKindOf } from '../../domain/js/lifecycle.js'
+import { STEPS, endIndex, isItemKind, itemKindOf, resolveStepRef, stepKeyAt } from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
 import { SUBSTEP_ID_PATTERN, stepLabel, substepsOf } from '../../domain/js/substeps.js'
 import { intakeFields } from '../../domain/js/fields.js'
@@ -449,7 +449,8 @@ export const SESSION_EXEMPT = [
   /^\/api\/webhooks\/github$/,
   /^\/api\/farm\//,
   /^\/api\/agent-pages\.css$/,
-  /^\/api\/items\/[^/]+\/gates\/\d+\/approve-via-whatsapp$/,
+  // HZ-709: the gate is a step key, or (deprecated) a position.
+  /^\/api\/items\/[^/]+\/gates\/(?:\d+|[a-z]+\.[a-z0-9-]+)\/approve-via-whatsapp$/,
   // HZ-142's poll-vote leg. Same credential and the same allowlist as the
   // line above — the bridge is a daemon and has no session either.
   /^\/api\/wa\/poll-vote$/,
@@ -890,6 +891,19 @@ export function buildApp({
     type: 'object',
     required: ['id'],
     properties: { id: { type: 'string', minLength: 1 } },
+  }
+
+  // HZ-709: the step key a farm result carries.
+  const STEP_KEY_BODY = { type: 'string', minLength: 1, maxLength: 80 }
+
+  // HZ-709: a gate route's :step — a step key such as change.accept-code, or
+  // a position (deprecated for one release). gateStepOf() resolves it.
+  const STEP_REF_PARAM = {
+    type: 'string',
+    minLength: 1,
+    maxLength: 80,
+    description:
+      "The step's key, e.g. change.accept-code. Deprecated: a numeric step position still works for one release and logs a deprecation line.",
   }
 
   function send(reply, result) {
@@ -1954,6 +1968,41 @@ export function buildApp({
   // humanAuthorized() wrapper. Decorated so server.js and the tests reach it.
   // HZ-272: resolveConflicts is the Resolve-conflicts button's run, for the
   // caretaker at Accept the code (caretakerAccept.js).
+  // HZ-709: a gate route's :step — the step's key, or (deprecated for one
+  // release) its position, which still works and logs one deprecation line.
+  // The record keeps its position, so the key is turned into one here, at the
+  // boundary. Answers 404 unknown_step / 409 wrong_kind itself and returns
+  // null; otherwise the position to hand on.
+  function gateStepOf(request, reply, route) {
+    const { id, step } = request.params
+    const item = store.getItem(id)
+    const ref = resolveStepRef(step, item ? itemKindOf(item) : null)
+    if (ref.error) {
+      reply.code(ref.error === 'unknown_step' ? 404 : 409).send({ error: ref.error })
+      return null
+    }
+    if (ref.deprecated) request.log.warn(`deprecated: numeric step ref route=${route} item=${id} step=${step}`)
+    return ref.index
+  }
+
+  // HZ-709: the /reject body's send-back target — `targetStep` (a key), or the
+  // deprecated `targetStepIndex`. Both, naming different steps, is ambiguous.
+  // { index } (null for no target) or { error, status }.
+  function rejectTargetOf(request, id) {
+    const { targetStep, targetStepIndex } = request.body ?? {}
+    if (targetStep == null) {
+      if (targetStepIndex != null) {
+        request.log.warn(`deprecated: numeric step ref route=reject item=${id} step=${targetStepIndex}`)
+      }
+      return { index: targetStepIndex ?? null }
+    }
+    const item = store.getItem(id)
+    const ref = resolveStepRef(targetStep, item ? itemKindOf(item) : null)
+    if (ref.error || ref.deprecated) return { error: 'invalid_target', status: 409 }
+    if (targetStepIndex != null && targetStepIndex !== ref.index) return { error: 'ambiguous_target', status: 400 }
+    return { index: ref.index }
+  }
+
   const gateActions = {
     approve: (id, stepIndex, notes, actor, human) => performGateApproval(id, stepIndex, notes, actor, human),
     sendBack: (id, opts, actor) => performSendBack(id, opts, actor),
@@ -1962,14 +2011,15 @@ export function buildApp({
   fastify.decorate('gateActions', gateActions)
 
   fastify.post(
-    '/api/items/:id/gates/:stepIndex/approve',
+    '/api/items/:id/gates/:step/approve',
     {
       config: { scope: 'member:item' },
       schema: {
         params: {
           type: 'object',
-          required: ['id', 'stepIndex'],
-          properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+          required: ['id', 'step'],
+          // HZ-709: a step key; a position is deprecated (one release).
+          properties: { id: { type: 'string' }, step: STEP_REF_PARAM },
         },
         body: {
           type: 'object',
@@ -1992,7 +2042,9 @@ export function buildApp({
     async (request, reply) => {
       const proof = humanAuthorized(request, reply)
       if (!proof) return
-      const { id, stepIndex } = request.params
+      const stepIndex = gateStepOf(request, reply, 'approve')
+      if (stepIndex === null) return
+      const { id } = request.params
       const notes = (request.body?.notes || '').trim()
       const planHash = request.body?.planHash || null
       const runner = request.body?.runner || null
@@ -2028,14 +2080,14 @@ export function buildApp({
   // GitHub comment, the same way GitHub- and browser-driven approvals are.
   // Identity, though, comes from senderJid and nothing else.
   fastify.post(
-    '/api/items/:id/gates/:stepIndex/approve-via-whatsapp',
+    '/api/items/:id/gates/:step/approve-via-whatsapp',
     {
       config: { scope: 'wa' },
       schema: {
         params: {
           type: 'object',
-          required: ['id', 'stepIndex'],
-          properties: { id: { type: 'string' }, stepIndex: { type: 'integer', minimum: 0 } },
+          required: ['id', 'step'],
+          properties: { id: { type: 'string' }, step: STEP_REF_PARAM },
         },
         body: {
           type: 'object',
@@ -2057,7 +2109,11 @@ export function buildApp({
       // Checked before the item is even looked up, so a rejected sender gets
       // no oracle for which item ids exist.
       if (!isAllowedApprover(senderJid)) return reply.code(403).send({ error: 'sender_not_allowed' })
-      const { id, stepIndex } = request.params
+      // HZ-709: resolved only after the 503/401/403 ladder, so a refused
+      // caller learns nothing about which step keys exist.
+      const stepIndex = gateStepOf(request, reply, 'approve-via-whatsapp')
+      if (stepIndex === null) return
+      const { id } = request.params
       const notes = (request.body?.notes || '').trim()
       // Same shape the farm sends today; falls back to the last 4 digits of
       // the (now proven) jid when no display name rides along.
@@ -2133,7 +2189,9 @@ export function buildApp({
         return reply.code(200).send({
           ok: true,
           outcome: result.outcome,
-          ...(result.itemId ? { itemId: result.itemId, stepIndex: result.stepIndex, choice: result.choice } : {}),
+          ...(result.itemId
+            ? { itemId: result.itemId, stepIndex: result.stepIndex, stepKey: stepKeyAt(result.stepIndex), choice: result.choice }
+            : {}),
         })
       }
       // Logged, not just answered. unknown_poll in particular is the tappable
@@ -2155,24 +2213,29 @@ export function buildApp({
           properties: {
             target: { type: 'string' },
             feedback: { type: 'string' },
+            // HZ-709: the send-back target by step key.
+            targetStep: { type: 'string', minLength: 1, maxLength: 80 },
+            // Deprecated (one release): the target by position.
             targetStepIndex: { type: 'integer' },
-            // HZ-540: a sub-step of targetStepIndex, from the item's snapshot.
+            // HZ-540: a sub-step of the target step, from the item's snapshot.
             targetSubstepId: { type: 'string', pattern: SUBSTEP_ID_PATTERN },
           },
         },
-        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
         security: HUMAN_GATE_SECURITY,
       },
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const { id } = request.params
+      const targetStep = rejectTargetOf(request, id)
+      if (targetStep.error) return reply.code(targetStep.status).send({ error: targetStep.error })
       const result = gateActions.sendBack(
         id,
         {
           target: request.body?.target,
           feedback: request.body?.feedback,
-          targetStepIndex: request.body?.targetStepIndex,
+          targetStepIndex: targetStep.index,
           targetSubstepId: request.body?.targetSubstepId,
         },
         actorOf(request),
@@ -4777,6 +4840,8 @@ export function buildApp({
             job_view: FINAL_JOB_VIEW_BODY,
             // HZ-570: the test-result rows farmd will post next for this run.
             test_runs_expected: { type: 'integer', minimum: 0 },
+            // HZ-709: the key of the step the run ran (absent from older farms).
+            step_key: STEP_KEY_BODY,
           },
         },
       },
@@ -4810,6 +4875,7 @@ export function buildApp({
             reset_at: { type: 'string', maxLength: 100 },
             provider: { type: 'string', maxLength: 100 },
             model: { type: 'string', maxLength: 100 },
+            step_key: STEP_KEY_BODY,
           },
         },
       },
@@ -4819,7 +4885,14 @@ export function buildApp({
       checkFlakes.recordRunFlakes(request.params.runId, request.body.flakes, { log: request.log })
       const { reset_at: resetAt, provider, model } = request.body
       const limit = provider && model ? { provider, model, reset_at: resetAt ?? null } : null
-      return orchestrator.failFarmRun(request.params.runId, request.body.error, request.body.reason || null, request.body.job_view, limit)
+      return orchestrator.failFarmRun(
+        request.params.runId,
+        request.body.error,
+        request.body.reason || null,
+        request.body.job_view,
+        limit,
+        request.body.step_key ?? null,
+      )
     },
   )
 
@@ -4856,6 +4929,7 @@ export function buildApp({
             rule: { type: 'string', minLength: 1, maxLength: RULE_MAX_CHARS },
             needs: { type: 'string', minLength: 1, maxLength: NEEDS_MAX_CHARS },
             flakes: FLAKES_BODY,
+            step_key: STEP_KEY_BODY,
           },
         },
       },

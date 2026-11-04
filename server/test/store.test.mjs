@@ -556,10 +556,10 @@ test('parseIssueBody keeps an outcome whose operative detail sits past char 500 
 test('listItems resolves currentStep so non-UI clients can see gate state', () => {
   const byId = Object.fromEntries(store.listItems().map((it) => [it.id, it]))
   assert.deepEqual(byId['T-GATE'].currentStep, {
-    index: 3, label: 'Approve & prioritize this work', kind: 'gate', phase: 'Plan', gate: true,
+    index: 3, key: 'change.approve-prioritize', label: 'Approve & prioritize this work', kind: 'gate', phase: 'Plan', gate: true,
   })
   assert.deepEqual(byId['T-AGENT'].currentStep, {
-    index: 11, label: 'Specialist agent implements', kind: 'agent', phase: 'Execute', gate: false,
+    index: 11, key: 'change.implement', label: 'Specialist agent implements', kind: 'agent', phase: 'Execute', gate: false,
   })
   assert.deepEqual(byId['T-CLOSED'].currentStep, {
     index: STEPS.length, label: 'Closed', kind: 'done', phase: 'Done', gate: false,
@@ -573,6 +573,7 @@ test('stepOutputs carry the step label for non-UI clients', () => {
   const gate = store.listItems().find((it) => it.id === 'T-GATE')
   assert.deepEqual(gate.stepOutputs['8'], {
     output: 'verdict: pass', attempt: 1, artifact: '# QA review', attemptCount: 1, label: 'QA reviews the test plan',
+    key: 'change.qa-test-plan', // HZ-709: the step's permanent key
     provider: null, // HZ-357: no provider recorded for this run
     model: null, // HZ-398: nor a model
     verdict: null, // HZ-429: only Verify & report records one
