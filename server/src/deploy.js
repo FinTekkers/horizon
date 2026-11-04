@@ -195,6 +195,16 @@ export function deployOutcomeFor(target, tag) {
   return readTail(logFile).split('\n').some((line) => failed.test(line)) ? 'failed' : 'pending'
 }
 
+// The newest DEPLOY OK line for `tag` in the target's self-deploy.log, or
+// null. A tenant's Deploy step gets it from here (deployWait.js), because the
+// tenant's run user cannot read this server user's state dir.
+export function deployOkLine(target, tag) {
+  const logFile = join(stateDirFor(target), 'self-deploy.log')
+  if (!tag || !existsSync(logFile)) return null
+  const ok = new RegExp(`DEPLOY OK tag=(?:refs/tags/)?${escapeRegExp(tag)}(?: |$)`)
+  return readTail(logFile).split('\n').filter((line) => ok.test(line)).at(-1) ?? null
+}
+
 // The log's last LOG_TAIL_BYTES: polled every few seconds, so never the whole file.
 function readTail(file) {
   const fd = openSync(file, 'r')

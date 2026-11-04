@@ -1800,7 +1800,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // HZ-333: a deploy queue batch already published and deployed this
     // item's release; the wait bound counts from that deploy's start.
     releaseFields = { release_tag: shipped.tag, release_url: shipped.release_url }
-    deployWait = deployWaitFor(item.repo, { startedAt: shipped.startedAtMs })
+    deployWait = deployWaitFor(item.repo, { startedAt: shipped.startedAtMs, tag: shipped.tag })
   } else if (stepIndex === DEPLOY_STEP_INDEX && item.repo && item.issue != null) {
     try {
       const release = await createDeployRelease(item)
