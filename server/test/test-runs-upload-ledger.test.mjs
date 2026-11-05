@@ -95,7 +95,7 @@ const rowCount = (runId) => db.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT tes
 const ledger = (runId) => db.prepare('SELECT test_runs_expected, test_runs_stored, test_runs_stored_at, test_runs_abandoned FROM step_run WHERE id = ?').get(runId)
 const dispatchOf = (id, stepIndex) => calls.filter((c) => c.url.endsWith('/steps/run') && c.body?.item?.id === id && c.body?.step?.index === stepIndex).at(-1)?.body
 const storedInput = (body) => body.artifacts.find((a) => a.label === STORED_RESULTS_INPUT_LABEL)?.content
-const itemRow = (id) => db.prepare('SELECT cursor, paused, rejected, review_cycle_count FROM work_item WHERE id = ?').get(id)
+const itemRow = (id) => db.prepare('SELECT cursor, paused, review_cycle_count FROM work_item WHERE id = ?').get(id)
 const reviewRuns = (id) => db.prepare('SELECT status, output FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id').all(id, REVIEW_STEP_INDEX)
 
 async function waitFor(what, check, ms = 3000) {
@@ -200,7 +200,6 @@ test('metric 4: results a restart lost, past the retry window, re-queue the chec
   const row = itemRow('UL-4')
   assert.equal(row.cursor, IMPLEMENT_STEP_INDEX)
   assert.equal(row.paused, 0)
-  assert.equal(row.rejected, 0)
   assert.equal(row.review_cycle_count, 1, 'the review cycle count is unchanged')
   const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all('UL-4').map((e) => e.text)
   assert.ok(events.some((t) => t.includes('checks re-queued')), events.join('\n'))

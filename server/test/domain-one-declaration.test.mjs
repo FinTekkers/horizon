@@ -58,6 +58,7 @@ const LABEL_MENTIONS_ALLOWED = {
   'server/test/domain-step-keys.test.mjs': 'HZ-709: the frozen list of shipped step keys, each with the label it names (guardrail 4)',
   'server/test/lifecycle-renamed-label.test.mjs': 'fabricated 2-step fixture',
   'server/test/personas.test.mjs': 'MOCK_STEP_BEHAVIOR lookup key',
+  'server/test/send-back-defaults.test.mjs': "HZ-708: the issue's default send-back table, keyed by gate and target label",
   'server/test/store.test.mjs': 'expected label in an item payload assertion',
   'ui/src/domain/lifecycle.test.js': 'fabricated 2-step fixture',
   'farm/roles/pm.md': 'role prompt — guarded by role-prompt-labels.test.mjs',

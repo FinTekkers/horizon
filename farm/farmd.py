@@ -251,29 +251,21 @@ def _adopt_jobs() -> None:
         print(f"farmd: removed {len(reaped)} orphaned job container(s): {', '.join(reaped)}", flush=True)
 
 
-# HZ-769: moved to farm/job_env.py, shared with the Run plan check. The
-# aliases keep farmd's own names, which its tests patch and call.
+# HZ-772: the bodies live in farm/job_env.py, shared with a tenant job's
+# runner. These names stay farmd's, and each call passes _read_dotenv as it
+# is bound now, so the readers go through this module's own name.
 _read_dotenv = job_env.read_dotenv
-_resolve_job_env = job_env.resolve_job_env
+_host_redact_values = job_env.host_redact_values
 
 
-def _host_redact_values() -> dict:
-    """The two host credentials every job log is scrubbed of. Redaction only:
-    a command gets them in its env only when the plan's env block names them."""
-    return {name: os.environ[name] for name in ("GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET") if os.environ.get(name)}
+def _resolve_job_env(cwd: str, env_refs: dict, login: dict | None = None) -> dict:
+    """See job_env.resolve_job_env."""
+    return job_env.resolve_job_env(cwd, env_refs, login, read_dotenv=_read_dotenv)
 
 
 def _job_redact_values(cwd: str | None, login: dict | None = None) -> dict:
-    """Everything a job log is scrubbed of beyond the plan's named env values:
-    the host credentials plus every <cwd>/.env value, named by the plan or not
-    — a command run in cwd can load or print .env itself. The .env keys are
-    namespaced so a same-named host credential never displaces one. HZ-553:
-    likewise every test-login file value, under checks' login_env: prefix."""
-    dotenv = _read_dotenv(Path(cwd) / ".env") if cwd else {}
-    values = {f"dotenv:{k}": v for k, v in dotenv.items() if v}
-    values.update({f"login_env:{k}": v for k, v in (login or {}).items() if v})
-    values.update(_host_redact_values())
-    return values
+    """See job_env.job_redact_values."""
+    return job_env.job_redact_values(cwd, login, read_dotenv=_read_dotenv, host_values=_host_redact_values)
 
 
 def _teardown() -> None:
@@ -951,10 +943,10 @@ def _tenant_spool_path(run_id) -> Path:
 
 def _sweep_orphan_tenant_spools() -> None:
     """Removes every tenant spool whose claimed task file is gone: no launch
-    can still need it."""
+    can still need it. HZ-772: a job's claimed task file is in jobs/active."""
     for spool in (QUEUE_DIR / "runs" / "active").glob(f"*{TENANT_SPOOL_SUFFIX}"):
         run_id = spool.name[: -len(TENANT_SPOOL_SUFFIX)]
-        if not (spool.parent / f"{run_id}.json").exists():
+        if not (spool.parent / f"{run_id}.json").exists() and not (QUEUE_DIR / "jobs" / "active" / f"{run_id}.json").exists():
             spool.unlink(missing_ok=True)
 
 
@@ -1183,8 +1175,9 @@ def _is_tenant(task: dict) -> bool:
     return credentials.is_tenant_project(task.get("project"))
 
 
-# HZ-758: a tenant item's job step (launch_job) still has no run-user path.
-TENANT_JOB_REFUSAL = "tenant job steps do not run on the farm yet: they would run as the farm user"
+# HZ-772: a tenant job runs as its run user on the host; rootless containers
+# for a nologin run user are not supported yet.
+TENANT_JOB_HOST_ONLY = "tenant jobs run on the host runner only"
 
 
 def _tenant_launch_refusal(task: dict) -> str | None:
@@ -1216,11 +1209,14 @@ def _run_user_home(run_user: str) -> str:
         raise credentials.TenantEnvError("run_user has no account on this host") from None
 
 
-def _tenant_spool(task: dict) -> Path:
+def _tenant_spool(task: dict, entry: str = "agent") -> Path:
     """Writes the tenant session's whole env, its task and its test-env path
     to <run_id>.tenant.json, mode 0600, for farm.tenant_launch to hand to the
     run user over stdin. Raises TenantEnvError / LoginEnvError (fields only)
-    with nothing written."""
+    with nothing written. HZ-772: `entry` tells tenant-entry what to exec —
+    "agent" (farm.step_agent) or "job" (farm.tenant_job). A job's task rides
+    under "job", not "task", so a tenant-entry from before HZ-772 (which
+    ignores `entry`) refuses it rather than running it as an agent step."""
     project = task["project"]
     test_env_file = login_env.tenant_env_path(task.get("test_env_file"), project.get("id"))
     env = credentials.tenant_session_env(project, home=_run_user_home(project["runUser"]))
@@ -1229,7 +1225,7 @@ def _tenant_spool(task: dict) -> Path:
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f"{task['run_id']}.tenant.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(json.dumps({"env": env, "task": task, "test_env_file": test_env_file}))
+            f.write(json.dumps({"entry": entry, "env": env, "job" if entry == "job" else "task": task, "test_env_file": test_env_file}))
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
     except BaseException:
@@ -1238,18 +1234,19 @@ def _tenant_spool(task: dict) -> Path:
     return path
 
 
-def _launch_tenant_session(name: str, task: dict, repo_root: Path) -> None:
+def _launch_tenant_session(name: str, task: dict, repo_root: Path, *, entry: str = "agent") -> None:
     """Launches a tenant run as its project's run_user: spool first, then a
     tmux line holding only the spool path and the user name — never a value.
-    The spool is removed again if the session could not be created."""
+    The spool is removed again if the session could not be created. A job
+    session has no pipe-pane: its runner owns the only log."""
     run_user = task["project"]["runUser"]
-    spool = _tenant_spool(task)
+    spool = _tenant_spool(task, entry)
     try:
         tmux_mgr.new_session(
             name,
             f"{sys.executable} -m {tmux_mgr.TENANT_LAUNCH_MODULE} --spool {shlex.quote(str(spool))} --run-user {run_user}",
             cwd=str(repo_root),
-            log_file=str(LOGS_DIR / f"{name}.log"),
+            log_file=None if entry == "job" else str(LOGS_DIR / f"{name}.log"),
             run_user=run_user,
         )
     except BaseException:
@@ -1394,6 +1391,61 @@ def launch_job(task: dict) -> str:
     return name
 
 
+def _tenant_job_results_dir(task: dict) -> Path:
+    """HZ-772: where a tenant job's runner writes its state and log —
+    TENANT_JOBS_DIR/<project id>, which the run user owns and farmd reads."""
+    return Path(farm_config.TENANT_JOBS_DIR) / str(task["project"]["id"])
+
+
+def launch_tenant_job(task: dict) -> str:
+    """HZ-772: launches a tenant job's runner as its project's run_user, in
+    farm-job-<item>. farmd writes only its own claimed task file — no env
+    file, and no repo_dir, venv or task clone of the server's: the run user
+    clones, resolves and reads its own (farm/tenant_job.py). The runner
+    writes its state and log to the project's results dir. Raises
+    credentials.TenantEnvError or login_env.LoginEnvError (fields only) with
+    no file left and no session started."""
+    refusal = _tenant_launch_refusal(task)
+    if refusal:
+        raise credentials.TenantEnvError(refusal)
+    if task.get("runner") != "host":
+        raise credentials.TenantEnvError(TENANT_JOB_HOST_ONLY)
+    project_id = task["project"].get("id")
+    if isinstance(project_id, bool) or not str(project_id).isdigit():
+        raise credentials.TenantEnvError("tenant project needs a numeric id")
+    run_id = task["run_id"]
+    item_id = task["item"]["id"]
+    for key in ("repo_dir", "venv_dir", "task_clone", "env_file"):
+        task.pop(key, None)
+    task["results_dir"] = str(_tenant_job_results_dir(task))
+    task["claimed_at"] = time.time()
+    active = QUEUE_DIR / "jobs" / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    claimed = active / f"{run_id}.json"
+    _write_task_atomic(claimed, task)
+    name = _job_session_name(item_id)
+    try:
+        # The runner starts in Horizon's checkout, as an internal one does.
+        _launch_tenant_session(name, task, task_job.HORIZON_ROOT, entry="job")
+    except BaseException:
+        claimed.unlink(missing_ok=True)
+        raise
+    JOB_SESSIONS[str(run_id)] = name
+    print(f"farmd: launched {name} for run {run_id} as {task['project']['runUser']}", flush=True)
+    return name
+
+
+def _job_paths(run_id, task: dict) -> tuple[Path, Path]:
+    """(state file, log) of a job. HZ-772: a tenant job's are in its
+    project's results dir, never in farmd's own STATE_DIR or LOGS_DIR."""
+    item_id = task["item"]["id"]
+    if _is_tenant(task):
+        return task_job.tenant_result_paths(_tenant_job_results_dir(task), item_id)
+    from farm.config import STATE_DIR as _STATE
+
+    return _STATE / "jobs" / f"{item_id}.json", _job_log_path(run_id, item_id)
+
+
 # HZ-378: an Execute artifact's own ceiling — the runner's summary plus its
 # full redacted log. Mirrors server/src/orchestrator.js's JOB_LOG_MAX_CHARS:
 # farmd caps before the POST (the route's body limit is 1 MB) and the server
@@ -1476,8 +1528,6 @@ def _poll_jobs() -> None:
     No answer or a 5xx (the server restarting in a deploy) keeps it for the
     next poll, so a result is never lost; a resend after a crash between the
     server's ack and the unlink is answered stale, so the run ends once."""
-    from farm.config import LOGS_DIR as _LOGS, STATE_DIR as _STATE
-
     for task_path in sorted((QUEUE_DIR / "jobs" / "active").glob("*.json")):
         if task_path.name.endswith(".env.json") or task_path.name.endswith(".json.tmp"):
             continue
@@ -1485,7 +1535,7 @@ def _poll_jobs() -> None:
             task = json.loads(task_path.read_text())
             run_id = str(task["run_id"])
             item_id = task["item"]["id"]
-            state_file = _STATE / "jobs" / f"{item_id}.json"
+            state_file, log_path = _job_paths(run_id, task)
             try:
                 state = json.loads(state_file.read_text())
             except (OSError, json.JSONDecodeError):
@@ -1513,8 +1563,6 @@ def _poll_jobs() -> None:
                 text = f"{run_n} command(s) run, {passed} passed, {failed} failed"
                 if failing:
                     text += f": {failing}"
-                log_name = JOB_SESSIONS.get(run_id) or _job_session_name(item_id)
-                log_path = _LOGS / f"{log_name}.log"
                 if "log_offset" in state:
                     # HZ-434: this attempt's slice of the append-only log.
                     log_text, start, end = _read_attempt_log(log_path, state.get("log_offset"))
@@ -2025,11 +2073,6 @@ async def steps_run(request: Request):
     view = steps.FARM_VIEWS[body["item"].get("kind") or "change"]
     queue = lane_for_index(view, body["step"].get("index", 99))
     if queue == "job":
-        # HZ-758: a job runs as the farm user (launch_job), so a tenant's is
-        # refused — never run outside its run user.
-        if _is_tenant(body):
-            _log_isolation_refusal(body["run_id"], project, TENANT_JOB_REFUSAL)
-            return JSONResponse({"error": "tenant_launch_refused", "reason": TENANT_JOB_REFUSAL}, status_code=400)
         if not _jobs_enabled():
             return JSONResponse({"error": "jobs_disabled"}, status_code=409)
         item_id = body["item"].get("id") or ""
@@ -2047,6 +2090,17 @@ async def steps_run(request: Request):
         # farm applies no default, so a job naming no runner is refused.
         if body.get("runner") not in task_job.RUNNERS:
             return JSONResponse({"error": "job_runner_missing"}, status_code=400)
+        # HZ-772: a tenant job runs as its run user (launch_tenant_job). One
+        # it cannot run that way is refused before the server hears started.
+        tenant = _is_tenant(body)
+        if tenant:
+            try:
+                if body["runner"] != "host":
+                    raise credentials.TenantEnvError(TENANT_JOB_HOST_ONLY)
+                _run_user_home(project["runUser"])
+            except credentials.TenantEnvError as exc:
+                _log_isolation_refusal(body["run_id"], project, str(exc))
+                return JSONResponse({"error": "tenant_launch_refused", "reason": str(exc)}, status_code=400)
         # The server armed a queue watchdog at dispatch; a job that never
         # reports started would be failed as never_picked_up mid-run. This
         # flips it to the execution budget, which markFarmRunStarted leaves
@@ -2058,7 +2112,11 @@ async def steps_run(request: Request):
             print(f"farmd: run {body['run_id']} no longer active server-side — not launching", flush=True)
             return {"ok": True, "queued": queue, "stale": True}
         try:
-            name = launch_job(body)
+            name = launch_tenant_job(body) if tenant else launch_job(body)
+        except credentials.TenantEnvError as exc:
+            # Fields only, never a value (HZ-663).
+            _log_isolation_refusal(body["run_id"], project, str(exc))
+            return JSONResponse({"error": "tenant_launch_refused", "reason": str(exc)}, status_code=400)
         except run_plan.CwdRefused as exc:
             return JSONResponse({"error": f"cwd refused: {exc}"}, status_code=400)
         except login_env.LoginEnvError as exc:
@@ -2271,7 +2329,18 @@ def _job_secrets(task: dict) -> dict:
     """Every value a job's log is scrubbed of — the plan's resolved env values
     plus the redact set — so command text in a view is scrubbed the same way.
     HZ-415: the .env is the one in the resolved repo cwd; a cwd that does not
-    resolve gets the host credentials only, and no .env is read."""
+    resolve gets the host credentials only, and no .env is read.
+
+    HZ-772: a tenant job's .env and test-env file are the run user's, which
+    farmd cannot read; its runner scrubbed its own log with them. A view of
+    it is scrubbed of that project's token and the host credentials."""
+    if _is_tenant(task):
+        try:
+            project = task["project"]
+            token = {"tenant:GITHUB_TOKEN": credentials.resolve_token_ref(project.get("githubTokenRef"), project_id=project.get("id"))}
+        except credentials.TenantEnvError:
+            token = {}
+        return {**_host_redact_values(), **token}
     try:
         block = run_plan.extract(task.get("plan_artifact") or "")
     except ValueError:
@@ -2297,10 +2366,10 @@ def _job_log_path(run_id, item_id: str) -> Path:
     return _LOGS / f"{name}.log"
 
 
-def _job_log_tail(run_id, item_id: str, lines: int = JOB_LOG_TAIL_LINES) -> list[str]:
+def _job_log_tail(run_id, item_id: str, lines: int = JOB_LOG_TAIL_LINES, *, log_path: Path | None = None) -> list[str]:
     """The last lines of the runner's own log file, already redacted."""
     try:
-        with _job_log_path(run_id, item_id).open("rb") as f:
+        with (log_path or _job_log_path(run_id, item_id)).open("rb") as f:
             f.seek(0, os.SEEK_END)
             f.seek(max(0, f.tell() - 16 * 1024))
             text = f.read().decode("utf-8", "replace")
@@ -2313,12 +2382,11 @@ def _job_view(run_id: str, task: dict) -> dict:
     """The job's current status for the server's GET /api/items/:id/job and
     the Execute card (HZ-407): each command (text redacted) with its status,
     elapsed seconds against the budget, and the log's last redacted lines."""
-    from farm.config import STATE_DIR as _STATE
-
     item_id = task["item"]["id"]
     name = JOB_SESSIONS.get(str(run_id)) or _job_session_name(item_id)
+    state_path, log_path = _job_paths(run_id, task)
     try:
-        state = json.loads((_STATE / "jobs" / f"{item_id}.json").read_text())
+        state = json.loads(state_path.read_text())
     except (OSError, json.JSONDecodeError):
         state = None
     # A previous run's state (before a Resume's runner writes) is not this run's.
@@ -2354,7 +2422,7 @@ def _job_view(run_id: str, task: dict) -> dict:
         "startedAt": started_at,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "commands": commands,
-        "logTail": [redact(line, secrets) for line in _job_log_tail(run_id, item_id)],
+        "logTail": [redact(line, secrets) for line in _job_log_tail(run_id, item_id, log_path=log_path)],
     }
 
 
@@ -2430,6 +2498,28 @@ def _mark_job_stopped(run_id, item_id: str) -> None:
         pass
 
 
+# HZ-772: how long Stop waits for a tenant runner to record its own stop.
+TENANT_STOP_WAIT_S = 5.0
+
+
+def _await_tenant_job_stop(run_id, task: dict) -> None:
+    """HZ-772: a tenant job's command group and state belong to its run user,
+    so farmd neither kills the group nor writes the state. Killing the
+    session sends SIGHUP through sudo to the runner, which marks the running
+    command `stopped` itself (task_job.mark_stopped). This waits, bounded,
+    for that so the returned view shows it."""
+    state_path, _log_path = _job_paths(run_id, task)
+    deadline = time.monotonic() + TENANT_STOP_WAIT_S
+    while True:
+        state = task_job.load_state(state_path)
+        if not state or str(state.get("run_id")) != str(run_id) or state.get("status") != "running":
+            return
+        if time.monotonic() >= deadline:
+            print(f"farmd: tenant job {run_id} has not recorded its stop yet", flush=True)
+            return
+        time.sleep(0.1)
+
+
 @app.post("/jobs/stop")
 async def jobs_stop(request: Request):
     """Loopback only: the server's Stop run button. Kills the job's tmux
@@ -2447,7 +2537,10 @@ async def jobs_stop(request: Request):
     if not tmux_mgr.session_exists(name):
         return JSONResponse({"error": "job not running"}, status_code=409)
     tmux_mgr.kill_session(name)
-    _mark_job_stopped(run_id, task["item"]["id"])
+    if _is_tenant(task):
+        await asyncio.to_thread(_await_tenant_job_stop, run_id, task)
+    else:
+        _mark_job_stopped(run_id, task["item"]["id"])
     # Built before the session is forgotten, so the log path still resolves.
     view = _job_view(run_id, task)
     JOB_SESSIONS.pop(run_id, None)
@@ -2484,7 +2577,7 @@ def jobs_log(run_id: str, request: Request, offset: int = 0, item_id: str | None
     elif not item_id or not _JOB_ITEM_ID_RE.match(item_id):
         return JSONResponse({"error": "unknown job"}, status_code=404)
     name = JOB_SESSIONS.get(str(run_id)) or _job_session_name(item_id)
-    log_path = _job_log_path(run_id, item_id)
+    log_path = _job_paths(run_id, task)[1] if task else _job_log_path(run_id, item_id)
     offset = max(0, offset)
     content = b""
     if log_path.exists():

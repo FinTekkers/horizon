@@ -13,6 +13,7 @@ import { linkSpawned, spawnItems } from './spawn.js'
 import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
+import { ROUTE_MOVE_ACTIONS, moveKeyOf, planMove } from './moveItem.js'
 import * as premerge from './premerge.js'
 import * as autoResolve from './autoResolve.js'
 import * as webhooks from './webhooks.js'
@@ -1958,8 +1959,10 @@ export function buildApp({
   // The /reject body, moved out unchanged (HZ-271) so every send-back — the
   // browser, the WhatsApp poll vote and the Autopilot caretaker — runs it.
   // HZ-540: targetSubstepId sends it back to that sub-step of targetStepIndex.
-  function performSendBack(id, { target, feedback, targetStepIndex, targetSubstepId } = {}, actor = 'You') {
-    return store.requestChanges(id, target, feedback, actor, targetStepIndex ?? null, targetSubstepId ?? null)
+  // HZ-710: `proof` is the gate PIN's, from the browser only — it alone
+  // releases a rule block.
+  function performSendBack(id, { target, feedback, targetStepIndex, targetSubstepId, proof = null } = {}, actor = 'You') {
+    return store.requestChanges(id, target, feedback, actor, targetStepIndex ?? null, targetSubstepId ?? null, { proof })
   }
 
   // HZ-271: THE one approve and the one send-back. Every route below calls
@@ -2228,7 +2231,8 @@ export function buildApp({
       },
     },
     (request, reply) => {
-      if (!humanAuthorized(request, reply)) return
+      const proof = humanAuthorized(request, reply)
+      if (!proof) return
       const { id } = request.params
       const targetStep = rejectTargetOf(request, id)
       if (targetStep.error) return reply.code(targetStep.status).send({ error: targetStep.error })
@@ -2239,6 +2243,7 @@ export function buildApp({
           feedback: request.body?.feedback,
           targetStepIndex: targetStep.index,
           targetSubstepId: request.body?.targetSubstepId,
+          proof,
         },
         actorOf(request),
       )
@@ -2445,6 +2450,9 @@ export function buildApp({
       if (result.ok && !result.alreadyDismissed) {
         store.addEvent(item.id, { who: actorOf(request), text: `dismissed the ask “${result.title}”: ${result.reason}`, color: '#9C333E', initials: 'HZ' })
         store.notifyChange()
+        // HZ-731: a dismissed blocking ask may have been all that held
+        // Implement or Execute; kick() re-checks and no-ops otherwise.
+        orchestrator.kick(item.id)
       }
       return sendAsk(reply, result.ok ? { ok: true, ...(result.alreadyDismissed ? { alreadyDismissed: true } : {}) } : result)
     },
@@ -2600,10 +2608,11 @@ export function buildApp({
       },
     },
     (request, reply) => {
-      if (!humanAuthorized(request, reply)) return
+      const proof = humanAuthorized(request, reply)
+      if (!proof) return
       return send(
         reply,
-        store.restartPhase(request.params.id, request.params.phase, request.body?.reason, actorOf(request)),
+        store.restartPhase(request.params.id, request.params.phase, request.body?.reason, actorOf(request), { proof }),
       )
     },
   )
@@ -2640,35 +2649,106 @@ export function buildApp({
     },
     async (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      const { id } = request.params
-      const item = store.getItem(id)
-      const result = store.abandonItem(id, request.body.reason, actorOf(request), {
+      const result = await abandonAndCloseIssue(request.params.id, request.body.reason, actorOf(request), {
         removeDependentLinks: request.body.removeDependentLinks === true,
       })
-      if (result.error) return send(reply, result)
-      // HZ-513: free the item's screenshots ref, as a PR closed unmerged does.
-      // Not awaited and never throws, so it can't block or fail the abandon.
-      if (item?.repo) github.deleteArtifactRef(item.repo, item).catch(() => {})
-      if (item?.repo && item.issue != null) {
-        try {
-          await github.closeIssueAsAbandoned(item, request.body.reason.trim())
-          store.addEvent(id, {
-            who: 'Horizon',
-            text: `closed issue #${item.issue} on GitHub as not planned`,
-            color: '#0E6E74',
-            initials: 'HZ',
-          })
-        } catch (err) {
-          store.addEvent(id, {
-            who: 'Horizon',
-            text: `could not close issue #${item.issue}: ${err.message} — close it manually`,
-            color: '#9C333E',
-            initials: 'HZ',
-          })
-        }
-        store.notifyChange()
-      }
       return send(reply, result)
+    },
+  )
+
+  // The abandon itself, then its best-effort GitHub side effects — shared by
+  // /abandon and /move (HZ-710).
+  async function abandonAndCloseIssue(id, reason, actor, options) {
+    const item = store.getItem(id)
+    const result = store.abandonItem(id, reason, actor, options)
+    if (result.error) return result
+    // HZ-513: free the item's screenshots ref, as a PR closed unmerged does.
+    // Not awaited and never throws, so it can't block or fail the abandon.
+    if (item?.repo) github.deleteArtifactRef(item.repo, item).catch(() => {})
+    if (item?.repo && item.issue != null) {
+      try {
+        await github.closeIssueAsAbandoned(item, reason.trim())
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `closed issue #${item.issue} on GitHub as not planned`,
+          color: '#0E6E74',
+          initials: 'HZ',
+        })
+      } catch (err) {
+        store.addEvent(id, {
+          who: 'Horizon',
+          text: `could not close issue #${item.issue}: ${err.message} — close it manually`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+      }
+      store.notifyChange()
+    }
+    return result
+  }
+
+  // HZ-710: the one move action. `from` is the step key the caller saw — a
+  // move from a step the item has left is refused (stale_step). Same gate PIN
+  // as every other move route: without it nothing moves and no row is
+  // written. Approve and abandon run the paths their own routes run, so a
+  // merge, a filing and the golden-case checks still happen; return, retry
+  // and reopen are store.moveByHuman. Answers { ok, move } — the item_move row.
+  fastify.post(
+    '/api/items/:id/move',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['action', 'from'],
+          properties: {
+            action: { type: 'string', enum: ROUTE_MOVE_ACTIONS },
+            from: { type: 'string', minLength: 1, maxLength: 80 },
+            to: { type: 'string', minLength: 1, maxLength: 80 },
+            note: { type: 'string', maxLength: 2000 },
+          },
+        },
+        response: {
+          200: OK_OBJECT,
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          403: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+        },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      const proof = humanAuthorized(request, reply)
+      if (!proof) return
+      const { id } = request.params
+      const { action, from, to = null } = request.body
+      const note = (request.body.note || '').trim()
+      const item = store.getItem(id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (action === 'return' && to == null) return reply.code(400).send({ error: 'bad_target_key' })
+      if (action === 'abandon' && !note) return reply.code(400).send({ error: 'note_required' })
+      if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
+      const actor = actorOf(request)
+      let result
+      if (action === 'approve') {
+        const planned = planMove(item, { action, toKey: to })
+        if (planned.error) return send(reply, planned)
+        result =
+          STEPS[item.cursor].kind === 'gate'
+            ? await gateActions.approve(id, item.cursor, note, actor, { proof })
+            : await orchestrator.forwardRejectedReview(id, actor)
+        if (result.status) return reply.code(result.status).send(gateFailureBody(result))
+      } else if (action === 'abandon') {
+        result = await abandonAndCloseIssue(id, note, actor)
+      } else {
+        result = store.moveByHuman(id, { action, toKey: to, note, who: actor, proof })
+      }
+      if (result.error) return send(reply, result)
+      return reply.send({ ok: true, move: store.lastMove(id) })
     },
   )
 

@@ -42,6 +42,13 @@ const caretaker = await import('../src/caretaker.js')
 const actor = await import('../src/caretakerActor.js')
 const rules = await import('../src/caretakerRules.js')
 const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
+const { STEPS } = await import('../../domain/js/lifecycle.js')
+// HZ-708: where each gate's send-back lands by default — the step that
+// produced what the gate reviews.
+const SENT_BACK_TO = {
+  5: STEPS.findIndex((s) => s.label === 'Plan options & trade-offs (pros / cons)'),
+  10: STEPS.findIndex((s) => s.label === 'Draft implementation plan'),
+}
 
 const OWNER = '15550001111@s.whatsapp.net'
 const silent = { info() {}, warn() {}, error() {} }
@@ -148,7 +155,7 @@ const sendBackTwice = async (id, pid, gate) => {
   item(id, pid, gate - 1)
   arrive(id, gate, ARTIFACT[gate])
   await settle()
-  assert.equal(cursorOf(id), gate - 1, `${id}: the first send-back did not happen`)
+  assert.equal(cursorOf(id), SENT_BACK_TO[gate], `${id}: the first send-back did not happen`)
   arrive(id, gate, ARTIFACT[gate])
   await settle()
 }
@@ -224,12 +231,12 @@ test('a human send-back resets the count: the next caretaker send-back at that g
   })
   assert.equal(res.statusCode, 200)
   await settle()
-  assert.equal(cursorOf(id), 9)
+  assert.equal(cursorOf(id), SENT_BACK_TO[10])
 
   arrive(id, 10, ARTIFACT[10])
   await settle()
   assert.equal(evalsOf(id).at(-1).decision, 'send_back')
-  assert.equal(cursorOf(id), 9, 'not sent back')
+  assert.equal(cursorOf(id), SENT_BACK_TO[10], 'not sent back')
   assert.equal(sendBacksOf(id).length, 3, 'caretaker, human, caretaker')
   assert.equal(pingsOf(id).length, 1, 'pinged again')
 })
@@ -249,7 +256,7 @@ test('a human approval resets the count (the rewind after the approval is simula
   arrive(id, 10, ARTIFACT[10])
   await settle()
   assert.equal(evalsOf(id).at(-1).decision, 'send_back')
-  assert.equal(cursorOf(id), 9, 'not sent back')
+  assert.equal(cursorOf(id), SENT_BACK_TO[10], 'not sent back')
   assert.equal(pingsOf(id).length, 1, 'pinged again')
 })
 
@@ -312,7 +319,7 @@ test('a send-back at gate 5 then one at gate 10 are two normal send-backs and no
   db.prepare('UPDATE work_item SET cursor = 9 WHERE id = ?').run(id)
   arrive(id, 10, ARTIFACT[10])
   await settle()
-  assert.equal(cursorOf(id), 9)
+  assert.equal(cursorOf(id), SENT_BACK_TO[10])
   assert.deepEqual(
     evalsOf(id).map((e) => [e.gate_index, e.decision]),
     [

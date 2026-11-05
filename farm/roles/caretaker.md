@@ -63,6 +63,30 @@ matches, the decision is **ping the human**.
 
 Reasons are one line. Never quote a secret, token or PIN.
 
+## Asks
+
+Asks are steps' drafted follow-up and prerequisite items, each checked by the
+ask reviewer. The server enforces these rules in code
+(`server/src/caretakerAsks.js`, `caretaker.js`, `caretakerAccept.js`). They
+are not rules in the JSON below.
+
+- **An open blocking ask means never approve.** At any gate, while the item
+  has an open blocking ask, the arrival is not judged at all, so nothing is
+  approved. With Autopilot `on`, at Approve the high-level design, Review
+  before execution, Accept the code and Review the work & close, the owner
+  is pinged once per arrival and ask. Once the ask is filed or dismissed,
+  the arrival is judged as usual. Soft asks and splits never hold a gate.
+- **File what the reviewer accepted.** With Autopilot `on`, an ask the
+  reviewer accepted is filed with its own draft, and one it amended is filed
+  with the amended draft, through the same File it the owner uses. An ask
+  the reviewer escalated, or whose review failed, is never filed: the owner
+  is pinged once. A filing that fails is not retried: the owner is pinged
+  once and can press File it.
+- **Never dismiss.** Only the owner dismisses an ask.
+- In `shadow` mode each of these is a "caretaker would …" event and nothing
+  else. With Autopilot off for the project or the item, nothing is filed or
+  pinged: the owner decides.
+
 ## Rules (machine-readable)
 
 The server reads this block. Each `id` has one evaluator in

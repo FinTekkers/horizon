@@ -263,6 +263,23 @@ test('js/IMPLEMENT_ITEM_KIND', () => {
   for (const c of js.IMPLEMENT_ITEM_KIND) assert.equal(binding.IMPLEMENT_ITEM_KIND, c.expect, c.case)
 })
 
+// HZ-731: the hold names the start step by its label, never its position.
+test('js/askStartHold', () => {
+  for (const c of js.askStartHold) {
+    const hold = binding.askStartHold(c.item, c.asks)
+    if (c.expect === null) {
+      assert.equal(hold, null, c.case)
+      continue
+    }
+    assert.deepEqual(
+      { askId: hold.askId, title: hold.title, filedItemId: hold.filedItem?.id ?? null },
+      c.expect,
+      c.case,
+    )
+    assert.equal(hold.step, binding.STEPS[c.item.cursor].label, c.case)
+  }
+})
+
 test('js/holdingBlockers', () => {
   for (const c of js.holdingBlockers) {
     assert.deepEqual(binding.holdingBlockers(c.item, c.blockers).map((b) => b.id), c.expectIds, c.case)
@@ -535,5 +552,13 @@ test('js/sendBackTargetOf: a gate\'s declared default, by key', () => {
     const target = binding.sendBackTargetOf(binding.stepIndexOf(c.gateKey))
     if (c.expectKey) assert.equal(binding.stepKeyAt(target), c.expectKey, c.case)
     else assert.equal(target, c.expect, c.case)
+  }
+})
+
+test('js/mergedFloor: a merged change item may not move before Accept the code', () => {
+  for (const c of js.mergedFloor) {
+    const floor = binding.mergedFloor(c.item)
+    if (c.expectLabel) assert.equal(binding.STEPS[floor].label, c.expectLabel, c.case)
+    else assert.equal(floor, c.expect, c.case)
   }
 })

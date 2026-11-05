@@ -83,6 +83,7 @@ const vote = (msgId, option, voter = DAVID, voteId = nextId('VOTE')) =>
   votes.applyVote({ voteId, pollMsgId: msgId, voterJid: voter, selectedOption: option }, ACTIONS)
 
 const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor
+const movesOf = (id) => db.prepare('SELECT who, from_key, to_key, action, note FROM item_move WHERE item_id = ? ORDER BY id').all(id)
 const counts = (id) => ({
   cursor: cursorOf(id),
   decisions: db.prepare('SELECT COUNT(*) AS n FROM gate_decision WHERE item_id = ?').get(id).n,
@@ -120,6 +121,10 @@ test('an Approve vote from an allowlisted voter approves the gate', async () => 
   assert.equal(decision.step_index, GATE)
   // Attributable, and from the PROVEN jid — the bridge sends no display name.
   assert.equal(decision.decided_by, '...1111 via WhatsApp poll')
+  // HZ-710: exactly one move, by the same voter.
+  assert.deepEqual(movesOf(id), [
+    { who: '...1111 via WhatsApp poll', from_key: stepKeyAt(GATE), to_key: stepKeyAt(GATE + 1), action: 'approve', note: '' },
+  ])
 })
 
 test('the acknowledgement rides the existing text outbox, to the poll recipient', () => {
@@ -142,13 +147,16 @@ test('a Send back vote sends the item to the gate default rework target', async 
   const landed = cursorOf(id)
   assert.ok(landed < LATER_GATE, `the item did not move back (cursor ${landed})`)
   assert.equal(STEPS[landed].kind, 'agent', 'a send-back must land on an agent step')
-  // The default, derived by store.requestChanges and nowhere else: the
-  // nearest preceding agent step.
-  let expected = LATER_GATE
-  while (expected > 0 && STEPS[expected].kind !== 'agent') expected--
-  assert.equal(landed, expected)
+  // HZ-708: the gate's default, derived by store.requestChanges and nowhere
+  // else — for Review before execution, the plan it reviews.
+  assert.equal(STEPS[LATER_GATE].label, 'Review before execution')
+  assert.equal(STEPS[landed].label, 'Draft implementation plan', `landed on ${STEPS[landed].label}`)
   assert.equal(db.prepare('SELECT decision FROM gate_decision WHERE item_id = ?').get(id).decision, 'rejected')
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM feedback WHERE item_id = ?').get(id).n, 1)
+  // HZ-710: exactly one move, a return. A poll vote carries no notes.
+  assert.deepEqual(movesOf(id), [
+    { who: '...1111 via WhatsApp poll', from_key: stepKeyAt(LATER_GATE), to_key: 'change.draft-plan', action: 'return', note: '' },
+  ])
 })
 
 test('the Accept gate sends back to the implement step, not to the Review step before it', async () => {
@@ -157,6 +165,15 @@ test('the Accept gate sends back to the implement step, not to the Review step b
   assert.equal((await vote(msgId, POLL_SEND_BACK)).outcome, 'applied')
   const landed = cursorOf(id)
   assert.equal(STEPS[landed].label, 'Specialist agent implements', `landed on ${STEPS[landed].label}`)
+})
+
+test('HZ-708: a Send back vote on a merged item at Accept the code is refused, reported as a 409 and changes nothing', async () => {
+  const id = makeItem('P-MERGED', ACCEPT_GATE_INDEX, { merged_at: '2026-11-01 00:00:00' })
+  const { msgId } = makePoll(id, ACCEPT_GATE_INDEX)
+  const res = await assertNothingChanged(id, () => vote(msgId, POLL_SEND_BACK))
+  assert.equal(res.outcome, 'failed')
+  assert.equal(res.status, 409)
+  assert.equal(res.error, 'merged_target')
 })
 
 test('the send-back event names the gate, not "this step"', () => {

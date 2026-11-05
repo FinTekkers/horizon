@@ -442,23 +442,41 @@ def test_a_test_env_file_that_is_not_a_string_is_still_refused(farm, root, value
     assert farmd._tenant_launch_refusal(task) == "tenant test_env_file must live under the project's own directory"
 
 
-def test_a_tenant_job_step_is_refused_and_never_runs_as_the_farm_user(farm, root, fake_tmux, monkeypatch):
-    """launch_job runs as the farm user, so a tenant's job step stays refused."""
-    from domain.py import steps
+def test_a_tenant_job_step_launches_as_its_run_user_never_the_farm_user(farm, root, tmp_path, fake_tmux, monkeypatch):
+    """HZ-772 metric 1: the job step is no longer refused. farmd launches it
+    through farm.tenant_launch as the run user — never launch_job's farm-user
+    runner — and tenant-entry execs farm.tenant_job with exactly the spool env."""
+    from domain.py import run_plan, steps
 
     monkeypatch.setattr(farmd, "_jobs_enabled", lambda: True)
-    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: pytest.fail("a refused job must never report started"))
-    monkeypatch.setattr(farmd, "launch_job", lambda task: pytest.fail("a tenant job must never launch"))
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd, "launch_job", lambda task: pytest.fail("a tenant job never runs as the farm user"))
+    monkeypatch.setattr(config, "TENANT_JOBS_DIR", tmp_path / "tenant-jobs")
     job = make_task(66318, test_env_file=a_file(root), item_id="AC-2")
     job["item"]["kind"] = "task"
     job["step"] = {"index": steps.by_kind_label("task", "Execute")["index"], "label": "Execute"}
-    job.update(plan_artifact="plan", approved_hash="h", runner="host", repo_dir="/tmp")
+    artifact = run_plan.render({"cwd": ".", "commands": ["echo hi"], "budget_minutes": 1})
+    job.update(plan_artifact=artifact, approved_hash="h", runner="host", repo_dir="/srv/farm-user/acme")
+    try:
+        res = client.post("/steps/run", json=job)
+        assert res.status_code == 200
+        assert res.json() == {"ok": True, "queued": "job", "session": "farm-job-ac-2"}
+        [call] = new_sessions(fake_tmux)
+        assert_launched_as_run_user(call, 66318)
+        assert "farm.task_job" not in call[-1]
+        assert call[call.index("-c") + 1] == str(farmd.task_job.HORIZON_ROOT)
+        assert "pipe-pane" not in [c[0] for c in fake_tmux.calls], "the runner owns the only log"
+        payload = json.loads(farmd._tenant_spool_path(66318).read_text())
+        assert payload["entry"] == "job"
+        assert payload["job"]["results_dir"] == str(tmp_path / "tenant-jobs" / "7")
+        assert "repo_dir" not in payload["job"], "the farm user's checkout is never handed over"
+        assert "task" not in payload, "a tenant-entry from before HZ-772 refuses it"
+        assert payload["env"]["GITHUB_TOKEN"] == A_TOKEN
+        assert not list((QUEUE_DIR / "jobs" / "active").glob("66318.env.json*")), "farmd writes no env file"
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "66318.json").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("66318", None)
 
-    res = client.post("/steps/run", json=job)
-    assert res.status_code == 400
-    assert res.json() == {"error": "tenant_launch_refused", "reason": farmd.TENANT_JOB_REFUSAL}
-    assert queued_files() == []
-    assert new_sessions(fake_tmux) == []
 
 
 # ---- guardrail 2: no token value in any outward channel ----

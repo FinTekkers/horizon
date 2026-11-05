@@ -495,7 +495,11 @@ test('HZ-216: a merge is shown on the done Accept step, but not when the item la
   assert.equal((await approve(id)).statusCode, 200)
   assert.equal((await gateActionOf(id)).state, 'merged')
 
-  store.restartPhase(id, STEPS[ACCEPT_GATE_INDEX].phase, 'rebuild it', 'You')
+  // HZ-708: merged code is never rewound, so the item only comes back to the
+  // gate once its merge is undone (a reopen clears merged_at).
+  assert.deepEqual(store.restartPhase(id, STEPS[ACCEPT_GATE_INDEX].phase, 'rebuild it', 'You'), { error: 'merged_target' })
+  db.prepare('UPDATE work_item SET merged_at = NULL WHERE id = ?').run(id)
+  assert.deepEqual(store.restartPhase(id, STEPS[ACCEPT_GATE_INDEX].phase, 'rebuild it', 'You'), { ok: true })
   assert.equal(await gateActionOf(id), null, 'not on the upcoming gate while it is rebuilt')
   db.prepare("INSERT INTO step_run (item_id, step_index, agent, status) VALUES (?, ?, 'Eng', 'done')").run(id, ACCEPT_GATE_INDEX - 1)
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, id)

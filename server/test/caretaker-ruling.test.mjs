@@ -268,6 +268,11 @@ test('journey: a real operator_decide arrival is ruled with no human — one PAT
   assert.equal(dispatch.item.guardrails, itemOf(id).guardrails, 'the re-run step sees the ruled guardrails')
   const actions = db.prepare('SELECT * FROM caretaker_action WHERE item_id = ?').all(id)
   assert.deepEqual(actions.map((a) => [a.action, a.outcome, a.gate_index]), [['send_back', 'ok', 5]])
+  // HZ-710: the ruling's send-back is exactly one move, by the Caretaker, its note the ruling.
+  const moves = db.prepare('SELECT who, from_key, to_key, action, note FROM item_move WHERE item_id = ?').all(id)
+  assert.equal(moves.length, 1)
+  assert.deepEqual({ ...moves[0], note: undefined }, { who: 'Caretaker', from_key: 'change.approve-design', to_key: 'change.plan-options', action: 'return', note: undefined })
+  assert.match(moves[0].note, /^Caretaker ruling: /)
 
   // Once per arrival: another sweep and another change signal add nothing.
   await ruling.actOnRulings({ gateActions: app.gateActions, log: silent })
@@ -278,6 +283,7 @@ test('journey: a real operator_decide arrival is ruled with no human — one PAT
   assert.equal(feedbackOf(id).length, 1)
   assert.equal(caretakerEvents(id).length, eventsBefore + 1)
   assert.equal(farmCalls.filter((c) => c.item_id === id).length, 1)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM item_move WHERE item_id = ?').get(id).n, 1)
   orchestrator.cancel(id)
 })
 

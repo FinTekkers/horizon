@@ -42,7 +42,7 @@ globalThis.fetch = async (url, opts = {}) => {
   return { ok: true, json: async () => ({}) }
 }
 
-const { db } = await import('../src/db.js')
+const { db, dropLegacyRejectedColumn } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const gateNotifier = await import('../src/gateNotifier.js')
@@ -307,23 +307,28 @@ test('send-back: gates 10 and 13 and boot recovery never land on a skipped row',
   const insert = db.prepare("INSERT INTO work_item (id, title, priority, cursor, lane) VALUES (?, 'Send back', 'Medium', ?, 'trivial')")
   const item = { kind: 'change', lane: 'trivial' }
   for (const t of reworkTargets(PLAN_GATE, 'change', item)) assert.equal(SKIPPED.includes(t.index), false, t.label)
-  assert.equal(defaultReworkTarget(PLAN_GATE, 'change', item), QA)
+  // HZ-708: Review before execution's default is the plan it reviews, which the lane keeps.
+  assert.equal(defaultReworkTarget(PLAN_GATE, 'change', item), PLAN)
   assert.equal(defaultReworkTarget(ACCEPT, 'change', item), IMPLEMENT)
-  // Without the item, the picker is today's.
-  assert.equal(defaultReworkTarget(PLAN_GATE), SUMMARIZE)
+  assert.equal(defaultReworkTarget(PLAN_GATE), PLAN)
+  // A default the lane skips walks back instead, past every skipped row.
+  assert.equal(SKIPPED.includes(defaultReworkTarget(DESIGN_GATE, 'change', item)), false)
 
   insert.run('SB-10', PLAN_GATE)
   assert.deepEqual(store.requestChanges('SB-10', 'QA', 'redo', 'You', SUMMARIZE), { error: 'invalid_target' })
   assert.deepEqual(store.requestChanges('SB-10', 'QA', 'redo'), { ok: true })
-  assert.equal(store.getItem('SB-10').cursor, QA)
+  assert.equal(store.getItem('SB-10').cursor, PLAN)
 
   insert.run('SB-13', ACCEPT)
   assert.deepEqual(store.requestChanges('SB-13', 'Eng', 'redo'), { ok: true })
   assert.equal(store.getItem('SB-13').cursor, IMPLEMENT)
 
+  // HZ-710: a legacy database still has the `rejected` column until boot drops it.
   insert.run('SB-BOOT', PLAN_GATE)
+  db.exec('ALTER TABLE work_item ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0')
   db.prepare("UPDATE work_item SET rejected = 1 WHERE id = 'SB-BOOT'").run()
-  store.recoverRejectedItems()
+  store.recoverLegacyRejected()
+  dropLegacyRejectedColumn()
   assert.equal(store.getItem('SB-BOOT').cursor, QA)
   for (const id of ['SB-10', 'SB-13', 'SB-BOOT']) orchestrator.cancel(id)
 })

@@ -20,8 +20,16 @@
 # could plant ~/.gitconfig as a symlink, so the file is written by the run user
 # itself (runuser), never by root, and anything but a regular file is refused.
 #
-# HORIZON_RUN_USER_HOME_ROOT (default /home) is for the tests only. It is safe
-# in a root helper only because sudo's env_reset drops it: the rule in
+# HZ-772: it also creates the run user's Task job results dir,
+# /var/lib/horizon/tenant-jobs/<id>: owned by hz-p<id>, group the tenant-jobs
+# root's (the farm user's, set by install-tenant-host.sh), mode 2750 — farmd
+# reads a job's state and log there and no other tenant can. Until the
+# installer has created that root it is skipped with a note; a tenant job then
+# fails closed in tenant-entry. A symlink or non-directory there is refused.
+#
+# HORIZON_RUN_USER_HOME_ROOT (default /home) and HORIZON_TENANT_JOBS_ROOT
+# (default /var/lib/horizon/tenant-jobs) are for the tests only. They are safe
+# in a root helper only because sudo's env_reset drops them: the rule in
 # horizon-tenant.sudoers has no SETENV, and must never gain one.
 set -euo pipefail
 
@@ -50,6 +58,19 @@ else
 fi
 chown "$user:$GROUP" "$home"
 chmod 700 "$home"
+
+jobs_root="${HORIZON_TENANT_JOBS_ROOT:-/var/lib/horizon/tenant-jobs}"
+if [ -d "$jobs_root" ] && [ ! -L "$jobs_root" ]; then
+  jobs_dir="$jobs_root/$1"
+  if [ -L "$jobs_dir" ] || { [ -e "$jobs_dir" ] && [ ! -d "$jobs_dir" ]; }; then
+    refuse "$jobs_dir is not a directory"
+  fi
+  [ -d "$jobs_dir" ] || mkdir -m 0700 "$jobs_dir"
+  chown "$user:$(stat -c %G "$jobs_root")" "$jobs_dir"
+  chmod 2750 "$jobs_dir"
+else
+  echo "horizon-provision-run-user: no $jobs_root yet — run install-tenant-host.sh before a tenant Task job" >&2
+fi
 
 gitconfig="$home/.gitconfig"
 if [ -e "$gitconfig" ] || [ -L "$gitconfig" ]; then

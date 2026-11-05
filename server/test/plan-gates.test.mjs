@@ -62,7 +62,7 @@ const alice = loginFixtureUser(auth, config, { email: 'alice@example.com', name:
 
 const FILE_ITEMS = kindStepIndex('File items', 'plan')
 const REVIEW_CLOSE = kindStepIndex('Review & close', 'plan')
-const METRICS_REVIEW = kindStepIndex('Review drafts: metrics & size', 'plan')
+const DRAFT_ITEMS = kindStepIndex('Draft items', 'plan')
 const REPO = 'acme/plan-gates-repo'
 
 const projectId = Number(db.prepare("INSERT INTO project (name, enabled) VALUES ('Roadmap', 1)").run().lastInsertRowid)
@@ -131,9 +131,9 @@ test('Approve & file with the PIN advances; File items with no drafts files noth
   assert.ok(!config.FARM_STEP_INDEXES.has(FILE_ITEMS))
 })
 
-test('rejecting Review & close reworks to the nearest agent step, never File items', () => {
+test('rejecting Review & close reworks to Draft items (HZ-708), never File items', () => {
   seedPlan('P-REJECT', REVIEW_CLOSE)
-  assert.equal(defaultReworkTarget(REVIEW_CLOSE), METRICS_REVIEW)
+  assert.equal(defaultReworkTarget(REVIEW_CLOSE), DRAFT_ITEMS)
   assert.ok(!reworkTargets(REVIEW_CLOSE).some((t) => t.index === FILE_ITEMS))
 
   // An explicit File items target is refused, and the item stays at the gate.
@@ -141,8 +141,8 @@ test('rejecting Review & close reworks to the nearest agent step, never File ite
   assert.equal(cursorOf('P-REJECT'), REVIEW_CLOSE)
 
   assert.deepEqual(store.requestChanges('P-REJECT', 'close gate', 'redo the drafts review'), { ok: true })
-  assert.equal(cursorOf('P-REJECT'), METRICS_REVIEW)
+  assert.equal(cursorOf('P-REJECT'), DRAFT_ITEMS)
   const feedback = db.prepare('SELECT target FROM feedback WHERE item_id = ? ORDER BY id DESC LIMIT 1').get('P-REJECT')
-  assert.equal(feedback.target, STEPS[METRICS_REVIEW].agent)
+  assert.equal(feedback.target, STEPS[DRAFT_ITEMS].agent)
   orchestrator.cancel('P-REJECT')
 })

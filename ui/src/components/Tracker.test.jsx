@@ -9,7 +9,7 @@
 // success metric 11 — not just the domain module's filter logic.
 
 import { expect, test, vi } from 'vitest'
-import { render, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
+import { render, fireEvent, cleanup, waitFor, act, within } from '@testing-library/react'
 import { afterEach } from 'vitest'
 
 vi.mock('../api', () => ({
@@ -850,7 +850,7 @@ test('the forward button disables while its request runs, and two clicks make on
   let settle
   const onForward = vi.fn(() => new Promise((resolve) => (settle = resolve)))
   const { getByRole } = renderWithForward(rejectedItem, onForward)
-  const button = getByRole('button', { name: 'Forward to Accept the code' })
+  const button = getByRole('button', { name: 'Accept despite review findings' })
 
   fireEvent.click(button)
   fireEvent.click(button)
@@ -871,7 +871,7 @@ test('the forward button disables while its request runs, and two clicks make on
 test('a failed forward request re-enables the button too', async () => {
   const onForward = vi.fn(() => Promise.reject(new Error('network down')))
   const { getByRole } = renderWithForward(rejectedItem, onForward)
-  const button = getByRole('button', { name: 'Forward to Accept the code' })
+  const button = getByRole('button', { name: 'Accept despite review findings' })
   fireEvent.click(button)
   await waitFor(() => expect(button.disabled).toBe(false))
   expect(getByRole('alert').textContent).toMatch(/did not go through/)
@@ -879,7 +879,19 @@ test('a failed forward request re-enables the button too', async () => {
 
 test('the forward button is absent when the latest review did not reject (O2)', () => {
   const { queryByRole } = renderWithForward({ ...rejectedItem, reviewRejected: false }, vi.fn())
-  expect(queryByRole('button', { name: 'Forward to Accept the code' })).toBeNull()
+  expect(queryByRole('button', { name: 'Accept despite review findings' })).toBeNull()
+})
+
+test('HZ-710: the outstanding review findings are listed with Accept despite review findings', () => {
+  const findings = [
+    { file: 'server/src/app.js', line: 12, detail: 'the route skips the PIN' },
+    { file: null, line: null, detail: 'no test for the refusal' },
+  ]
+  const { getByRole } = renderWithForward({ ...rejectedItem, reviewFindings: findings }, vi.fn())
+  const list = getByRole('list', { name: 'Outstanding review findings' })
+  const rows = within(list).getAllByRole('listitem').map((li) => li.textContent)
+  expect(rows).toEqual(['server/src/app.js:12 — the route skips the PIN', 'no test for the refusal'])
+  expect(getByRole('button', { name: 'Accept despite review findings' })).toBeTruthy()
 })
 
 test("the Accept gate shows who forwarded it and the forwarded run's findings, not the newest review (R12)", () => {

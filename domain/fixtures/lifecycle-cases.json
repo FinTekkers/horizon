@@ -735,6 +735,14 @@
     "agentStepIndexes": [
       { "case": "agent entries only, in order", "expect": [0, 2] }
     ],
+    "askStartHold": [
+      { "case": "an item before implement is held by nothing, even with an open blocking ask", "item": { "cursor": 7 }, "asks": [{ "id": 1, "status": "open", "title": "A", "filed": null }], "expect": null },
+      { "case": "a change item at implement is held by an open blocking ask", "item": { "cursor": 11 }, "asks": [{ "id": 1, "status": "open", "title": "A", "filed": null }], "expect": { "askId": 1, "title": "A", "filedItemId": null } },
+      { "case": "a change item at implement is held by a filed ask until its item merges", "item": { "cursor": 11 }, "asks": [{ "id": 2, "status": "filed", "title": "B", "filed": { "id": "HZ-2", "title": "B", "cursor": 12, "kind": "change" } }], "expect": { "askId": 2, "title": "B", "filedItemId": "HZ-2" } },
+      { "case": "a filed ask whose item merged holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 3, "status": "filed", "title": "C", "filed": { "id": "HZ-3", "title": "C", "cursor": 14, "kind": "change", "merged_at": "2026-11-05 00:00:00" } }], "expect": null },
+      { "case": "a filed ask whose item no longer exists holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 4, "status": "filed", "title": "D", "filed": null }], "expect": null },
+      { "case": "a task at execute is held by an open blocking ask", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 5, "status": "open", "title": "E", "filed": null }], "expect": { "askId": 5, "title": "E", "filedItemId": null } }
+    ],
 
     "gateStepIndexes": [
       { "case": "gate entries only, in order", "expect": [1] }
@@ -827,9 +835,10 @@
 
     "defaultReworkTarget": [
       { "case": "the accept gate sends back to the implement step", "gateLabel": "Accept the code", "expectLabel": "Specialist agent implements" },
-      { "case": "any other gate walks back to the nearest earlier agent step", "gateLabel": "Review before execution", "expectLabel": "Summarize reviews & recommend" },
+      { "case": "HZ-708: Review before execution sends back to the plan it reviews", "gateLabel": "Review before execution", "expectLabel": "Draft implementation plan" },
       { "case": "the approve-the-run gate sends back to the run plan, not the impact review", "gateLabel": "Approve the run", "expectLabel": "Run plan" },
-      { "case": "HZ-435: a trivial item walks past the skipped summary to the QA review", "gateLabel": "Review before execution", "item": { "lane": "trivial" }, "expectLabel": "QA reviews the test plan" }
+      { "case": "HZ-435: a trivial item keeps a declared target its lane does not skip", "gateLabel": "Review before execution", "item": { "lane": "trivial" }, "expectLabel": "Draft implementation plan" },
+      { "case": "HZ-708: a lane that skips the declared target walks back from the gate instead", "gateLabel": "Approve the high-level design", "item": { "lane": "trivial" }, "expectLabel": "Set guardrails" }
     ],
 
     "LANES": [{ "case": "the lanes, in the order steps.json declares them", "expect": ["trivial"] }],
@@ -883,10 +892,16 @@
       { "case": "another kind's key is wrong_kind", "ref": "task.approve-run", "kind": "change", "expect": { "error": "wrong_kind" } }
     ],
 
+    "mergedFloor": [
+      { "case": "a merged change item may move no earlier than Accept the code", "item": { "kind": "change", "merged_at": "2026-11-01 00:00:00" }, "expectLabel": "Accept the code" },
+      { "case": "an unmerged change item has no floor", "item": { "kind": "change", "merged_at": null }, "expect": null },
+      { "case": "a task item has no floor even with merged_at set", "item": { "kind": "task", "merged_at": "2026-11-01 00:00:00" }, "expect": null }
+    ],
+
     "sendBackTargetOf": [
       { "case": "Accept the code sends back to the implement step", "gateKey": "change.accept-code", "expectKey": "change.implement" },
       { "case": "Approve the run sends back to Run plan", "gateKey": "task.approve-run", "expectKey": "task.run-plan" },
-      { "case": "a gate with no declared target has none", "gateKey": "change.review-before-exec", "expect": null },
+      { "case": "HZ-708: Review before execution sends back to the plan", "gateKey": "change.review-before-exec", "expectKey": "change.draft-plan" },
       { "case": "an agent step has none", "gateKey": "change.implement", "expect": null }
     ]
   },

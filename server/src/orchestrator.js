@@ -11,7 +11,8 @@
 
 import http from 'node:http'
 import https from 'node:https'
-import { db } from './db.js'
+import { db, dropLegacyRejectedColumn } from './db.js'
+import { STEP_COLUMNS, moveItem, writeStepCompletion } from './moveItem.js'
 import { hasNoProject, unlinkedProjectId } from './membership.js'
 import { AGENTS } from './agentTokens.js'
 import {
@@ -62,8 +63,9 @@ import {
   finishGateAction,
   getConflictRun as conflictRunOf,
   sweepGateActions,
-  recoverRejectedItems,
+  recoverLegacyRejected,
   blockersOf,
+  startHoldOf,
   requestChanges,
   reviewRejected,
   isProjectEnabled,
@@ -931,9 +933,13 @@ export async function resolveConflicts(id, actor = 'You', { startedBy = 'human',
     addEvent(id, { who: 'Horizon', text: startedEvent, color: '#0E6E74', initials: 'HZ' })
   }
 
+  // HZ-708: the item's newest run when the claim was taken. An escalation that
+  // comes back after the item left the gate — even one that has since returned —
+  // must not send fresh work back (see staleEscalationReason).
+  const arrivalRunId = lastStepRunId(id)
   let outcome = { state: 'failed', reason: 'conflict resolution stopped unexpectedly' }
   try {
-    const run = await runConflictResolution(id, item, actor)
+    const run = await runConflictResolution(id, item, actor, arrivalRunId)
     outcome = { state: run.state, reason: run.reason }
     return run.result
   } finally {
@@ -951,9 +957,50 @@ function recordFarmCheckPass(item, report, source) {
   recordCheckPass({ repo: item.repo, itemId: item.id, sha, finishedAt: report[CHECKS_FINISHED_AT_KEY], source })
 }
 
+function lastStepRunId(id) {
+  return db.prepare('SELECT MAX(id) AS id FROM step_run WHERE item_id = ?').get(id)?.id ?? null
+}
+
+// HZ-708: why an escalation that just came back must not move the item, or
+// null when the item still waits at Accept the code as it did when the claim
+// was taken. Coming back to the gate always re-runs the implement and review
+// steps, so a newer step_run means the item left and returned meanwhile.
+function staleEscalationReason(id, arrivalRunId) {
+  const gate = STEPS[ACCEPT_GATE_INDEX].label
+  const now = getItem(id)
+  if (!now) return 'the item is no longer on the board'
+  if (isClosed(now)) return `the item is no longer waiting at ${gate} (it is closed)`
+  if (isAbandoned(now)) return `the item is no longer waiting at ${gate} (it was abandoned)`
+  if (now.merged_at) return `the item is no longer waiting at ${gate} (its PR has merged)`
+  if (now.cursor !== ACCEPT_GATE_INDEX) {
+    return `the item is no longer waiting at ${gate} (now at ${STEPS[now.cursor]?.label ?? 'another step'})`
+  }
+  if (lastStepRunId(id) !== arrivalRunId) return `the item left ${gate} and came back while the resolver ran`
+  return null
+}
+
+// The resolver's escalation: send the item back to implement, unless it has
+// moved on since the claim. The check and the send-back run in one tick, so
+// nothing can move the item between them.
+function escalate(id, item, reason, actor, arrivalRunId) {
+  const stale = staleEscalationReason(id, arrivalRunId)
+  if (stale) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: `ignored the conflict resolver's escalation on PR #${item.pr} (${reason}): ${stale} — nothing was sent back`,
+      color: '#0E6E74',
+      initials: 'RS',
+    })
+    const why = `escalation not applied: ${stale}`
+    return { result: { error: 'stale_escalation', reason: why }, state: 'failed', reason: why }
+  }
+  requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
+  return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
+}
+
 // The resolver call itself; returns { result, state, reason } — the route's
 // reply plus the conflictRun outcome resolveConflicts() records.
-async function runConflictResolution(id, item, actor) {
+async function runConflictResolution(id, item, actor, arrivalRunId) {
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
@@ -978,9 +1025,7 @@ async function runConflictResolution(id, item, actor) {
     if (err.status === 409 && err.code === 'cancelled') {
       return { result: { error: 'cancelled' }, state: 'failed', reason: FARM_RESOLVE_CANCELLED_REASON }
     }
-    const reason = `automatic conflict resolution could not run (${err.message})`
-    requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
-    return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
+    return escalate(id, item, `automatic conflict resolution could not run (${err.message})`, actor, arrivalRunId)
   }
 
   // HZ-327: the resolver's flakes and per-test results, resolved or not.
@@ -1011,8 +1056,7 @@ async function runConflictResolution(id, item, actor) {
   }
 
   const reason = CONFLICT_ESCALATION_REASONS[result.reason] || result.detail || 'conflict resolution could not complete automatically'
-  requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
-  return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
+  return escalate(id, item, reason, actor, arrivalRunId)
 }
 
 function projectPayload(projectId) {
@@ -1335,8 +1379,11 @@ export const MOCK_STEP_BEHAVIOR = {
 }
 
 // Whether an item may start a new step: its project must be enabled (HZ-207).
+// HZ-731: Implement (a Task's Execute) also waits until every blocking ask is
+// dismissed, or filed with its item merged or closed (store.startHoldOf). Only
+// a new dispatch waits: a run already in flight is never discarded for it.
 function runnable(item) {
-  return inFlightRunnable(item) && isProjectEnabled(item.project_id)
+  return inFlightRunnable(item) && isProjectEnabled(item.project_id) && !startHoldOf(item)
 }
 
 // The check a step already in flight is held to. It sets the project's
@@ -1349,7 +1396,6 @@ function inFlightRunnable(item) {
     !isClosed(item) &&
     !isAbandoned(item) &&
     !item.paused &&
-    !item.rejected &&
     // HZ-346: a run stopped on a rule holds the item until a dependency it
     // gained merges or closes, or a human resumes or sends it back (store.js).
     !item.rule_block_json &&
@@ -1591,7 +1637,7 @@ async function runLaneCheck(id, stepIndex) {
   // together, so the cursor crosses them in one move. nextCursor still decides
   // where it lands, so a skipped row is never landed on.
   const last = Math.max(...laneCheckIndexes(now))
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor({ ...now, cursor: last }), id)
+  writeStepCompletion(id, nextCursor({ ...now, cursor: last }))
   addEvent(id, {
     who: 'Horizon',
     text: `plan sections checked — ${PLAN_SECTIONS.join(', ')} present`,
@@ -1660,7 +1706,7 @@ async function runServerStep(id, stepIndex) {
   db.prepare("UPDATE step_run SET status = 'done', output = ?, ended_at = datetime('now') WHERE id = ?").run(result.output ?? summary, runId)
   // HZ-550: Horizon's own code, no agent — 0 tokens, labelled non-agent.
   recordRunUsage(runId, NON_AGENT)
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+  writeStepCompletion(id, nextCursor(getItem(id)))
   addEvent(id, { who: 'Horizon', text: `completed “${step.label}” — ${summary}`, color: '#5E4380', initials: 'HZ' })
   notifyChange()
   dispatching.delete(id)
@@ -1731,13 +1777,7 @@ function sendBackToImplement(id, { feedback, fix = null, event }) {
 // and never a human's (a human's feedback is 'ui').
 function sendBackTo(id, stepIndex, { feedback, fix = null, event, source = 'ui' }) {
   db.prepare('INSERT INTO feedback (item_id, target, message, source) VALUES (?, ?, ?, ?)').run(id, STEPS[stepIndex].agent, feedback, source)
-  if (fix) {
-    db.prepare(
-      "UPDATE work_item SET cursor = ?, fix_pass = ?, fix_findings_json = ?, updated_at = datetime('now') WHERE id = ?",
-    ).run(stepIndex, fix.pass, fix.findingsJson, id)
-  } else {
-    db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(stepIndex, id)
-  }
+  writeStepCompletion(id, stepIndex, fix ? { fix_pass: fix.pass, fix_findings_json: fix.findingsJson } : {})
   addEvent(id, event)
 }
 
@@ -2281,9 +2321,7 @@ const PROJECT_CONTEXT_FEEDBACK = 5
 // rows; farm/pm_steps.py's render_project_context() owns all trimming and the
 // size cap, so there is one owner for the budget.
 //
-// `rejected` is deliberately not filtered on: it means "sent back right now"
-// (store.js resets it as the item advances), and those items are often the
-// most relevant context. Abandoned items are dropped.
+// Abandoned items are dropped.
 export function buildProjectContext(itemId) {
   const row = db.prepare('SELECT project_id FROM work_item WHERE id = ?').get(itemId)
   const projectId = row?.project_id ?? null
@@ -2415,8 +2453,11 @@ const PATCH_FIELD_LABELS = { desc: 'Outcome', metric: 'Success metric', guardrai
 // an object that merges into one JSON column while every other field is a plain
 // column assignment — building `SET <key> = ?` straight off the patch keys (as
 // both callers used to) would emit `SET personas = ?` and fail.
-function writeWorkItemPatch(id, item, patch) {
-  const fields = Object.keys(patch || {}).filter((f) => f !== 'personas')
+//
+// HZ-710: a patch never moves the item — its step columns, which only
+// moveItem.js writes, are dropped. Exported for move-item-single-writer.test.mjs.
+export function writeWorkItemPatch(id, item, patch) {
+  const fields = Object.keys(patch || {}).filter((f) => f !== 'personas' && !STEP_COLUMNS.includes(f))
   const assignments = fields.map((f) => `${f} = ?`)
   const values = fields.map((f) => patch[f])
   if (patch?.personas) {
@@ -2837,9 +2878,7 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
 
   const passed = delta ? delta.passed : verdict.code_review.verdict === 'pass' && verdict.qa_review.verdict === 'pass'
   if (passed) {
-    db.prepare(
-      "UPDATE work_item SET cursor = ?, fix_pass = 0, fix_findings_json = NULL, updated_at = datetime('now') WHERE id = ?",
-    ).run(nextCursor(getItem(id)), id)
+    writeStepCompletion(id, nextCursor(getItem(id)), { fix_pass: 0, fix_findings_json: null })
     addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
     postStepComment(getItem(id), REVIEW_STEP_INDEX, attempt, text, patch, isMock, artifactMd)
     notifyChange()
@@ -2886,11 +2925,30 @@ function finalizeReviewStep(id, runId, text, artifactMd, verdict, patch, isMock,
 // cursor — Accept the code is still a gate, decided with the gate PIN.
 // forwarded_review_run_id / forwarded_by / forwarded_sha say which verdict the
 // gate shows, who sent it there, and which commit that verdict read.
-function forwardToAcceptGate(id, { who, initials, reason, reviewRunId }) {
-  db.prepare(
-    `UPDATE work_item SET cursor = ?, fix_pass = 0, fix_findings_json = NULL, forwarded_review_run_id = ?,
-       forwarded_by = ?, forwarded_sha = last_reviewed_sha, updated_at = datetime('now') WHERE id = ?`,
-  ).run(ACCEPT_GATE_INDEX, reviewRunId, who, id)
+//
+// HZ-710: the cap is the review step completing; a human's forward is a move —
+// "Accept despite review findings", an approve at Accept the code whose note
+// lists the findings still outstanding. Returns the event, or the move's
+// refusal.
+function forwardToAcceptGate(id, { who, initials, reason, reviewRunId, human = false }) {
+  const row = db.prepare('SELECT last_reviewed_sha, fix_findings_json FROM work_item WHERE id = ?').get(id)
+  const fields = {
+    fix_pass: 0,
+    fix_findings_json: null,
+    forwarded_review_run_id: reviewRunId,
+    forwarded_by: who,
+    forwarded_sha: row?.last_reviewed_sha ?? null,
+  }
+  const moved = human
+    ? moveItem(id, {
+        action: 'approve',
+        toKey: stepKeyAt(ACCEPT_GATE_INDEX),
+        who,
+        note: forwardNote(reason, row?.fix_findings_json),
+        fields,
+      })
+    : writeStepCompletion(id, ACCEPT_GATE_INDEX, fields)
+  if (moved.error) return moved
   const event = {
     who,
     text: `${reason} — forwarded to the human gate with the failing verdict attached (review run #${reviewRunId})`,
@@ -2901,6 +2959,22 @@ function forwardToAcceptGate(id, { who, initials, reason, reviewRunId }) {
   notifyChange()
   kick(id)
   return event
+}
+
+// The forward's item_move note: why, then each finding the failing review
+// left open, one per line, from the fix-pass record review wrote.
+const FORWARD_NOTE_MAX_CHARS = 2000
+function forwardNote(reason, findingsJson) {
+  let findings = []
+  try {
+    const parsed = JSON.parse(findingsJson ?? '[]')
+    if (Array.isArray(parsed)) findings = parsed
+  } catch {
+    findings = []
+  }
+  const lines = findings.map((f) => `- ${[f?.file, f?.line].filter((part) => part != null && part !== '').join(':') || 'general'}: ${f?.detail ?? ''}`.trim())
+  const text = lines.length > 0 ? `${reason}\nOutstanding findings:\n${lines.join('\n')}` : reason
+  return text.slice(0, FORWARD_NOTE_MAX_CHARS)
 }
 
 // HZ-185: a human with the gate PIN forwards an item the latest review just
@@ -2966,12 +3040,14 @@ async function forwardOrRefuse(id, item, actor, reviewRun) {
   if (rejection) {
     db.prepare("UPDATE feedback SET delivered_at = COALESCE(delivered_at, datetime('now')) WHERE id = ?").run(rejection.id)
   }
-  forwardToAcceptGate(id, {
+  const forwarded = forwardToAcceptGate(id, {
     who: actor,
     initials: 'YOU',
     reason: `skipped the remaining automated review cycles (cycle ${item.review_cycle_count}/${REVIEW_CYCLE_CAP} failed)`,
     reviewRunId: reviewRun.id,
+    human: true,
   })
+  if (forwarded.error) return { error: forwarded.error }
   return { ok: true, forwarded: true }
 }
 
@@ -3043,7 +3119,7 @@ function finalizeDeployStep(id, runId, text, artifactMd, verdict, patch, ran) {
     return
   }
 
-  db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+  writeStepCompletion(id, nextCursor(getItem(id)))
   addEvent(id, { who: agent.label, text: `completed “${step.label}” — ${text.slice(0, 300)}`, color: agent.color, initials: agent.initials })
   postStepComment(getItem(id), DEPLOY_STEP_INDEX, attempt, text, patch, false, artifactMd)
   notifyChange()
@@ -3369,7 +3445,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   } else {
     // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
     // back to (store.js requestChanges).
-    db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+    writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
     if (circular) {
       addEvent(id, {
         who: 'Horizon',
@@ -3856,7 +3932,7 @@ async function runMockStep(id, stepIndex, runId) {
     "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, runId)
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
-  db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(after), id)
+  writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${summary}`,
@@ -4184,8 +4260,10 @@ export async function init(log) {
     // Mock runs die with this process: close them; resume will re-kick.
     closeAllOrphanedRuns()
   }
-  const recovered = recoverRejectedItems()
+  // HZ-710: requeue any row still flagged rejected, then drop the flag.
+  const recovered = recoverLegacyRejected()
   if (recovered > 0) log.info(`Requeued ${recovered} rejected item(s) for rework`)
+  dropLegacyRejectedColumn()
   if (FARM_URL) {
     // HZ-333: the deploy queue resumes from the database — mid-window,
     // mid-publish or mid-deploy — then ticks on.
