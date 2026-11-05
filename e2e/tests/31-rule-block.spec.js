@@ -16,7 +16,7 @@ import { IMPLEMENT_STEP_INDEX, STEPS, endIndex } from '../../domain/js/lifecycle
 const DB_PATH = process.env.HORIZON_E2E_DB
 const RULE = 'guardrail 6: models first: no local workaround'
 const NEEDS = 'a ledger-models release with the fix'
-const EVENT = `stopped by a rule: “${RULE}” — needs: ${NEEDS} — add a dependency on the item that delivers it, resume to retry, or abandon`
+const EVENT = `stopped by a rule: “${RULE}” — needs: ${NEEDS} — add a dependency on the item that delivers it, release it with your gate PIN, or abandon`
 
 // HZ-365: the agent's full explanation — a summary line, then 3,000
 // characters in all with blank lines and single breaks kept.
@@ -201,7 +201,17 @@ function dependencyCount(itemId, dependsOnId) {
   }
 }
 
-test('HZ-580: a dependency added after the block leads the banner; Resume clears only the block and the item waits on it', async ({ page }) => {
+// HZ-713: releasing the block is the resume that clears it, so it needs a
+// browser session and the gate PIN. This spec sets its own PIN (earlier specs
+// rotate it); setGatePinDirect also locks the session, so no PIN rides on an
+// earlier verify and the dialog opens.
+test('HZ-580: a dependency added after the block leads the banner; Release with PIN clears only the block and the item waits on it', async ({ page }) => {
+  const db = openDb(DB_PATH)
+  try {
+    setGatePinDirect(db, ADMIN_EMAIL, '580580')
+  } finally {
+    db.close()
+  }
   await page.goto('/rule-wait')
   await expect(page.locator('.tracker__id')).toHaveText('RULE-WAIT')
   const banner = page.locator('#rule-block')
@@ -211,7 +221,9 @@ test('HZ-580: a dependency added after the block leads the banner; Resume clears
   await banner.getByRole('button', { name: "Show the agent's full explanation" }).click()
   expect(await banner.getByTestId('rule-block-needs').evaluate((el) => el.textContent)).toBe(LONG_NEEDS)
 
-  await banner.getByRole('button', { name: 'Resume' }).click()
+  await banner.getByRole('button', { name: 'Release with PIN' }).click()
+  await answerPinDialog(page, '580580')
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('580580')
   await expect(page.locator('#rule-block')).toHaveCount(0)
   await expect(page.locator('.tracker__status')).toHaveText('Blocked')
   await expect(page.locator('.dep-detail__section--blocked')).toContainText('RULE-DEP')

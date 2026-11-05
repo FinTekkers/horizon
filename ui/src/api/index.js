@@ -67,6 +67,8 @@ export const {
   resolveConflicts,
   forwardToAccept,
   setPaused,
+  releaseRuleBlock,
+  releaseUsageWait,
   setAutopilotOff,
   stopJob,
   resumeJob,

@@ -2342,11 +2342,32 @@ export function buildApp({
           required: ['paused'],
           properties: { paused: { type: 'boolean' } },
         },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      // HZ-713: a resume clears a rule block (store.setPaused), so on a
+      // blocked item it needs a browser session and the gate PIN. Pause, and
+      // resuming an item with no block, need only the login, as before.
+      if (request.body.paused === false && store.hasRuleBlock(request.params.id) && !humanAuthorized(request, reply)) return
+      const result = store.setPaused(request.params.id, request.body.paused)
+      return send(reply, result.error ? result : { ...result, ...actionState(request.params.id) })
+    },
+  )
+
+  // HZ-713: "Release now" on a usage wait — the held step runs again with its
+  // models' limits cleared (orchestrator.releaseUsageWait). Login only.
+  fastify.post(
+    '/api/items/:id/usage-wait/release',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => {
-      const result = store.setPaused(request.params.id, request.body.paused)
+      const result = orchestrator.releaseUsageWait(request.params.id, actorOf(request))
       return send(reply, result.error ? result : { ...result, ...actionState(request.params.id) })
     },
   )

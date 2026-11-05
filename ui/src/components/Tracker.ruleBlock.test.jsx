@@ -1,7 +1,8 @@
 // HZ-365: a rule-blocked item's page shows the banner — which rule stopped it,
 // the whole of what's needed (summary first, the agent's full explanation
-// behind a toggle) and HZ-346's ways to clear it (HZ-580 adds Resume). All agent text is
-// plain React text with its line breaks kept.
+// behind a toggle) and HZ-346's ways to clear it (HZ-580 adds Resume; HZ-713
+// makes it Release with PIN). All agent text is plain React text with its line
+// breaks kept.
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { useState } from 'react'
@@ -111,17 +112,25 @@ test('a single short line has no toggle', () => {
   expect(queryByRole('button', { name: /full explanation/ })).toBeNull()
 })
 
-test('no banner when the item is not rule-blocked, or is paused', () => {
+test('no banner when the item is not rule-blocked', () => {
   expect(banner(renderTracker(blockedItem(null)).container)).toBeNull()
-  cleanup()
-  expect(banner(renderTracker({ ...blockedItem(), paused: true }).container)).toBeNull()
+})
+
+// HZ-713: a paused, blocked item's Resume would be refused without the PIN,
+// so it shows the rule banner, and the header offers no Resume work.
+test('a paused, rule-blocked item shows the rule banner and no header Resume work', () => {
+  const { container, queryByRole } = renderTracker({ ...blockedItem(), paused: true })
+  expect(banner(container)).not.toBeNull()
+  expect(container.querySelectorAll('[data-hold-banner]').length).toBe(1)
+  expect(queryByRole('button', { name: 'Resume work' })).toBeNull()
 })
 
 test('Add dependency fires onAddDependency with the item id', () => {
   const spy = vi.fn()
   const { getByRole } = renderTracker(blockedItem(), { onAddDependency: spy })
   const button = getByRole('button', { name: 'Add dependency' })
-  expect(button.classList.contains('btn-resume')).toBe(true)
+  // HZ-713: only Release with PIN is styled as the continue action.
+  expect(button.classList.contains('btn-outline')).toBe(true)
   fireEvent.click(button)
   expect(spy).toHaveBeenCalledWith('LS-17')
 })
@@ -218,16 +227,17 @@ test('a dependency from before the block adds no lead line, and the summary stay
   expect(el.textContent).toContain(SUMMARY)
 })
 
-// HZ-580 metric 3: Resume is the paused banner's setPaused(false) path. The
-// server clearing the block is proven in server/test/rule-block.test.mjs and
-// the e2e journey; here the parent re-renders with what the server returns.
-function ResumeHarness({ initial, afterResume, onTogglePause }) {
+// HZ-580 metric 3: the banner's release clears the block. HZ-713: through
+// onReleaseRuleBlock, which sends the gate PIN (serverApi.releaseRuleBlock).
+// The server clearing the block is proven in
+// server/test/rule-block-release-pin.test.mjs and the e2e journey; here the
+// parent re-renders with what the server returns.
+function ResumeHarness({ initial, afterResume, onReleaseRuleBlock }) {
   const [item, setItem] = useState(initial)
-  const toggle = (id, paused) =>
-    Promise.resolve(onTogglePause(id, paused)).then(() => setItem(afterResume))
+  const release = (id) => Promise.resolve(onReleaseRuleBlock(id)).then(() => setItem(afterResume))
   return (
     <Tracker item={item} onBack={noop} onApprove={noop} onApproveWithComments={noop} onReject={noop} onResolveConflicts={noop}
-      onTogglePause={toggle} onRestartPhase={noop} onSetPersona={noop} onAbandon={noop} onAddDependency={noop} onAmendRule={noop} />
+      onTogglePause={noop} onReleaseRuleBlock={release} onRestartPhase={noop} onSetPersona={noop} onAbandon={noop} onAddDependency={noop} onAmendRule={noop} />
   )
 }
 
@@ -236,18 +246,18 @@ const DEP = { id: 'LM-389', title: 'Add settlement field', abandoned: false, mer
 test.each([
   ['an open dependency: the item then shows as blocked by it', { blocked: true, blockedBy: [DEP] }, 'Blocked'],
   ['no dependency: the item then shows as ready for its agent', { blocked: false, blockedBy: [] }, null],
-])('Resume sends one setPaused(false) and the rule-block banner goes away — %s', async (_name, deps, label) => {
+])('Release with PIN sends one release and the rule-block banner goes away — %s', async (_name, deps, label) => {
   const spy = vi.fn(() => Promise.resolve({ ok: true, paused: false }))
   const initial = { ...blockedItem(), ...deps }
   const after = { ...initial, ruleBlock: null, paused: false }
-  const { container, getByRole } = render(<ResumeHarness initial={initial} afterResume={after} onTogglePause={spy} />)
+  const { container, getByRole } = render(<ResumeHarness initial={initial} afterResume={after} onReleaseRuleBlock={spy} />)
   expect(container.querySelector('.tracker__status').textContent).toBe('Blocked by a rule')
 
   await act(async () => {
-    fireEvent.click(getByRole('button', { name: 'Resume' }))
+    fireEvent.click(getByRole('button', { name: 'Release with PIN' }))
   })
   expect(spy).toHaveBeenCalledTimes(1)
-  expect(spy).toHaveBeenCalledWith('LS-17', false)
+  expect(spy).toHaveBeenCalledWith('LS-17')
   expect(banner(container)).toBeNull()
   const status = container.querySelector('.tracker__status').textContent
   expect(status).toBe(label ?? itemStatus(after, true).label)
@@ -256,15 +266,28 @@ test.each([
   else expect(status).not.toMatch(/Blocked|Paused/)
 })
 
-test('two clicks on Resume while the call is pending send one call, and the button is disabled', () => {
+test('two clicks on Release with PIN while the call is pending send one call, and the button is disabled', () => {
   const spy = vi.fn(() => new Promise(() => {}))
-  const { getByRole } = renderTracker(blockedItem(), { onTogglePause: spy })
-  const button = getByRole('button', { name: 'Resume' })
+  const resume = vi.fn()
+  const { getByRole } = renderTracker(blockedItem(), { onReleaseRuleBlock: spy, onTogglePause: resume })
+  const button = getByRole('button', { name: 'Release with PIN' })
   fireEvent.click(button)
   fireEvent.click(button)
   expect(spy).toHaveBeenCalledTimes(1)
-  expect(spy).toHaveBeenCalledWith('LS-17', false)
+  expect(spy).toHaveBeenCalledWith('LS-17')
+  expect(resume).not.toHaveBeenCalled()
   expect(button.disabled).toBe(true)
+})
+
+// HZ-713: a refused release (wrong or no PIN) says so, and the banner stays.
+test('a refused release shows the PIN message and keeps the banner', async () => {
+  const spy = vi.fn(() => Promise.reject(new Error('human_gate_key_required')))
+  const { container, getByRole } = renderTracker(blockedItem(), { onReleaseRuleBlock: spy })
+  await act(async () => {
+    fireEvent.click(getByRole('button', { name: 'Release with PIN' }))
+  })
+  expect(getByRole('alert').textContent).toBe('Releasing a rule block needs your gate PIN.')
+  expect(banner(container)).not.toBeNull()
 })
 
 // HZ-580 metric 4: every action the block's text names has a button here.
@@ -277,5 +300,5 @@ test('every action in RULE_BLOCK_ACTIONS has a banner button, and the block text
     expect(button, `no button for "${phrase}"`).not.toBeNull()
     expect(ruleBlockActionsText()).toContain(phrase)
   }
-  expect(ruleBlockActionsText()).toBe('add a dependency on the item that delivers it, resume to retry, or abandon')
+  expect(ruleBlockActionsText()).toBe('add a dependency on the item that delivers it, release it with your gate PIN, or abandon')
 })

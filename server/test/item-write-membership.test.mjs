@@ -157,6 +157,7 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/move': { payload: { action: 'retry', from: 'change.implement' } },
   'POST /api/items/:id/feedback': { payload: { message: 'hello' } },
   'POST /api/items/:id/pause': { payload: { paused: true } },
+  'POST /api/items/:id/usage-wait/release': { payload: {} },
   'POST /api/items/:id/persona': { payload: { agent: Object.keys(PERSONAS)[0], persona: 'generalist' } },
   'PUT /api/items/:id/steps/:stepIndex/provider': { payload: { provider: 'default' } },
   'POST /api/items/:id/priority': { payload: { priority: 'High' } },
@@ -190,7 +191,7 @@ test('metric 1: a non-member gets exactly 404 on every member:item route; nothin
     .filter((r) => r.scope === 'member:item' && r.method !== 'GET' && r.method !== 'HEAD')
     .map((r) => `${r.method} ${r.url}`)
   assert.deepEqual(routes.sort(), Object.keys(MEMBER_ITEM_ROUTES).sort())
-  assert.equal(routes.length, 19)
+  assert.equal(routes.length, 20)
 
   const overlapBefore = overlapCalls
   const before = snapshot()

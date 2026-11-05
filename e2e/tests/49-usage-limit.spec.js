@@ -4,6 +4,7 @@
 // the DB (fixtures/seed.js), and the texts must survive a reload, which proves
 // they come from the database rather than client state. The wait is far in the
 // future and the second item sits at a gate, so the mock farm never kicks either.
+// HZ-713: a third waiting item is released by hand with Release now.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
@@ -12,6 +13,7 @@ import { STEPS, requiredStepIndex } from '../../domain/js/lifecycle.js'
 const DB_PATH = process.env.HORIZON_E2E_DB
 const WAIT_ID = 'UL-E2E-1'
 const FELL_ID = 'UL-E2E-2'
+const RELEASE_ID = 'UL-E2E-3'
 const IMPLEMENT = requiredStepIndex('Specialist agent implements')
 const ARCH = requiredStepIndex('Architecture review')
 const GATE = requiredStepIndex('Review before execution')
@@ -25,6 +27,8 @@ test.beforeAll(() => {
     if (db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(WAIT_ID)) return
     insertItem(db, { id: WAIT_ID, title: 'E2E fixture — every model usage-limited', cursor: IMPLEMENT })
     db.prepare('UPDATE work_item SET usage_wait_until = ? WHERE id = ?').run('2099-01-01T14:00:00.000Z', WAIT_ID)
+    insertItem(db, { id: RELEASE_ID, title: 'E2E fixture — usage wait released by hand', cursor: IMPLEMENT })
+    db.prepare('UPDATE work_item SET usage_wait_until = ? WHERE id = ?').run('2099-01-01T14:00:00.000Z', RELEASE_ID)
 
     insertItem(db, { id: FELL_ID, title: 'E2E fixture — ran on a fallback model', cursor: GATE })
     const runId = insertStepRun(db, {
@@ -64,4 +68,30 @@ test('a step that ran on a fallback model names the model and what it fell back 
 
   await page.reload()
   await expect(stepCard(page, ARCH).locator('.step-card__provider').getByText(NOTE)).toBeVisible({ timeout: 10_000 })
+})
+
+function waitColumn(id) {
+  const db = openDb(DB_PATH)
+  try {
+    return db.prepare('SELECT usage_wait_until, cursor FROM work_item WHERE id = ?').get(id)
+  } finally {
+    db.close()
+  }
+}
+
+test('HZ-713: Release now ends the wait and runs the same step again; a reload keeps it gone', async ({ page }) => {
+  await page.goto(`/${RELEASE_ID.toLowerCase()}`)
+  await expect(page.locator('.tracker__id')).toHaveText(RELEASE_ID)
+  const banner = page.locator('[data-hold-banner="usageLimit"]')
+  await expect(banner.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
+
+  await banner.getByRole('button', { name: 'Release now' }).click()
+  await expect(page.getByText(WAIT_TEXT)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('[data-hold-banner]')).toHaveCount(0)
+  await expect.poll(() => waitColumn(RELEASE_ID).usage_wait_until, { timeout: 10_000 }).toBeNull()
+
+  await page.reload()
+  await expect(page.locator('.tracker__id')).toHaveText(RELEASE_ID)
+  await expect(page.getByText(WAIT_TEXT)).toHaveCount(0)
+  await expect(page.locator('[data-hold-banner="usageLimit"]')).toHaveCount(0)
 })

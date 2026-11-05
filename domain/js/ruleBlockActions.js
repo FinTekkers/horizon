@@ -10,7 +10,7 @@
 
 export const RULE_BLOCK_ACTIONS = Object.freeze([
   Object.freeze({ key: 'addDependency', phrase: 'add a dependency on the item that delivers it' }),
-  Object.freeze({ key: 'resume', phrase: 'resume to retry' }),
+  Object.freeze({ key: 'resume', phrase: 'release it with your gate PIN' }),
   Object.freeze({ key: 'abandon', phrase: 'abandon' }),
 ])
 

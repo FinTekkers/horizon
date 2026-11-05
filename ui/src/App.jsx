@@ -689,6 +689,10 @@ function AuthenticatedApp({ user, onLogout }) {
           onAbandon={(id) => openComposer('abandon', id)}
           onAddDependency={(id) => setAddDependency({ itemId: id, fileNew: false })}
           onAmendRule={(id) => openComposer('amend', id)}
+          onReleaseRuleBlock={api.releaseRuleBlock}
+          onReleaseUsageWait={api.releaseUsageWait}
+          onOpenProjectSettings={(projectId) => openAdmin(`/admin/projects/${projectId}`)}
+          onOpenItem={openItem}
         />
       )}
 

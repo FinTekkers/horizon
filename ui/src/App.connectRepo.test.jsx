@@ -38,6 +38,8 @@ vi.mock('./api', () => ({
   getPlanProgress: () => [],
   getRestartSent: () => null,
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   createProject: vi.fn(),
   connectTenantRepo: vi.fn(async () => CONNECTED),
   getTenantChecks: vi.fn(async () => ({ repo: 'Acme/site', checks: { install: null, test: null, e2e: null } })),
