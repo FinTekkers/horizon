@@ -2,7 +2,7 @@
 // confirmed and gate-PIN protected (HZ-704: the PIN dialog); the right PIN
 // flips the project and the board picks its items up. A wrong PIN is refused by the route (server/test/gate-pin-routes.test.mjs).
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -29,7 +29,8 @@ test('flipping a project on with the gate PIN enables it and the board picks its
   await expect(page.locator('.board__title')).toBeVisible({ timeout: 10_000 })
   await expect(page.getByText('E2E fixture — Delta item')).toHaveCount(0)
 
-  await page.goto('/admin')
+  // HZ-764: the switch is on the project's Settings tab.
+  await page.goto(await adminProjectPath(page, DELTA, { tab: 'settings' }))
   const toggle = page.getByRole('switch', { name: `${DELTA} enabled` })
   await expect(toggle).toHaveAttribute('aria-checked', 'false')
 

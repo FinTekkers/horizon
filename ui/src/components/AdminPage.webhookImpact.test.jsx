@@ -81,16 +81,23 @@ function impactAfterRow(container, repo) {
   return next?.classList.contains('repo-webhook__impact') ? next : null
 }
 
+// HZ-764: each repository has its own page; `show` switches to a section or,
+// with `repo`, to that repository's page.
+const repoRoute = (repo) => ({ section: 'projects', project: '7', tab: 'repositories', repo })
+
 function renderWith({ repos, webhooks, targets = TARGETS }) {
   if (targets instanceof Error) api.getDeployTargets.mockRejectedValue(targets)
   else api.getDeployTargets.mockResolvedValue({ targets })
   api.getRepoWebhooks.mockResolvedValue({ webhooks })
   const projects = [{ id: 7, name: 'Hooks', enabled: true, repos: repos.map((repo, i) => ({ repo, prefix: `P${i}` })) }]
-  const page = (section) => <AdminPage sync={{}} projects={projects} onBack={() => {}} route={{ section }} />
-  const utils = render(page('projects'))
+  const page = (route) => <AdminPage sync={{}} projects={projects} onBack={() => {}} route={route} />
+  const utils = render(page(repoRoute(repos[0])))
   // HZ-564: Admin shows one section at a time; the shell keeps its deploy
   // targets read across a switch.
-  return { ...utils, show: (section) => utils.rerender(page(section)) }
+  return {
+    ...utils,
+    show: (section, repo = repos[0]) => utils.rerender(page(section === 'projects' ? repoRoute(repo) : { section })),
+  }
 }
 
 for (const status of ['missing', 'mismatched']) {
@@ -120,23 +127,25 @@ test('a missing webhook on a repo with no deploy target says only GitHub changes
 })
 
 test('in one project, each repo row carries its own impact text', async () => {
-  const { container } = renderWith({
+  const { container, show } = renderWith({
     repos: ['FinTekkers/ui-service', 'acme/web'],
     webhooks: [hook('FinTekkers/ui-service', 'missing'), hook('acme/web', 'missing')],
   })
   const block = within(projectBlock(container, 'Hooks'))
   await block.findByText(RELEASES_BLOCKED)
-  await block.findByText(SYNC_DELAY_ONLY)
-
   const target = impactAfterRow(container, 'FinTekkers/ui-service')
-  const plain = impactAfterRow(container, 'acme/web')
   expect(within(target).getByText(RELEASES_BLOCKED)).toBeTruthy()
   expect(within(target).getByText(SYNC_CONTINUES)).toBeTruthy()
   expect(within(target).queryByText(SYNC_DELAY_ONLY)).toBeNull()
+  expect(block.getAllByText(RELEASES_BLOCKED)).toHaveLength(1)
+
+  show('projects', 'acme/web')
+  const other = within(projectBlock(container, 'Hooks'))
+  await other.findByText(SYNC_DELAY_ONLY)
+  const plain = impactAfterRow(container, 'acme/web')
   expect(within(plain).getByText(SYNC_DELAY_ONLY)).toBeTruthy()
   expect(within(plain).queryByText(RELEASES_BLOCKED)).toBeNull()
-  expect(block.getAllByText(RELEASES_BLOCKED)).toHaveLength(1)
-  expect(block.getAllByText(SYNC_DELAY_ONLY)).toHaveLength(1)
+  expect(other.getAllByText(SYNC_DELAY_ONLY)).toHaveLength(1)
 })
 
 test('Fix webhook says what it does, before and after the confirm form opens', async () => {

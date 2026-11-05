@@ -17,7 +17,7 @@
 // (STALE), so the board's 30-day filter hides them and `layout-board` keeps
 // its layout; their pages still open by URL.
 
-import { insertItem, insertProject, insertStepRun, insertDependency, insertSpawn, insertGateAction } from './seed.js'
+import { insertItem, insertStepRun, insertDependency, insertSpawn, insertGateAction } from './seed.js'
 import { LATER } from './layout-screens-seed.js'
 import {
   ACCEPT_GATE_INDEX,
@@ -37,6 +37,9 @@ import { FENCE_INFO } from '../../domain/js/planInventory.js'
 const STALE = '2001-01-01 00:00:00'
 
 export const PROJECT = 'Journey screens project'
+// HZ-764: a fixed id, so the config's journey-admin-projects path can name the
+// project's Automation tab.
+export const PROJECT_ID = 613
 // rulesKey('project', PROJECT) in server/src/definitions.js.
 export const RULES_KEY = 'journey-screens-project'
 
@@ -458,7 +461,7 @@ function seedTasksAndPlans(db) {
 // A project with Autopilot on shadow and a step on Muse, and three saved
 // versions of its rules.
 function seedProject(db) {
-  const projectId = insertProject(db, { name: PROJECT })
+  const projectId = Number(db.prepare('INSERT INTO project (id, name, enabled) VALUES (?, ?, 1)').run(PROJECT_ID, PROJECT).lastInsertRowid)
   db.prepare("UPDATE project SET autopilot = 'shadow', provider_defaults_json = ? WHERE id = ?").run(JSON.stringify({ 0: 'muse' }), projectId)
   db.prepare("INSERT INTO project_event (project_id, kind, old_value, new_value, who, created_at) VALUES (?, 'autopilot', 'off', 'shadow', 'Admin', ?)").run(
     projectId,

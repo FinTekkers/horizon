@@ -111,3 +111,16 @@ export async function verifySharedSession(pin) {
   }
 }
 
+
+// HZ-764: Admin's URL for one project's page — a tab, or one of its
+// repositories — with the project's id read from the API by name. Specs open
+// these explicitly: bare /admin lands on Needs attention whenever an earlier
+// spec left a flake or a failed deploy behind.
+export async function adminProjectPath(page, name, { tab = null, repo = null } = {}) {
+  const res = await page.request.get('/api/items')
+  const project = ((await res.json()).projects || []).find((p) => p.name === name)
+  if (!project) throw new Error(`adminProjectPath: no project named ${name}`)
+  const base = `/admin/projects/${project.id}`
+  if (repo) return `${base}/repos/${repo}`
+  return tab ? `${base}/${tab}` : base
+}

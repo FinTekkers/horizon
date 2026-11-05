@@ -9,6 +9,17 @@
 // `memberOnly` sections are a member's own project settings, over the tenant
 // API; the owner sets those in Projects and never sees them.
 export const ADMIN_SECTIONS = [
+  // HZ-764: broken webhooks, flaky tests and failed deploys across the
+  // owner's projects, each with its fix. Admin opens here when it has rows.
+  {
+    key: 'attention',
+    ownerOnly: true,
+    group: 'Needs attention',
+    label: 'Needs attention',
+    keywords: ['webhook', 'flaky', 'failed deploy', 'broken', 'fix'],
+  },
+  // HZ-764: AdminNav lists one entry per project in place of this one, each
+  // carrying these keywords, then New project.
   {
     key: 'projects',
     ownerOnly: true,
@@ -32,6 +43,9 @@ export const ADMIN_SECTIONS = [
       'prefix',
       'default branch',
       'connect',
+      'isolation',
+      'agents',
+      'automation',
     ],
   },
   {
@@ -74,7 +88,8 @@ export const ADMIN_GROUPS = [...new Set(ADMIN_SECTIONS.map((s) => s.group))]
 
 const SECTION_KEYS = new Set(ADMIN_SECTIONS.map((s) => s.key))
 
-// HZ-660: the section a member lands on in place of an owner-only one.
+// HZ-660: the section a member lands on in place of an owner-only one (bare
+// `/admin` included).
 export const MEMBER_ADMIN_SECTION = 'account'
 
 // The sections this user may open, in order.
@@ -92,35 +107,56 @@ export function isMemberOnlySection(section) {
   return ADMIN_SECTIONS.some((s) => s.key === section && s.memberOnly)
 }
 
-export const ADMIN_HOME = { section: 'projects', project: null, repo: null, tab: null, unknown: false }
+// HZ-764: a project page's tabs, in order. The first is the default, so its
+// URL is the bare project path.
+export const PROJECT_TABS = ['repositories', 'automation', 'agents', 'settings']
+
+// Bare `/admin`: no section yet. AdminPage picks one (HZ-764's landing rule);
+// a member's goes to Account (HZ-660).
+export const ADMIN_HOME = { section: null, project: null, repo: null, tab: null, home: true, unknown: false }
+
+const PROJECT_ID = /^\d+$/
 
 // `rest` is the path after `/admin`, decoded, with no leading or trailing
-// slash: '' | 'deploys' | 'projects/<project>/<repo>/<tab>'. Projects takes
-// up to three more segments, kept for the per-repository pages to come; until
-// then they show Projects with the URL left as it is. Anything else is
-// unknown, shows Projects, and App rewrites its URL to `/admin`.
+// slash: '' | 'deploys' | 'attention' | 'projects/new' | 'projects/<id>' |
+// 'projects/<id>/<tab>' | 'projects/<id>/repos/<owner>/<name>'. `<id>` is the
+// numeric project id. Anything else, the pre-HZ-764
+// 'projects/<slug>/<repo>/<tab>' included, is unknown: Admin opens as for bare
+// `/admin` and App rewrites the URL to `/admin`.
 export function parseAdminPath(rest) {
   const parts = rest ? rest.split('/').filter(Boolean) : []
   if (parts.length === 0) return ADMIN_HOME
+  const unknown = { ...ADMIN_HOME, home: false, unknown: true }
   const section = parts[0].toLowerCase()
-  if (!SECTION_KEYS.has(section)) return { ...ADMIN_HOME, unknown: true }
-  if (section === 'projects' && parts.length <= 4) {
-    const [, project = null, repo = null, tab = null] = parts
-    return { section, project, repo, tab: tab && tab.toLowerCase(), unknown: false }
-  }
-  if (parts.length > 1) return { ...ADMIN_HOME, unknown: true }
-  return { ...ADMIN_HOME, section }
+  if (!SECTION_KEYS.has(section)) return unknown
+  const route = { ...ADMIN_HOME, home: false, section }
+  if (section !== 'projects') return parts.length === 1 ? route : unknown
+  const [, project, ...more] = parts
+  if (project === undefined) return route
+  if (project.toLowerCase() === 'new') return more.length === 0 ? { ...route, project: 'new' } : unknown
+  if (!PROJECT_ID.test(project)) return unknown
+  if (more.length === 0) return { ...route, project }
+  const tab = more[0].toLowerCase()
+  if (more.length === 1 && PROJECT_TABS.includes(tab)) return { ...route, project, tab }
+  if (more.length === 3 && tab === 'repos') return { ...route, project, tab: 'repositories', repo: `${more[1]}/${more[2]}` }
+  return unknown
 }
 
-// The path (no base prefix) for a section, e.g. `/admin/deploys`.
-export function adminPath({ section }) {
-  return SECTION_KEYS.has(section) ? `/admin/${section}` : '/admin'
+// The path (no base prefix) for a section, e.g. `/admin/deploys`, or for a
+// project page, its tab or one of its repositories. The Repositories tab is the
+// bare project path.
+export function adminPath({ section, project = null, tab = null, repo = null }) {
+  if (!SECTION_KEYS.has(section)) return '/admin'
+  if (section !== 'projects' || project == null) return `/admin/${section}`
+  const base = `/admin/projects/${encodeURIComponent(project)}`
+  if (repo) return `${base}/repos/${String(repo).split('/').map(encodeURIComponent).join('/')}`
+  return tab && tab !== PROJECT_TABS[0] ? `${base}/${tab}` : base
 }
 
 // The section keys whose label, group or keywords contain the query, case
-// insensitive. `extraTerms` adds per-section words from live data (project
-// and repository names under `projects`). An empty query matches every one.
-// `sections` is the list to search: AdminNav passes visibleSections(isOwner).
+// insensitive. `extraTerms` adds per-section words from live data. An empty
+// query matches every one. `sections` is the list to search: AdminNav passes
+// its entries (one per project in place of `projects`).
 export function matchSections(query, extraTerms = {}, sections = ADMIN_SECTIONS) {
   const q = query.trim().toLowerCase()
   const all = sections.map((s) => s.key)

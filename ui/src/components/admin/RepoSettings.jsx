@@ -1,5 +1,6 @@
 import { Fragment, useState } from 'react'
 import { saveRepoChecks, saveRepoMarks, saveRepoTestEnvFile, getRepoCheckDefaults } from '../../api'
+import { MoreHelp } from './MoreHelp'
 
 const CHECK_SLOTS = [
   { key: 'install', label: 'Install' },
@@ -179,15 +180,17 @@ export function RepoChecks({ projectId, repoConn }) {
       </button>
       {open && (
         <form className="repo-checks__form" onSubmit={submit}>
-          <div className="gh-note">
-            The greyed hints are suggestions detected on the hub clone (a fresh workspace may differ); a hint never
-            runs until you type it in and save. Only the filled boxes run, in this order; empty ones are skipped,
-            never auto-filled. With every box empty, implement fails unless the repo is marked 'no checks'. Each runs as <code>sh -c</code>, so a missing program fails the check rather than being
-            skipped. One command per line: each line runs and is timed on its own, in order, and the first failure
-            stops the run. Only the first install line is cached, so put the dependency install there. Commands
-            are read when a step starts, so an edit applies from the next run. Do not put tokens or secrets in
-            commands.
-          </div>
+          <MoreHelp label="More about check commands">
+            <div className="gh-note">
+              The greyed hints are suggestions detected on the hub clone (a fresh workspace may differ); a hint never
+              runs until you type it in and save. Only the filled boxes run, in this order; empty ones are skipped,
+              never auto-filled. With every box empty, implement fails unless the repo is marked 'no checks'. Each runs as <code>sh -c</code>, so a missing program fails the check rather than being
+              skipped. One command per line: each line runs and is timed on its own, in order, and the first failure
+              stops the run. Only the first install line is cached, so put the dependency install there. Commands
+              are read when a step starts, so an edit applies from the next run. Do not put tokens or secrets in
+              commands.
+            </div>
+          </MoreHelp>
           {CHECK_SLOTS.map(({ key, label }) => (
             <Fragment key={key}>
               <label className="field">
@@ -219,12 +222,14 @@ export function RepoChecks({ projectId, repoConn }) {
               )}
             </Fragment>
           ))}
-          <div className="gh-note">
-            {TARGETED_LABEL}: on a fix round the farm runs that slot alone first, with last round's failed tests in{' '}
-            <code>HORIZON_FAILED_TESTS</code> (one <code>file</code> or <code>file:line</code> per line). If they still
-            fail, the next fix starts at once; if they pass, every check runs as usual. Tick it only once the slot's
-            command reads that variable.
-          </div>
+          <MoreHelp label="More about the targeted run">
+            <div className="gh-note">
+              {TARGETED_LABEL}: on a fix round the farm runs that slot alone first, with last round's failed tests in{' '}
+              <code>HORIZON_FAILED_TESTS</code> (one <code>file</code> or <code>file:line</code> per line). If they still
+              fail, the next fix starts at once; if they pass, every check runs as usual. Tick it only once the slot's
+              command reads that variable.
+            </div>
+          </MoreHelp>
           <div className="project-block__add">
             <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
               {busy ? 'Saving…' : 'Save commands'}
@@ -282,14 +287,16 @@ function RepoTestEnvFile({ projectId, repoConn }) {
           }}
         />
       </label>
-      <div className="gh-note">
-        Optional. An absolute path on the farm host to a file of <code>NAME=value</code> lines, e.g. a test
-        login. Horizon stores the path only; the farm reads the file each time this repo's test and e2e checks
-        and its deploy smoke check run, and passes the values to those commands only. Agents see the variable
-        names, never the values. Every value is masked as <code>[redacted]</code> in logs and reports, so a
-        common word used as a value is masked everywhere too. A missing or unreadable file fails the checks.
-        Validate does not use this file yet, so a green Validate says nothing about logged-in coverage.
-      </div>
+      <MoreHelp label="More about the env file">
+        <div className="gh-note">
+          Optional. An absolute path on the farm host to a file of <code>NAME=value</code> lines, e.g. a test
+          login. Horizon stores the path only; the farm reads the file each time this repo's test and e2e checks
+          and its deploy smoke check run, and passes the values to those commands only. Agents see the variable
+          names, never the values. Every value is masked as <code>[redacted]</code> in logs and reports, so a
+          common word used as a value is masked everywhere too. A missing or unreadable file fails the checks.
+          Validate does not use this file yet, so a green Validate says nothing about logged-in coverage.
+        </div>
+      </MoreHelp>
       <div className="project-block__add">
         <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
           {busy ? 'Saving…' : 'Save env file path'}

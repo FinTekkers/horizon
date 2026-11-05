@@ -35,3 +35,10 @@ export function webhookImpact({ status, hasDeployTarget } = {}) {
   if (hasDeployTarget === false) return [WEBHOOK_IMPACT.SYNC_DELAY_ONLY]
   return [WEBHOOK_IMPACT.SYNC_CONTINUES]
 }
+
+// Whether Fix webhook applies: the hook is missing, or Horizon's own is
+// mismatched, or (HZ-425) it still sends the events from before `repository`
+// was added. Needs attention lists exactly these.
+export function webhookNeedsFix(webhook) {
+  return webhook?.status === 'missing' || webhook?.status === 'mismatched' || webhook?.reason === 'legacy_events'
+}

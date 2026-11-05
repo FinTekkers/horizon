@@ -141,12 +141,13 @@ test('the owner never sees the card, even on a project with no repository', asyn
   expect(newItemButton().disabled).toBe(false)
 })
 
+// HZ-764: /admin then lands on the first project (nothing needs attention).
 test("guardrail 2: the owner's /admin/checks goes to /admin, and the member-only section is not rendered", async () => {
   currentUser = OWNER
   window.history.pushState({}, '', '/admin/checks')
   render(<App />)
-  expect(await screen.findByRole('heading', { name: 'Projects' })).toBeTruthy()
-  await waitFor(() => expect(window.location.pathname).toBe('/admin'))
+  expect(await screen.findByRole('heading', { name: 'Acme' })).toBeTruthy()
+  await waitFor(() => expect(window.location.pathname).toBe('/admin/projects/7'))
   expect(screen.queryByRole('heading', { name: "Your project's check commands" })).toBeNull()
   expect(api.getTenantChecks).not.toHaveBeenCalled()
 })

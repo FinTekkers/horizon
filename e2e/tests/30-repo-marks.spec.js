@@ -6,19 +6,20 @@
 // inserted directly (connecting through the API purges the demo items other
 // specs read); the seeded horizon and ui-service rows are never touched.
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ADMIN_EMAIL = 'admin@example.com'
 const GATE_PIN = '604193'
+const PROJECT = 'E2E Marks Co'
 const REPO = 'e2e-marks-co/site'
 const WARNING = 'no checks configured: items in this repo will fail at implement'
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
-    const project = insertProject(db, { name: 'E2E Marks Co', enabled: true })
+    const project = insertProject(db, { name: PROJECT, enabled: true })
     db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(project, REPO, 'EMS')
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
@@ -44,7 +45,8 @@ async function flip(page, label) {
 }
 
 test("the owner marks a repo 'no checks' and 'no deploy' in Admin, each behind the gate PIN", async ({ page }) => {
-  await page.goto('/admin')
+  // HZ-764: the marks are on the repository's own page.
+  await page.goto(await adminProjectPath(page, PROJECT, { repo: REPO }))
   await expect(marks(page).getByText(WARNING)).toBeVisible({ timeout: 10_000 })
   await expect(toggle(page, 'No checks')).toHaveAttribute('aria-checked', 'false')
   await expect(toggle(page, 'No deploy')).toHaveAttribute('aria-checked', 'false')
