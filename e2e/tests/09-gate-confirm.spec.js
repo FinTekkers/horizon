@@ -2,6 +2,7 @@
 // Pins the two claims in the work item's success metric that no other spec
 // asserts directly: (1) the confirm dialog names the real item + gate
 // *before* any request reaches the server, and (2) Cancel sends nothing.
+// HZ-711: an approve is a move — POST /api/items/:id/move, action approve.
 // Each test creates its own item (same pattern as 08-full-lifecycle.spec.js)
 // so the two tests can't race each other's gate state.
 
@@ -27,8 +28,8 @@ test('the confirm dialog names the item and gate before any request fires, then 
   const id = await createItem(request, 'E2E gate-confirm request ordering')
 
   const calls = []
-  await page.route('**/api/items/*/gates/*/approve', (route) => {
-    calls.push(route.request().url())
+  await page.route('**/api/items/*/move', (route) => {
+    calls.push(route.request().postDataJSON())
     route.continue()
   })
 
@@ -47,6 +48,7 @@ test('the confirm dialog names the item and gate before any request fires, then 
   await page.locator('.composer__submit').click()
 
   await expect.poll(() => calls.length, { timeout: 10_000 }).toBe(1)
+  expect(calls).toEqual([{ action: 'approve', from: 'change.approve-prioritize' }])
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
     timeout: 10_000,
   })
@@ -56,8 +58,8 @@ test('cancelling the confirm dialog sends nothing and leaves the gate untouched'
   const id = await createItem(request, 'E2E gate-confirm cancel')
 
   const calls = []
-  await page.route('**/api/items/*/gates/*/approve', (route) => {
-    calls.push(route.request().url())
+  await page.route('**/api/items/*/move', (route) => {
+    calls.push(route.request().postDataJSON())
     route.continue()
   })
 

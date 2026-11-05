@@ -1,6 +1,6 @@
-// HZ-389: after a pause, resume or send-back, the item page shows the state in
-// the server's answer at once — no delta, no reload. A send-back that restarts
-// a step labels that step's card "Sent: attempt N starting" with the server's N,
+// HZ-389: after a pause, resume or move, the item page shows the state in
+// the server's answer at once — no delta, no reload. A move (HZ-711: a Retry
+// or Return to through moveItem) that restarts a step labels that step's card "Sent: attempt N starting" with the server's N,
 // and the activity feed shows the restart row from the answer's events. A later
 // delta applies on top without a second row. A failed action, or one still in
 // flight, leaves the page as it was.
@@ -12,7 +12,7 @@
 import { afterEach, beforeAll, expect, test, vi } from 'vitest'
 import { act, cleanup, render } from '@testing-library/react'
 import { useSyncExternalStore } from 'react'
-import { IMPLEMENT_STEP_INDEX, STEPS } from '../../../domain/js/lifecycle.js'
+import { IMPLEMENT_STEP_INDEX, STEPS, stepIndexOf } from '../../../domain/js/lifecycle.js'
 
 class MockEventSource {
   constructor(url) {
@@ -53,7 +53,12 @@ afterEach(() => {
   localStorage.clear()
 })
 
-const STEP_LABEL = STEPS[IMPLEMENT_STEP_INDEX].label
+const STEP_KEY = 'change.implement'
+const STEP_LABEL = STEPS[stepIndexOf(STEP_KEY)].label
+// The answer's `restart`, as the server sends it: the step by key, and the
+// attempt it started.
+const restartAt = (attempt) => ({ stepIndex: stepIndexOf(STEP_KEY), stepKey: STEP_KEY, attempt })
+const retry = (id, note) => serverApi.moveItem(id, { action: 'retry', to: STEP_KEY, note })
 const NOTE_EVENT = { who: 'You', text: `requested changes on Eng: try X — sent back to the ${STEP_LABEL.toLowerCase()} step`, color: '#9C333E', initials: 'YOU', created_at: '2026-10-10 12:00:02' }
 const FAIL_EVENT = { who: 'Horizon', text: 'agent step failed: repo checks failed — item paused; resume to retry', color: '#9C333E', initials: 'HZ', created_at: '2026-10-10 12:00:00' }
 
@@ -66,7 +71,8 @@ function pausedFailed(id, extra = {}) {
     metric: '',
     guardrails: '',
     priority: 'Medium',
-    cursor: IMPLEMENT_STEP_INDEX,
+    cursor: stepIndexOf(STEP_KEY),
+    currentStepKey: STEP_KEY,
     paused: true,
     rejected: false,
     events: [FAIL_EVENT],
@@ -77,7 +83,7 @@ function pausedFailed(id, extra = {}) {
   }
 }
 
-// The item as /reject answers: running again, the note on top of its events.
+// The item as /move answers: running again, the note on top of its events.
 function restarted(item, { attempt, activeRun = true, ...extra } = {}) {
   return {
     ...item,
@@ -106,10 +112,9 @@ function Page({ id }) {
       onBack={noop}
       onApprove={noop}
       onApproveWithComments={noop}
-      onReject={noop}
+      onMove={noop}
       onResolveConflicts={noop}
       onTogglePause={serverApi.setPaused}
-      onRestartPhase={noop}
       onSetPersona={noop}
       onAbandon={noop}
     />
@@ -133,9 +138,9 @@ const count = (list, text) => list.filter((t) => t.includes(text)).length
 test('R5: the answer already carries the run at attempt N, and the card still reads "Sent: attempt 3 starting"', async () => {
   const item = pausedFailed('AS-5')
   const view = open(item)
-  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: restarted(item, { attempt: 3 }), restart: { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 3 } })))
+  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: restarted(item, { attempt: 3 }), restart: restartAt(3) })))
 
-  await act(() => serverApi.requestChanges('AS-5', 'Eng', 'try X'))
+  await act(() => retry('AS-5', 'try X'))
   expect(stepMeta(view)).toContain('Sent: attempt 3 starting')
   expect(view.getByRole('button', { name: 'Pause work' })).toBeTruthy()
 })
@@ -143,9 +148,9 @@ test('R5: the answer already carries the run at attempt N, and the card still re
 test('R6: N is the server\'s restart.attempt, not one derived from the runs the page knows of', async () => {
   const item = pausedFailed('AS-6', { stepOutputs: { [IMPLEMENT_STEP_INDEX]: { attempt: 2, attemptCount: 2, label: STEP_LABEL } } })
   const view = open(item)
-  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: restarted(item, { attempt: 7, activeRun: false }), restart: { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 7 } })))
+  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: restarted(item, { attempt: 7, activeRun: false }), restart: restartAt(7) })))
 
-  await act(() => serverApi.requestChanges('AS-6', 'Eng', 'try X'))
+  await act(() => retry('AS-6', 'try X'))
   expect(stepMeta(view)).toContain('Sent: attempt 7 starting')
   expect(stepMeta(view)).not.toContain('attempt 3')
 })
@@ -155,9 +160,9 @@ test('R8 / line 4: the restart row shows once from the answer; a later delta add
   const view = open(item)
   expect(count(activityTexts(view), 'requested changes on Eng')).toBe(0)
   const answer = restarted(item, { attempt: 2 })
-  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: answer, restart: { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 2 } })))
+  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: answer, restart: restartAt(2) })))
 
-  await act(() => serverApi.requestChanges('AS-8', 'Eng', 'try X'))
+  await act(() => retry('AS-8', 'try X'))
   expect(count(activityTexts(view), 'requested changes on Eng: try X')).toBe(1)
   expect(stepMeta(view)).toContain('Sent: attempt 2 starting')
 
@@ -170,7 +175,7 @@ test('R8 / line 4: the restart row shows once from the answer; a later delta add
 
   // The step finished and the item moved on: the label goes with it.
   act(() =>
-    MockEventSource.instances.at(-1).dispatch('delta', { upserts: [{ ...answer, cursor: IMPLEMENT_STEP_INDEX + 1, activeRun: null }] }),
+    MockEventSource.instances.at(-1).dispatch('delta', { upserts: [{ ...answer, cursor: stepIndexOf('change.auto-review'), currentStepKey: 'change.auto-review', activeRun: null }] }),
   )
   expect(view.container.textContent).not.toContain('Sent: attempt')
 })
@@ -179,12 +184,12 @@ test('R9: an answer older than the cached item is not applied, and its restart i
   const item = pausedFailed('AS-9', { last_activity_at: '2026-10-10 12:00:05' })
   const view = open(item)
   const cached = serverApi.getItems().find((it) => it.id === 'AS-9')
-  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: restarted(item, { attempt: 4 }), restart: { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 4 } })))
+  vi.stubGlobal('fetch', vi.fn(() => reply({ ok: true, item: restarted(item, { attempt: 4 }), restart: restartAt(4) })))
 
-  await act(() => serverApi.requestChanges('AS-9', 'Eng', 'try X'))
+  await act(() => retry('AS-9', 'try X'))
   expect(serverApi.getItems().find((it) => it.id === 'AS-9')).toBe(cached)
   expect(view.getByRole('button', { name: 'Resume work' })).toBeTruthy()
-  expect(serverApi.getRestartSent('AS-9')).toEqual({ stepIndex: IMPLEMENT_STEP_INDEX, attempt: 4 })
+  expect(serverApi.getRestartSent('AS-9')).toEqual(restartAt(4))
 })
 
 test('line 2: pause and resume show the answer\'s state at once, with no delta', async () => {
@@ -199,7 +204,7 @@ test('line 2: pause and resume show the answer\'s state at once, with no delta',
   expect(view.getByRole('button', { name: 'Pause work' })).toBeTruthy()
 })
 
-test('R10: while /reject and /pause are pending, the button and the step stay as they were', async () => {
+test('R10: while /move and /pause are pending, the button and the step stay as they were', async () => {
   const item = pausedFailed('AS-10')
   const view = open(item)
   const before = stepMeta(view)
@@ -208,14 +213,14 @@ test('R10: while /reject and /pause are pending, the button and the step stay as
 
   let sent
   act(() => {
-    sent = serverApi.requestChanges('AS-10', 'Eng', 'try X')
+    sent = retry('AS-10', 'try X')
   })
   await act(async () => {})
   expect(view.getByRole('button', { name: 'Resume work' })).toBeTruthy()
   expect(stepMeta(view)).toBe(before)
   expect(count(activityTexts(view), 'requested changes')).toBe(0)
   await act(async () => {
-    answer({ ok: true, status: 200, json: async () => ({ ok: true, item: restarted(item, { attempt: 2 }), restart: { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 2 } }) })
+    answer({ ok: true, status: 200, json: async () => ({ ok: true, item: restarted(item, { attempt: 2 }), restart: restartAt(2) }) })
     await sent
   })
   expect(view.getByRole('button', { name: 'Pause work' })).toBeTruthy()
@@ -235,18 +240,19 @@ test('R11: a 409, no answer, a cancelled PIN retry and a failed pause each leave
   const original = cached()
 
   vi.stubGlobal('fetch', vi.fn(() => reply({ error: 'closed' }, 409)))
-  await expect(serverApi.requestChanges('AS-11', 'Eng', 'x')).rejects.toMatchObject({ message: 'closed', status: 409 })
+  await expect(retry('AS-11', 'x')).rejects.toMatchObject({ message: 'closed', status: 409 })
   expect(cached()).toBe(original)
 
   vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
-  await expect(serverApi.requestChanges('AS-11', 'Eng', 'x')).rejects.toThrow('network')
+  await expect(retry('AS-11', 'x')).rejects.toThrow('network')
   expect(cached()).toBe(original)
 
-  // Wrong PIN, and the retry dialog is cancelled: the 401 is what comes back.
+  // Wrong PIN, and the retry dialog is cancelled: the move rejects with
+  // pin_needed (HZ-711: moves go through gateAction, as Kill does).
   vi.stubGlobal('fetch', vi.fn(() => reply({ error: 'bad_human_gate_key' }, 401)))
   const requester = vi.fn().mockResolvedValueOnce('wrong').mockResolvedValue(null)
   serverApi.setPinRequester(requester)
-  await expect(serverApi.requestChanges('AS-11', 'Eng', 'x')).rejects.toMatchObject({ status: 401 })
+  await expect(retry('AS-11', 'x')).rejects.toThrow('pin_needed')
   expect(requester.mock.calls).toEqual([[{ retry: false }], [{ retry: true }]])
   expect(cached()).toBe(original)
   expect(serverApi.getRestartSent('AS-11')).toBeNull()

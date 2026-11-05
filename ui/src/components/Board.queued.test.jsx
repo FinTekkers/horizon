@@ -1,10 +1,11 @@
 // HZ-360: while a Horizon self-deploy drains, a card at Accept the code reads
 // Queued to merge with the drain's latest end and whose Accept is waiting —
-// and offers no Approve or Send back. A stale tab whose Approve the server
-// held shows the same, from the real data layer.
+// and offers no Approve or Return to… (HZ-711: the shared menu, offered by the
+// item's `moves`). A stale tab whose Approve the server held shows the same,
+// from the real data layer.
 
 import { expect, test, vi, afterEach, beforeEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, fireEvent } from '@testing-library/react'
 
 vi.mock('../api', () => ({
   issueUrl: () => 'https://example.test/issue',
@@ -30,6 +31,24 @@ afterEach(() => {
 
 const noop = () => {}
 
+// What the snapshot offers at Accept the code.
+const ACCEPT_MOVES = {
+  approve: { key: 'change.accept-code', label: 'Accept the code' },
+  targets: [
+    {
+      key: 'change.implement',
+      label: 'Specialist agent implements',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+}
+
 function item(id, extra = {}) {
   return {
     id,
@@ -50,6 +69,7 @@ function item(id, extra = {}) {
     blockedBy: [],
     dependents: [],
     acceptWaiting: null,
+    moves: ACCEPT_MOVES,
     ...extra,
   }
 }
@@ -63,7 +83,8 @@ function renderBoard(items, deployBlock, viewerName = 'Dana') {
       viewerName={viewerName}
       onOpen={noop}
       onApprove={noop}
-      onReject={noop}
+      onMove={noop}
+      onAbandon={noop}
       onTogglePause={noop}
       onNewItem={noop}
     />,
@@ -72,6 +93,7 @@ function renderBoard(items, deployBlock, viewerName = 'Dana') {
 
 const cardOf = (container, id) => [...container.querySelectorAll('.card')].find((c) => c.querySelector('.card__id')?.textContent === id)
 const buttons = (card) => [...card.querySelectorAll('button')].map((b) => b.textContent)
+const moreToggle = (card, id) => card.querySelector(`button[aria-label="More actions for ${id}"]`)
 
 test('a card at Accept the code during a drain reads Queued to merge, names the approver, and has no gate buttons', () => {
   const { container } = renderBoard(
@@ -90,15 +112,17 @@ test('a card at Accept the code during a drain reads Queued to merge, names the 
     expect(card.querySelector('.card__queued').textContent).toContain(QUEUED_TEXT)
     expect(card.querySelector('.card__queued-by')?.textContent ?? null).toBe(approvedBy)
     expect(buttons(card)).not.toContain('Approve')
-    expect(buttons(card)).not.toContain('Send back')
+    expect(moreToggle(card, id)).toBeNull()
   }
 })
 
-test('with no drain the same card keeps Approve and Send back', () => {
+test('with no drain the same card keeps Approve and Return to…', () => {
   const { container } = renderBoard([item('Q-1')], null)
   const card = cardOf(container, 'Q-1')
   expect(card.querySelector('.card__queued')).toBeNull()
-  expect(buttons(card)).toEqual(expect.arrayContaining(['Approve', 'Send back']))
+  expect(buttons(card)).toContain('Approve')
+  fireEvent.click(moreToggle(card, 'Q-1'))
+  expect([...card.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Return to…', 'Abandon'])
 })
 
 class MockEventSource {

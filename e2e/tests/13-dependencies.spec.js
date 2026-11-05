@@ -66,7 +66,9 @@ test('abandoning a blocker with "Remove these links" leaves its dependent unbloc
   await page.goto('/depab-1')
   await expect(page.locator('.tracker__id')).toHaveText('DEPAB-1')
 
-  await page.getByRole('button', { name: 'Abandon', exact: true }).click()
+  // HZ-711: Abandon is in the header's ⋯ menu.
+  await page.getByRole('button', { name: 'More actions for DEPAB-1' }).click()
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Abandon' }).click()
   const dialog = page.getByRole('dialog')
   await expect(dialog).toContainText('DEPAB-2 — E2E fixture — waits on the abandoned blocker')
   await expect(dialog.getByRole('checkbox', { name: 'Remove these links' })).toBeChecked()

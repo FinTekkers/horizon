@@ -1,5 +1,7 @@
 // HZ-470: Kill (Abandon) and Restart phase used to close their dialog at once
-// and drop the request's answer, so a failure was silent. Here the server
+// and drop the request's answer, so a failure was silent. HZ-711: Restart
+// phase is gone; its successor is the Move dialog (Return to an earlier step,
+// opened from the step list), and both now POST /move. Here the server
 // answers 500 for each: the request is sent exactly once (no automatic
 // retry), the dialog stays open with the error, and the item's state and
 // phase labels on the page are unchanged — before and after a reload.
@@ -11,20 +13,20 @@
 
 import { test, expect, verifySharedSession } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
-import { phasesFor } from '../../domain/js/lifecycle.js'
+import { stepsFor } from '../../domain/js/lifecycle.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ADMIN_EMAIL = 'admin@example.com'
 const GATE_PIN = '470470'
 const ID = 'KRE-1'
-const FIRST_PHASE = phasesFor('change')[0]
+const [FIRST_STEP] = stepsFor('change')
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
     // beforeAll re-runs in a fresh worker after a failed test; seed once.
     if (!db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(ID)) {
-      insertItem(db, { id: ID, title: 'E2E fixture — Kill and Restart phase fail loudly', cursor: 3 })
+      insertItem(db, { id: ID, title: 'E2E fixture — Kill and Return to fail loudly', cursor: 3 })
     }
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
@@ -47,31 +49,39 @@ async function expectUnchanged(page, before) {
   await expect(page.locator('.phase__status')).toHaveText(before.phases)
 }
 
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 const DIALOGS = [
   {
     name: 'Abandon',
-    route: `**/api/items/${ID}/abandon`,
-    open: (page) => page.getByRole('button', { name: 'Abandon', exact: true }).click(),
-    title: `Abandon this item · ${ID}`,
+    action: 'abandon',
+    // HZ-711: Abandon is in the header's ⋯ menu.
+    open: async (page) => {
+      await page.getByRole('button', { name: `More actions for ${ID}` }).click()
+      await page.getByRole('menu').getByRole('menuitem', { name: 'Abandon' }).click()
+    },
+    dialog: (page) => page.getByRole('dialog', { name: `Abandon this item · ${ID}` }),
+    note: (dialog) => dialog.getByRole('textbox'),
+    submit: 'Abandon',
   },
   {
-    name: 'Restart phase',
-    route: `**/api/items/${ID}/phases/*/restart`,
-    open: (page) =>
-      page
-        .locator('.phase')
-        .filter({ has: page.locator('.phase__name', { hasText: FIRST_PHASE }) })
-        .getByRole('button', { name: 'Restart phase' })
-        .click(),
-    title: `Restart phase · ${ID}`,
+    name: 'Return to an earlier step',
+    action: 'return',
+    // HZ-711: an earlier step in the step list opens the Move dialog for it.
+    open: (page) => page.getByRole('button', { name: new RegExp(`^${escape(FIRST_STEP.label)}\\s*Return here$`) }).click(),
+    dialog: (page) => page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` }),
+    note: (dialog) => dialog.getByLabel('Note for the step (optional)'),
+    submit: 'Return here',
   },
 ]
 
-for (const dialog of DIALOGS) {
-  test(`${dialog.name}: a 500 keeps the dialog open with the error and leaves the item as it was`, async ({ page }) => {
+for (const spec of DIALOGS) {
+  test(`${spec.name}: a 500 keeps the dialog open with the error and leaves the item as it was`, async ({ page }) => {
     let hits = 0
-    await page.route(dialog.route, (route) => {
+    const actions = []
+    await page.route(`**/api/items/${ID}/move`, (route) => {
       hits += 1
+      actions.push(route.request().postDataJSON()?.action)
       return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'internal' }) })
     })
 
@@ -80,18 +90,21 @@ for (const dialog of DIALOGS) {
     await expect(page.locator('.phase__status').first()).toBeVisible()
     const before = await pageState(page)
 
-    await dialog.open(page)
-    await expect(page.locator('.composer__title')).toHaveText(dialog.title)
-    await page.locator('.composer__input').fill('E2E: the server will refuse this')
-    await page.locator('.composer__submit').click()
+    await spec.open(page)
+    const dialog = spec.dialog(page)
+    await expect(dialog).toBeVisible()
+    await spec.note(dialog).fill('E2E: the server will refuse this')
+    await dialog.getByRole('button', { name: spec.submit, exact: true }).click()
 
-    const alert = page.locator('.composer').getByRole('alert')
+    const alert = dialog.getByRole('alert')
     await expect(alert).toHaveText('That did not go through — try again.')
     await expect(alert).not.toContainText(GATE_PIN)
     expect(hits).toBe(1)
-    await expect(page.locator('.composer__title')).toHaveText(dialog.title)
-    await expect(page.locator('.composer__submit')).toBeEnabled()
-    await expect(page.locator('.composer__cancel')).toBeEnabled()
+    expect(actions).toEqual([spec.action])
+    await expect(dialog).toBeVisible()
+    await expect(spec.note(dialog)).toHaveValue('E2E: the server will refuse this')
+    await expect(dialog.getByRole('button', { name: spec.submit, exact: true })).toBeEnabled()
+    await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled()
     await expectUnchanged(page, before)
 
     await page.reload()

@@ -61,6 +61,7 @@ import { askHolderIds, openAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 import { moveItem, planMove } from './moveItem.js'
+import { moveOptions } from './moveOptions.js'
 
 const listeners = new Set()
 
@@ -2265,6 +2266,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     // in a route. The record keeps its position (cursor).
     currentStepKey: stepKeyAt(row.cursor),
     steps: stepViewsFor(itemKindOf(row)),
+    // HZ-711: the moves a person may make from here, by step key — what every
+    // surface's Approve, Return to…, Retry and Abandon list (moveItem.js).
+    moves: moveOptions(row, { running: !!activeRun }),
     paused: !!row.paused,
     // Last progress on this item, for the board's staleness filter (HZ-80) —
     // `updated_at` is already maintained by `touch` on every mutation below.

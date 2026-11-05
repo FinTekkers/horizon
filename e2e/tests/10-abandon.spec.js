@@ -35,8 +35,10 @@ test('abandoning an item requires a reason, closes it out distinctly from comple
   await expect(page.locator('.tracker__id')).toHaveText('ABANDON-1')
   await expect(page.locator('.tracker__status')).not.toContainText('Abandoned')
 
-  // Empty reason is blocked — the composer stays open.
-  await page.getByRole('button', { name: 'Abandon', exact: true }).click()
+  // Empty reason is blocked — the composer stays open. HZ-711: Abandon is in
+  // the header's ⋯ menu.
+  await page.getByRole('button', { name: 'More actions for ABANDON-1' }).click()
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Abandon' }).click()
   await expect(page.locator('.composer__title')).toHaveText('Abandon this item · ABANDON-1')
   await page.locator('.composer__submit').click()
   await expect(page.locator('.composer__title')).toBeVisible()
@@ -53,7 +55,7 @@ test('abandoning an item requires a reason, closes it out distinctly from comple
   )
   // Abandoned is a distinct terminal state from closed — the pause/abandon
   // controls (only shown while an item is still live) are gone.
-  await expect(page.getByRole('button', { name: 'Abandon', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'More actions for ABANDON-1' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Pause work' })).toHaveCount(0)
 
   // Abandoned items are hidden from the board by default (HZ-80) — not

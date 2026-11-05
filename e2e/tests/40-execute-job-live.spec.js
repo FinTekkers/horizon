@@ -84,7 +84,7 @@ async function sendProgress(request, id, body) {
 }
 
 const executeCard = (page) =>
-  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: /^Execute$/ }) })
+  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: /^Execute(\s*(Return here|Retry|Approve))?$/ }) })
 const commandRow = (card, command) =>
   card.locator('.job-panel__command').filter({ has: card.page().locator('.job-panel__command-text').getByText(command, { exact: true }) })
 

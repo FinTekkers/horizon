@@ -33,6 +33,7 @@ import DependencyBadge, { itemHref } from './DependencyBadge'
 import GateActionStatus from './GateActionStatus'
 import ProjectBadge from './ProjectBadge'
 import TaskBadge from './TaskBadge'
+import StepActionMenu from './StepActionMenu'
 import { LinkIcon, LockIcon, PrIcon } from './icons'
 
 function progressSegs(item) {
@@ -51,7 +52,7 @@ function progressSegs(item) {
   })
 }
 
-function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName, now, showWait, planKind, onOpen, onOpenPlan, onApprove, onReject, onTogglePause, isGateBusy }) {
+function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName, now, showWait, planKind, onOpen, onOpenPlan, onApprove, onMove, onAbandon, onTogglePause, isGateBusy }) {
   const closed = isClosed(item)
   const abandoned = isAbandoned(item)
   const rejected = item.rejected && !closed && !abandoned
@@ -64,7 +65,6 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
   const ruleBlocked = isRuleBlocked(item)
   const isActiveAgent =
     !closed && !abandoned && !awaiting && !rejected && !paused && !blocked && !ruleBlocked && cur && cur.kind === 'agent'
-  const rejectTarget = awaiting && cur ? cur.label : cur ? cur.label : 'this step'
   // HZ-385: each button sends the state it shows, once at a time, as the
   // Tracker's does.
   const pauseInFlight = useRef(false)
@@ -225,29 +225,14 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
             />
           )}
           {!gateRunning && !queued && (
-            <div className="card__gate-actions">
-              <button
-                className="btn-approve"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onApprove(item.id, cur.label)
-                }}
-              >
-                Approve
-              </button>
-              <button
-                className="btn-reject"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onReject(item.id, rejectTarget)
-                }}
-              >
-                Send back
-              </button>
-            </div>
+            <StepActionMenu item={item} onApprove={onApprove} onMove={onMove} onAbandon={onAbandon} className="card__gate-actions" />
           )}
         </div>
       )}
+
+      {/* HZ-711: the same menu on a card that is not at a gate — Return to…,
+          Retry and Abandon, as the item's snapshot offers them. */}
+      {!awaiting && <StepActionMenu item={item} onApprove={onApprove} onMove={onMove} onAbandon={onAbandon} className="card__step-actions" />}
 
       {isActiveAgent && (
         <button
@@ -328,7 +313,8 @@ export default function Board({
   viewerName = null,
   onOpen,
   onApprove,
-  onReject,
+  onMove,
+  onAbandon,
   onTogglePause,
   onNewItem,
   isGateBusy = gateActionBusy,
@@ -618,7 +604,8 @@ export default function Board({
                       onOpen={onOpen}
                       onOpenPlan={onOpenPlan}
                       onApprove={onApprove}
-                      onReject={onReject}
+                      onMove={onMove}
+                      onAbandon={onAbandon}
                       onTogglePause={onTogglePause}
                       isGateBusy={isGateBusy}
                     />

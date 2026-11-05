@@ -944,6 +944,31 @@ button { font-family: var(--font-sans); }
   font: 500 12px var(--font-sans); color: var(--warning-ink); margin-bottom: 10px;
 }
 .card__gate-actions { display: flex; gap: 8px; }
+.card__step-actions { margin-top: 11px; }
+
+/* HZ-711: Approve, and ⋯ for Return to…, Retry and Abandon — one menu on the
+   item page, board cards and the Approvals drawer. */
+.step-menu { position: relative; display: flex; align-items: stretch; gap: 8px; }
+.step-menu__toggle {
+  flex: none; min-width: 38px; cursor: pointer; border-radius: 9px; padding: 6px 10px;
+  border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted-strong);
+  font: 700 14px var(--font-sans); line-height: 1;
+}
+.step-menu__toggle:hover, .step-menu__toggle[aria-expanded='true'] { border-color: var(--hover-border); color: var(--deep); }
+.step-menu__toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.step-menu__list {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  display: flex; flex-direction: column; min-width: 170px; max-width: min(280px, 90vw); padding: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 18px 40px rgba(var(--shadow-rgb), 0.18);
+}
+.step-menu__item {
+  border: none; background: none; cursor: pointer; text-align: left; border-radius: 8px;
+  padding: 9px 12px; font: 600 13px var(--font-sans); color: var(--deep);
+}
+.step-menu__item:hover, .step-menu__item:focus-visible { background: var(--surface-alt); outline: none; }
+.step-menu__item--danger { color: var(--danger-ink); }
+.tracker__actions .step-menu .btn-approve { flex: none; padding: 9px 18px; }
 /* HZ-360: a merge held for a Horizon deploy, in place of the gate buttons. */
 .card__queued { font: 500 12px var(--font-sans); color: var(--primary-ink); overflow-wrap: anywhere; }
 .card__queued-by { margin-top: 4px; font-weight: 700; }
@@ -1163,6 +1188,13 @@ button { font-family: var(--font-sans); }
 /* ===== Stepper ===== */
 .phase { margin-bottom: 18px; }
 .phase__head { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+/* HZ-711: the heading is a button that selects the phase's first step. */
+button.phase__head {
+  width: 100%; border: none; background: none; padding: 4px 6px; margin-left: -6px; border-radius: 9px;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+button.phase__head:hover { background: var(--surface-alt); }
+button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .phase__num {
   width: 22px; height: 22px; border-radius: 7px;
   display: flex; align-items: center; justify-content: center;
@@ -1174,12 +1206,6 @@ button { font-family: var(--font-sans); }
 }
 .phase__status { font: 600 11px var(--font-sans); }
 .phase__spacer { flex: 1; }
-.phase__restart {
-  cursor: pointer; border: none; background: none; color: var(--muted);
-  font: 600 12px var(--font-sans); display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 8px; border-radius: 7px;
-}
-.phase__restart:hover { color: var(--warning-ink); background: var(--warning-bg); }
 
 .step { display: flex; gap: 14px; }
 .step__rail { display: flex; flex-direction: column; align-items: center; width: 30px; flex-shrink: 0; }
@@ -1222,6 +1248,18 @@ button { font-family: var(--font-sans); }
 .step-card--queued { background: var(--surface-alt); border: 1px solid var(--subtle); }
 .step-card__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .step-card__label { font: 700 14px var(--font-sans); color: var(--deep); }
+/* HZ-711: each step's label is the button that selects it and opens what the
+   item's snapshot offers there (Return here, Retry, Approve). */
+.step-card__select {
+  display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0;
+  border: none; background: none; padding: 2px 4px; margin: -2px -4px; border-radius: 7px;
+  text-align: left; cursor: pointer; overflow-wrap: anywhere;
+}
+.step-card__select:hover { background: var(--surface); }
+.step-card__select:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.step-card__select--action:hover .step-card__hint { color: var(--primary-ink); }
+.step-card__hint { font: 600 11px var(--font-sans); color: var(--muted); }
+.step--selected > .step__body > .step-card { box-shadow: 0 0 0 2px var(--primary); }
 .step-card__agent {
   display: inline-flex; align-items: center; gap: 6px;
   font: 600 11px var(--font-sans); background: var(--surface);
@@ -1429,6 +1467,29 @@ button { font-family: var(--font-sans); }
 }
 .composer__input:focus { border-color: var(--primary); background: var(--surface); }
 .composer__hint { font: 600 11px var(--font-sans); color: var(--muted); margin-top: 8px; }
+
+/* HZ-711: the Move dialog — the server's summary of a Return to or Retry. */
+.move-dialog { max-height: calc(100vh - 48px); overflow-y: auto; }
+.move-dialog__choices { border: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.move-dialog__choice {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 9px; cursor: pointer;
+  font: 600 13px var(--font-sans); color: var(--deep); overflow-wrap: anywhere;
+}
+.move-dialog__choice:hover { background: var(--surface-alt); }
+.move-dialog__default {
+  margin-left: auto; flex: none; font: 700 10px var(--font-sans); text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--primary-ink); background: var(--active-bg); border-radius: 6px; padding: 2px 6px;
+}
+.move-dialog__summary {
+  margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--surface-alt);
+  border: 1px solid var(--subtle); display: flex; flex-direction: column; gap: 10px;
+  font: 500 13px var(--font-sans); color: var(--deep); overflow-wrap: anywhere;
+}
+.move-dialog__row { display: flex; flex-direction: column; gap: 3px; }
+.move-dialog__target { font: 700 15px var(--font-sans); }
+.move-dialog__list { margin: 0; padding-left: 18px; }
+.move-dialog__stops { font: 700 13px var(--font-sans); color: var(--warning-ink); }
+.move-dialog__gone { margin-top: 14px; font: 600 13px var(--font-sans); color: var(--danger-ink); }
 .composer__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .composer__cancel {
   cursor: pointer; border: none; background: var(--chip); color: var(--deep);
@@ -1782,6 +1843,13 @@ button { font-family: var(--font-sans); }
    page itself. The board shows one column at a time (HZ-586). */
 @media (max-width: 699px) {
   :root { --bottomnav-h: 64px; }
+
+  /* HZ-711: the step menu's toggle is tappable, and the Move dialog uses the
+     whole width with its summary scrolling under the title. */
+  .step-menu__toggle { min-width: 44px; min-height: 44px; }
+  .step-menu__item { min-height: 44px; }
+  .move-dialog { padding: 20px 18px; }
+  .move-dialog__choice { min-height: 44px; }
 
   /* Room for the fixed bottom nav, so the last card or row is never under it. */
   .app { padding-bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom, 0px)); }

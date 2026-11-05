@@ -3,6 +3,7 @@ import { stepLabel } from '../../../domain/js/substeps.js'
 import { LockIcon } from './icons'
 import { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import AskCard from './AskCard'
+import StepActionMenu from './StepActionMenu'
 import { blockingAsks } from './BlockingAsksBanner'
 
 // HZ-544: what Autopilot would have done at this gate, from the server's
@@ -24,8 +25,9 @@ function autopilotOffNote(item) {
 }
 
 // HZ-730: `askItems` are items with open blocking asks; each ask is listed
-// first, under "Blocking asks", to file or dismiss in place.
-export default function ApprovalsDrawer({ items, askItems = [], onClose, onOpenItem, onApprove, onReject }) {
+// first, under "Blocking asks", to file or dismiss in place. HZ-711: each gate
+// offers the item page's own menu (StepActionMenu).
+export default function ApprovalsDrawer({ items, askItems = [], onClose, onOpenItem, onApprove, onMove, onAbandon }) {
   const pending = items.filter(awaitingGate)
   const asks = askItems.flatMap((item) => blockingAsks(item).map((ask) => ({ item, ask })))
   const parts = [
@@ -101,14 +103,7 @@ export default function ApprovalsDrawer({ items, askItems = [], onClose, onOpenI
                     )}
                   </div>
                 )}
-                <div className="approval__actions">
-                  <button className="btn-approve" onClick={() => onApprove(item.id, label)}>
-                    Approve
-                  </button>
-                  <button className="btn-reject" onClick={() => onReject(item.id, label)}>
-                    Send back
-                  </button>
-                </div>
+                <StepActionMenu item={item} onApprove={onApprove} onMove={onMove} onAbandon={onAbandon} className="approval__actions" />
               </div>
             )
           })}

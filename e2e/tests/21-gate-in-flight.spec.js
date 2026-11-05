@@ -110,7 +110,8 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await page.goto('/')
   const card = page.locator('.card', { hasText: TITLE })
   const cardApprove = card.locator('.btn-approve')
-  const cardReject = card.locator('.btn-reject')
+  // HZ-711: the card's ⋯ menu (Return to…, Abandon) replaced Send back.
+  const cardReject = card.getByRole('button', { name: `More actions for ${ID}` })
   const cardStatus = card.locator('.gate-action-status')
   const badge = page.locator('.topbar .pending-btn__badge')
   const drawerItem = page.locator('.drawer .approval', { hasText: ID })
@@ -123,7 +124,7 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await itemPage.goto(`/${ID.toLowerCase()}`)
   const gate = itemPage.locator('.step-card--awaiting', { hasText: 'Accept the code' })
   const gateApprove = gate.locator('.btn-gate-approve')
-  const gateReject = gate.locator('.btn-gate-reject')
+  const gateReject = gate.getByRole('button', { name: 'Return to…' })
   const gateStatus = gate.locator('.gate-action-status')
   await expect(gateApprove).toBeEnabled({ timeout: 10_000 })
 

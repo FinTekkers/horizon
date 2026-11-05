@@ -34,12 +34,11 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   getPlanProgress: () => [],
   approveGate: vi.fn(),
-  requestChanges: vi.fn(),
+  moveItem: vi.fn(),
   getRestartSent: () => null,
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),
-  restartPhase: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   logout: vi.fn(),
@@ -72,8 +71,44 @@ function item(id, extra = {}) {
     activeRun: null,
     conflictRun: null,
     gateAction: null,
+    // HZ-711: the server's moves at Accept the code — the board, drawer and
+    // page offer only these.
+    moves: {
+      approve: { key: 'change.accept-code', label: 'Accept the code' },
+      targets: [
+        {
+          key: 'change.implement',
+          label: 'Specialist agent implements',
+          action: 'return',
+          isDefault: true,
+          redo: 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.',
+          reapprovals: [],
+          stopsRunning: false,
+        },
+      ],
+      canAbandon: true,
+      amend: null,
+    },
     ...extra,
   }
+}
+
+// HZ-711: the server's moves at Approve the high-level design.
+const DESIGN_MOVES = {
+  approve: { key: 'change.approve-design', label: 'Approve the high-level design' },
+  targets: [
+    {
+      key: 'change.plan-options',
+      label: 'Plan options & trade-offs (pros / cons)',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 2 steps, from “Plan options & trade-offs (pros / cons)” to “Approve the high-level design”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
 }
 
 const now = () => new Date().toISOString()
@@ -99,7 +134,7 @@ const RUNNING = {
 
 // A (the one acted on) and B (another item still waiting) at Accept, C at an
 // earlier gate. All three are pending to start with.
-const baseline = (aExtra = {}) => [item('PA-A', aExtra), item('PA-B'), item('PA-C', { cursor: DESIGN_INDEX })]
+const baseline = (aExtra = {}) => [item('PA-A', aExtra), item('PA-B'), item('PA-C', { cursor: DESIGN_INDEX, moves: DESIGN_MOVES })]
 
 function pushItems(next) {
   act(() => {
@@ -319,6 +354,12 @@ test('a merge whose gate advanced does not bring the item back', async () => {
   openDrawer()
   expectPending(view, ['PA-B', 'PA-C'])
 
-  pushItems(baseline({ cursor: ACCEPT_INDEX + 1, gateAction: action('premerge', 'merged', { reason: null }) }))
+  pushItems(
+    baseline({
+      cursor: ACCEPT_INDEX + 1,
+      gateAction: action('premerge', 'merged', { reason: null }),
+      moves: { approve: null, targets: [], canAbandon: true, amend: null },
+    }),
+  )
   expectPending(view, ['PA-B', 'PA-C'])
 })

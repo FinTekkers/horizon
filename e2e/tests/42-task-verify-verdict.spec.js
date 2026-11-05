@@ -62,7 +62,7 @@ test('a failed Verify & report shows a red circle-X and its summary in the step 
   await page.goto(`/${ID.toLowerCase()}`)
 
   const step = page.locator('.step', {
-    has: page.locator('.step-card__label', { hasText: new RegExp(`^${VERIFY.label}$`) }),
+    has: page.locator('.step-card__label', { hasText: new RegExp(`^${VERIFY.label}(\\s*(Return here|Retry|Approve))?$`) }),
   })
   const stepX = step.getByRole('img', { name: /failed/i })
   await expect(stepX).toBeVisible({ timeout: 15_000 })

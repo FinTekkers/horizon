@@ -1,8 +1,11 @@
 // HZ-540 metrics 1 and 2, guardrail 1: an item with a sub-step snapshot,
 // through the real server and UI. Its card stays in its phase column, the
 // board keeps its columns, and the tracker draws the snapshot's sub-steps as
-// indented rows under their anchors. A send-back from Accept the code to the
-// audit sub-step lands the item there, and a reload shows it.
+// indented rows under their anchors. HZ-711: a return from Accept the code
+// (Return to…, the Move dialog) offers the steps, not their sub-steps — the
+// /move route has no sub-step target — so a return to the audit sub-step's
+// anchor, Specialist agent implements, lands the item on that step at no
+// sub-step, and a reload shows it.
 //
 // The snapshot is written straight into work_item.substeps_json, as HZ-538's
 // intake leaves it; its labels appear in no project file. An open dependency
@@ -10,7 +13,7 @@
 // walk it on before the reload.
 //
 // HZ-704: setting the spec's own PIN locks the shared session, so the
-// send-back opens the PIN dialog.
+// return opens the PIN dialog.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
@@ -49,7 +52,7 @@ test.beforeAll(() => {
 const card = (page) => page.locator('.card').filter({ has: page.locator('.card__id', { hasText: new RegExp(`^${ID}$`) }) })
 const column = (page, name) => page.locator('.col').filter({ has: page.locator('.col__name', { hasText: new RegExp(`^${name}$`) }) })
 
-test('the board and tracker show the snapshot’s sub-steps, and a send-back to one survives a reload', async ({ page }) => {
+test('the board and tracker show the snapshot’s sub-steps, and a return to the audit sub-step’s anchor survives a reload', async ({ page }) => {
   // The labels are the snapshot's alone: no project file names them.
   const fileText = existsSync(STEPS_FILE) ? readFileSync(STEPS_FILE, 'utf8') : ''
   for (const sub of SUBSTEPS) expect(fileText).not.toContain(sub.label)
@@ -63,32 +66,52 @@ test('the board and tracker show the snapshot’s sub-steps, and a send-back to 
   const rows = page.getByTestId('substep-row')
   await expect(rows).toHaveCount(SUBSTEPS.length, { timeout: 15_000 })
   await expect(rows.locator('.step-card__label')).toHaveText(SUBSTEPS.map((s) => s.label))
+  // Before the return: the item is at the gate, at no sub-step.
+  await expect(page.locator('[data-substep] [aria-current="step"]')).toHaveCount(0)
   for (const sub of SUBSTEPS) {
     // Each row follows its anchor's step card, indented.
     const anchor = page.locator('.step:not(.step--sub)', { has: page.locator('.step-card__label', { hasText: STEPS[sub.anchor].label }) })
     await expect(anchor.locator('xpath=following-sibling::div[1]')).toHaveAttribute('data-substep', sub.id)
   }
 
-  // Send back to the audit sub-step, picked by its label.
-  await page.locator('.step-card--awaiting').getByRole('button', { name: 'Send back with feedback' }).click()
-  const picker = page.getByLabel('Send back to')
-  const option = picker.locator('option', { hasText: 'Audit the change' })
-  await picker.selectOption(await option.getAttribute('value'))
-  await page.locator('.composer__input').fill('Tighten the audit.')
-  await page.locator('.composer__submit').click()
+  // Return to the audit sub-step's anchor step, picked by its label: the
+  // dialog lists steps only, never a sub-step.
+  const implement = STEPS[IMPLEMENT_STEP_INDEX]
+  await page.locator('.step-card--awaiting').getByRole('button', { name: 'Return to…' }).click()
+  const dialog = page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` })
+  await expect(dialog).toBeVisible()
+  for (const sub of SUBSTEPS) await expect(dialog.getByRole('radio', { name: new RegExp(`^${sub.label}`) })).toHaveCount(0)
+  await dialog.getByRole('radio', { name: new RegExp(`^${implement.label}`) }).check()
+  await expect(dialog.getByTestId('move-summary')).toContainText(`from “${implement.label}” to “${STEPS[ACCEPT_GATE_INDEX].label}”`)
+  await dialog.getByLabel('Note for the step (optional)').fill('Tighten the audit.')
+  const moved = page.waitForResponse((res) => res.url().endsWith(`/api/items/${ID}/move`) && res.status() !== 401)
+  await dialog.getByRole('button', { name: 'Return here' }).click()
   await answerPinDialog(page, GATE_PIN)
-  await expect(page.locator('.composer')).toHaveCount(0, { timeout: 15_000 })
+  const res = await moved
+  expect(res.status()).toBe(200)
+  expect(res.request().postDataJSON()).toEqual({ action: 'return', from: STEPS[ACCEPT_GATE_INDEX].key, to: implement.key, note: 'Tighten the audit.' })
+  await expect(dialog).toHaveCount(0, { timeout: 15_000 })
 
+  // The anchor step is current, at no sub-step — after a reload too. The
+  // open dependency holds it there.
+  const expectAtAnchor = async () => {
+    await expect
+      .poll(async () => {
+        const item = (await (await page.request.get('/api/items')).json()).items.find((it) => it.id === ID)
+        return [item.currentStepKey, item.substep_cursor]
+      })
+      .toEqual([implement.key, null])
+    await expect(page.locator('.step-card--awaiting')).toHaveCount(0)
+    await expect(page.locator('[data-substep] [aria-current="step"]')).toHaveCount(0)
+    await expect(page.getByTestId('substep-row')).toHaveCount(SUBSTEPS.length)
+  }
   await page.reload()
-  const current = page.locator('[data-substep="impl-audit"]')
-  await expect(current.locator('[aria-current="step"]')).toBeVisible({ timeout: 15_000 })
-  await expect(current).toContainText('Current sub-step')
-  await expect(current).toContainText('Performance')
+  await expect(page.locator('.tracker__id')).toHaveText(ID, { timeout: 15_000 })
+  await expectAtAnchor()
 
   await page.goto('/')
   const col = column(page, phase)
   await expect(col.locator('.card__id', { hasText: new RegExp(`^${ID}$`) })).toBeVisible({ timeout: 15_000 })
-  await expect(card(page).getByTestId('card-substep')).toContainText('Audit the change')
-  await expect(card(page).getByTestId('card-substep')).toContainText('Performance')
+  await expect(card(page).getByTestId('card-substep')).toHaveCount(0)
   await expect(page.locator('.col')).toHaveCount(PHASES.length)
 })

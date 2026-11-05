@@ -35,12 +35,19 @@ function renderCard(item) {
           activeRun: null,
           gateAction: null,
           events: [],
+          moves: {
+            approve: { key: 'change.accept-code', label: 'Accept the code' },
+            targets: [],
+            canAbandon: true,
+            amend: null,
+          },
           ...item,
         },
       ]}
       onOpen={noop}
       onApprove={noop}
-      onReject={noop}
+      onMove={noop}
+      onAbandon={noop}
       onTogglePause={noop}
       onNewItem={noop}
     />,

@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { phasesFor, itemKindOf } from '../../../domain/js/lifecycle.js'
-import { decodeTarget, encodeTarget } from '../../../domain/js/substeps.js'
 
 const COPY = {
   approve: {
@@ -8,20 +6,6 @@ const COPY = {
     submitLabel: 'Approve',
     submitColor: 'var(--success)',
     placeholder: 'Decision notes — e.g. which option to adopt, or conditions for the next step…',
-  },
-  reject: {
-    title: 'Send back with feedback',
-    submitLabel: 'Send back',
-    submitColor: 'var(--danger)',
-    placeholder: 'What should change, or what question needs answering?',
-  },
-  restart: {
-    title: 'Restart phase',
-    submitLabel: 'Restart phase',
-    submitColor: 'var(--warning)',
-    // White is ~2:1 on light-mode amber; --on-warning swaps per theme.
-    submitInk: 'var(--on-warning)',
-    placeholder: 'Why are you restarting? (optional)',
   },
   abandon: {
     title: 'Abandon this item',
@@ -40,16 +24,11 @@ const COPY = {
   },
 }
 
-// The restart phase index is relative to the item's own kind (HZ-445).
-function subtitle(composer, item) {
+// HZ-711: Return to and Retry are MoveDialog's; this composer keeps the modes
+// that are not a step change.
+function subtitle(composer) {
   if (composer.mode === 'approve') {
     return `Approves ${composer.target || 'the gate'}; your notes are delivered to the next agent and recorded on the issue`
-  }
-  if (composer.mode === 'reject') {
-    return `The responsible agent re-runs the step and must address your notes${composer.target ? ' · ' + composer.target : ''}`
-  }
-  if (composer.mode === 'restart' && composer.phase != null) {
-    return `${phasesFor(itemKindOf(item))[composer.phase]} phase will re-run from the start`
   }
   if (composer.mode === 'abandon') {
     return 'Stops dispatch, cancels any in-flight run, and closes the GitHub issue as not planned — this is recorded on the activity feed and cannot be undone from here'
@@ -60,21 +39,16 @@ function subtitle(composer, item) {
   return ''
 }
 
-export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
+export default function ComposerModal({ composer, onSubmit, onCancel }) {
   const inputRef = useRef(null)
-  const copy = COPY[composer.mode] || COPY.reject
-  // Only a reject from a gate offers a destination — everywhere else this
-  // stays empty and the picker doesn't render.
-  const stepOptions = composer.mode === 'reject' ? composer.stepOptions || [] : []
-  const [targetStepIndex, setTargetStepIndex] = useState('')
+  const copy = COPY[composer.mode] || COPY.approve
   // HZ-354: abandoning an item that blocks others lists them, with an option
   // (on by default) to remove their links to it in the same request.
   const dependents = composer.mode === 'abandon' ? composer.dependents || [] : []
   const [removeDependentLinks, setRemoveDependentLinks] = useState(true)
-  // HZ-470: Kill and Restart phase stay open until their request settles —
-  // Cancel, Esc and the scrim do nothing meanwhile. A send-back keeps its
-  // Cancel.
-  const locked = composer.busy === true && (composer.mode === 'restart' || composer.mode === 'abandon')
+  // HZ-470: Kill stays open until its request settles — Cancel, Esc and the
+  // scrim do nothing meanwhile. Amend the rule keeps its Cancel.
+  const locked = composer.busy === true && composer.mode === 'abandon'
   const cancel = () => {
     if (!locked) onCancel()
   }
@@ -82,18 +56,12 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
     if (composer.busy) return
     const text = (inputRef.current?.value || '').trim()
     // Abandon (HZ-59) demands a reason — the modes that require text must not
-    // submit empty. This guard came from this branch; the reject/step-target
-    // routing below came from main (HZ-51). Both are needed.
+    // submit empty.
     if (copy.required && !text) {
       inputRef.current?.focus()
       return
     }
-    if (composer.mode === 'reject') {
-      // HZ-540: a sub-step option adds its id as a third argument.
-      const chosen = stepOptions.length ? decodeTarget(targetStepIndex) : null
-      if (chosen?.substepId) onSubmit(text, chosen.index, chosen.substepId)
-      else onSubmit(text, chosen ? chosen.index : null)
-    } else if (composer.mode === 'abandon') {
+    if (composer.mode === 'abandon') {
       onSubmit(text, { removeDependentLinks: dependents.length > 0 && removeDependentLinks })
     } else {
       onSubmit(text)
@@ -124,28 +92,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
         <div className="composer__title" id="composer-title">
           {copy.title} · {composer.itemId}
         </div>
-        <div className="composer__sub">{subtitle(composer, item)}</div>
-        {stepOptions.length > 0 && (
-          <div className="composer__field">
-            <label htmlFor="composer-target-step" className="composer__field-label">
-              Send back to
-            </label>
-            <select
-              id="composer-target-step"
-              className="composer__select"
-              value={targetStepIndex}
-              onChange={(e) => setTargetStepIndex(e.target.value)}
-            >
-              <option value="">Default — {composer.defaultTargetLabel}</option>
-              {/* HZ-540: a sub-step option sits under its step, indented. */}
-              {stepOptions.map((opt) => (
-                <option key={encodeTarget(opt)} value={encodeTarget(opt)}>
-                  {opt.substepId ? `\u00a0\u00a0↳ ${opt.label}` : opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        <div className="composer__sub">{subtitle(composer)}</div>
         {dependents.length > 0 && (
           <div className="composer__field">
             <div className="composer__field-label">This item blocks</div>
@@ -168,7 +115,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
         )}
         <textarea ref={inputRef} className="composer__input" placeholder={copy.placeholder} autoFocus />
         <div className="composer__hint">⌘/Ctrl + Enter to submit · Esc to cancel</div>
-        {/* HZ-389: a send-back that did not go through says why; the text
+        {/* HZ-389: a request that did not go through says why; the text
             stays, so it can be sent again. */}
         {composer.error && <span role="alert">{composer.error}</span>}
         <div className="composer__actions">
@@ -177,7 +124,7 @@ export default function ComposerModal({ composer, item, onSubmit, onCancel }) {
           </button>
           <button
             className="composer__submit"
-            style={{ background: copy.submitColor, ...(copy.submitInk && { color: copy.submitInk }) }}
+            style={{ background: copy.submitColor }}
             disabled={composer.busy}
             aria-busy={composer.busy || undefined}
             onClick={submit}

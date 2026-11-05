@@ -1,7 +1,7 @@
 // HZ-445: a Task's phase label comes from the Task's own phase list, not the
 // change list — a Task at Review & close reads "Review", never "Deploy", on
-// its Board card, in the approvals drawer and in the restart dialog. Change
-// items keep the labels they always had.
+// its Board card and in the approvals drawer. Change items keep the labels
+// they always had. (HZ-711 removed the restart dialog.)
 
 import { expect, test, vi, afterEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
@@ -13,7 +13,6 @@ vi.mock('../api', () => ({
 
 import Board from './Board'
 import ApprovalsDrawer from './ApprovalsDrawer'
-import ComposerModal from './ComposerModal'
 import {
   PHASES,
   STEPS,
@@ -76,7 +75,8 @@ test('Board card: the Task says Review, the change item says Deploy', () => {
       items={[task, change]}
       onOpen={noop}
       onApprove={noop}
-      onReject={noop}
+      onMove={noop}
+      onAbandon={noop}
       onTogglePause={noop}
       onNewItem={noop}
     />,
@@ -88,28 +88,10 @@ test('Board card: the Task says Review, the change item says Deploy', () => {
 test('Approvals drawer: the Task says Review; a change gate keeps its change-list label', () => {
   const changeGate = item('HZ-G', { cursor: ACCEPT_GATE_INDEX })
   const { container } = render(
-    <ApprovalsDrawer items={[task, changeGate]} onClose={noop} onOpenItem={noop} onApprove={noop} onReject={noop} />,
+    <ApprovalsDrawer items={[task, changeGate]} onClose={noop} onOpenItem={noop} onApprove={noop} onMove={noop} onAbandon={noop} />,
   )
   expect(phaseOf(container, '.approval', '.approval__id', 'HZ-T', '.approval__phase')).toBe('Review')
   expect(phaseOf(container, '.approval', '.approval__id', 'HZ-G', '.approval__phase')).toBe(
     PHASES[STEPS[ACCEPT_GATE_INDEX].phase],
-  )
-})
-
-test('Restart dialog names the phase from the item kind list', () => {
-  const restart = (it) => ({
-    open: true,
-    mode: 'restart',
-    itemId: it.id,
-    phase: taskClose.phase,
-  })
-  const { container, unmount } = render(
-    <ComposerModal composer={restart(task)} item={task} onSubmit={noop} onCancel={noop} />,
-  )
-  expect(container.querySelector('.composer__sub').textContent).toBe('Review phase will re-run from the start')
-  unmount()
-  const changeView = render(<ComposerModal composer={restart(change)} item={change} onSubmit={noop} onCancel={noop} />)
-  expect(changeView.container.querySelector('.composer__sub').textContent).toBe(
-    'Deploy phase will re-run from the start',
   )
 })

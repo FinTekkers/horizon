@@ -7,17 +7,70 @@
 // { subscribe, getItems } + the action functions, so nothing else changes.
 //
 //   GET  /items                                → getItems()
-//   POST /items/:id/gates/:step/approve        → approveGate(id)
-//   POST /items/:id/reject                     → requestChanges(id, target, feedback)
+//   POST /items/:id/move (approve)             → approveGate(id)
+//   POST /items/:id/move (return, retry)       → moveItem(id, { action, to, note })
 //   POST /items/:id/pause                      → setPaused(id, paused)
-//   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
-import { STEPS, PHASES, isClosed, firstStepIndex, defaultReworkTarget } from '../../../domain/js/lifecycle.js'
+import { STEPS, isClosed, firstStepIndex, stepIndexOf } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
-import { substepReworkTargets } from '../../../domain/js/substeps.js'
 import { PERSONAS, isPersona } from '../domain/personas'
 import PRODUCTIVITY_FIXTURE from '../../../domain/fixtures/productivity.json'
+
+// HZ-711: each seed item's `moves` as the server would send it at its seed
+// step (server/src/moveOptions.js) — written out, never worked out here. A
+// mock item that has moved since offers none: the mock has no move rules.
+const ret = (key, label, redo, reapprovals = [], isDefault = false, stopsRunning = false) => ({
+  key,
+  label,
+  action: 'return',
+  isDefault,
+  redo,
+  reapprovals,
+  stopsRunning,
+})
+const retry = (key, label, stopsRunning = true) => ({ key, label, action: 'retry', isDefault: false, redo: `Runs “${label}” again.`, reapprovals: [], stopsRunning })
+const SEED_MOVES = {
+  'BF-145': { approve: null, targets: [ret('change.define-outcome', 'Define the outcome', 'Redoes 2 steps, from “Define the outcome” to “Define how we measure success”.', [], true, true), retry('change.define-success', 'Define how we measure success')], canAbandon: true, amend: null },
+  'BF-128': {
+    approve: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
+    targets: [
+      ret('change.define-outcome', 'Define the outcome', 'Redoes 4 steps, from “Define the outcome” to “Approve & prioritize this work”.', [], true),
+      ret('change.define-success', 'Define how we measure success', 'Redoes 3 steps, from “Define how we measure success” to “Approve & prioritize this work”.'),
+      ret('change.set-guardrails', 'Set guardrails', 'Redoes 2 steps, from “Set guardrails” to “Approve & prioritize this work”.'),
+    ],
+    canAbandon: true,
+    amend: null,
+  },
+  'BF-119': {
+    approve: null,
+    targets: [
+      ret('change.approve-design', 'Approve the high-level design', 'Redoes 3 steps, from “Approve the high-level design” to “Architecture review”.', ['Approve the high-level design'], false, true),
+      ret('change.draft-plan', 'Draft implementation plan', 'Redoes 2 steps, from “Draft implementation plan” to “Architecture review”.', [], true, true),
+      retry('change.arch-review', 'Architecture review'),
+    ],
+    canAbandon: true,
+    amend: null,
+  },
+  'BF-140': {
+    approve: { key: 'change.review-before-exec', label: 'Review before execution' },
+    targets: [
+      ret('change.draft-plan', 'Draft implementation plan', 'Redoes 5 steps, from “Draft implementation plan” to “Review before execution”.', [], true),
+      ret('change.summarize-reviews', 'Summarize reviews & recommend', 'Redoes 2 steps, from “Summarize reviews & recommend” to “Review before execution”.'),
+    ],
+    canAbandon: true,
+    amend: null,
+  },
+  'BF-097': {
+    approve: { key: 'change.accept-code', label: 'Accept the code' },
+    targets: [
+      ret('change.review-before-exec', 'Review before execution', 'Redoes 4 steps, from “Review before execution” to “Accept the code”.', ['Review before execution']),
+      ret('change.implement', 'Specialist agent implements', 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.', [], true),
+    ],
+    canAbandon: true,
+    amend: null,
+  },
+}
 
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
@@ -67,6 +120,7 @@ let items = SEED_ITEMS.map((it) => ({
   blockedBy: [],
   dependents: [],
   ...it,
+  moves: SEED_MOVES[it.id] ?? null,
   paused: false,
   events: [],
   last_activity_at: new Date().toISOString(),
@@ -80,8 +134,13 @@ function emit() {
 
 // Every mutation re-stamps last_activity_at — the mock mirror of the
 // server's `touch` const in store.js, which every UPDATE statement includes.
+// HZ-711: an item whose step changed drops its seed `moves`.
 function update(id, fn) {
-  items = items.map((it) => (it.id === id ? { ...fn(it), last_activity_at: new Date().toISOString() } : it))
+  const next = (it) => {
+    const changed = fn(it)
+    return { ...changed, ...(changed.cursor !== it.cursor ? { moves: null } : {}), last_activity_at: new Date().toISOString() }
+  }
+  items = items.map((it) => (it.id === id ? next(it) : it))
   emit()
 }
 
@@ -357,62 +416,29 @@ export async function approveGate(id, notes, _options = {}) {
   return { ok: true, closed: isClosed(updated) }
 }
 
-// Mirrors the server's rework loop: rejection rolls back to the responsible
-// agent step and re-runs it instead of freezing the item. targetStepIndex
-// (HZ-51) lets a human pick an earlier agent step explicitly, same
-// validation and declared default targets as store.js's requestChanges.
-//
-// HZ-389: async and answering like serverApi — rejects with the server's error
-// code, resolves with { ok, item, restart } — and numbers the restarted attempt
-// the way the server does: one more than the runs the step already had (here,
-// one run per visit, since mock steps record none).
-const mockAttempts = new Map() // `${id}:${stepIndex}` -> the last attempt started
+// HZ-711: mirrors serverApi.moveItem — a Return to or Retry the item's
+// `moves` offers, else the server's refusal. HZ-389: answers { ok, item,
+// restart } and numbers the restarted attempt the way the server does: one
+// more than the runs the step already had (here, one run per visit, since mock
+// steps record none).
+const mockAttempts = new Map() // `${id}:${stepKey}` -> the last attempt started
 const restartsSent = new Map()
 
-// HZ-540: targetSubstepId, as on the server — one of substepReworkTargets.
-export async function requestChanges(id, target, feedback, targetStepIndex, targetSubstepId) {
+export async function moveItem(id, { action, to, note = '' }) {
   const it = items.find((x) => x.id === id)
   if (!it) throw new Error('not_found')
   if (isClosed(it)) throw new Error('closed')
-  const atGate = STEPS[it.cursor]?.kind === 'gate'
-  const substep =
-    targetSubstepId == null
-      ? null
-      : substepReworkTargets(it).find((t) => t.index === targetStepIndex && t.substepId === targetSubstepId)
-  if (targetSubstepId != null && !substep) throw new Error('invalid_target')
-  if (targetStepIndex != null) {
-    const validTarget =
-      atGate &&
-      Number.isInteger(targetStepIndex) &&
-      targetStepIndex >= 0 &&
-      targetStepIndex < it.cursor &&
-      STEPS[targetStepIndex]?.kind === 'agent'
-    if (!validTarget) throw new Error('invalid_target')
-  }
+  const target = (it.moves?.targets ?? []).find((t) => t.action === action && t.key === to)
+  if (!target) throw Object.assign(new Error('bad_target_key'), { status: 409 })
   clearTimeout(timers[id])
-  let reworkIdx = it.cursor
-  if (atGate) {
-    // HZ-708: the gate's default is the server's own (defaultReworkTarget).
-    reworkIdx = targetStepIndex != null ? targetStepIndex : defaultReworkTarget(reworkIdx, undefined, it)
-  }
-  const reworkLabel = (substep ? substep.label : STEPS[reworkIdx].label).toLowerCase()
-  update(id, (x) => ({
-    ...x,
-    cursor: reworkIdx,
-    paused: false,
-    ...(x.substeps ? { substep_cursor: substep?.substepId ?? null, substep: substep ? x.substeps.find((s) => s.id === substep.substepId) : null } : {}),
-  }))
-  pushEvent(id, {
-    who: 'You',
-    text: `requested changes on ${target || 'this step'}${feedback ? ': ' + feedback : ''} — sent back to the ${reworkLabel} step`,
-    color: '#9C333E',
-    initials: 'YOU',
-  })
+  update(id, (x) => ({ ...x, cursor: stepIndexOf(to), paused: false, moves: null }))
+  const text = action === 'retry' ? `retried “${target.label}”` : `moved this item back to “${target.label}”`
+  pushEvent(id, { who: 'You', text: `${text}${note ? ': ' + note : ''}`, color: '#DFA200', initials: 'YOU' })
   runAgents(id)
   const item = items.find((x) => x.id === id)
-  if (STEPS[reworkIdx].kind !== 'agent') return { ok: true, item }
-  const key = `${id}:${reworkIdx}`
-  const restart = { stepIndex: reworkIdx, attempt: (mockAttempts.get(key) ?? 1) + 1 }
+  if (STEPS[item.cursor].kind !== 'agent') return { ok: true, item }
+  const key = `${id}:${to}`
+  const restart = { stepKey: to, attempt: (mockAttempts.get(key) ?? 1) + 1 }
   mockAttempts.set(key, restart.attempt)
   restartsSent.set(id, restart)
   emit()
@@ -802,18 +828,6 @@ export async function getScreenshotImage() {
 
 export async function approveScreenshots() {
   throw new Error('not_found')
-}
-
-export function restartPhase(id, phase, reason) {
-  const firstIdx = STEPS.findIndex((st) => st.phase === phase)
-  update(id, (x) => ({ ...x, cursor: firstIdx, paused: false }))
-  pushEvent(id, {
-    who: 'You',
-    text: `restarted the ${PHASES[phase]} phase${reason ? ': ' + reason : ''}`,
-    color: '#DFA200',
-    initials: 'YOU',
-  })
-  runAgents(id)
 }
 
 // HZ-730: the demo has no repos to file on, so File it only closes the ask,

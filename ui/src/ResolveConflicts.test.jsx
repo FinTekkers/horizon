@@ -31,11 +31,10 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   getPlanProgress: () => [],
   approveGate: vi.fn(),
-  requestChanges: vi.fn(),
+  moveItem: vi.fn(),
   getRestartSent: () => null,
   resolveConflicts: vi.fn(),
   setPaused: vi.fn(),
-  restartPhase: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   logout: vi.fn(),
@@ -67,6 +66,23 @@ function conflictedItem(id, extra = {}) {
     stepOutputs: {},
     activeRun: null,
     conflictRun: null,
+    // HZ-711: the server's moves at Accept the code — the page offers only these.
+    moves: {
+      approve: { key: 'change.accept-code', label: 'Accept the code' },
+      targets: [
+        {
+          key: 'change.implement',
+          label: 'Specialist agent implements',
+          action: 'return',
+          isDefault: true,
+          redo: 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.',
+          reapprovals: [],
+          stopsRunning: false,
+        },
+      ],
+      canAbandon: true,
+      amend: null,
+    },
     ...extra,
   }
 }
@@ -291,11 +307,11 @@ test('HZ-216: a running conflictRun shows its own label and elapsed time and dis
   const gateButton = (name) => [...document.querySelectorAll('.step-card__actions button')].find((b) => b.textContent === name)
 
   expect(document.querySelector('.gate-action-status').textContent).toMatch(/^Resolving conflicts on PR #7 · 1m 0\ds/)
-  for (const name of ['Approve', 'Approve with comments', 'Send back with feedback']) expect(gateButton(name).disabled, name).toBe(true)
+  for (const name of ['Approve', 'Approve with comments', 'Return to…']) expect(gateButton(name).disabled, name).toBe(true)
 
   await waitFor(() => expect(listeners.size).toBeGreaterThan(0))
   pushItems([conflictedItem('RC-13', { conflictRun: { state: 'resolved', since: new Date().toISOString(), reason: null } })])
   await findByText(/has merge conflicts with main/)
-  for (const name of ['Approve', 'Approve with comments', 'Send back with feedback']) expect(gateButton(name).disabled, name).toBe(false)
+  for (const name of ['Approve', 'Approve with comments', 'Return to…']) expect(gateButton(name).disabled, name).toBe(false)
   expect(document.querySelector('.gate-action-status')).toBeNull()
 })
