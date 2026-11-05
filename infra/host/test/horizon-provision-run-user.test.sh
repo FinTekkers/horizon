@@ -35,6 +35,8 @@ expect() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; els
 REAL_STAT="$(command -v stat)"
 HOME_ROOT="$WORK/home"
 LIBEXEC="$WORK/libexec"
+# HZ-772: the tenant jobs root; absent until the HZ-772 section creates it.
+JOBS_ROOT="$WORK/tenant-jobs"
 mkdir -p "$HOME_ROOT/hz-p42"
 
 for cmd in groupadd useradd chown chmod visudo; do
@@ -66,6 +68,7 @@ STUB
 cat >"$STUBS/stat" <<STUB
 #!/usr/bin/env bash
 printf 'stat %s\n' "\$*" >>"\${LOG:?}"
+[ "\$2" = %G ] && { echo "\${STUB_FARM_GROUP:-ubuntu}"; exit 0; }
 echo "0:0 \$("$REAL_STAT" -c %a "\${@: -1}")"
 STUB
 cat >"$STUBS/runuser" <<'STUB'
@@ -99,7 +102,7 @@ chmod +x "$STUBS"/*
 # run_helper ARGS… — runs the helper with the stubs; leaves $LOG and $STATUS.
 run_helper() {
   : >"$LOG"
-  env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" bash "$HELPER" "$@" >"$WORK/out" 2>&1
+  env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" HORIZON_TENANT_JOBS_ROOT="$JOBS_ROOT" bash "$HELPER" "$@" >"$WORK/out" 2>&1
   STATUS=$?
 }
 logged() { grep -qF -- "$1" "$LOG"; }
@@ -116,7 +119,7 @@ if [ "$STATUS" -eq 2 ] && [ ! -s "$LOG" ]; then ok "refuses no argument"; else n
 run_helper 1 2
 if [ "$STATUS" -eq 2 ] && [ ! -s "$LOG" ]; then ok "refuses two arguments"; else not_ok "refuses two arguments"; fi
 : >"$LOG"
-env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" STUB_UID=1000 bash "$HELPER" 42 >/dev/null 2>&1
+env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" HORIZON_TENANT_JOBS_ROOT="$JOBS_ROOT" STUB_UID=1000 bash "$HELPER" 42 >/dev/null 2>&1
 STATUS=$?
 if [ "$STATUS" -eq 2 ] && not_logged '^(groupadd|useradd)'; then ok "refuses to run as non-root"; else not_ok "refuses to run as non-root"; fi
 
@@ -135,7 +138,7 @@ expect "never touches sudoers, a password or another user" not_logged 'sudoers|^
 # ---- idempotent: an existing, correct hz-p42 is left as it is ----
 
 : >"$LOG"
-env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" STUB_USER_EXISTS=1 bash "$HELPER" 42 >/dev/null 2>&1
+env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" HORIZON_TENANT_JOBS_ROOT="$JOBS_ROOT" STUB_USER_EXISTS=1 bash "$HELPER" 42 >/dev/null 2>&1
 STATUS=$?
 expect "a second run succeeds" test "$STATUS" -eq 0
 expect "a second run creates no user" not_logged '^useradd'
@@ -146,7 +149,7 @@ expect "a second run still sets the home to 700" logged "chmod 700 $HOME_ROOT/hz
 for case in "STUB_SHELL=/bin/bash:a login shell" "STUB_GROUPS=hz-tenants sudo:a supplementary group" "STUB_HOME=/root:another home"; do
   setting="${case%%:*}"
   : >"$LOG"
-  env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" STUB_USER_EXISTS=1 "$setting" bash "$HELPER" 42 >/dev/null 2>&1
+  env PATH="$STUBS:$PATH" LOG="$LOG" HORIZON_RUN_USER_HOME_ROOT="$HOME_ROOT" HORIZON_TENANT_JOBS_ROOT="$JOBS_ROOT" STUB_USER_EXISTS=1 "$setting" bash "$HELPER" 42 >/dev/null 2>&1
   STATUS=$?
   if [ "$STATUS" -eq 2 ] && not_logged '^(useradd|chown|chmod|runuser)'; then ok "refuses an existing hz-p42 with ${case#*:}"; else not_ok "refuses an existing hz-p42 with ${case#*:}"; fi
 done
@@ -198,6 +201,29 @@ expect "git identity: the symlink's target is byte-identical" cmp -s "$WORK/vict
 expect "git identity: no git write for a symlinked .gitconfig" not_logged '^runuser '
 expect "git identity: no chown or chmod of the symlink" not_logged '^(chown|chmod) .*\.gitconfig'
 rm -f "$GITCONFIG"
+
+# ---- HZ-772: the run user's tenant job results dir ----
+
+run_helper 42
+expect "results dir: skipped with a note while the root is missing" test "$STATUS" -eq 0
+expect "results dir: none created without the root" test ! -e "$JOBS_ROOT/42"
+mkdir -p "$JOBS_ROOT"
+run_helper 42
+expect "results dir: exit 0" test "$STATUS" -eq 0
+expect "results dir: created" test -d "$JOBS_ROOT/42"
+expect "results dir: owned by the run user, group the jobs root's (the farm user's)" logged "chown hz-p42:ubuntu $JOBS_ROOT/42"
+expect "results dir: mode 2750" logged "chmod 2750 $JOBS_ROOT/42"
+expect "results dir: no other project's dir is touched" not_logged "$JOBS_ROOT/(4|43|420)( |\$)"
+run_helper 42
+expect "results dir: a second run is ok" test "$STATUS" -eq 0
+expect "results dir: a second run sets 2750 again" logged "chmod 2750 $JOBS_ROOT/42"
+rm -rf "$JOBS_ROOT/42"
+ln -s "$WORK/victim-dir" "$JOBS_ROOT/42"
+run_helper 42
+expect "results dir: a symlink there is refused" test "$STATUS" -eq 2
+expect "results dir: a symlink is never chowned" not_logged "^chown hz-p42:ubuntu $JOBS_ROOT/42"
+rm -f "$JOBS_ROOT/42"
+rm -rf "$JOBS_ROOT"
 
 # ---- the sudoers template: exactly the two rules ----
 
