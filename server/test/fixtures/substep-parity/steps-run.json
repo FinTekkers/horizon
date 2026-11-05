@@ -1307,15 +1307,19 @@
             "content": "## Assess\nartifact of step 20"
           },
           {
+            "label": "Impact review",
+            "content": "## Impact review\nartifact of step 22"
+          }
+        ],
+        "evidence": [
+          {
             "label": "Run plan",
+            "stepIndex": 21,
             "content": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```"
           },
           {
-            "label": "Impact review",
-            "content": "## Impact review\nartifact of step 22"
-          },
-          {
             "label": "Execute",
+            "stepIndex": 24,
             "content": "## Execute\nartifact of step 24"
           }
         ],

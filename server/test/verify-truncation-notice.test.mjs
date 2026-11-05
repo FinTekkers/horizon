@@ -1,8 +1,10 @@
-// HZ-434: when Verify & report's evidence is cut to fit the context budget,
+// HZ-434: when Verify & report's input is cut to fit the context budget,
 // the dispatched inputs say so first — which section, how many bytes, where
-// the whole text is — and tell Verify to say so in its summary. A report file
-// in the Execute artifact is kept whole or named as omitted, never cut.
+// the whole text is — and tell Verify to say so in its summary. A report
+// section is kept whole or named as omitted, never cut.
 // No other step gets a notice, and the 60,000-char budget is not raised.
+// HZ-771: the Run plan and Execute go to Verify whole, as files, so the cut
+// input here is an oversized Assess artifact.
 //
 // Its own file because config.js reads the environment at import time.
 
@@ -29,7 +31,7 @@ globalThis.fetch = async (url, opts) => {
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
-const { STEPS, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX, VERIFY_REPORT_STEP_INDEX, kindStepIndex } = await import(
+const { STEPS, ASSESS_STEP_INDEX, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX, VERIFY_REPORT_STEP_INDEX, kindStepIndex } = await import(
   '../../domain/js/lifecycle.js'
 )
 
@@ -65,8 +67,10 @@ function doneRow(id, stepIndex, artifact) {
 }
 
 // Runs Execute to completion with `artifact`, then returns Verify's dispatch.
-async function verifyDispatchFor(id, artifact) {
+// `assess`, when given, is a done Assess artifact before the Run plan.
+async function verifyDispatchFor(id, artifact, assess = null) {
   seedTaskRow(id, EXECUTE_STEP_INDEX, sha256(PLAN))
+  if (assess !== null) doneRow(id, ASSESS_STEP_INDEX, assess)
   doneRow(id, RUN_PLAN_STEP_INDEX, PLAN)
   orchestrator.kick(id)
   await wait(30)
@@ -76,7 +80,7 @@ async function verifyDispatchFor(id, artifact) {
   await wait(30)
   const dispatch = stepDispatch(id, VERIFY_REPORT_STEP_INDEX)
   assert.ok(dispatch, 'Verify & report was dispatched')
-  return dispatch.body.artifacts
+  return dispatch.body
 }
 
 // A report the way farm/job_reports.py renders one: a `Report: ` heading and
@@ -87,15 +91,20 @@ const reportSection = (path, body) => `### Report: ${path}\n\ninlined, ${Buffer.
 
 test('R3: an over-budget Verify dispatch puts the notice first, names the cut, and keeps each report whole or omitted', async () => {
   const reports = ['/tmp/a.json', '/tmp/b.json', '/tmp/c.json', '/tmp/d.json'].map((path) => ({ path, body: reportBody(path) }))
-  const log = 'déjà vu — prices loaded é\n'.repeat(3000)
-  const execute =
-    '## Commands\n1 command(s) run, 1 passed, 0 failed\n- exit 0 — `python3 load.py`\n\n' +
-    'Full log: `/home/farm/logs/farm-job-t-trunc.log` (this attempt is bytes 0–90,000)\n\n' +
+  const log = 'déjà vu — prices checked é\n'.repeat(3000)
+  const assess =
+    '## Assess\nThe scripts exist.\n\n' +
     `## Reports\n\n${reports.map((r) => reportSection(r.path, r.body)).join('\n\n')}\n\n` +
-    `## Log (this attempt)\n${log}`
-  assert.ok(execute.length + PLAN.length > BUDGET, 'sanity: the inputs really are over the budget')
+    `## Notes\n${log}`
+  const execute = '## Commands\n1 command(s) run, 1 passed, 0 failed\n\n## Log (this attempt)\nok\n'
+  assert.ok(assess.length > BUDGET, 'sanity: the inputs really are over the budget')
 
-  const artifacts = await verifyDispatchFor('T-TRUNC', execute)
+  const { artifacts, evidence } = await verifyDispatchFor('T-TRUNC', execute, assess)
+  assert.deepEqual(
+    evidence.map((e) => e.label),
+    ['Run plan', 'Execute'],
+    'the Run plan and Execute ride whole, as evidence',
+  )
 
   // The notice comes first and is within the budget with everything else.
   assert.equal(artifacts[0].label, orchestrator.TRUNCATION_NOTICE_LABEL)
@@ -103,19 +112,20 @@ test('R3: an over-budget Verify dispatch puts the notice first, names the cut, a
   assert.ok(totalChars(artifacts) <= BUDGET, `inputs total ${totalChars(artifacts)} chars, over ${BUDGET}`)
   assert.ok(artifacts[0].content.length <= orchestrator.TRUNCATION_NOTICE_MAX_CHARS)
 
-  // It names the section, the bytes cut (bytes, not chars: the log is
-  // multi-byte), where the whole log is, and the summary instruction.
-  const sent = artifacts.find((a) => a.label === 'Execute').content
+  // It names the section, the bytes cut (bytes, not chars: the text is
+  // multi-byte), where the whole artifact is, and the summary instruction.
+  const sent = artifacts.find((a) => a.label === 'Assess').content
   const kept = sent.slice(0, sent.lastIndexOf('\n\n[...reduced:'))
-  const fullBytes = Buffer.byteLength(execute, 'utf8')
+  const fullBytes = Buffer.byteLength(assess, 'utf8')
   const cutBytes = fullBytes - Buffer.byteLength(kept, 'utf8')
-  assert.notEqual(cutBytes, execute.length - kept.length, 'sanity: bytes and chars differ for this text')
+  assert.notEqual(cutBytes, assess.length - kept.length, 'sanity: bytes and chars differ for this text')
   const notice = artifacts[0].content
   assert.ok(
-    notice.includes(`**Execute**: cut ${cutBytes.toLocaleString('en-US')} of ${fullBytes.toLocaleString('en-US')} bytes`),
+    notice.includes(`**Assess**: cut ${cutBytes.toLocaleString('en-US')} of ${fullBytes.toLocaleString('en-US')} bytes`),
     notice,
   )
-  assert.ok(notice.includes('/api/items/T-TRUNC/job/log'))
+  assert.ok(notice.includes(`/api/items/T-TRUNC/artifacts/${ASSESS_STEP_INDEX}`))
+  assert.ok(!notice.includes('**Execute**') && !notice.includes('**Run plan**'), 'evidence files are never named as cut')
   assert.ok(notice.includes('Say in your summary that this input was truncated, and name the section.'))
   assert.ok(notice.includes(`${BUDGET}-char context budget`))
 
@@ -131,14 +141,14 @@ test('R3: an over-budget Verify dispatch puts the notice first, names the cut, a
     }
   }
   assert.ok(whole > 0 && whole < reports.length, `sanity: some reports fit and some did not (${whole} whole)`)
-  assert.ok(sent.includes('Full log: `/home/farm/logs/farm-job-t-trunc.log`'), 'the full-log pointer survives the cut')
 })
 
 test('R4: a Verify dispatch that fits gets no notice', async () => {
-  const artifacts = await verifyDispatchFor('T-FITS', '## Commands\n1 command(s) run\n\n## Log (this attempt)\nok\n')
+  const { artifacts, evidence } = await verifyDispatchFor('T-FITS', '## Commands\n1 command(s) run\n\n## Log (this attempt)\nok\n')
   assert.ok(!artifacts.some((a) => a.label === 'Truncation notice'))
+  assert.deepEqual(artifacts, [])
   assert.deepEqual(
-    artifacts.map((a) => a.label),
+    evidence.map((e) => e.label),
     ['Run plan', 'Execute'],
   )
 })

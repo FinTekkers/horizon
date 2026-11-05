@@ -537,6 +537,25 @@ export function budgetVerifyInputs(itemId, rows) {
   }
 }
 
+// HZ-771: Verify & report reads the Run plan and this attempt's Execute log as
+// files the farm writes (farm/verify_evidence.py), never through the budget.
+export const VERIFY_EVIDENCE_STEP_INDEXES = [RUN_PLAN_STEP_INDEX, EXECUTE_STEP_INDEX]
+
+// Exported for tests. Takes the evidence rows out of `rows`: `evidence` holds
+// each one's stored artifact whole, `rest` is every other row, in order.
+export function splitVerifyEvidence(rows) {
+  const evidence = []
+  const rest = []
+  for (const row of rows) {
+    if (VERIFY_EVIDENCE_STEP_INDEXES.includes(row.step_index)) {
+      evidence.push({ label: STEPS[row.step_index].label, stepIndex: row.step_index, content: row.artifact })
+    } else {
+      rest.push(row)
+    }
+  }
+  return { evidence, rest }
+}
+
 // Exported for tests. `step.requires` (domain/steps.json) names prior
 // steps this step cannot review without in full. Returns one entry per
 // required label whose budgeted artifact was truncated — empty when every
@@ -1895,8 +1914,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     .all(id, IMPLEMENT_STEP_INDEX, stepIndex, id, IMPLEMENT_STEP_INDEX)
     .map((row) => ({ step_index: row.step_index, artifact: row.artifact ?? row.output ?? '' }))
   // HZ-434: Verify & report gets a notice of anything cut, read first.
-  const { budgeted, notice: truncationNotice } =
-    stepIndex === VERIFY_REPORT_STEP_INDEX ? budgetVerifyInputs(id, rows) : { budgeted: budgetArtifacts(rows), notice: null }
+  // HZ-771: its Run plan and Execute rows go whole, as files, so neither is
+  // budgeted or named in the notice.
+  const { evidence, rest: verifyRows } =
+    stepIndex === VERIFY_REPORT_STEP_INDEX ? splitVerifyEvidence(rows) : { evidence: null, rest: null }
+  const { budgeted, notice: truncationNotice } = evidence
+    ? budgetVerifyInputs(id, verifyRows)
+    : { budgeted: budgetArtifacts(rows), notice: null }
 
   // HZ-105: a step whose `requires` names a prior artifact must never review
   // it half-shown — the exact HZ-102 failure shape was a reviewer judging a
@@ -1905,7 +1929,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // no dispatch, no verdict, no artifact. failFarmRun pauses the item and
   // names the artifact, its full size, and the shortfall — a capacity
   // decision for a human, never auto-retried (see AUTO_RETRY_REASONS).
-  const missingRequired = missingRequiredInputs(step, rows, budgeted, itemKindOf(item))
+  const missingRequired = missingRequiredInputs(step, verifyRows ?? rows, budgeted, itemKindOf(item))
   if (missingRequired.length > 0) {
     const detail = missingRequired
       .map((m) => `"${m.label}" needs ${m.fullLen} chars, only ${m.gotLen} could be supplied (${m.fullLen - m.gotLen} short)`)
@@ -1956,6 +1980,9 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     run_id: runId,
     attempt,
     artifacts,
+    // HZ-771: Verify & report's evidence, each stored artifact whole and
+    // already redacted. Absent on every other step.
+    ...(evidence ? { evidence } : {}),
     item: {
       id: item.id,
       // HZ-383: farmd and step_agent pick the step's runner by kind and label.

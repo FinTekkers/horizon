@@ -235,6 +235,7 @@ def run_agent(
     retry_fresh: bool = True,
     disallowed_tools: str | None = None,
     overlay: dict | None = None,
+    add_dirs: list[str] | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
     "model": <id or None>, "command_id": <id or None>}, plus "num_turns" (HZ-458)
@@ -281,10 +282,17 @@ def run_agent(
 
     overlay (HZ-535) is the task's project overlay, so a project persona's
     model is resolved from its project file. None keeps the declared models.
+
+    add_dirs (HZ-771) are folders outside cwd the agent may read. Only a
+    provider declaring READS_ADD_DIRS (Claude) can be handed them, so any
+    other provider is refused before it is called rather than run without
+    the files. They reach the provider only when set.
     """
     name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
     if disallowed_tools and not getattr(provider_module, "ENFORCES_DENY_RULES", False):
         raise AgentError(f"provider '{name}' cannot enforce deny rules (disallowed_tools) — refusing this call")
+    if add_dirs and not getattr(provider_module, "READS_ADD_DIRS", False):
+        raise AgentError(f"provider '{name}' cannot read add_dirs (evidence files) — refusing this call")
     model = _model_for(name, agent, step, persona, model_choice, overlay)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
@@ -308,6 +316,7 @@ def run_agent(
             allowed_tools=allowed_tools,
             retry_fresh=retry_fresh,
             **({"disallowed_tools": disallowed_tools} if disallowed_tools else {}),
+            **({"add_dirs": add_dirs} if add_dirs else {}),
         )
     except AgentExhaustedError as exc:
         # The same provenance a reply carries, so a salvaged reply can record

@@ -1465,7 +1465,9 @@ def job_artifact_md(
         return cap_job_artifact(f"## Commands\n{summary_text}\n\n## Log\n{log_text or '(no output)'}\n")
     head = "\n".join([summary_text, *commands] + ([f"\n{full_log}"] if full_log else []))
     reports = f"{reports_md}\n" if reports_md else ""
-    return cap_job_artifact(f"## Commands\n{head}\n\n{reports}## Log (this attempt)\n{log_text or '(no output)'}\n")
+    return cap_job_artifact(
+        f"{job_reports.COMMANDS_HEADING}\n{head}\n\n{reports}{job_reports.ATTEMPT_LOG_HEADING}\n{log_text or '(no output)'}\n"
+    )
 
 
 def _command_lines(entries, secrets: dict) -> list[str]:
