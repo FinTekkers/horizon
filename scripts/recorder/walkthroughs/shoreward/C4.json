@@ -1,19 +1,18 @@
 {
   "setup": [
     {"action": "goto", "path": "/horizon/"},
-    {"action": "waitFor", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")", "timeoutMs": 30000},
-    {"action": "click", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")"},
+    {"action": "waitFor", "selector": ".card:has-text(\"find-comps.mjs\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"find-comps.mjs\")"},
     {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
   ],
   "actions": [
-    {"action": "caption", "text": "Approve the run", "ms": 3500},
-    {"action": "waitFor", "selector": ".step:has(.step-card__label:text-is(\"Approve the run\")) .btn-gate-approve", "timeoutMs": 30000},
+    {"action": "caption", "text": "Approve the tool", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Approve & prioritize this work\")) .btn-gate-approve", "timeoutMs": 3600000, "reloadEveryMs": 30000},
     {"action": "pause", "ms": 2500},
-    {"action": "click", "selector": ".step:has(.step-card__label:text-is(\"Approve the run\")) .btn-gate-approve"},
+    {"action": "click", "selector": ".step:has(.step-card__label:text-is(\"Approve & prioritize this work\")) .btn-gate-approve"},
     {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
     {"action": "pause", "ms": 800},
     {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
-    {"action": "waitFor", "selector": ".step:has(.step-card__label:text-is(\"Execute\")) :text(\"In progress\")", "timeoutMs": 60000},
     {"action": "pause", "ms": 3000}
   ]
 }

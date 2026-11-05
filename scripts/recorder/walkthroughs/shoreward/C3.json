@@ -6,10 +6,11 @@
     {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
   ],
   "actions": [
-    {"action": "caption", "text": "The agents assess it and plan the run", "ms": 3500},
-    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Approve the run\")) .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
-    {"action": "pause", "ms": 2000},
-    {"action": "followLink", "selector": ".step:has(.step-card__label:text-is(\"Run plan\")) a.step-card__artifact-link"},
-    {"action": "pause", "ms": 12000}
+    {"action": "caption", "text": "The agent finds it needs a tool first", "ms": 3500},
+    {"action": "waitFor", "selector": ".dep-detail__section--blocked a.dep-detail__id", "timeoutMs": 30000},
+    {"action": "pause", "ms": 4000},
+    {"action": "followLink", "selector": ".dep-detail__section--blocked a.dep-detail__id"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000},
+    {"action": "pause", "ms": 3000}
   ]
 }

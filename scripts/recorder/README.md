@@ -93,7 +93,7 @@ frame. Scenario files hold no address and never fill a login or PIN field
 `node scripts/record-item.mjs --production https://shoreward.ai` films the
 Shoreward video's Chapter A, B and C scenes on the real site, signed in as
 the **Parvati Real Estate** tenant. Each scene is one file in
-`scripts/recorder/walkthroughs/shoreward/` (`A1.json` … `C7.json`) and
+`scripts/recorder/walkthroughs/shoreward/` (`A1.json` … `C13.json`) and
 becomes one real-time 1920×1080 `<out>/<scene>.mp4`. Every run also appends a
 timestamped line per step to `<out>/run.log`. `--out` defaults to
 `recordings/shoreward-<YYYYMMDD-HHMMSS>/`, which is gitignored.
@@ -210,7 +210,7 @@ profile, record headed on the virtual display: add `--headed` and run under
 | A6 | "Set up your first project": names the project Parvati Real Estate | |
 | A7 | Connecting the repo on the "Connect your repository" card (HZ-703), then setting the Test command to `npm test` and returning to the board | `PARVATI_GITHUB_TOKEN`; `parvati-site` already published |
 | B1–B7 | The first item, "Add a Neighbourhoods page": set the goal, plan (B2 ends on the plan), approve the plan, execute, test and review (B5 ends on the review), approve the change, then the live site's new page | the item from B1; `parvati-site` marked **No deploy** (below) |
-| C1–C7 | The first Task, "Find comparable sales for an Upper West Side co-op": define, approve & prioritize, assess and run plan (C3 ends on the run plan), approve the run, execute, verify & report (C6 ends on the 20 ranked sales), review & close | the task from C1 |
+| C1–C13 | The first Task, "Find comparable sales for an Upper West Side co-op": define and approve & prioritize (C1–C2). Its Assess files a tool Change, "Add read-only data/find-comps.mjs" (PS-6 on 5 Nov): C3 shows the block and opens it, C4–C8 take it through approve, plan, build, review and close. Then the Task plans its run (C9 ends on the run plan), approve the run, execute, verify & report (C12 ends on the 20 ranked sales), review & close (C13) | the task from C1, and the tool Change its Assess files |
 
 Chapter A is a **real sign-up**. A2–A5 create the Parvati tenant once; a
 re-take of A3–A5 needs a fresh tenant or an owner reset. A3 and A4 must run
@@ -221,7 +221,7 @@ ended on, which is held in memory only and never logged.
 
 Each B and C scene after the first opens its item from the board in
 unfilmed `setup` steps, so each can be re-run on its own. The long scenes
-(B2, B4, B5, B7, C3, C5, C6) use `waitUntil`, which keeps filming for up to
+(B2, B4, B5, B7, C5–C7, C9, C11, C12) use `waitUntil`, which keeps filming for up to
 2 hours, reloads the page every minute and logs `still waiting …` each
 minute. A scene that may wait over 30 minutes needs 5 GB free in the temp
 dir and in `--out`.
@@ -243,7 +243,7 @@ Besides `goto`, `click`, `type`, `waitFor`, `pause` and `caption`:
   scrubbed from the log. A scene whose variable is unset fails before a
   browser starts.
 - `resume` `{}`: opens the page the previous scene of the same run ended on.
-- `followLink` `{ selector }`: opens the link's href in the filmed tab, same origin only. "View full artifact ↗" links open a new tab, which is never filmed, so B2, B5, C3 and C6 use this to show the plan, the review, the run plan and the report.
+- `followLink` `{ selector }`: opens the link's href in the filmed tab, same origin only. "View full artifact ↗" links open a new tab, which is never filmed, so B2, B5, C5, C9 and C12 use this to show the plans, the review, the run plan and the report; C3 uses it to open the tool Change from the Task's "Blocked by" panel.
 - `gotoSite` `{ url }`: opens a page of the tenant's live site, under `SITE_URL_PREFIXES` in `walkthrough.mjs` only (B7).
 - A top-level `setup` list plays before filming starts.
 

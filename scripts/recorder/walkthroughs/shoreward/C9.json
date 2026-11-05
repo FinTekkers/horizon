@@ -1,0 +1,15 @@
+{
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
+  ],
+  "actions": [
+    {"action": "caption", "text": "Back to the task: the agents plan the run", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Approve the run\")) .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 2000},
+    {"action": "followLink", "selector": ".step:has(.step-card__label:text-is(\"Run plan\")) a.step-card__artifact-link"},
+    {"action": "pause", "ms": 12000}
+  ]
+}
