@@ -572,7 +572,13 @@ function AuthenticatedApp({ user, onLogout }) {
         </div>
       )}
 
-      {view === 'board' && needsFirstProject && <FirstProjectScreen onCreate={api.createProject} />}
+      {view === 'board' && needsFirstProject && (
+        <FirstProjectScreen
+          onCreate={api.createProject}
+          pinPending={user?.gatePinRevealPending === true}
+          onRevealPin={api.revealFirstGatePin}
+        />
+      )}
 
       {view === 'board' && !needsFirstProject && (
         <Board

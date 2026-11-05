@@ -85,7 +85,7 @@ export function setAccountStatus(userId, status, who, { accessEndedAt = null } =
 }
 
 // Returns { user, pin } — pin is the plaintext, shown to the caller exactly
-// once; only its hash is ever persisted.
+// once; only its hash is ever persisted. HZ-773: so the row counts as shown.
 // HZ-655: `role` is 'owner' or 'member' (user.role, which access.js's route
 // guard reads). It defaults to 'member', like the column, so a caller that
 // forgets it gets the closed answer; only the owner's own paths pass 'owner'.
@@ -94,8 +94,8 @@ export function createUser({ email, name, authMethod, googleSub = null, role = '
   const id = crypto.randomUUID()
   const pin = generatePin()
   db.prepare(
-    `INSERT INTO user (id, email, name, initials, auth_method, google_sub, gate_pin_hash, last_login_at, role)
-     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+    `INSERT INTO user (id, email, name, initials, auth_method, google_sub, gate_pin_hash, last_login_at, role, gate_pin_revealed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, datetime('now'))`,
   ).run(id, email, name, initialsFor(name), authMethod, googleSub, hashSecret(pin), role)
   return { user: toPublicUser(db.prepare('SELECT * FROM user WHERE id = ?').get(id)), pin }
 }
@@ -106,6 +106,8 @@ export function createUser({ email, name, authMethod, googleSub = null, role = '
 // password path accepts only ADMIN_EMAIL, and a later Google login adopts the
 // row through findOrCreateGoogleUser. last_login_at stays NULL, and the INSERT
 // does not name account_status, so the 'pending_payment' default applies.
+// HZ-773: its PIN is never shown here, so gate_pin_revealed_at stays NULL and
+// the first-project screen reveals one later (revealFirstGatePin).
 export function createSignupUser({ email, name, company }) {
   const id = crypto.randomUUID()
   db.prepare(
@@ -451,6 +453,29 @@ export function regenerateGatePin(userId) {
     db.prepare('UPDATE session SET pin_verified_until = NULL WHERE user_id = ?').run(userId)
   })()
   return pin
+}
+
+// HZ-773: a sign-up's first look at its PIN. Its PIN was generated at sign-up
+// and never shown, so a fresh one replaces it and is returned — once: the
+// UPDATE only matches while gate_pin_revealed_at is NULL, and sets it. Null
+// for anyone already shown a PIN (the owner, users from before HZ-773, a
+// second call). Locks every session of the user, like regenerateGatePin.
+export function revealFirstGatePin(userId) {
+  const pin = generatePin()
+  return db.transaction(() => {
+    const changed = db
+      .prepare("UPDATE user SET gate_pin_hash = ?, gate_pin_revealed_at = datetime('now') WHERE id = ? AND gate_pin_revealed_at IS NULL")
+      .run(hashSecret(pin), userId).changes
+    if (changed !== 1) return null
+    db.prepare('UPDATE session SET pin_verified_until = NULL WHERE user_id = ?').run(userId)
+    return pin
+  }).immediate()
+}
+
+// Whether revealFirstGatePin would still show this user a PIN.
+export function gatePinRevealPending(userId) {
+  const row = db.prepare('SELECT gate_pin_revealed_at FROM user WHERE id = ?').get(userId)
+  return !!row && row.gate_pin_revealed_at == null
 }
 
 // ---- PIN-verified sessions (HZ-704) ----

@@ -504,6 +504,26 @@ export async function regenerateGatePin() {
   return result
 }
 
+// HZ-773: a fresh sign-up's gate PIN, shown once on "Set up your first
+// project". Resolves to the six digits; they are handed straight to the
+// caller to show, never stored here. Rejects with err.code
+// 'pin_already_shown' (409) when it was shown before, e.g. in another tab.
+export async function revealFirstGatePin() {
+  const res = await fetch(`${API_BASE}/auth/gate-pin/first`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-horizon-csrf': '1' },
+    body: '{}',
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || typeof data.pin !== 'string') {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.code = data.error ?? null
+    throw err
+  }
+  pinVerifiedUntil = null
+  return data.pin
+}
+
 // ---- personal API tokens (HZ-179) ----
 // The raw token comes back once, from createApiToken, and is handed straight
 // to the caller to show — it is never stored here, like the gate PIN above:

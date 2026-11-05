@@ -348,6 +348,8 @@ const WRITE_CASES = {
   'DELETE /api/admin/deploy-targets/:key': { expect: '404', url: '/api/admin/deploy-targets/iso-target', owner: 200 },
   'POST /api/items/:id/abandon': { expect: '404', url: '/api/items/ISOA-2/abandon', body: { reason: 'iso abandon' }, owner: 200 },
   'POST /api/projects/:id/repos/disconnect': { expect: '404', url: `/api/projects/${B}/repos/disconnect`, body: { repo: REPO_B }, owner: 200 },
+  // HZ-773: no one here is a fresh sign-up, so every reveal is a 409 that changes nothing.
+  'POST /api/auth/gate-pin/first': { expect: 'exempt', url: '/api/auth/gate-pin/first', readsSession: true, self: { session: 409 }, own: { status: 401 }, owner: 409 },
   // After every PIN route: a new PIN would refuse the rest.
   'POST /api/auth/gate-pin/regenerate': { expect: 'exempt', url: '/api/auth/gate-pin/regenerate', readsSession: true, freshSession: true, self: { session: 200 }, own: { status: 401 }, owner: 200 },
   'POST /api/auth/pin/lock': { expect: 'exempt', url: '/api/auth/pin/lock', readsSession: true, self: { session: 200 }, own: { status: 401 }, owner: 200 },

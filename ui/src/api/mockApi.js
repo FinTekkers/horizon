@@ -138,6 +138,13 @@ export async function regenerateGatePin() {
   return { ok: true, pin: '000000' }
 }
 
+// HZ-773: the mock user is the owner, never a fresh sign-up.
+export async function revealFirstGatePin() {
+  const err = new Error('pin_already_shown')
+  err.code = 'pin_already_shown'
+  throw err
+}
+
 // HZ-704: mock mode has no server session to lock, and never asks for a PIN.
 export async function lockPinSession() {
   return { ok: true }

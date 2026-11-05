@@ -849,12 +849,15 @@ export function createProject(name, { isolation = 'internal', memberId = null } 
   const existing = db.prepare('SELECT id FROM project WHERE name = ?').get(name)
   if (existing) return { error: 'exists' }
   // The first project becomes active and enabled without a farm restart —
-  // nothing was running before it existed. Later ones start disabled (HZ-207).
+  // nothing was running before it existed. Later internal ones start disabled
+  // (HZ-207); a tenant's own project starts enabled (HZ-773), since its member
+  // has no screen to enable it.
   const first = getActiveProjectId() == null
+  const enabled = first || isolation === 'tenant'
   const id = db.transaction(() => {
     const projectId = db
       .prepare('INSERT INTO project (name, enabled, isolation) VALUES (?, ?, ?)')
-      .run(name, first ? 1 : 0, isolation).lastInsertRowid
+      .run(name, enabled ? 1 : 0, isolation).lastInsertRowid
     // HZ-661: a member's new project is also their active one — always a
     // project they were just made a member of, never any other id.
     if (memberId != null) {

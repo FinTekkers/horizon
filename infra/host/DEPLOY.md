@@ -661,8 +661,8 @@ in `/usr/local/libexec/horizon/`, creates `/etc/horizon/tenant-tokens` as
 
 On sudo older than 1.9.10, replace the regex with the plain path
 (`… NOPASSWD: /usr/local/libexec/horizon/horizon-provision-run-user`); the
-helper refuses anything but one positive integer itself. `tenant-entry` is
-installed as in HZ-663. Until the install runs, a connect answers
+helper refuses anything but one positive integer itself. The same script
+installs `tenant-entry` (HZ-773). Until the install runs, a connect answers
 `502 run_user_provision_failed` and saves nothing.
 
 Also confirm the run users cannot read the server's or farm's environment:
@@ -709,6 +709,34 @@ Rollback: revert the release (tenant launches are refused again) and re-run
 `install-tenant-host.sh` from it to put the old `tenant-entry` back. Hubs left
 under `/home/hz-p*/.horizon-farm/workspaces` are harmless; remove them as root
 if wanted.
+
+### Tenant onboarding with no hand fixes (HZ-773)
+
+After this release, run once:
+
+```bash
+sudo bash infra/host/install-tenant-host.sh
+```
+
+- It now installs `tenant-entry` to `/usr/local/libexec/horizon/`, root-owned,
+  `0755`, with `/opt/horizon/farm/.venv/bin/python` (set
+  `HORIZON_FARM_PYTHON` for another venv) on its shebang. It refuses, before
+  any change, if that python cannot `import httpx`. A copy that already
+  matches is left as it is, so the script stays safe to re-run.
+- `horizon-provision-run-user` now gives each run user a git identity in
+  `/home/hz-p<id>/.gitconfig` (`Horizon (hz-p<id>)`,
+  `hz-p<id>@noreply.shoreward.ai`), written as that user and only where
+  unset. It runs on every connect, so existing run users get it on their next
+  connect; a hand-set value is kept. No sudoers change.
+- A tenant's own new project starts enabled; the owner's projects keep
+  HZ-207's disabled-by-default rule. Existing projects are not changed.
+- A new sign-up is shown their gate PIN once, on "Set up your first project".
+  Users from before this release are never offered it.
+
+Check: `stat -c '%U %a' /usr/local/libexec/horizon/tenant-entry` prints
+`root 755`, and `head -1` of it prints the venv's python. Rollback: revert the
+release; the installed `tenant-entry` and written `.gitconfig` files are
+harmless and can stay.
 
 ## 2m. farmd under systemd (HZ-714)
 
