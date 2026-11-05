@@ -3017,7 +3017,9 @@ export function buildApp({
       // HZ-704: pinVerifiedUntil is when this session's PIN verification ends,
       // or null — a timestamp, never the PIN.
       const pinVerifiedUntil = auth.sessionPinVerifiedUntil(request.cookies[SESSION_COOKIE_NAME])
-      return { user: { ...user, isAdmin: access.isOwner(user.id), pinVerifiedUntil } }
+      // HZ-773: a sign-up not yet shown its PIN; a flag, never the PIN.
+      const gatePinRevealPending = auth.gatePinRevealPending(user.id)
+      return { user: { ...user, isAdmin: access.isOwner(user.id), pinVerifiedUntil, gatePinRevealPending } }
     },
   )
 
@@ -3051,6 +3053,28 @@ export function buildApp({
       const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
       if (!user) return reply.code(401).send({ error: 'login_required' })
       return { ok: true, pin: auth.regenerateGatePin(user.id) }
+    },
+  )
+
+  // HZ-773: a sign-up's gate PIN, shown once on "Set up your first project".
+  // A login session only (a token is not read, so 401), and a same-origin
+  // request carrying x-horizon-csrf: it answers a secret, so a bare cookie
+  // never passes. The PIN is in this one body only, never cached; anyone
+  // already shown a PIN gets 409, with no PIN.
+  fastify.post(
+    '/api/auth/gate-pin/first',
+    {
+      config: { scope: 'public' },
+      schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 409: ERROR_OBJECT }, security: SESSION_SECURITY },
+    },
+    (request, reply) => {
+      const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
+      if (!user) return reply.code(401).send({ error: 'login_required' })
+      if (sameOrigin(request) !== 'ok') return reply.code(403).send({ error: 'csrf_required' })
+      const pin = auth.revealFirstGatePin(user.id)
+      if (pin == null) return reply.code(409).send({ error: 'pin_already_shown' })
+      reply.header('Cache-Control', 'no-store')
+      return { ok: true, pin }
     },
   )
 

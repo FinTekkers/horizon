@@ -716,6 +716,7 @@ test('/api/auth/me returns the stored account_status; every other field is uncha
       isAdmin: true,
       account_status: 'past_due',
       pinVerifiedUntil: null,
+      gatePinRevealPending: false,
     })
   } finally {
     auth.setAccountStatus(id, 'active', 'test')

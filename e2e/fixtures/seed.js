@@ -206,25 +206,17 @@ export function insertGateAction(db, { itemId, kind = 'premerge', state, reason 
   ).run(itemId, kind, state, crypto.randomBytes(8).toString('hex'), epoch, detail, reason, failingCheck, now, deadline, running ? null : now)
 }
 
-// HZ-656: a signed-in non-owner, written like server/src/auth.js's createUser
-// and createSession (session id is sha256 of the raw token). `projectIds` are
-// the projects they belong to. Returns { userId, token }: set `token` as the
-// horizon_session cookie in a context of their own.
-export function insertMemberSession(db, { email, name, projectIds = [] }) {
-  const userId = crypto.randomUUID()
-  const initials = name
+const initialsOf = (name) =>
+  name
     .split(/\s+/)
     .map((word) => word[0])
     .join('')
     .slice(0, 2)
     .toUpperCase()
-  db.prepare(
-    `INSERT INTO user (id, email, name, initials, auth_method, gate_pin_hash, role, last_login_at)
-     VALUES (?, ?, ?, ?, 'password', 'unused', 'member', datetime('now'))`,
-  ).run(userId, email, name, initials)
-  for (const projectId of projectIds) {
-    db.prepare('INSERT INTO project_member (project_id, user_id) VALUES (?, ?)').run(projectId, userId)
-  }
+
+// A login session for `userId`, written like auth.createSession (the id is
+// sha256 of the raw token). Returns the raw token.
+function insertSession(db, userId) {
   const token = crypto.randomBytes(32).toString('hex')
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   db.prepare('INSERT INTO session (id, user_id, expires_at) VALUES (?, ?, ?)').run(
@@ -232,5 +224,40 @@ export function insertMemberSession(db, { email, name, projectIds = [] }) {
     userId,
     expiresAt,
   )
-  return { userId, token }
+  return token
+}
+
+// HZ-656: a signed-in non-owner, written like server/src/auth.js's createUser
+// and createSession (session id is sha256 of the raw token). `projectIds` are
+// the projects they belong to. Returns { userId, token }: set `token` as the
+// horizon_session cookie in a context of their own. HZ-773: like createUser,
+// their PIN counts as shown, so "Set up your first project" offers no reveal.
+export function insertMemberSession(db, { email, name, projectIds = [] }) {
+  const userId = crypto.randomUUID()
+  db.prepare(
+    `INSERT INTO user (id, email, name, initials, auth_method, gate_pin_hash, role, last_login_at, gate_pin_revealed_at)
+     VALUES (?, ?, ?, ?, 'password', 'unused', 'member', datetime('now'), datetime('now'))`,
+  ).run(userId, email, name, initialsOf(name))
+  for (const projectId of projectIds) {
+    db.prepare('INSERT INTO project_member (project_id, user_id) VALUES (?, ?)').run(projectId, userId)
+  }
+  return { userId, token: insertSession(db, userId) }
+}
+
+// HZ-773: a paid shoreward.ai sign-up just after their first Google login, as
+// auth.createSignupUser, the Stripe webhook and findOrCreateGoogleUser leave
+// it: a hash of a PIN no one was shown (the plaintext is thrown away here
+// too), gate_pin_revealed_at NULL, account 'active', a google_sub, and a
+// session. Returns { userId, token }. The spec learns the PIN only from the
+// screen — never use setGatePinDirect on this row.
+export function insertSignupUser(db, { email, name, company }) {
+  const userId = crypto.randomUUID()
+  const salt = crypto.randomBytes(16)
+  const unseenPin = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0')
+  const hash = `${salt.toString('hex')}:${crypto.scryptSync(unseenPin, salt, 32).toString('hex')}`
+  db.prepare(
+    `INSERT INTO user (id, email, name, initials, auth_method, google_sub, gate_pin_hash, company, account_status, last_login_at)
+     VALUES (?, ?, ?, ?, 'password', ?, ?, ?, 'active', datetime('now'))`,
+  ).run(userId, email, name, initialsOf(name), `google-${userId}`, hash, company)
+  return { userId, token: insertSession(db, userId) }
 }

@@ -1177,6 +1177,18 @@ if (!userColumnNames().has('access_ended_at')) {
     for (const { id } of cancelled) backfill.run(id)
   }).immediate()
 }
+// HZ-773: when the account's gate PIN was shown to its holder. NULL only for a
+// sign-up (auth.createSignupUser) whose PIN no one has seen yet; the first-
+// project screen reveals it once (auth.revealFirstGatePin). Every user from
+// before this column counts as already shown, so the owner and existing
+// tenants are never offered a reveal. Additive and once-only, like above.
+if (!userColumnNames().has('gate_pin_revealed_at')) {
+  db.transaction(() => {
+    if (userColumnNames().has('gate_pin_revealed_at')) return
+    db.exec('ALTER TABLE user ADD COLUMN gate_pin_revealed_at TEXT')
+    db.exec("UPDATE user SET gate_pin_revealed_at = datetime('now') WHERE gate_pin_revealed_at IS NULL")
+  }).immediate()
+}
 // HZ-641: ids of work items the account purge deleted, so store.finishedItems
 // still reports them and farmd reaps their worktrees. Ids only, no content.
 db.exec(`

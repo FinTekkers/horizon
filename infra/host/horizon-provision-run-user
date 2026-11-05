@@ -12,6 +12,17 @@
 # existing hz-p<id> is refused, never changed. It never sets a password,
 # never grants a login shell, never adds a supplementary group and never
 # touches sudoers. The home is 0700, so no other run user can read it.
+#
+# HZ-773: it also gives the run user a git identity, so a tenant step's commit
+# never fails with "Author identity unknown": user.name "Horizon (hz-p<id>)"
+# and user.email "hz-p<id>@noreply.shoreward.ai" in ~/.gitconfig, each only if
+# unset, so a value already there is kept. The run user owns that home and
+# could plant ~/.gitconfig as a symlink, so the file is written by the run user
+# itself (runuser), never by root, and anything but a regular file is refused.
+#
+# HORIZON_RUN_USER_HOME_ROOT (default /home) is for the tests only. It is safe
+# in a root helper only because sudo's env_reset drops it: the rule in
+# horizon-tenant.sudoers has no SETENV, and must never gain one.
 set -euo pipefail
 
 GROUP=hz-tenants
@@ -27,7 +38,7 @@ refuse() {
 [ "$(id -u)" = 0 ] || refuse "must run as root"
 
 user="hz-p$1"
-home="/home/$user"
+home="${HORIZON_RUN_USER_HOME_ROOT:-/home}/$user"
 
 groupadd -f "$GROUP"
 if entry="$(getent passwd "$user")"; then
@@ -39,4 +50,18 @@ else
 fi
 chown "$user:$GROUP" "$home"
 chmod 700 "$home"
+
+gitconfig="$home/.gitconfig"
+if [ -e "$gitconfig" ] || [ -L "$gitconfig" ]; then
+  [ -f "$gitconfig" ] && [ ! -L "$gitconfig" ] || refuse "$gitconfig is not a regular file"
+fi
+# git as the run user, umask 077, so a new ~/.gitconfig is 0600 and theirs.
+as_run_user() {
+  runuser -u "$user" -- env HOME="$home" sh -c 'umask 077 && cd "$HOME" && exec "$@"' sh "$@"
+}
+set_git_identity() {
+  as_run_user git config --file "$gitconfig" --get "$1" >/dev/null || as_run_user git config --file "$gitconfig" "$1" "$2"
+}
+set_git_identity user.name "Horizon ($user)"
+set_git_identity user.email "$user@noreply.shoreward.ai"
 echo "horizon-provision-run-user: ok $user"
