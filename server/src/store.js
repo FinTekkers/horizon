@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { db } from './db.js'
+import { db, hasRejectedColumn } from './db.js'
 import { GATE_ACTION_MARGIN_MS, PREMERGE_SKIP_MAX_AGE_MS } from './config.js'
 import {
   STEPS,
@@ -35,11 +35,9 @@ import {
   gateStepIndexes,
   laneOf,
   laneSkips,
-  nextCursor,
   kindStepIndex,
   stepKeyAt,
   defaultReworkTarget,
-  mergedFloor,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 import { isPriority } from '../../domain/js/priorities.js'
@@ -61,6 +59,7 @@ import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { openAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
+import { moveItem, planMove } from './moveItem.js'
 
 const listeners = new Set()
 
@@ -2077,7 +2076,7 @@ export function deployBatchFactsFor(itemId) {
 
 // HZ-228: when the item entered its current state, for the board's elapsed
 // label — ISO UTC, or null when the card shows no timer. Read-only. In order:
-//   1. closed, abandoned, rejected or paused → null (paused has no pause
+//   1. closed, abandoned or paused → null (paused has no pause
 //      timestamp, so a paused card shows no timer);
 //   2. an active run → its start. At the parallel review steps that is the
 //      newest active run, not necessarily the cursor step's own;
@@ -2089,7 +2088,7 @@ export function deployBatchFactsFor(itemId) {
 //      reads from the forwarded review's end;
 //   5. anything else (an agent step not yet dispatched) → null.
 function stateSince(row, activeRun, gateAction) {
-  if (isClosed(row) || row.abandoned_at || row.rejected || row.paused) return null
+  if (isClosed(row) || row.abandoned_at || row.paused) return null
   if (activeRun) return toIsoUtc(activeRun.started_at)
   if (STEPS[row.cursor]?.kind !== 'gate') return null
   if (gateAction?.state === 'running') return toIsoUtc(gateAction.since)
@@ -2108,7 +2107,7 @@ export const PAUSE_SET = "paused = 1, paused_at = CASE WHEN paused = 1 AND pause
 
 // HZ-443: when the item started waiting on a human — the board's "Waiting on
 // me" filter and sort — ISO UTC, or null when it is not waiting. In order:
-//   1. closed, abandoned or rejected → null;
+//   1. closed or abandoned → null;
 //   2. paused → when the pause began (paused_at, set by PAUSE_SET);
 //   3. rule-blocked → the block's blockedAt;
 //   4. at a gate → when it reached the gate. Unlike stateSince, a running gate
@@ -2116,7 +2115,7 @@ export const PAUSE_SET = "paused = 1, paused_at = CASE WHEN paused = 1 AND pause
 //   5. anything else (an agent working) → null.
 // A new pause path must write PAUSE_SET, or its items show no wait.
 function waitingSince(row, ruleBlock) {
-  if (isClosed(row) || row.abandoned_at || row.rejected) return null
+  if (isClosed(row) || row.abandoned_at) return null
   if (row.paused) return toIsoUtc(row.paused_at)
   if (ruleBlock) return toIsoUtc(ruleBlock.blockedAt)
   if (STEPS[row.cursor]?.kind === 'gate') return gateReachedAt(row)
@@ -2249,7 +2248,6 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     currentStepKey: stepKeyAt(row.cursor),
     steps: stepViewsFor(itemKindOf(row)),
     paused: !!row.paused,
-    rejected: !!row.rejected,
     // Last progress on this item, for the board's staleness filter (HZ-80) —
     // `updated_at` is already maintained by `touch` on every mutation below.
     last_activity_at: row.updated_at,
@@ -2262,6 +2260,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...gateFields,
     state_since: stateSince(row, activeRun, gateFields.gateAction),
     reviewRejected: reviewRejected(row),
+    // HZ-710: what "Accept despite review findings" accepts despite.
+    reviewFindings: reviewFindings(row),
     forwardedReview: forwardedReview(row),
     ...dependencies,
     ...spawnFields(row.id),
@@ -2292,6 +2292,19 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
 // orchestrator.forwardRejectedReview so the button and the route agree.
 export function reviewRejected(row) {
   return row.cursor === IMPLEMENT_STEP_INDEX && row.fix_findings_json != null
+}
+
+// HZ-710: the findings the failing review left open — its fix-pass record —
+// as { file, line, detail }, while reviewRejected holds; otherwise none.
+function reviewFindings(row) {
+  if (!reviewRejected(row)) return []
+  try {
+    const parsed = JSON.parse(row.fix_findings_json)
+    if (!Array.isArray(parsed)) return []
+    return parsed.map((f) => ({ file: f?.file ?? null, line: f?.line ?? null, detail: String(f?.detail ?? '') }))
+  } catch {
+    return []
+  }
 }
 
 const selectForwardedRun = db.prepare('SELECT attempt, artifact, output FROM step_run WHERE id = ? AND item_id = ?')
@@ -2327,7 +2340,6 @@ export function getItem(id) {
     kind: itemKindOf(row),
     lane: laneOf(row),
     paused: !!row.paused,
-    rejected: !!row.rejected,
     personas: personasFromRow(row, projectOverlayFor(row.project_id)),
     providerChoices: providerChoicesFromRow(row),
   }
@@ -2462,13 +2474,6 @@ function disabledProject(item) {
 // ---- mutations ----
 
 const touch = "updated_at = datetime('now')"
-// A human-directed rework at or before implement starts the automated review
-// loop over: fresh cycles, and no HZ-182 fix pass — a human send-back is an
-// unscoped change, so the next implement and review are both full.
-const RESET_REVIEW_STATE =
-  ', review_cycle_count = 0, fix_pass = 0, fix_findings_json = NULL, last_reviewed_sha = NULL' +
-  ', forwarded_review_run_id = NULL, forwarded_by = NULL, forwarded_sha = NULL'
-
 // detail (HZ-373): the full failure message behind a check headline in
 // `text`, for "Show details"; null for every other event.
 export function addEvent(id, { who, text, color, initials, detail = null, verdict = null }) {
@@ -2568,23 +2573,32 @@ export function approveGate(
   }
 
   const trimmed = (notes || '').trim()
-  const next = nextCursor(it)
-  db.prepare(
-    `UPDATE work_item SET cursor = ?, rejected = 0${approvedHash ? ', approved_plan_hash = ?, approved_runner = ?' : ''}, ${touch} WHERE id = ?`,
-  ).run(...(approvedHash ? [next, approvedHash, approvedRunner, id] : [next, id]))
-  db.prepare(
-    'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot) VALUES (?, ?, ?, ?, ?, ?, ?)',
-  ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed)
-  if (golden?.set) approveGoldenCases(id, golden.set, actor)
-  if (trimmed) {
-    // Approval notes are direction for whoever runs next — queue as feedback
-    // so the next dispatched agent step receives and must address them.
-    db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
-      id,
-      STEPS[next]?.agent || '',
-      trimmed,
-    )
-  }
+  // HZ-710: the move, the decision and its follow-ons land together or not at all.
+  const moved = db.transaction(() => {
+    const move = moveItem(id, {
+      action: 'approve',
+      who: actor,
+      note: trimmed,
+      proof,
+      fields: approvedHash ? { approved_plan_hash: approvedHash, approved_runner: approvedRunner } : {},
+    })
+    if (move.error) return move
+    db.prepare(
+      'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed)
+    if (golden?.set) approveGoldenCases(id, golden.set, actor)
+    if (trimmed) {
+      // Approval notes are direction for whoever runs next — queue as feedback
+      // so the next dispatched agent step receives and must address them.
+      db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
+        id,
+        STEPS[move.toIndex]?.agent || '',
+        trimmed,
+      )
+    }
+    return move
+  })()
+  if (moved.error) return moved
   addEvent(id, {
     who: actor,
     text: `approved: ${STEPS[stepIndex].label.toLowerCase()}${trimmed ? ' — ' + trimmed : ''}`,
@@ -2627,7 +2641,12 @@ export function filedAutopilotOff(itemId) {
 // back to one of its sub-steps — one substepReworkTargets offers, checked the
 // same way. The cursor goes to the anchor and substep_cursor names the
 // sub-step. Every other send-back leaves the item at no sub-step.
-export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null, targetSubstepId = null) {
+//
+// HZ-710: a wrapper over moveItem — a return to the target, or a retry of the
+// step the item is on — keeping this route's own target rules, refusals and
+// event until "Retire the old move routes". `proof` is the gate PIN's: only
+// a send-back with it releases a rule block (HZ-346).
+export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null, targetSubstepId = null, { proof = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -2668,42 +2687,42 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
     // walks back instead (HZ-435), never onto a server step (HZ-446).
     reworkIdx = targetStepIndex != null ? targetStepIndex : defaultReworkTarget(it.cursor, itemKindOf(it), it)
   }
+  const move =
+    reworkIdx === it.cursor
+      ? { action: 'retry', substepId: null }
+      : { action: 'return', toKey: stepKeyAt(reworkIdx), substepId: substep ? substep.substepId : null }
   // HZ-708: merged code is never rewound — no step before Accept the code.
-  const floor = mergedFloor(it)
-  if (floor !== null && reworkIdx < floor) return { error: 'merged_target' }
+  const planned = planMove(it, move)
+  if (planned.error) return { error: planned.error === 'merged' ? 'merged_target' : 'invalid_target' }
 
   agentRunner.cancel(id, 'rejected')
   // HZ-541: an approved golden-cases set survives every send-back but one to
   // the sub-step that writes it, which regenerates it for a new approval.
   if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === GOLDEN_CASES_OUTPUT) clearGoldenCases(id)
 
-  if (atGate) {
-    db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
-      id,
-      it.cursor,
-      'rejected',
-      feedbackText || '',
-      actor,
-    )
-  }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
-
-  // HZ-709: the row names the step it was sent back to by key, too.
-  db.prepare('INSERT INTO feedback (item_id, target, message, step_key) VALUES (?, ?, ?, ?)').run(
-    id,
-    reworkAgent || target || '',
-    feedbackText || '(no notes)',
-    stepKeyAt(reworkIdx),
-  )
-  // A human-directed rework gets a fresh set of automated review cycles —
-  // otherwise a prior automated cap-out could falsely cap this new attempt.
-  const resetReview = it.kind === 'change' && reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
-  // HZ-346: a human send-back is never held by a rule block. HZ-384: and it
-  // retires any approved run plan — the run must be approved again, against
-  // whatever plan it comes back with (always NULL on a change item).
-  db.prepare(
-    `UPDATE work_item SET cursor = ?, substep_cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL, approved_plan_hash = NULL, approved_runner = NULL${resetReview}, ${touch} WHERE id = ?`,
-  ).run(reworkIdx, substep ? substep.substepId : null, id)
+  const moved = db.transaction(() => {
+    const result = moveItem(id, { ...move, who: actor, note: feedbackText || '', proof })
+    if (result.error) return result
+    if (atGate) {
+      db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
+        id,
+        it.cursor,
+        'rejected',
+        feedbackText || '',
+        actor,
+      )
+    }
+    // HZ-709: the row names the step it was sent back to by key, too.
+    db.prepare('INSERT INTO feedback (item_id, target, message, step_key) VALUES (?, ?, ?, ?)').run(
+      id,
+      reworkAgent || target || '',
+      feedbackText || '(no notes)',
+      stepKeyAt(reworkIdx),
+    )
+    return result
+  })()
+  if (moved.error) return moved
   addEvent(id, {
     who: actor,
     text: `requested changes on ${target || 'this step'}${feedbackText ? ': ' + feedbackText : ''} — sent back to the ${(substep ? substep.label : STEPS[reworkIdx].label).toLowerCase()} step`,
@@ -2713,6 +2732,52 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   notify()
   agentRunner.kick(id)
   return { ok: true }
+}
+
+// HZ-710: the route's return, retry and reopen (approve and abandon keep
+// their own paths, with their checks). A return or retry re-runs from the
+// target with `note` as that step's feedback; a return to a gate waits there
+// for a new decision. A reopen of an item that has a GitHub issue is refused:
+// the next sync would close it again, so it is reopened on GitHub.
+export function moveByHuman(id, { action, toKey = null, note = '', who = 'You', proof = null }) {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
+  const planned = planMove(it, { action, toKey })
+  if (planned.error) return planned
+  if (action === 'reopen' && it.repo && it.issue != null) {
+    return { error: 'reopen_on_github', hint: `Reopen issue #${it.issue} on GitHub; Horizon follows it.` }
+  }
+  const trimmed = (note || '').trim()
+  if (action !== 'reopen') agentRunner.cancel(id, 'superseded')
+  const moved = db.transaction(() => {
+    const result = moveItem(id, { action, toKey, who, note: trimmed, proof })
+    if (result.error) return result
+    if (trimmed && STEPS[result.toIndex]?.kind === 'agent') {
+      db.prepare('INSERT INTO feedback (item_id, target, message, step_key) VALUES (?, ?, ?, ?)').run(
+        id,
+        STEPS[result.toIndex].agent || '',
+        trimmed,
+        result.move.toKey,
+      )
+    }
+    return result
+  })()
+  if (moved.error) return moved
+  const label = STEPS[moved.toIndex]?.label ?? ''
+  const text =
+    action === 'reopen' ? 'reopened this item' : action === 'retry' ? `retried “${label}”` : `moved this item back to “${label}”`
+  addEvent(id, { who, text: `${text}${trimmed ? ': ' + trimmed : ''}`, color: '#DFA200', initials: 'YOU' })
+  notify()
+  agentRunner.kick(id)
+  return { ok: true, move: moved.move }
+}
+
+// HZ-710: the item's newest item_move row, in the route's shape, or null.
+export function lastMove(id) {
+  const row = db.prepare('SELECT * FROM item_move WHERE item_id = ? ORDER BY id DESC LIMIT 1').get(id)
+  if (!row) return null
+  return { id: row.id, itemId: row.item_id, who: row.who, fromKey: row.from_key, toKey: row.to_key, action: row.action, note: row.note }
 }
 
 export function setPaused(id, paused) {
@@ -2798,7 +2863,9 @@ export function setPriority(id, priority) {
   return { ok: true }
 }
 
-export function restartPhase(id, phase, reason, actor = 'You') {
+// HZ-710: a wrapper over moveItem — a return to the phase's first row, or a
+// retry when the item is on it — keeping this route's refusals and event.
+export function restartPhase(id, phase, reason, actor = 'You', { proof = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -2818,24 +2885,26 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   if (!found) return { error: 'bad_phase' }
   if (phase > STEPS[it.cursor].phase) return { error: 'phase_ahead' }
   const firstIdx = found.index
+  const move = firstIdx === it.cursor ? { action: 'retry' } : { action: 'return', toKey: found.key }
   // HZ-708: merged code is never rewound — no phase that starts before Accept the code.
-  const floor = mergedFloor(it)
-  if (floor !== null && firstIdx < floor) return { error: 'merged_target' }
+  const planned = planMove(it, move)
+  if (planned.error) return { error: planned.error === 'merged' ? 'merged_target' : planned.error }
 
   agentRunner.cancel(id, 'superseded')
-  if (reason) {
-    // The restart reason is feedback: the first re-run agent must address it.
-    db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
-      id,
-      STEPS[firstIdx].agent || '',
-      reason,
-    )
-  }
-  const resetReview = kind === 'change' && firstIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
-  // HZ-346: a restart moves the cursor, so a rule block must not hold it.
-  db.prepare(
-    `UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, rule_block_json = NULL${resetReview}, ${touch} WHERE id = ?`,
-  ).run(firstIdx, id)
+  const moved = db.transaction(() => {
+    const result = moveItem(id, { ...move, who: actor, note: reason || '', proof })
+    if (result.error) return result
+    if (reason) {
+      // The restart reason is feedback: the first re-run agent must address it.
+      db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
+        id,
+        STEPS[firstIdx].agent || '',
+        reason,
+      )
+    }
+    return result
+  })()
+  if (moved.error) return moved
   addEvent(id, {
     who: actor,
     text: `restarted the ${phasesFor(kind)[phase]} phase${reason ? ': ' + reason : ''}`,
@@ -2873,6 +2942,8 @@ export function abandonItem(id, reason, actor = 'You', { removeDependentLinks = 
   // farm concurrency slot on work that's about to be marked abandoned.
   agentRunner.cancel(id, 'cancelled')
   const removedLinks = db.transaction(() => {
+    // HZ-710: the abandon is a move too — logged before the flag is set.
+    moveItem(id, { action: 'abandon', who: actor, note: trimmed })
     db.prepare(
       `UPDATE work_item SET abandoned_at = datetime('now'), abandoned_reason = ?, abandoned_by = ?, ${touch} WHERE id = ?`,
     ).run(trimmed, actor, id)
@@ -3091,12 +3162,17 @@ export function approveGateFromGithub(id) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   const stepIndex = it.cursor
-  if (isClosed(it) || isAbandoned(it) || STEPS[stepIndex]?.label !== 'Accept the code') return { error: 'not_at_accept_gate' }
+  if (isClosed(it) || isAbandoned(it) || stepIndex !== ACCEPT_GATE_INDEX) return { error: 'not_at_accept_gate' }
 
-  db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, ${touch} WHERE id = ?`).run(nextCursor(it), id)
-  db.prepare(
-    "INSERT INTO gate_decision (item_id, step_index, decision, decided_by) VALUES (?, ?, 'approved', 'GitHub')",
-  ).run(id, stepIndex)
+  const moved = db.transaction(() => {
+    const result = moveItem(id, { action: 'approve', who: 'GitHub', note: `PR #${it.pr} was merged on GitHub` })
+    if (result.error) return result
+    db.prepare(
+      "INSERT INTO gate_decision (item_id, step_index, decision, decided_by) VALUES (?, ?, 'approved', 'GitHub')",
+    ).run(id, stepIndex)
+    return result
+  })()
+  if (moved.error) return moved
   addEvent(id, {
     who: 'GitHub',
     text: `PR #${it.pr} was merged on GitHub — code accepted`,
@@ -3217,16 +3293,13 @@ export function upsertFromGithub(ghIssue, repoFullName) {
     // GitHub reopen must never silently resurrect an abandoned item mid-flight.
     if (closedOnGithub && !wasClosed && !row.abandoned_at) {
       agentRunner.cancel(row.id, 'cancelled')
-      db.prepare(`UPDATE work_item SET cursor = ?, ${touch} WHERE id = ?`).run(endIndex(itemKindOf(row)), row.id)
+      moveItem(row.id, { action: 'close', who: 'GitHub', note: `closed issue #${number}` })
       addEvent(row.id, { who: 'GitHub', text: `closed issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
       wakeDependents(row.id)
     } else if (!closedOnGithub && wasClosed && !row.abandoned_at) {
       // HZ-467: a reopened item starts over, so its old merge no longer counts.
-      db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0, paused = 0, merged_at = NULL, ${touch} WHERE id = ?`).run(
-        firstStepIndex(itemKindOf(row)),
-        row.id,
-      )
+      moveItem(row.id, { action: 'reopen', who: 'GitHub', note: `reopened issue #${number}` })
       addEvent(row.id, { who: 'GitHub', text: `reopened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
       changed = true
       agentRunner.kick(row.id)
@@ -3239,9 +3312,13 @@ export function upsertFromGithub(ghIssue, repoFullName) {
 
 // One-time boot recovery: items frozen in the legacy "rejected" state (from
 // before rejection triggered rework) are requeued at the responsible agent
-// step, reusing the rejection notes as the agent's feedback.
-export function recoverRejectedItems() {
-  const rows = db.prepare('SELECT id, cursor, kind, lane FROM work_item WHERE rejected = 1').all()
+// step, reusing the rejection notes as the agent's feedback. HZ-710: each is
+// one move by Horizon, noted "boot recovery"; boot then drops the column
+// (db.js dropLegacyRejectedColumn), so on a database without it this is a no-op.
+export function recoverLegacyRejected() {
+  if (!hasRejectedColumn()) return 0
+  const rows = db.prepare('SELECT * FROM work_item WHERE rejected = 1').all()
+  let recovered = 0
   for (const row of rows) {
     const first = firstStepIndex(itemKindOf(row))
     let reworkIdx = Math.min(Math.max(row.cursor, first), endIndex(itemKindOf(row)) - 1)
@@ -3260,13 +3337,20 @@ export function recoverRejectedItems() {
     const notes = db
       .prepare("SELECT notes FROM gate_decision WHERE item_id = ? AND decision = 'rejected' ORDER BY id DESC LIMIT 1")
       .get(row.id)?.notes
-    db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
-      row.id,
-      STEPS[reworkIdx].agent || '',
-      notes || 'changes requested',
-    )
-    const resetReview = itemKindOf(row) === 'change' && reworkIdx <= IMPLEMENT_STEP_INDEX ? RESET_REVIEW_STATE : ''
-    db.prepare(`UPDATE work_item SET cursor = ?, rejected = 0${resetReview}, ${touch} WHERE id = ?`).run(reworkIdx, row.id)
+    const move = reworkIdx === row.cursor ? { action: 'retry' } : { action: 'return', toKey: stepKeyAt(reworkIdx) }
+    const moved = db.transaction(() => {
+      db.prepare('UPDATE work_item SET rejected = 0 WHERE id = ?').run(row.id)
+      const result = moveItem(row.id, { ...move, who: 'Horizon', note: 'boot recovery' })
+      if (result.error) return result
+      db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
+        row.id,
+        STEPS[reworkIdx].agent || '',
+        notes || 'changes requested',
+      )
+      return result
+    })()
+    if (moved.error) continue
+    recovered++
     addEvent(row.id, {
       who: 'Horizon',
       text: `requeued for rework at “${STEPS[reworkIdx].label}”`,
@@ -3276,7 +3360,7 @@ export function recoverRejectedItems() {
     agentRunner.kick(row.id)
   }
   if (rows.length > 0) notify()
-  return rows.length
+  return recovered
 }
 
 // Agent-step execution lives in orchestrator.js (registered via

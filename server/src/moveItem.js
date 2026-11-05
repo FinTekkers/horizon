@@ -1,0 +1,303 @@
+// HZ-710: the one move. Every way an item's step changes — approve, return
+// to, retry, abandon, reopen, and the internal close a GitHub issue close
+// makes — goes through moveItem, in one transaction: validate, apply the one
+// reset rule, write the step and insert one item_move row. The only other
+// writer of an item's step is step completion (writeStepCompletion below),
+// which logs no move. server/test/move-item-single-writer.test.mjs pins that
+// no other module writes `cursor`.
+//
+// planMove is pure — no database — so the table test can walk every
+// (current step, target) pair of every kind. Steps are named by key here and
+// in item_move; the record keeps its position (domain/js/lifecycle.js).
+//
+// This module moves and logs, nothing else: cancelling a run, queueing
+// feedback, the activity event and the kick stay with the callers
+// (store.js's wrappers), so each existing route keeps its own wording.
+import { db } from './db.js'
+import { isHumanProof } from './humanProof.js'
+import { clearGoldenCases } from './goldenCases.js'
+import {
+  ACCEPT_GATE_INDEX,
+  APPROVE_FILE_GATE_INDEX,
+  APPROVE_RUN_GATE_INDEX,
+  IMPACT_REVIEW_STEP_INDEX,
+  IMPLEMENT_ITEM_KIND,
+  IMPLEMENT_STEP_INDEX,
+  REVIEW_STEP_INDEX,
+  RUN_PLAN_STEP_INDEX,
+  STEPS,
+  endIndex,
+  firstStepIndex,
+  isAbandoned,
+  isClosed,
+  isHumanOnlyGate,
+  itemKindOf,
+  laneCheckIndexes,
+  laneSkips,
+  mergedFloor,
+  nextCursor,
+  stepIndexOf,
+  stepKeyAt,
+  stepsFor,
+} from '../../domain/js/lifecycle.js'
+
+// The five a human (or the route) can ask for, plus 'close', which only a
+// GitHub issue close makes — the route never offers it.
+export const MOVE_ACTIONS = Object.freeze(['approve', 'return', 'retry', 'abandon', 'reopen', 'close'])
+export const ROUTE_MOVE_ACTIONS = Object.freeze(MOVE_ACTIONS.filter((action) => action !== 'close'))
+
+// A closed item sits one past its kind's last row, where no step key is.
+export const CLOSED_KEY = 'closed'
+
+export const MERGED_HINT = 'This item is merged. File a follow-up item instead.'
+
+// The gate that approves an item's golden cases, by key: each kind's first
+// gate (server/src/goldenCases.js FIRST_GATE_INDEXES).
+export const GOLDEN_GATE_KEYS = Object.freeze(['change.approve-prioritize', 'task.approve-prioritize'])
+const GOLDEN_GATE_INDEXES = GOLDEN_GATE_KEYS.map(stepIndexOf)
+
+// What a return to at or before implement clears: a fresh automated review
+// loop, no HZ-182 fix pass, and no forward to Accept the code.
+export const REVIEW_STATE_COLUMNS = Object.freeze([
+  'review_cycle_count = 0',
+  'fix_pass = 0',
+  'fix_findings_json = NULL',
+  'last_reviewed_sha = NULL',
+  'forwarded_review_run_id = NULL',
+  'forwarded_by = NULL',
+  'forwarded_sha = NULL',
+])
+
+// The columns that say where an item is. Only this module writes them; an
+// agent's patch (orchestrator.js writeWorkItemPatch) drops them.
+export const STEP_COLUMNS = Object.freeze(['cursor', 'substep_cursor'])
+
+// The only other columns a move or a completion may write alongside the step.
+// Anything else is refused, so `fields` cannot become a back door.
+export const MOVE_FIELDS = Object.freeze(
+  new Set([
+    'approved_plan_hash',
+    'approved_runner',
+    'fix_pass',
+    'fix_findings_json',
+    'forwarded_review_run_id',
+    'forwarded_by',
+    'forwarded_sha',
+    'substep_cursor',
+  ]),
+)
+
+// Automated outcomes that move an item back, or on to a gate, rather than to
+// its next row. They are step completions, not moves: the review loop counts
+// its own cycles, so the reset rule must not clear them.
+const AUTOMATED_OUTCOMES = new Map([
+  [REVIEW_STEP_INDEX, new Set([IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX])],
+  [IMPACT_REVIEW_STEP_INDEX, new Set([RUN_PLAN_STEP_INDEX])],
+])
+
+const NO_RESET = Object.freeze({
+  clearReview: false,
+  clearPlanHash: false,
+  clearGolden: false,
+  clearFiling: false,
+  releaseHolds: false,
+  clearMerged: false,
+})
+
+// The step key an item sits at, or CLOSED_KEY.
+export function moveKeyOf(item) {
+  return isClosed(item) ? CLOSED_KEY : stepKeyAt(item.cursor)
+}
+
+// The one reset rule. Returning to `toIndex` redoes it and every row after
+// it, so an approval at a gate at or after it is no longer an approval: the
+// run plan, the golden cases and the filing choice each clear only when the
+// target is at or before their own gate. The review counters clear only at or
+// before implement. Holds are released. Nothing before the target, and never
+// the branch or the PR, is touched.
+//
+// The golden cases and the run plan hash are cleared here. The filing choice
+// is the newest Approve & file approval's (store.js filedAutopilotOff), so
+// clearFiling needs no write: the gate must be approved again, and that new
+// decision row carries the new choice — approval history is never rewritten.
+export function resetFor(item, toIndex) {
+  const rows = new Set(stepsFor(itemKindOf(item)).map((step) => step.index))
+  const clears = (gate) => rows.has(gate) && toIndex <= gate
+  return {
+    clearReview: itemKindOf(item) === IMPLEMENT_ITEM_KIND && clears(IMPLEMENT_STEP_INDEX),
+    clearPlanHash: clears(APPROVE_RUN_GATE_INDEX),
+    clearGolden: GOLDEN_GATE_INDEXES.some(clears),
+    clearFiling: clears(APPROVE_FILE_GATE_INDEX),
+    releaseHolds: true,
+    clearMerged: false,
+  }
+}
+
+// HZ-185: the latest automated review failed and sent the item back to
+// implement with its findings (store.js reviewRejected reads the same row).
+function reviewFailed(item) {
+  return item.cursor === IMPLEMENT_STEP_INDEX && item.fix_findings_json != null
+}
+
+// Pure. Either { ok, action, fromKey, toKey, toIndex, substepId, reset,
+// needsHumanProof } or { error, hint? }. Refusals:
+//   bad_action      not one of MOVE_ACTIONS
+//   abandoned       the item is abandoned
+//   closed          the item is closed (every action but reopen)
+//   not_closed      reopen on an open item
+//   bad_target_key  no such step in the item's kind, or not the step the
+//                   action goes to
+//   not_earlier     a return to the current step or a later one
+//   lane_skipped    a return to a row the item's lane skips
+//   merged          a return before Accept the code after the PR merged
+//   not_at_gate     approve away from a gate
+//   at_gate         retry at a gate, which has nothing to redo
+export function planMove(item, { action, toKey = null, substepId = null } = {}) {
+  if (!MOVE_ACTIONS.includes(action)) return { error: 'bad_action' }
+  if (isAbandoned(item)) return { error: 'abandoned' }
+  const kind = itemKindOf(item)
+  const fromKey = moveKeyOf(item)
+  const done = (toIndex, reset, extra = {}) => ({
+    ok: true,
+    action,
+    fromKey,
+    toKey: toIndex >= endIndex(kind) ? CLOSED_KEY : stepKeyAt(toIndex),
+    toIndex,
+    substepId: null,
+    reset,
+    needsHumanProof: false,
+    ...extra,
+  })
+
+  if (action === 'reopen') {
+    if (!isClosed(item)) return { error: 'not_closed' }
+    const first = firstStepIndex(kind)
+    return done(first, { ...resetFor(item, first), clearMerged: true })
+  }
+  if (isClosed(item)) return { error: 'closed' }
+
+  const atGate = STEPS[item.cursor].kind === 'gate'
+  if (action === 'abandon') return done(item.cursor, NO_RESET)
+  if (action === 'close') return done(endIndex(kind), NO_RESET)
+  if (action === 'retry') {
+    if (atGate) return { error: 'at_gate' }
+    if (toKey != null && toKey !== fromKey) return { error: 'bad_target_key' }
+    // A retry redoes the step it is on, sub-step included.
+    return done(item.cursor, resetFor(item, item.cursor), { substepId: item.substep_cursor ?? null })
+  }
+  if (action === 'approve') {
+    // "Accept despite review findings" (HZ-185): the one approve that is not
+    // from a gate. The review step finished with a failing verdict, and the
+    // item lands on Accept the code — still a gate, so nothing merges until
+    // a human accepts there. Only from where a failing review leaves it.
+    if (!atGate) {
+      if (toKey === stepKeyAt(ACCEPT_GATE_INDEX) && reviewFailed(item)) return done(ACCEPT_GATE_INDEX, NO_RESET)
+      return { error: 'not_at_gate' }
+    }
+    const next = nextCursor(item)
+    const plan = done(next, NO_RESET, { needsHumanProof: isHumanOnlyGate(item.cursor) })
+    if (toKey != null && toKey !== plan.toKey) return { error: 'bad_target_key' }
+    return plan
+  }
+
+  // return
+  const toIndex = stepIndexOf(toKey)
+  if (toIndex === null || !stepsFor(kind).some((step) => step.index === toIndex)) return { error: 'bad_target_key' }
+  if (toIndex >= item.cursor) return { error: 'not_earlier' }
+  if (laneSkips(item).has(toIndex)) return { error: 'lane_skipped' }
+  const floor = mergedFloor(item)
+  if (floor !== null && toIndex < floor) return { error: 'merged', hint: MERGED_HINT }
+  return done(toIndex, resetFor(item, toIndex), { substepId: substepId ?? null })
+}
+
+// The step keys a return may go to from where the item is now.
+export function allowedTargets(item) {
+  if (isAbandoned(item) || isClosed(item)) return []
+  return stepsFor(itemKindOf(item))
+    .filter((step) => !planMove(item, { action: 'return', toKey: step.key }).error)
+    .map((step) => step.key)
+}
+
+const selectRow = db.prepare('SELECT * FROM work_item WHERE id = ?')
+const insertMove = db.prepare('INSERT INTO item_move (item_id, who, from_key, to_key, action, note) VALUES (?, ?, ?, ?, ?, ?)')
+
+function badField(fields) {
+  return Object.keys(fields).find((key) => !MOVE_FIELDS.has(key)) ?? null
+}
+
+// One move, in one transaction (a savepoint when the caller is already in
+// one, so the caller's failure rolls this back too). `proof` is app.js's
+// human proof: a humanOnly gate is not approved without it, and only a move
+// with it releases a rule block (HZ-346) — any other move releases the pause
+// alone. `fields` are extra columns from MOVE_FIELDS, written with the step.
+// Returns { ok, move } or a planMove refusal, plus not_found, bad_field and
+// human_pin_required.
+export function moveItem(id, { action, toKey = null, substepId = null, who, note = '', proof = null, fields = {} } = {}) {
+  return db.transaction(() => {
+    const item = selectRow.get(id)
+    if (!item) return { error: 'not_found' }
+    const field = badField(fields)
+    if (field) return { error: 'bad_field', field }
+    const plan = planMove(item, { action, toKey, substepId })
+    if (plan.error) return plan
+    if (plan.needsHumanProof && !isHumanProof(proof)) return { error: 'human_pin_required' }
+
+    const sets = ['cursor = ?']
+    const values = [plan.toIndex]
+    if (plan.reset.releaseHolds) {
+      sets.push('substep_cursor = ?', 'paused = 0')
+      values.push(plan.substepId)
+      if (isHumanProof(proof)) sets.push('rule_block_json = NULL')
+    }
+    if (plan.reset.clearReview) sets.push(...REVIEW_STATE_COLUMNS)
+    if (plan.reset.clearPlanHash) sets.push('approved_plan_hash = NULL', 'approved_runner = NULL')
+    if (plan.reset.clearMerged) sets.push('merged_at = NULL')
+    for (const [key, value] of Object.entries(fields)) {
+      sets.push(`${key} = ?`)
+      values.push(value)
+    }
+    db.prepare(`UPDATE work_item SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(...values, id)
+    if (plan.reset.clearGolden) clearGoldenCases(id)
+
+    const text = String(note ?? '')
+    const moveId = insertMove.run(id, who, plan.fromKey, plan.toKey, action, text).lastInsertRowid
+    return {
+      ok: true,
+      move: { id: Number(moveId), itemId: id, who, fromKey: plan.fromKey, toKey: plan.toKey, action, note: text },
+      toIndex: plan.toIndex,
+    }
+  })()
+}
+
+// Step completion: the item leaves the step it just finished. Not a move, so
+// no item_move row and no reset. Limited to where a finished step can go —
+// its next row; past a lane's checked rows from the first of them (HZ-435);
+// or one of the automated outcomes above — so it is never a second,
+// unchecked mover. Returns { ok } or { error: 'bad_completion' | 'bad_field'
+// | 'not_found' } and writes nothing on a refusal.
+export function writeStepCompletion(id, toIndex, fields = {}) {
+  const item = selectRow.get(id)
+  if (!item) return { error: 'not_found' }
+  const field = badField(fields)
+  if (field) return { error: 'bad_field', field }
+  if (!completionAllowed(item, toIndex)) {
+    console.warn(`step completion refused: ${id} from ${moveKeyOf(item)} to position ${toIndex}`)
+    return { error: 'bad_completion' }
+  }
+  const sets = ['cursor = ?']
+  const values = [toIndex]
+  for (const [key, value] of Object.entries(fields)) {
+    sets.push(`${key} = ?`)
+    values.push(value)
+  }
+  db.prepare(`UPDATE work_item SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(...values, id)
+  return { ok: true }
+}
+
+function completionAllowed(item, toIndex) {
+  if (isAbandoned(item) || isClosed(item)) return false
+  if (toIndex === nextCursor(item)) return true
+  const checked = laneCheckIndexes(item)
+  if (checked.has(item.cursor) && toIndex === nextCursor({ ...item, cursor: Math.max(...checked) })) return true
+  return AUTOMATED_OUTCOMES.get(item.cursor)?.has(toIndex) === true
+}

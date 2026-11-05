@@ -138,7 +138,7 @@ test('the current step renders exactly as without the ran-ahead review', () => {
   expect(iconOf(container, IMPL).className).toBe('step__icon step__icon--active')
   expect(row.querySelector('.step-card--ran-ahead')).toBeNull()
   expect(within(row).queryByTestId('ran-ahead-artifact')).toBeNull()
-  expect(within(row).getByRole('button', { name: `Forward to ${STEPS[REVIEW + 1].label}` })).toBeTruthy()
+  expect(within(row).getByRole('button', { name: 'Accept despite review findings' })).toBeTruthy()
 })
 
 test('a step behind the cursor renders exactly as without the ran-ahead review', () => {

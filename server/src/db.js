@@ -44,7 +44,6 @@ db.exec(`
     issue      INTEGER,
     cursor     INTEGER NOT NULL DEFAULT 0,
     paused     INTEGER NOT NULL DEFAULT 0,
-    rejected   INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -1800,6 +1799,38 @@ export function backfillMergedAt(database = db) {
           AND cursor > ? AND cursor < ?`,
     )
     .run(itemKindOf({}), IMPLEMENT_ITEM_KIND, ACCEPT_GATE_INDEX, endIndex(IMPLEMENT_ITEM_KIND)).changes
+}
+
+// HZ-710: one row per move (server/src/moveItem.js) — who moved the item,
+// from which step to which, how and why. Steps are named by key; a closed
+// item's position is 'closed'. Additive: no cursor is read or written here.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS item_move (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id    TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    who        TEXT NOT NULL,
+    from_key   TEXT NOT NULL,
+    to_key     TEXT NOT NULL,
+    action     TEXT NOT NULL CHECK (action IN ('approve','return','retry','abandon','reopen','close')),
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS item_move_item ON item_move (item_id, id);
+`)
+
+// HZ-710: the unused `rejected` flag goes. Boot runs it after
+// store.recoverLegacyRejected() has requeued any row still flagged, so the
+// order is requeue, then drop. A database without the column (fresh, or
+// already migrated) is left alone, so a second boot is a no-op. Returns
+// whether it dropped the column.
+export function dropLegacyRejectedColumn(database = db) {
+  if (!hasRejectedColumn(database)) return false
+  database.exec('ALTER TABLE work_item DROP COLUMN rejected')
+  return true
+}
+
+export function hasRejectedColumn(database = db) {
+  return database.prepare('PRAGMA table_info(work_item)').all().some((col) => col.name === 'rejected')
 }
 
 // One-time on first boot after HZ-141 ships, and placed LAST on purpose: it

@@ -83,6 +83,7 @@ const vote = (msgId, option, voter = DAVID, voteId = nextId('VOTE')) =>
   votes.applyVote({ voteId, pollMsgId: msgId, voterJid: voter, selectedOption: option }, ACTIONS)
 
 const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor
+const movesOf = (id) => db.prepare('SELECT who, from_key, to_key, action, note FROM item_move WHERE item_id = ? ORDER BY id').all(id)
 const counts = (id) => ({
   cursor: cursorOf(id),
   decisions: db.prepare('SELECT COUNT(*) AS n FROM gate_decision WHERE item_id = ?').get(id).n,
@@ -120,6 +121,10 @@ test('an Approve vote from an allowlisted voter approves the gate', async () => 
   assert.equal(decision.step_index, GATE)
   // Attributable, and from the PROVEN jid — the bridge sends no display name.
   assert.equal(decision.decided_by, '...1111 via WhatsApp poll')
+  // HZ-710: exactly one move, by the same voter.
+  assert.deepEqual(movesOf(id), [
+    { who: '...1111 via WhatsApp poll', from_key: stepKeyAt(GATE), to_key: stepKeyAt(GATE + 1), action: 'approve', note: '' },
+  ])
 })
 
 test('the acknowledgement rides the existing text outbox, to the poll recipient', () => {
@@ -148,6 +153,10 @@ test('a Send back vote sends the item to the gate default rework target', async 
   assert.equal(STEPS[landed].label, 'Draft implementation plan', `landed on ${STEPS[landed].label}`)
   assert.equal(db.prepare('SELECT decision FROM gate_decision WHERE item_id = ?').get(id).decision, 'rejected')
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM feedback WHERE item_id = ?').get(id).n, 1)
+  // HZ-710: exactly one move, a return. A poll vote carries no notes.
+  assert.deepEqual(movesOf(id), [
+    { who: '...1111 via WhatsApp poll', from_key: stepKeyAt(LATER_GATE), to_key: 'change.draft-plan', action: 'return', note: '' },
+  ])
 })
 
 test('the Accept gate sends back to the implement step, not to the Review step before it', async () => {

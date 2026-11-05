@@ -129,9 +129,11 @@ const PAUSE_ERRORS = {
 
 // HZ-185: on an item the latest automated review just rejected, sends it to
 // Accept the code with that verdict attached instead of another implement
-// cycle. The ref is the guard (two clicks in one tick both read the same
-// stale state); `busy` only renders it. Disabled until the request settles,
-// and while a gate action runs (HZ-216).
+// cycle. HZ-710: "Accept despite review findings" — the findings it accepts
+// despite are listed above the button, so they are read before the PIN. The
+// ref is the guard (two clicks in one tick both read the same stale state);
+// `busy` only renders it. Disabled until the request settles, and while a
+// gate action runs (HZ-216).
 function ForwardToAcceptButton({ item, onForwardToAccept, disabled }) {
   const inFlight = useRef(false)
   const [busy, setBusy] = useState(false)
@@ -152,8 +154,19 @@ function ForwardToAcceptButton({ item, onForwardToAccept, disabled }) {
   return (
     <div className="step-card__conflict">
       Automated review rejected this. Forward it to “{STEPS[ACCEPT_GATE_INDEX].label}” with the findings attached?
+      {item.reviewFindings?.length > 0 && (
+        <ul className="step-card__findings" aria-label="Outstanding review findings">
+          {item.reviewFindings.map((f, i) => (
+            <li key={i}>
+              {f.file ? <code>{f.line != null ? `${f.file}:${f.line}` : f.file}</code> : null}
+              {f.file ? ' — ' : ''}
+              {f.detail}
+            </li>
+          ))}
+        </ul>
+      )}
       <button className="btn-gate-reject" disabled={busy || disabled} aria-busy={busy || undefined} onClick={forward}>
-        {busy ? 'Forwarding…' : `Forward to ${STEPS[ACCEPT_GATE_INDEX].label}`}
+        {busy ? 'Forwarding…' : 'Accept despite review findings'}
       </button>
       {error && <span role="alert">{error}</span>}
     </div>
