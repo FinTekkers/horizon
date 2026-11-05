@@ -114,9 +114,21 @@ const projectBlock = (page) =>
   page.locator('.project-block').filter({ has: page.locator('.project-block__name', { hasText: new RegExp(`^${PROJECT}$`) }) })
 
 // HZ-564: Admin shows one section at a time, each at its own URL. HZ-764:
-// a project's tabs and each repository have their own URLs too.
-const projectPath = (tab = null) => `/admin/projects/${projectId}${tab ? `/${tab}` : ''}`
-const repoPath = () => `/admin/projects/${projectId}/repos/${REPO}`
+// a project's tabs and each repository have their own URLs too. A failed
+// test restarts the worker and resets `projectId`, so read it again.
+function exampleProjectId() {
+  if (projectId) return projectId
+  const db = openDb(DB_PATH)
+  try {
+    projectId = db.prepare('SELECT id FROM project WHERE name = ?').get(PROJECT)?.id ?? null
+  } finally {
+    db.close()
+  }
+  expect(projectId, 'step 1 must run first').toBeTruthy()
+  return projectId
+}
+const projectPath = (tab = null) => `/admin/projects/${exampleProjectId()}${tab ? `/${tab}` : ''}`
+const repoPath = () => `/admin/projects/${exampleProjectId()}/repos/${REPO}`
 
 async function openAdmin(page, path) {
   await page.goto(path)
@@ -238,7 +250,7 @@ test('step 6 — choose the provider and model defaults', async ({ page }) => {
   await openAdmin(page, projectPath('settings'))
   const runsOn = projectBlock(page).locator('.project-autopilot').filter({ hasText: 'Runs on' })
   const selects = runsOn.locator('select')
-  expect(await selects.count()).toBeGreaterThan(0)
+  await expect(selects.first()).toBeVisible()
   for (const select of await selects.all()) await expect(select).toHaveValue('default')
   await shot(page, '06-runs-on', runsOn)
 
@@ -330,7 +342,7 @@ test('step 9 — file and watch a first small item', async ({ page }) => {
   const db = openDb(DB_PATH)
   try {
     if (!db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(FIRST_ITEM.id)) {
-      insertItem(db, { ...FIRST_ITEM, priority: 'Low', cursor: 0, repo: REPO, project_id: projectId })
+      insertItem(db, { ...FIRST_ITEM, priority: 'Low', cursor: 0, repo: REPO, project_id: exampleProjectId() })
     }
   } finally {
     db.close()
