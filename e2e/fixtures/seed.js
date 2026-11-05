@@ -166,6 +166,19 @@ export function insertAsk(
     .run(itemId, stepRunId, stepIndex, kind, status, JSON.stringify({ title, repo, outcome, metric, guardrails }), why).lastInsertRowid
 }
 
+// HZ-730: a finished HZ-729 review of one ask (server/src/db.js's ask_review),
+// as the review sweep writes it. `amendedDraft` is the reviewer's edited
+// draft, for verdict 'amend'.
+export function insertAskReview(db, { askId, verdict = 'accept', status = 'done', reasons = ['Fits the project.'], amendedDraft = null }) {
+  db.prepare("INSERT INTO ask_review (ask_id, provider, status, verdict, reasons_json, amended_draft_json) VALUES (?, 'muse', ?, ?, ?, ?)").run(
+    askId,
+    status,
+    verdict,
+    JSON.stringify(reasons),
+    amendedDraft ? JSON.stringify(amendedDraft) : null,
+  )
+}
+
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
 // Writing the hash directly (instead of through Admin's "Regenerate my PIN")
 // lets a spec know the plaintext. Targets the account global-setup.js already

@@ -111,6 +111,12 @@ function seedItem(id, projectId, repo, cursor) {
 }
 const RUN_A = seedItem('ISOA-1', A, REPO_A, ACCEPT_INDEX)
 seedItem('ISOA-2', A, REPO_A, 0)
+// HZ-730: one open, unreviewed blocking ask on ISOA-1, for File it and Dismiss.
+const ASK_A = Number(
+  db
+    .prepare("INSERT INTO ask (item_id, step_run_id, step_index, kind, status, draft_json, why) VALUES ('ISOA-1', ?, 0, 'blocking', 'open', ?, 'iso why')")
+    .run(RUN_A, JSON.stringify({ title: 'Iso ask', repo: REPO_A, outcome: 'An outcome.', metric: '1. a\n2. b\n3. c', guardrails: 'None.' })).lastInsertRowid,
+)
 const RUN_B = seedItem('ISOB-1', B, REPO_B, ACCEPT_INDEX)
 
 // ---- users: the owner, a member of nothing, and a member to be disabled ----
@@ -276,6 +282,9 @@ const WRITE_CASES = {
   'POST /api/items/:id/dependencies': { expect: '404', url: `${ITEM}/dependencies`, body: { dependsOnId: 'ISOA-2' }, owner: 200 },
   'POST /api/items/:id/dependencies/remove': { expect: '404', url: `${ITEM}/dependencies/remove`, body: { dependsOnId: 'ISOA-2' }, owner: 200 },
   'POST /api/items/:id/feedback': { expect: '404', url: `${ITEM}/feedback`, body: { message: 'iso feedback' }, owner: 200 },
+  // HZ-730: 409 ask_not_reviewed — ISOA-1's ask has no review, so File it waits; Dismiss closes it.
+  'POST /api/items/:id/asks/:askId/file': { expect: '404', url: `${ITEM}/asks/${ASK_A}/file`, body: {}, owner: 409 },
+  'POST /api/items/:id/asks/:askId/dismiss': { expect: '404', url: `${ITEM}/asks/${ASK_A}/dismiss`, body: { reason: 'iso reason' }, owner: 200 },
   'POST /api/items/:id/pause': { expect: '404', url: `${ITEM}/pause`, body: { paused: false }, owner: 200 },
   'POST /api/items/:id/persona': { expect: '404', url: `${ITEM}/persona`, body: { agent: PERSONA_AGENT, persona: PERSONA_ID }, owner: 200 },
   'POST /api/items/:id/priority': { expect: '404', url: `${ITEM}/priority`, body: { priority: 'High' }, owner: 200 },

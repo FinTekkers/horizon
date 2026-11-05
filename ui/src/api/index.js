@@ -76,6 +76,8 @@ export const {
   addDependency,
   removeDependency,
   abandonItem,
+  fileAsk,
+  dismissAsk,
   listDefinitions,
   getDefinition,
   saveDefinition,

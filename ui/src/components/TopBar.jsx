@@ -224,6 +224,9 @@ export default function TopBar({
   onOpenDefinitions,
   onOpenFarmHealth = null,
   farmHealthState = null,
+  followUpCount = 0,
+  followUpsHref = '/follow-ups',
+  onOpenFollowUps = null,
 }) {
   const hot = pendingCount > 0
   return (
@@ -257,6 +260,21 @@ export default function TopBar({
 
       <div className="topbar__spacer" />
 
+      {/* HZ-730: the project's Suggested follow-ups, for triage in batches. */}
+      {onOpenFollowUps && (
+        <a
+          className={`followups-link${view === 'follow-ups' ? ' followups-link--on' : ''}`}
+          href={followUpsHref}
+          aria-current={view === 'follow-ups' ? 'page' : undefined}
+          onClick={(e) => {
+            e.preventDefault()
+            onOpenFollowUps()
+          }}
+        >
+          Follow-ups
+          <span className="followups-link__badge">{followUpCount}</span>
+        </a>
+      )}
       <button className={`pending-btn${hot ? ' pending-btn--hot' : ''}`} onClick={onOpenApprovals}>
         <LockIcon />
         Pending approvals

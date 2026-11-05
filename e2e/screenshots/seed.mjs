@@ -7,7 +7,8 @@
 // See e2e/fixtures/layout-screens-seed.js for what each row is for, and
 // e2e/fixtures/autopilot-off-screens-seed.js (HZ-544) for the
 // `autopilot-off-*` screens' item, which sits at a gate and goes in before boot.
-// e2e/fixtures/journey-screens-seed.js (HZ-613) seeds the `journey-*` screens.
+// e2e/fixtures/journey-screens-seed.js (HZ-613) seeds the `journey-*` screens,
+// and e2e/fixtures/asks-screens-seed.js (HZ-730) the `asks-*` ones.
 //   node seed.mjs after <db> <server url> — also marks the queued-work run
 //     queued in the server's run-state cache, through the test hook, logged in
 //     with the SCREENSHOT_LOGIN_KEY the runner gives serve.sh.
@@ -16,6 +17,7 @@ import { openDb } from '../fixtures/seed.js'
 import { seedBeforeBoot, seedAfterBoot } from '../fixtures/layout-screens-seed.js'
 import { seedAutopilotOffScreens } from '../fixtures/autopilot-off-screens-seed.js'
 import { seedJourneyScreensBeforeBoot, seedJourneyScreensAfterBoot, QUEUED_REASON } from '../fixtures/journey-screens-seed.js'
+import { seedAsksScreens } from '../fixtures/asks-screens-seed.js'
 
 const [phase, dbPath, serverUrl] = process.argv.slice(2)
 if (!['before', 'after'].includes(phase) || !dbPath) {
@@ -38,6 +40,7 @@ try {
     seedBeforeBoot(db)
     seedAutopilotOffScreens(db)
     seedJourneyScreensBeforeBoot(db)
+    seedAsksScreens(db)
   } else {
     seedAfterBoot(db)
     queuedRun = seedJourneyScreensAfterBoot(db)

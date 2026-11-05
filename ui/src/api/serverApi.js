@@ -980,6 +980,16 @@ export async function abandonItem(id, reason, { removeDependentLinks = false } =
   return gateAction(`/items/${id}/abandon`, { reason: reason || '', removeDependentLinks })
 }
 
+// HZ-730: File it and Dismiss on one ask. Both need the gate PIN, so they go
+// through gateAction and reject with the server's error code and `status`.
+export async function fileAsk(itemId, askId) {
+  return gateAction(`/items/${encodeURIComponent(itemId)}/asks/${askId}/file`, {})
+}
+
+export async function dismissAsk(itemId, askId, reason) {
+  return gateAction(`/items/${encodeURIComponent(itemId)}/asks/${askId}/dismiss`, { reason })
+}
+
 // Personas are agent-scoped (HZ-125): one slot per composing agent, so the
 // agent travels with the id and the server merges rather than replaces.
 export function setPersona(id, agent, persona) {

@@ -36,6 +36,7 @@ import { metricLines } from '../../../domain/js/goldenCases.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import AsksPanel from './AsksPanel'
+import BlockingAsksBanner from './BlockingAsksBanner'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
@@ -1189,6 +1190,8 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
             resumeBusy={pauseBusy}
           />
         )}
+        {/* HZ-730: work a step said must be filed before this item goes on. */}
+        {!abandoned && !closed && <BlockingAsksBanner key={`ask-banner-${item.id}`} item={item} />}
         {abandoned && item.abandoned_reason && (
           <div className="tracker__actions">
             <div className="tile__value" style={{ color: 'var(--danger-ink)' }}>
@@ -1218,7 +1221,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
           </div>
         </div>
         <DependencyBadge key={item.id} item={item} onRemove={onRemoveDependency} />
-        {item.asks?.length > 0 && <AsksPanel item={item} />}
+        <AsksPanel item={item} />
       </div>
 
       <div className={`tracker__body${activityMin ? ' tracker__body--activity-min' : ''}`}>
