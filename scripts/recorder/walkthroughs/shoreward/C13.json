@@ -13,7 +13,7 @@
     {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
     {"action": "pause", "ms": 800},
     {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
-    {"action": "waitFor", "selector": ".step:has(.step-card__label:text-is(\"Review & close\")) :text(\"Completed\")", "timeoutMs": 60000},
+    {"action": "waitUntil", "selector": ".tracker__status:has-text(\"Closed\")", "timeoutMs": 180000, "reloadEveryMs": 15000},
     {"action": "pause", "ms": 3000}
   ]
 }
