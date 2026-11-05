@@ -126,7 +126,7 @@ test('a running pre-merge check shows its label and elapsed time and disables ev
   expect(status().textContent).toMatch(/^Merging: running checks on main \+ PR #7 · 3m 1\ds/)
   for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(true)
   expect(button('Resolve conflicts…').disabled).toBe(true)
-  expect(button('Forward to Accept the code').disabled).toBe(true)
+  expect(button('Accept despite review findings').disabled).toBe(true)
 })
 
 test('a push alone — an approval from WhatsApp or another tab — disables the buttons, with no click here', async () => {

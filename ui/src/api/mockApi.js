@@ -69,7 +69,6 @@ let items = SEED_ITEMS.map((it) => ({
   dependents: [],
   ...it,
   paused: false,
-  rejected: false,
   events: [],
   last_activity_at: new Date().toISOString(),
 }))
@@ -314,7 +313,6 @@ export async function createItem({ title, outcome, metric, guardrails, priority 
       blockedBy: [],
       dependents: [],
       paused: false,
-      rejected: false,
       events: [{ who: 'You', text: 'created this work item', color: '#5E4380', initials: 'YOU' }],
       last_activity_at: new Date().toISOString(),
     },
@@ -331,12 +329,12 @@ const AGENT_STEP_MS = 1150
 
 function runAgents(id) {
   const it = items.find((x) => x.id === id)
-  if (!it || isClosed(it) || it.paused || it.rejected) return
+  if (!it || isClosed(it) || it.paused) return
   if (STEPS[it.cursor].kind !== 'agent') return
   clearTimeout(timers[id])
   timers[id] = setTimeout(() => {
     const cur = items.find((x) => x.id === id)
-    if (cur && !isClosed(cur) && !cur.paused && !cur.rejected && STEPS[cur.cursor].kind === 'agent') {
+    if (cur && !isClosed(cur) && !cur.paused && STEPS[cur.cursor].kind === 'agent') {
       update(id, (x) => ({ ...x, cursor: x.cursor + 1 }))
       runAgents(id)
     }
@@ -351,7 +349,7 @@ export async function approveGate(id, notes, _options = {}) {
   const it = items.find((x) => x.id === id)
   if (!it || isClosed(it) || STEPS[it.cursor].kind !== 'gate') return { ok: false }
   const label = STEPS[it.cursor].label.toLowerCase()
-  update(id, (x) => ({ ...x, cursor: x.cursor + 1, rejected: false }))
+  update(id, (x) => ({ ...x, cursor: x.cursor + 1 }))
   if (notes) {
     pushEvent(id, { who: 'You', text: `approved: ${label} — ${notes}`, color: '#5E4380', initials: '✓' })
   }
@@ -402,7 +400,6 @@ export async function requestChanges(id, target, feedback, targetStepIndex, targ
   update(id, (x) => ({
     ...x,
     cursor: reworkIdx,
-    rejected: false,
     paused: false,
     ...(x.substeps ? { substep_cursor: substep?.substepId ?? null, substep: substep ? x.substeps.find((s) => s.id === substep.substepId) : null } : {}),
   }))
@@ -828,7 +825,7 @@ export async function approveScreenshots() {
 
 export function restartPhase(id, phase, reason) {
   const firstIdx = STEPS.findIndex((st) => st.phase === phase)
-  update(id, (x) => ({ ...x, cursor: firstIdx, rejected: false, paused: false }))
+  update(id, (x) => ({ ...x, cursor: firstIdx, paused: false }))
   pushEvent(id, {
     who: 'You',
     text: `restarted the ${PHASES[phase]} phase${reason ? ': ' + reason : ''}`,

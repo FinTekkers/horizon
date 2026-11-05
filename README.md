@@ -179,6 +179,17 @@ because HZ-77 has nothing to render until HZ-76's categories exist.
   abandoned-blocker checks, and it is removed the same way. Filing is keyed
   on the ask, so a second File it adds no second item or edge. A soft ask
   never adds a dependency.
+* **The start check (HZ-731).** Before Implement (a Task's Execute) starts,
+  every blocking ask must be dismissed by the owner, or filed with its item
+  merged or closed. Until then `runnable()` does not dispatch the step,
+  through `askStartHold` in `domain/js/lifecycle.js` (read through
+  `store.startHoldOf`). The item reads `blocked: true`, and `startHold` in its
+  payload names what it waits for: `{ askId, title, filedItem, step }`, with
+  `filedItem` null while the ask is unfiled, and `step` the start step's
+  label; the field is absent when nothing holds the start. The item page shows "Waiting for ask “…” before “Specialist agent
+  implements”" or "Waiting for HZ-… to merge or close before “…”". The filed
+  item's merge or close, or a Dismiss, wakes it. A run already in flight is
+  never discarded for it. Soft asks never hold.
 
 Implementation: `work_item_dependency` (server/src/db.js) is an additive
 table, not a column — no `CHECK` constraint on `work_item` or `step_run` is

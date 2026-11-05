@@ -209,7 +209,7 @@ const selectFailedChecks = db.prepare(`
    GROUP BY t.check_run`)
 
 const selectAtGates = db.prepare(`
-  SELECT w.id, w.kind, w.cursor, w.rejected, w.abandoned_at, w.project_id FROM work_item w
+  SELECT w.id, w.kind, w.cursor, w.abandoned_at, w.project_id FROM work_item w
    WHERE w.cursor IN (SELECT value FROM json_each(@gates)) AND ${IN_PROJECTS}`)
 
 const SCOPE_REASONS = [REASON.READ_ONLY_VIOLATED, REASON.JOB_CWD_REFUSED].map((reason) => `agent step failed (${reason})`)

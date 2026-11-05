@@ -78,11 +78,19 @@ def save_state(path: Path, state: dict) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(json.dumps(state, indent=2))
-        os.chmod(tmp, 0o644)
+        os.chmod(tmp, 0o640 if _in_tenant_results(path) else 0o644)
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _in_tenant_results(path: Path) -> bool:
+    """HZ-772: a tenant job's state file, under config.TENANT_JOBS_DIR, is
+    0640 — readable by the farm user's group only."""
+    from farm import config
+
+    return Path(path).parent.parent == Path(config.TENANT_JOBS_DIR)
 
 
 def _now_iso() -> str:
@@ -221,6 +229,7 @@ def _run_job(
     container_image: str | None = None,
     cpu_limit: str | None = None,
     memory_limit: str | None = None,
+    first_line: str | None = None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -263,7 +272,10 @@ def _run_job(
     pullable image, or a container that will not start ends the job
     `container_unavailable` with zero commands run — never a host run. A
     command the OOM killer ended fails with `failure_reason` naming the
-    memory limit."""
+    memory limit.
+
+    HZ-772: `first_line`, when given, is logged (redacted) at the head of each
+    start's output, before the env line — a tenant job's `running as` line."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -447,6 +459,8 @@ def _run_job(
     # HZ-416: a container run ignores the host venv, so it always names
     # `system` here, then the image its commands ran in.
     with log_path.open("a", encoding="utf-8") as log:
+        if first_line:
+            log.write(redact(f"{first_line}\n", secrets))
         log.write(redact(f"env: {venv or 'system'}\n", secrets))
         if runner == "container":
             log.write(redact(f"container: {container_image}\n", secrets))
@@ -670,6 +684,73 @@ def _read_env_file(path: str | None) -> tuple[dict, dict]:
     return _strings(data.get("env")), _strings(data.get("redact"))
 
 
+def tenant_result_paths(results_dir, item_id: str) -> tuple[Path, Path]:
+    """HZ-772: a tenant job's (state, log) in its project's results dir, named
+    as the internal state file and log are."""
+    return Path(results_dir) / f"{item_id}.json", Path(results_dir) / f"farm-job-{str(item_id).lower()}.log"
+
+
+def running_as_line() -> str:
+    """HZ-772: the user this runner runs as — a tenant log's first line."""
+    uid = os.getuid()
+    try:
+        import pwd
+
+        name = pwd.getpwuid(uid).pw_name
+    except (KeyError, ImportError):
+        name = "?"
+    return f"running as {name} (uid {uid})"
+
+
+def mark_stopped(state_path: Path, log_path: Path, run_id) -> None:
+    """HZ-772: what farmd's _mark_job_stopped does for an internal job, done by
+    a tenant runner itself — farmd cannot signal the run user's processes or
+    write its state. The running command's process group is killed and it is
+    recorded `stopped`, never `done`."""
+    state = load_state(state_path)
+    if not state or str(state.get("run_id")) != str(run_id):
+        return
+    now = _now_iso()
+    for entry in state.get("commands", []):
+        if not isinstance(entry, dict) or entry.get("status") != "running":
+            continue
+        pgid = entry.pop("pgid", None)
+        if isinstance(pgid, int) and pgid > 1:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        entry["status"] = "stopped"
+        entry["ended_at"] = now
+        entry["exit_code"] = None
+    if state.get("status") == "running":
+        state["status"] = "stopped"
+        state["ended_at"] = now
+    save_state(state_path, state)
+    try:
+        with Path(log_path).open("a", encoding="utf-8") as log:
+            log.write("stopped by the owner\n")
+    except OSError:
+        pass
+
+
+STOP_SIGNALS = (signal.SIGHUP, signal.SIGTERM)
+
+
+def _stop_on_signal(state_path: Path, log_path: Path, run_id) -> dict:
+    """HZ-772: farmd's Stop kills a tenant job's tmux session; sudo relays the
+    SIGHUP (or a SIGTERM) to this runner, which records the stop itself and
+    exits. Returns the handlers it replaced, for main() to put back."""
+
+    def stop(signum, _frame):
+        for sig in STOP_SIGNALS:
+            signal.signal(sig, signal.SIG_IGN)
+        mark_stopped(state_path, log_path, run_id)
+        raise SystemExit(128 + signum)
+
+    return {sig: signal.signal(sig, stop) for sig in STOP_SIGNALS}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="farm.task_job")
     parser.add_argument("--task", required=True, help="claimed job task file (queue/jobs/active/<run>.json)")
@@ -689,8 +770,18 @@ def main(argv: list[str] | None = None) -> int:
     # Imported here so unit tests can import this module without a FARM_HOME.
     from farm.config import LOGS_DIR, STATE_DIR
 
-    state_path = STATE_DIR / "jobs" / f"{item_id}.json"
-    log_path = LOGS_DIR / f"farm-job-{str(item_id).lower()}.log"
+    # HZ-772: a tenant job (run as its run user by farm.tenant_job) writes its
+    # state and log to its project's results dir, which farmd reads.
+    results_dir = task.get("results_dir")
+    first_line = None
+    replaced: dict = {}
+    if results_dir:
+        state_path, log_path = tenant_result_paths(results_dir, item_id)
+        first_line = running_as_line()
+        replaced = _stop_on_signal(state_path, log_path, run_id)
+    else:
+        state_path = STATE_DIR / "jobs" / f"{item_id}.json"
+        log_path = LOGS_DIR / f"farm-job-{str(item_id).lower()}.log"
     env_file = task.get("env_file")
     secrets, redact_only = _read_env_file(env_file)
     try:
@@ -716,10 +807,14 @@ def main(argv: list[str] | None = None) -> int:
             container_image=task.get("container_image"),
             cpu_limit=task.get("cpu_limit"),
             memory_limit=task.get("memory_limit"),
+            first_line=first_line,
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)
         return 2
+    finally:
+        for sig, handler in replaced.items():
+            signal.signal(sig, handler)
     print(f"task_job: run {run_id} finished: {summary}", flush=True)
     return 0
 

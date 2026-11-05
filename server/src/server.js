@@ -8,11 +8,13 @@ import * as gateNotifier from './gateNotifier.js'
 import * as caretaker from './caretaker.js'
 import * as caretakerActor from './caretakerActor.js'
 import * as caretakerRuling from './caretakerRuling.js'
+import * as caretakerAsks from './caretakerAsks.js'
 import * as askReview from './askReview.js'
 import * as autoResolve from './autoResolve.js'
 import * as heldAccept from './heldAccept.js'
 import * as farmHealth from './farmHealth.js'
 import * as accountPurge from './accountPurge.js'
+import { linkSpawned, spawnItems } from './spawn.js'
 import { PORT } from './config.js'
 
 const fastify = buildApp()
@@ -51,6 +53,10 @@ caretakerRuling.init(fastify.log, { gateActions: fastify.gateActions })
 // HZ-729: one independent review per open ask, on a provider other than the
 // ask's author (Muse by default). Writes only the ask_review table.
 askReview.init(fastify.log)
+// HZ-731: with Autopilot 'on', files the asks the reviewer accepted or
+// amended, pings the owner for the rest, and pings when an open blocking ask
+// holds a gate. Never dismisses. Its pings go out with caretakerActor's.
+caretakerAsks.init(fastify.log, { spawnItems, linkSpawned })
 // HZ-641: the daily purge of cancelled customers' data. Off unless
 // ACCOUNT_PURGE=on.
 accountPurge.init(fastify.log)

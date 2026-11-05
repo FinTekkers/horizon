@@ -24,6 +24,7 @@ delete process.env.GITHUB_WEBHOOK_SECRET
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
+const { mintHumanProof } = await import('../src/humanProof.js')
 const { STEPS, IMPLEMENT_STEP_INDEX, endIndex } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 const gateNotifier = await import('../src/gateNotifier.js')
@@ -341,7 +342,9 @@ test('a report from a non-implement step fails the run; a superseded run is stal
 
 test('a human send-back clears the block', () => {
   blockedItem('RB-9')
-  assert.deepEqual(store.requestChanges('RB-9', 'Eng', 'try another way'), { ok: true })
+  // HZ-710: the gate PIN's proof is what releases a rule block.
+  const proof = mintHumanProof({ userId: 1 })
+  assert.deepEqual(store.requestChanges('RB-9', 'Eng', 'try another way', 'You', null, null, { proof }), { ok: true })
   assert.equal(rawBlock('RB-9'), null)
   assert.ok(activeRun('RB-9'))
   orchestrator.cancel('RB-9')

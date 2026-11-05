@@ -44,7 +44,6 @@ db.exec(`
     issue      INTEGER,
     cursor     INTEGER NOT NULL DEFAULT 0,
     paused     INTEGER NOT NULL DEFAULT 0,
-    rejected   INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -1240,6 +1239,10 @@ const CARETAKER_PING_REASONS = [
   'accept_failed',
   // HZ-274: a 'ping_human' decision — the caretaker needs a human at a gate.
   'needs_human',
+  // HZ-731: a gate Autopilot would act on, held by an open blocking ask; and
+  // an ask Autopilot will not file (escalated, or its filing failed).
+  'blocking_ask',
+  'ask_escalated',
 ]
 const CARETAKER_PING_REASON_SQL = CARETAKER_PING_REASONS.map((reason) => `'${reason}'`).join(',')
 db.exec(`
@@ -1595,6 +1598,32 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
   }
 }
 
+// HZ-731: what the Autopilot caretaker did with an ask (caretakerAsks.js):
+// filed it, escalated it to the owner, or held a gate for it. The UNIQUE key
+// is the claim, so a restart or a second tick adds nothing; a 'file' row is
+// never retried, whatever its outcome. gate_index and arrival_run_id key a
+// 'gate_hold' to one arrival at one gate; the other actions leave them at
+// their defaults. mode 'shadow' rows only record what Autopilot would do.
+// project_id is the item's, for the hourly window only: the row belongs to
+// its ask and item, so it has no project foreign key of its own.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS caretaker_ask_action (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ask_id         INTEGER NOT NULL REFERENCES ask(id),
+    item_id        TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    project_id     INTEGER NOT NULL,
+    action         TEXT NOT NULL CHECK (action IN ('file','escalate','gate_hold')),
+    mode           TEXT NOT NULL CHECK (mode IN ('shadow','on')),
+    gate_index     INTEGER NOT NULL DEFAULT -1,
+    arrival_run_id INTEGER NOT NULL DEFAULT 0,
+    outcome        TEXT NOT NULL DEFAULT 'pending' CHECK (outcome IN ('pending','ok','failed','skipped')),
+    error          TEXT,
+    acted_at_ms    INTEGER NOT NULL,
+    UNIQUE (ask_id, action, mode, gate_index, arrival_run_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_caretaker_ask_action_project ON caretaker_ask_action(project_id, action, acted_at_ms);
+`)
+
 // HZ-379: items one parent filed for itself (server/src/spawn.js) — a Task's
 // Assess asking for code today, a list of items from one idea later. One row
 // per item to file: seq is its place in the request's list, and
@@ -1800,6 +1829,38 @@ export function backfillMergedAt(database = db) {
           AND cursor > ? AND cursor < ?`,
     )
     .run(itemKindOf({}), IMPLEMENT_ITEM_KIND, ACCEPT_GATE_INDEX, endIndex(IMPLEMENT_ITEM_KIND)).changes
+}
+
+// HZ-710: one row per move (server/src/moveItem.js) — who moved the item,
+// from which step to which, how and why. Steps are named by key; a closed
+// item's position is 'closed'. Additive: no cursor is read or written here.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS item_move (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id    TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    who        TEXT NOT NULL,
+    from_key   TEXT NOT NULL,
+    to_key     TEXT NOT NULL,
+    action     TEXT NOT NULL CHECK (action IN ('approve','return','retry','abandon','reopen','close')),
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS item_move_item ON item_move (item_id, id);
+`)
+
+// HZ-710: the unused `rejected` flag goes. Boot runs it after
+// store.recoverLegacyRejected() has requeued any row still flagged, so the
+// order is requeue, then drop. A database without the column (fresh, or
+// already migrated) is left alone, so a second boot is a no-op. Returns
+// whether it dropped the column.
+export function dropLegacyRejectedColumn(database = db) {
+  if (!hasRejectedColumn(database)) return false
+  database.exec('ALTER TABLE work_item DROP COLUMN rejected')
+  return true
+}
+
+export function hasRejectedColumn(database = db) {
+  return database.prepare('PRAGMA table_info(work_item)').all().some((col) => col.name === 'rejected')
 }
 
 // One-time on first boot after HZ-141 ships, and placed LAST on purpose: it

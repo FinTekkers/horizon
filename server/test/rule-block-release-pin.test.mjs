@@ -161,7 +161,7 @@ test('guardrail 2: pause then resume an item with no block needs no PIN, with to
   assert.equal(byToken.statusCode, 200, byToken.body)
 })
 
-test('guardrail 3: the PIN is in no event, ping, response, outbound request or log line', async () => {
+test('guardrail 3: the PIN is in no event, move-log row, ping, response, outbound request or log line', async () => {
   // The pings the blocks queued, sent through a stub.
   const pings = []
   await gateNotifier.drainOutbox({ send: async (to, body) => pings.push(`${to} ${body}`) })
@@ -171,6 +171,7 @@ test('guardrail 3: the PIN is in no event, ping, response, outbound request or l
   const sinks = {
     events: db.prepare('SELECT * FROM event').all().map((r) => JSON.stringify(r)),
     notices: db.prepare('SELECT * FROM gate_notice').all().map((r) => JSON.stringify(r)),
+    moveLog: db.prepare('SELECT * FROM item_move').all().map((r) => JSON.stringify(r)),
     pings,
     responses,
     outbound,

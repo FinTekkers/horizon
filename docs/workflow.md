@@ -191,7 +191,12 @@ cannot file or dismiss):
 A PM split (an ask of kind `split`) stays read-only: it is filed at its own
 gate, as before.
 
-## Two things that can interrupt "ever-forward"
+With Autopilot `on` (HZ-731), the Caretaker files the asks the reviewer
+accepted, and the amended draft of the ones it amended. It pings the owner
+about the rest, and never dismisses one. With Autopilot off, the owner
+decides. See `farm/roles/caretaker.md`.
+
+## Three things that can interrupt "ever-forward"
 
 - **Paused.** A human can pause an item at any point (a UI action, tracked
   separately from `cursor`). A paused item's steps simply don't get
@@ -206,8 +211,15 @@ gate, as before.
   closed. A blocker that is abandoned (soft-deleted, not
   closed) still blocks — `isBlockedByAbandoned` flags this case distinctly
   so it doesn't silently look like ordinary in-progress work.
+- **An open blocking ask (HZ-731).** No gate is approved by Autopilot while
+  the item has an open blocking ask; the owner is pinged instead. And before
+  Implement (a Task's Execute) starts, every blocking ask must be dismissed,
+  or filed with its item merged or closed. Until then the item waits, shown
+  as Blocked, and its page names the ask or the item it waits for
+  (`askStartHold` in `domain/js/lifecycle.js`). Soft asks never hold
+  anything.
 
-Both are independent of the phase/step sequence itself — they gate *whether*
+All three are independent of the phase/step sequence itself — they gate *whether*
 the next step runs, not *which* step is next.
 
 See [`docs/architecture.md`](architecture.md) for how each step's agent
