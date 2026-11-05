@@ -5,7 +5,7 @@
 // demo items other specs read) and deleted again in afterAll; the seeded rows
 // are never touched.
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -47,7 +47,8 @@ async function openChecks(page) {
 test('the owner saves two test commands, one per line, and both are shown after a reload', async ({ page }) => {
   const testSlot = page.getByRole('textbox', { name: `Test command for ${REPO}` })
 
-  await page.goto('/admin')
+  // HZ-764: check commands are on the repository's own page.
+  await page.goto(await adminProjectPath(page, PROJECT, { repo: REPO }))
   await openChecks(page)
   await testSlot.fill(TWO_LINES)
   await expect(testSlot).toHaveValue(TWO_LINES)

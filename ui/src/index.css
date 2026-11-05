@@ -536,6 +536,48 @@ button { font-family: var(--font-sans); }
 .repo-webhook__impact { margin: 2px 0 4px 18px; color: var(--warning-ink); }
 .repo-webhook__hint { margin: 0; align-self: center; }
 
+/* HZ-764: a project's page — its tabs, the compact repository list, one
+   repository's page, Needs attention's rows and the More toggle. */
+.project-page.project-block { margin-top: 0; background: var(--surface); border: 0; border-radius: 22px; padding: 26px 30px; }
+.project-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 16px; border-bottom: 1px solid var(--border); }
+.project-tabs__tab {
+  min-height: 40px; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  background: transparent; font: 600 14px var(--font-sans); color: var(--muted-strong); cursor: pointer;
+}
+.project-tabs__tab:hover { color: var(--deep); }
+.project-tabs__tab:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; border-radius: 8px 8px 0 0; }
+.project-tabs__tab--on { color: var(--primary-ink); border-bottom-color: var(--primary); font-weight: 800; }
+.project-page__line { font: 500 13px var(--font-sans); color: var(--text-secondary); margin-bottom: 10px; }
+.project-page__label { font: 600 13px var(--font-sans); color: var(--deep); }
+.project-page__facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 12px 0 0; font: 500 13px var(--font-sans); }
+.project-page__facts dt { color: var(--muted-strong); font-weight: 600; }
+.project-page__facts dd { margin: 0; overflow-wrap: anywhere; }
+.repo-list { list-style: none; margin: 0; padding: 0; }
+.repo-row--list { flex-wrap: wrap; border-bottom: 1px solid var(--border); }
+.repo-row--list:last-child { border-bottom: 0; }
+.repo-row__open { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; font-weight: 600; text-align: left; overflow-wrap: anywhere; }
+.repo-row__open:focus-visible, .link-button:focus-visible, .more-help__toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; border-radius: 4px; }
+.link-button { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; color: var(--primary-ink); text-decoration: underline; }
+.repo-page__crumbs { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; font: 500 13px var(--font-sans); color: var(--muted); }
+.repo-page__title { margin: 0; font: 700 15px var(--font-sans); color: var(--deep); overflow-wrap: anywhere; }
+.repo-page .repo-row { flex-wrap: wrap; }
+.repo-page__deploy { padding: 0 2px 6px 18px; font: 500 13px var(--font-sans); color: var(--text-secondary); }
+.more-help { margin: 4px 0; }
+.more-help__toggle { border: 0; background: none; padding: 0; cursor: pointer; color: var(--muted); font: 600 12px var(--font-sans); }
+.more-help__toggle:hover { color: var(--primary); }
+.attention-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.attention-row { padding: 12px 14px; background: var(--canvas); border: 1px solid var(--border); border-radius: 14px; min-width: 0; }
+.attention-row__head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; font: 500 13px var(--font-sans); }
+.attention-row__kind { font: 700 11px var(--font-sans); text-transform: uppercase; letter-spacing: 0.05em; color: var(--warning-ink); background: var(--warning-bg); border-radius: 5px; padding: 1px 6px; }
+.attention-row--deploy .attention-row__kind { color: var(--danger-ink); background: var(--danger-bg); }
+.attention-row__repo { font-weight: 700; color: var(--deep); overflow-wrap: anywhere; text-align: left; }
+.attention-row__project { color: var(--muted); }
+.attention-row__affects { margin: 6px 0 2px; font: 500 13px var(--font-sans); color: var(--text-secondary); }
+.attention-row__fix { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.attention-row__fix .project-block__add { margin-top: 6px; }
+.attention-row__fix .project-block__add, .repo-page .project-block__add { flex-wrap: wrap; align-items: center; }
+.attention-row__fix .project-block__add > button, .repo-page .project-block__add > button { white-space: nowrap; }
+
 .deploy-target-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
 .deploy-target-row__repo { color: var(--deep); font-weight: 600; }
 .deploy-target-row__service { font: 500 11px var(--font-mono); color: var(--muted); background: var(--subtle); border-radius: 5px; padding: 1px 6px; }
@@ -1654,6 +1696,12 @@ button { font-family: var(--font-sans); }
   /* HZ-564: the Phone artboard — Admin's list full width above its section. */
   .admin--sections { padding: 16px 16px 40px; }
   .admin-nav { flex-basis: 100%; max-width: none; }
+  /* HZ-764: a project page's tabs scroll sideways rather than wrap. */
+  .project-page.project-block { padding: 18px 16px; }
+  .project-tabs { flex-wrap: nowrap; overflow-x: auto; }
+  .project-tabs__tab { flex: none; min-height: 44px; }
+  .repo-row { flex-wrap: wrap; }
+  .repo-row__status { margin-left: 0; text-align: left; }
 
   /* HZ-563: the phone artboard — two tiles a row, one card a row, no slot column. */
   .farm-health { padding: 16px 16px 40px; }

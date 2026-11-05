@@ -4,7 +4,7 @@
 // Autopilot history. A wrong PIN is refused by the route
 // (server/test/gate-pin-routes.test.mjs).
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -23,7 +23,8 @@ test.beforeAll(() => {
 })
 
 test('Autopilot defaults to off; the right PIN saves it and it survives a reload', async ({ page }) => {
-  await page.goto('/admin')
+  // HZ-764: Autopilot is on the project's Automation tab.
+  await page.goto(await adminProjectPath(page, PROJECT, { tab: 'automation' }))
   const select = page.getByLabel(`${PROJECT} Autopilot`, { exact: true })
   await expect(select).toHaveValue('off')
   await expect(select.locator('option')).toHaveText(['off', 'shadow', 'on'])

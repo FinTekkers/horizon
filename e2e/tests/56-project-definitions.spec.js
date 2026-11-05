@@ -25,17 +25,16 @@ test.beforeAll(() => {
   }
 })
 
-test('the definitions switch sits next to Autopilot; no PIN is 401, the right PIN turns it off and it survives a reload', async ({ page }) => {
-  await page.goto('/admin')
-  const autopilot = page.getByLabel(`${PROJECT} Autopilot`, { exact: true })
+// HZ-764: the switch moved from beside Autopilot to the project's Agents tab.
+test('the definitions switch is on the Agents tab; no PIN is 401, the right PIN turns it off and it survives a reload', async ({ page }) => {
+  await page.goto(`/admin/projects/${projectId}/agents`)
   const definitions = page.getByLabel(`${PROJECT} project definitions`, { exact: true })
-  await expect(autopilot).toBeVisible()
   await expect(definitions).toBeChecked()
+  await expect(page.getByRole('tab', { name: 'Agents' })).toHaveAttribute('aria-selected', 'true')
 
-  // Same project block, and the control right after the Autopilot one.
-  const block = page.locator('.project-block').filter({ has: autopilot })
+  // The project's page holds it.
+  const block = page.locator('.project-block').filter({ has: definitions })
   await expect(block.locator('.project-definitions').getByLabel(`${PROJECT} project definitions`, { exact: true })).toBeVisible()
-  await expect(block.locator('.project-autopilot + .project-definitions')).toHaveCount(1)
 
   // The browser's own session, so the 401 is the PIN's, never login_required.
   const refused = await page.request.post(`/api/projects/${projectId}/definitions-enabled`, { data: { enabled: false } })

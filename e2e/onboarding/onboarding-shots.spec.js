@@ -113,8 +113,24 @@ const panel = (page, title) =>
 const projectBlock = (page) =>
   page.locator('.project-block').filter({ has: page.locator('.project-block__name', { hasText: new RegExp(`^${PROJECT}$`) }) })
 
-// HZ-564: Admin shows one section at a time, each at its own URL.
-async function openAdmin(page, path = '/admin') {
+// HZ-564: Admin shows one section at a time, each at its own URL. HZ-764:
+// a project's tabs and each repository have their own URLs too. A failed
+// test restarts the worker and resets `projectId`, so read it again.
+function exampleProjectId() {
+  if (projectId) return projectId
+  const db = openDb(DB_PATH)
+  try {
+    projectId = db.prepare('SELECT id FROM project WHERE name = ?').get(PROJECT)?.id ?? null
+  } finally {
+    db.close()
+  }
+  expect(projectId, 'step 1 must run first').toBeTruthy()
+  return projectId
+}
+const projectPath = (tab = null) => `/admin/projects/${exampleProjectId()}${tab ? `/${tab}` : ''}`
+const repoPath = () => `/admin/projects/${exampleProjectId()}/repos/${REPO}`
+
+async function openAdmin(page, path) {
   await page.goto(path)
   await expect(page.locator('.admin__title')).toHaveText('Admin', { timeout: 10_000 })
 }
@@ -131,14 +147,16 @@ test('before you start — GitHub access and the gate PIN', async ({ page }) => 
 })
 
 test('step 1 — create the project', async ({ page }) => {
-  await openAdmin(page)
-  const projects = panel(page, /^Projects$/)
+  await openAdmin(page, '/admin/projects/new')
+  const projects = panel(page, /^New project$/)
   await projects.getByPlaceholder('New project name, e.g. Shoreward').fill(PROJECT)
   await projects.getByRole('button', { name: 'Create project' }).click()
+  // Created, it opens on its Repositories tab.
   await expect(projectBlock(page)).toBeVisible()
-  await expect(projectBlock(page).getByText('Disabled', { exact: true })).toBeVisible()
   await expect(projectBlock(page).getByText('No repositories connected yet.')).toBeVisible()
   await shot(page, '01-create-project', projectBlock(page))
+  await projectBlock(page).getByRole('tab', { name: 'Settings' }).click()
+  await expect(projectBlock(page).getByText('Disabled', { exact: true })).toBeVisible()
 
   const db = openDb(DB_PATH)
   try {
@@ -164,7 +182,7 @@ test('step 2 — connect the repo; the webhook is verified', async ({ page }) =>
   // What the owner sees if the webhook could not be made: Fix webhook.
   await stubWebhook(page, 'missing')
   webhookHits = 0
-  await openAdmin(page)
+  await openAdmin(page, repoPath())
   const block = projectBlock(page)
   await expect(block.getByText('Webhook: missing')).toBeVisible()
   await expect(block.getByRole('button', { name: 'Fix webhook' })).toBeVisible()
@@ -180,7 +198,7 @@ test('step 2 — connect the repo; the webhook is verified', async ({ page }) =>
 })
 
 test('step 3 — set the check commands', async ({ page }) => {
-  await openAdmin(page)
+  await openAdmin(page, repoPath())
   const block = projectBlock(page)
   await expect(block.getByText('no checks configured: items in this repo will fail at implement')).toBeVisible()
   await block.getByRole('button', { name: /Check commands/ }).click()
@@ -229,10 +247,10 @@ test('step 4 — set the project and repo rules', async ({ page }) => {
 })
 
 test('step 6 — choose the provider and model defaults', async ({ page }) => {
-  await openAdmin(page)
+  await openAdmin(page, projectPath('settings'))
   const runsOn = projectBlock(page).locator('.project-autopilot').filter({ hasText: 'Runs on' })
   const selects = runsOn.locator('select')
-  expect(await selects.count()).toBeGreaterThan(0)
+  await expect(selects.first()).toBeVisible()
   for (const select of await selects.all()) await expect(select).toHaveValue('default')
   await shot(page, '06-runs-on', runsOn)
 
@@ -244,7 +262,7 @@ test('step 6 — choose the provider and model defaults', async ({ page }) => {
 })
 
 test('step 7 — the pre-flight, by hand until Validate project ships', async ({ page }) => {
-  await openAdmin(page)
+  await openAdmin(page, repoPath())
   const block = projectBlock(page)
   await expect(block.getByText('Webhook: ok')).toBeVisible({ timeout: 10_000 })
   await expect(block.getByText('no checks configured: items in this repo will fail at implement')).toHaveCount(0)
@@ -253,14 +271,15 @@ test('step 7 — the pre-flight, by hand until Validate project ships', async ({
 })
 
 test('step 8 — enable the project; Autopilot stays off', async ({ page }) => {
-  await openAdmin(page)
+  await openAdmin(page, projectPath('settings'))
   const block = projectBlock(page)
   await block.getByRole('switch', { name: `${PROJECT} enabled` }).click()
   await block.getByRole('button', { name: 'Enable', exact: true }).click()
   await expect(block.getByText('Enabled', { exact: true })).toBeVisible()
   await expect(block.getByRole('switch', { name: `${PROJECT} enabled` })).toHaveAttribute('aria-checked', 'true')
-  await expect(block.getByLabel(`${PROJECT} Autopilot`)).toHaveValue('off')
   await shot(page, '08-enabled', block)
+  await block.getByRole('tab', { name: 'Automation' }).click()
+  await expect(block.getByLabel(`${PROJECT} Autopilot`)).toHaveValue('off')
 })
 
 test('step 5 — add the deploy target and Dry run it (after step 8)', async ({ page }) => {
@@ -323,7 +342,7 @@ test('step 9 — file and watch a first small item', async ({ page }) => {
   const db = openDb(DB_PATH)
   try {
     if (!db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(FIRST_ITEM.id)) {
-      insertItem(db, { ...FIRST_ITEM, priority: 'Low', cursor: 0, repo: REPO, project_id: projectId })
+      insertItem(db, { ...FIRST_ITEM, priority: 'Low', cursor: 0, repo: REPO, project_id: exampleProjectId() })
     }
   } finally {
     db.close()

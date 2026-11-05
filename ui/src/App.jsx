@@ -102,7 +102,9 @@ function sendBackError(err) {
 
 // Deep links: /  → board, /admin → admin, /definitions → agent definitions,
 // /admin/<section> → that Admin section (HZ-564: any /admin/... path stays in
-// Admin; an unknown one shows Projects and is rewritten to /admin),
+// Admin; an unknown one is rewritten to /admin), /admin/projects/<id>[/<tab>]
+// and /admin/projects/<id>/repos/<owner>/<name> → a project or repository page
+// (HZ-764),
 // /farm-health → Farm health (HZ-563, admins),
 // /privacy and /terms → the public legal pages (no login required),
 // /<item-id> → that item's tracker (case-insensitive, e.g. localhost:5173/hz-102).
@@ -403,8 +405,11 @@ function AuthenticatedApp({ user, onLogout }) {
     toBoard()
   }
   // HZ-564: every Admin navigation — the account menu and Admin's own list.
-  const openAdmin = (path) => {
-    navigate(path)
+  // HZ-764: `replace` (bare /admin's landing) swaps the history entry instead
+  // of adding one, so Back still leaves Admin.
+  const openAdmin = (path, { replace = false } = {}) => {
+    if (replace) window.history.replaceState(window.history.state, '', PREFIX + path)
+    else navigate(path)
     setAdminRoute(parsePath(PREFIX + path).admin ?? ADMIN_HOME)
     setView('admin')
     setApprovalsOpen(false)
@@ -430,8 +435,8 @@ function AuthenticatedApp({ user, onLogout }) {
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  // HZ-564: an unknown /admin/... path shows Admin's first section; its URL
-  // becomes /admin, on first load and on back/forward alike.
+  // HZ-564: an unknown /admin/... path becomes /admin (HZ-764: which then
+  // lands as bare /admin does), on first load and on back/forward alike.
   useEffect(() => {
     if (view !== 'admin' || !adminRoute.unknown) return
     window.history.replaceState(window.history.state, '', `${PREFIX}/admin`)
@@ -446,8 +451,8 @@ function AuthenticatedApp({ user, onLogout }) {
     setAdminRoute({ ...ADMIN_HOME, section: MEMBER_ADMIN_SECTION })
   }, [view, adminRoute, isAdmin])
 
-  // HZ-703: the owner's /admin/<member-only section> shows Admin's first
-  // section, and its URL becomes /admin.
+  // HZ-703: the owner's /admin/<member-only section> becomes /admin, which
+  // lands as bare /admin does (HZ-764).
   useEffect(() => {
     if (view !== 'admin' || !isAdmin || !isMemberOnlySection(adminRoute.section)) return
     window.history.replaceState(window.history.state, '', `${PREFIX}/admin`)
@@ -617,6 +622,7 @@ function AuthenticatedApp({ user, onLogout }) {
           onNavigate={openAdmin}
           isOwner={isAdmin}
           activeProject={activeProject}
+          snapshotReady={api.hasSnapshot()}
         />
       )}
 

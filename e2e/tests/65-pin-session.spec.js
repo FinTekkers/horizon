@@ -11,7 +11,7 @@
 // The dialog's desktop and phone screenshots are kept as test artifacts
 // (pin-dialog-desktop.png, pin-dialog-phone.png) for the PR.
 
-import { test, expect, verifySharedSession } from '../fixtures/test-base.js'
+import { test, expect, verifySharedSession, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -51,7 +51,8 @@ async function expectInViewport(page) {
 }
 
 async function flipProject(page, verb) {
-  await page.goto('/admin')
+  // HZ-764: the switch is on the project's Settings tab.
+  await page.goto(await adminProjectPath(page, PROJECT, { tab: 'settings' }))
   const toggle = page.getByRole('switch', { name: `${PROJECT} enabled` })
   await expect(toggle).toBeVisible({ timeout: 10_000 })
   await toggle.click()

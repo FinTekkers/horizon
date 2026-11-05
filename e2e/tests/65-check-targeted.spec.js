@@ -6,7 +6,7 @@
 // the spec's own PIN locks the shared session, so the first save opens the
 // PIN dialog.
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -60,7 +60,8 @@ test('the owner opts the E2E slot into targeted re-runs, and the choice survives
   const box = page.getByRole('checkbox', { name: `E2E: On a fix round, re-run only the failed tests first (${REPO})` })
   const e2eSlot = page.getByRole('textbox', { name: `E2E command for ${REPO}` })
 
-  await page.goto('/admin')
+  // HZ-764: check commands are on the repository's own page.
+  await page.goto(await adminProjectPath(page, PROJECT, { repo: REPO }))
   await openChecks(page)
   await expect(box).toBeDisabled()
   await e2eSlot.fill(E2E_COMMAND)

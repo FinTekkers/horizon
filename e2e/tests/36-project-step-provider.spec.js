@@ -7,7 +7,7 @@
 // Its own project with no repo and no items, so no mock agent ever runs a PM
 // step against it. Sets its own PIN: earlier specs rotate it.
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 
@@ -33,7 +33,8 @@ test('a project step default starts at Default; the right PIN saves Muse and it 
   page,
   request,
 }) => {
-  await page.goto('/admin')
+  // HZ-764: every step's Runs on is on the project's Settings tab.
+  await page.goto(await adminProjectPath(page, PROJECT, { tab: 'settings' }))
   const select = page.getByLabel(`${PROJECT} ${OUTCOME} Runs on`, { exact: true })
   await expect(select).toHaveValue('default', { timeout: 10_000 })
   await expect(select.locator('option')).toHaveText(['Default', 'Claude', 'Muse'])

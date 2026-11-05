@@ -6,7 +6,7 @@
 // other specs read) and deleted again in afterAll. HZ-704: setting the spec's
 // own PIN locks the shared session, so the first save opens the PIN dialog.
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, adminProjectPath } from '../fixtures/test-base.js'
 import { openDb, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -61,8 +61,10 @@ test('the owner saves the env file path behind the PIN; it survives a reload, an
 }) => {
   const field = page.getByRole('textbox', { name: `Test credentials env file for ${REPO}`, exact: true })
 
-  await page.goto('/admin')
+  // HZ-764: the env file is on the repository's own page, its help behind More.
+  await page.goto(await adminProjectPath(page, PROJECT, { repo: REPO }))
   await openChecks(page)
+  await block(page).getByRole('button', { name: 'More about the env file' }).click()
   await expect(block(page).getByText('Horizon stores the path only')).toBeVisible()
   expect(await save(page, HOST_PATH, { pin: GATE_PIN })).toBe(200)
   await expect(block(page).getByText('Test credentials env file saved.')).toBeVisible()

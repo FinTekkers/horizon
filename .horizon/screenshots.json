@@ -33,7 +33,7 @@
     {"name": "journey-premerge-red", "path": "/js-pmc", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".activity-row:has-text(\"failing tests (3):\")"},
     {"name": "journey-gate-blocked", "path": "/js-inflight", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".gate-action-status:has-text(\"Blocked: pre-merge check npm test failed\")"},
     {"name": "journey-gate-running", "path": "/js-running", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".gate-action-status:has-text(\"waiting for a capacity slot to run pre-merge checks (main + PR), 1 ahead\")", "mask": [".gate-action-status__elapsed"]},
-    {"name": "journey-admin-projects", "path": "/admin", "viewports": ["desktop"], "themes": ["light"], "waitFor": "[aria-label=\"Journey screens project Autopilot history\"]:has-text(\"off → shadow\")"},
+    {"name": "journey-admin-projects", "path": "/admin/projects/613/automation", "viewports": ["desktop"], "themes": ["light"], "waitFor": "[aria-label=\"Journey screens project Autopilot history\"]:has-text(\"off → shadow\")"},
     {"name": "journey-definitions", "path": "/definitions", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".defs__item:has-text(\"journey-screens-project\")"},
     {"name": "journey-verify-fail", "path": "/js-verify", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".step:has-text(\"Command 1 crashed on import.\") .step__icon"},
     {"name": "journey-ran-ahead", "path": "/js-ran-ahead", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": ".step-card__meta:has-text(\"Failed, sent back · attempt 1\")"},

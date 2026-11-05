@@ -294,6 +294,11 @@ const PROJECTS = [
   { id: 2, name: 'Gamma', enabled: false, repos: [] },
 ]
 
+// HZ-764: one project, or one repository, at a time — each test opens the page
+// that holds the control it checks.
+const settingsTab = (id) => ({ section: 'projects', project: String(id), tab: 'settings' })
+const repoPage = (id, repo) => ({ section: 'projects', project: String(id), tab: 'repositories', repo })
+
 function projectBlock(container, name) {
   return [...container.querySelectorAll('.project-block')].find(
     (b) => b.querySelector('.project-block__name')?.textContent === name,
@@ -301,17 +306,18 @@ function projectBlock(container, name) {
 }
 
 test('Admin lists every project with its enabled state', () => {
-  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const { container, rerender } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} route={settingsTab(1)} />)
   const alpha = within(projectBlock(container, 'Alpha'))
-  const gamma = within(projectBlock(container, 'Gamma'))
   expect(alpha.getByRole('switch', { name: 'Alpha enabled' }).getAttribute('aria-checked')).toBe('true')
   expect(alpha.getByText('Enabled')).toBeTruthy()
+  rerender(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} route={settingsTab(2)} />)
+  const gamma = within(projectBlock(container, 'Gamma'))
   expect(gamma.getByRole('switch', { name: 'Gamma enabled' }).getAttribute('aria-checked')).toBe('false')
   expect(gamma.getByText('Disabled')).toBeTruthy()
 })
 
 test('flipping asks to confirm: a cancelled PIN prompt leaves the state, a confirmed one calls setProjectEnabled once', async () => {
-  const { container, rerender } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const { container, rerender } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} route={settingsTab(2)} />)
   const gamma = within(projectBlock(container, 'Gamma'))
   fireEvent.click(gamma.getByRole('switch', { name: 'Gamma enabled' }))
   expect(gamma.queryByLabelText('Gate PIN to enable Gamma')).toBeNull()
@@ -331,12 +337,14 @@ test('flipping asks to confirm: a cancelled PIN prompt leaves the state, a confi
   await waitFor(() => expect(api.setProjectEnabled).toHaveBeenCalledTimes(1))
   expect(api.setProjectEnabled).toHaveBeenCalledWith(2, true)
   await waitFor(() => expect(gamma.queryByRole('button', { name: 'Enable' })).toBeNull())
-  rerender(<AdminPage sync={{}} projects={[PROJECTS[0], { ...PROJECTS[1], enabled: true }]} onBack={() => {}} />)
+  rerender(
+    <AdminPage sync={{}} projects={[PROJECTS[0], { ...PROJECTS[1], enabled: true }]} onBack={() => {}} route={settingsTab(2)} />,
+  )
   expect(gamma.getByRole('switch', { name: 'Gamma enabled' }).getAttribute('aria-checked')).toBe('true')
 })
 
 test('disabling asks to confirm too', async () => {
-  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} route={settingsTab(1)} />)
   const alpha = within(projectBlock(container, 'Alpha'))
   fireEvent.click(alpha.getByRole('switch', { name: 'Alpha enabled' }))
   fireEvent.click(alpha.getByRole('button', { name: 'Disable' }))
@@ -358,19 +366,20 @@ const CHECK_PROJECTS = [
 ]
 
 test('check commands show the saved values, and detected defaults as placeholders — fetched only on open', async () => {
-  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const page = (repo) => <AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} route={repoPage(3, repo)} />
+  const { container, rerender } = render(page('acme/web'))
   const fin = within(projectBlock(container, 'Fin'))
   expect(api.getRepoCheckDefaults).not.toHaveBeenCalled()
-  const [webToggle, apiToggle] = fin.getAllByRole('button', { name: /Check commands/ })
 
-  fireEvent.click(webToggle)
+  fireEvent.click(fin.getByRole('button', { name: /Check commands/ }))
   expect(fin.getByLabelText('Install command for acme/web').value).toBe('npm install --ignore-scripts')
   expect(fin.getByLabelText('Test command for acme/web').value).toBe('npm test')
   expect(fin.getByLabelText('Lint command for acme/web').value).toBe('')
   expect(fin.getByLabelText('E2E command for acme/web').value).toBe('')
   expect(api.getRepoCheckDefaults).toHaveBeenCalledWith(3, 'acme/web')
 
-  fireEvent.click(apiToggle)
+  rerender(page('acme/api'))
+  fireEvent.click(fin.getByRole('button', { name: /Check commands/ }))
   expect(api.getRepoCheckDefaults).toHaveBeenCalledWith(3, 'acme/api')
   await waitFor(() =>
     expect(fin.getByLabelText('Install command for acme/api').placeholder).toBe('npm install --no-audit --no-fund'),
@@ -381,7 +390,7 @@ test('check commands show the saved values, and detected defaults as placeholder
 })
 
 test('saving check commands sends the edited slots', async () => {
-  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} route={repoPage(3, 'acme/web')} />)
   const fin = within(projectBlock(container, 'Fin'))
   fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
   fireEvent.change(fin.getByLabelText('Lint command for acme/web'), { target: { value: 'npm run lint' } })
@@ -424,7 +433,7 @@ test('the targeted-run box is disabled while its slot has no command, and is sen
     checks: { install: 'npm install --ignore-scripts', test: 'npm test', lint: null, e2e: 'npm run e2e', screenshots: null },
     targeted: ['e2e'],
   })
-  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} route={repoPage(3, 'acme/web')} />)
   const fin = within(projectBlock(container, 'Fin'))
   fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
   const e2eBox = fin.getByLabelText(`E2E: ${TARGETED} (acme/web)`)
@@ -449,7 +458,7 @@ test('the targeted-run box is disabled while its slot has no command, and is sen
 
 test('a saved opt-in shows ticked from the snapshot', () => {
   const projects = [{ ...CHECK_PROJECTS[0], repos: [{ ...CHECK_PROJECTS[0].repos[0], targeted: ['test'] }] }]
-  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} route={repoPage(3, 'acme/web')} />)
   const fin = within(projectBlock(container, 'Fin'))
   fireEvent.click(fin.getByRole('button', { name: /Check commands/ }))
   expect(fin.getByLabelText(`Test: ${TARGETED} (acme/web)`).checked).toBe(true)
@@ -460,7 +469,7 @@ test('a saved opt-in shows ticked from the snapshot', () => {
 
 test('the Screenshots slot is a fifth command box, saved like the others', async () => {
   api.saveRepoChecks.mockResolvedValueOnce({ ok: true, repo: 'acme/web', checks: {} })
-  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={CHECK_PROJECTS} onBack={() => {}} route={repoPage(3, 'acme/web')} />)
   const fin = within(projectBlock(container, 'Fin'))
   fireEvent.click(fin.getAllByRole('button', { name: /Check commands/ })[0])
   fireEvent.change(fin.getByLabelText('Screenshots command for acme/web'), { target: { value: 'node scripts/shots.mjs' } })
@@ -486,12 +495,17 @@ test('a repo with only a Screenshots command still warns that it has no checks',
       ],
     },
   ]
-  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} />)
+  const page = (repo) => <AdminPage sync={{}} projects={projects} onBack={() => {}} route={repoPage(3, repo)} />
+  const { container, rerender } = render(page('acme/shots'))
   const warnings = within(projectBlock(container, 'Fin')).getAllByText(
     'no checks configured: items in this repo will fail at implement',
   )
   expect(warnings).toHaveLength(1)
   expect(within(warnings[0].closest('.repo-marks')).getByLabelText('No checks for acme/shots')).toBeTruthy()
+  rerender(page('acme/web'))
+  expect(
+    within(projectBlock(container, 'Fin')).queryAllByText('no checks configured: items in this repo will fail at implement'),
+  ).toHaveLength(0)
 })
 
 // ---- HZ-244: each repo row's webhook status and the Fix webhook action ----
@@ -512,7 +526,9 @@ for (const [status, row, label, code] of [
 ]) {
   test(`a repo row shows webhook status ${status} and the last delivery's response code`, async () => {
     api.getRepoWebhooks.mockResolvedValue({ webhooks: [{ repo: 'FinTekkers/ui-service', ...row }] })
-    const { container } = render(<AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} />)
+    const { container } = render(
+      <AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} route={repoPage(7, 'FinTekkers/ui-service')} />,
+    )
     const scoped = repoRow(container)
     expect(await scoped.findByText(label)).toBeTruthy()
     expect(scoped.getByText(code)).toBeTruthy()
@@ -526,7 +542,9 @@ test('a mismatched hook on another host is labelled so', async () => {
   api.getRepoWebhooks.mockResolvedValue({
     webhooks: [{ repo: 'FinTekkers/ui-service', status: 'mismatched', lastResponseCode: 200, reason: 'foreign_url' }],
   })
-  const { container } = render(<AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} />)
+  const { container } = render(
+    <AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} route={repoPage(7, 'FinTekkers/ui-service')} />,
+  )
   expect(await repoRow(container).findByText('Webhook: mismatched (other host)')).toBeTruthy()
 })
 
@@ -534,7 +552,9 @@ test('Fix webhook asks to confirm: a cancelled PIN prompt says nothing was saved
   api.getRepoWebhooks.mockResolvedValue({
     webhooks: [{ repo: 'FinTekkers/ui-service', status: 'missing', lastResponseCode: null, reason: null }],
   })
-  const { container } = render(<AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} />)
+  const { container } = render(
+    <AdminPage sync={{}} projects={REPO_PROJECT} onBack={() => {}} route={repoPage(7, 'FinTekkers/ui-service')} />,
+  )
   const block = within(projectBlock(container, 'Hooks'))
   fireEvent.click(await block.findByText('Fix webhook'))
   expect(block.queryByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook')).toBeNull()
@@ -564,7 +584,7 @@ test('Fix webhook asks to confirm: a cancelled PIN prompt says nothing was saved
 test('Admin shows one select per item kind for the shared first step, and a Task select saves to the Task row', async () => {
   const { STEPS, firstStepIndex } = await import('../../../domain/js/lifecycle.js')
   const shared = STEPS[0].label
-  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} />)
+  const { container } = render(<AdminPage sync={{}} projects={PROJECTS} onBack={() => {}} route={settingsTab(1)} />)
   const alpha = within(projectBlock(container, 'Alpha'))
   const change = alpha.getByLabelText(`Alpha ${shared} Runs on`)
   const task = alpha.getByLabelText(`Alpha Task ${shared} Runs on`)
@@ -596,7 +616,8 @@ test('each repo row shows its default branch, or that it has not been read yet',
       ],
     },
   ]
-  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} />)
+  const route = { section: 'projects', project: '1' }
+  const { container } = render(<AdminPage sync={{}} projects={projects} onBack={() => {}} route={route} />)
   const rows = [...container.querySelectorAll('.repo-row')]
   const rowOf = (repo) => within(rows.find((r) => r.textContent.includes(repo)))
   expect(rowOf('FinTekkers/price-service-rust').getByText('default branch: master')).toBeTruthy()
@@ -605,7 +626,17 @@ test('each repo row shows its default branch, or that it has not been read yet',
 
 // ---- HZ-564: "Find a setting" narrows the section list ----
 
-const SECTION_LABELS = ['Projects and repositories', 'Deploy targets', 'Flaky tests', 'GitHub access', 'Your PIN and API tokens']
+// HZ-764: Needs attention, then one entry per project and New project.
+const SECTION_LABELS = [
+  'Needs attention',
+  'Alpha',
+  'Gamma',
+  'New project',
+  'Deploy targets',
+  'Flaky tests',
+  'GitHub access',
+  'Your PIN and API tokens',
+]
 
 function sectionButtons(container) {
   const nav = within(container.querySelector('aside[aria-label="Admin sections"]'))
@@ -618,7 +649,7 @@ test('Find a setting shows only the matching sections, and clearing it shows all
   expect(sectionButtons(container)).toEqual(SECTION_LABELS)
 
   fireEvent.change(search, { target: { value: 'webhook' } })
-  expect(sectionButtons(container)).toEqual(['Projects and repositories'])
+  expect(sectionButtons(container)).toEqual(['Needs attention', 'Alpha', 'Gamma'])
   fireEvent.change(search, { target: { value: 'PIN' } })
   expect(sectionButtons(container)).toEqual(['Your PIN and API tokens'])
 
@@ -636,14 +667,14 @@ test('a search that matches nothing says "No setting matches" and lists no secti
   expect(sectionButtons(container)).toEqual(SECTION_LABELS)
 })
 
-test('a project or repository name finds Projects, and clicking a section asks to navigate to its URL', () => {
+test('a project or repository name finds its project, and clicking a section asks to navigate to its URL', () => {
   const onNavigate = vi.fn()
   const projects = [{ id: 1, name: 'Fintekkers', enabled: true, repos: [{ repo: 'FinTekkers/ui-service', prefix: 'US' }] }]
   const { container, getByLabelText, getByRole } = render(
     <AdminPage sync={{}} projects={projects} onBack={() => {}} onNavigate={onNavigate} />,
   )
   fireEvent.change(getByLabelText('Find a setting'), { target: { value: 'ui-service' } })
-  expect(sectionButtons(container)).toEqual(['Projects and repositories'])
+  expect(sectionButtons(container)).toEqual(['Fintekkers'])
 
   fireEvent.change(getByLabelText('Find a setting'), { target: { value: '' } })
   fireEvent.click(getByRole('button', { name: /^Deploy targets/ }))

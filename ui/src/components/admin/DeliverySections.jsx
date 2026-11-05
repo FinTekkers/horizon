@@ -9,8 +9,8 @@ const DRY_RUN_ERROR = { 409: 'Dry run already running' }
 // HZ-258: five read-only checks of the stored target (script, repo dir,
 // service, sudo, health). Gate-PIN protected; the request carries nothing
 // else, so it cannot change what is probed. Results live in this component
-// only.
-function DeployDryRun({ target }) {
+// only. HZ-764: Needs attention reuses it, its button labelled "Dry run".
+export function DeployDryRun({ target, label = 'Run' }) {
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -35,7 +35,7 @@ function DeployDryRun({ target }) {
     <div className="deploy-dry-run">
       <div className="project-block__add">
         <button type="button" className="composer__submit" style={{ background: 'var(--primary)' }} onClick={run} disabled={busy}>
-          {busy ? 'Running…' : 'Run'}
+          {busy ? 'Running…' : label}
         </button>
       </div>
       {error && <div className="gh-error">{error}</div>}

@@ -16,6 +16,8 @@ vi.mock('./api', () => {
     getFarmHealth: vi.fn(() => new Promise(() => {})),
     getSync: () => ({ connected: false }),
     getProjects: () => none,
+    // HZ-764: the first frame is in, so Admin may land with no project.
+    hasSnapshot: () => true,
     getActiveProjectId: () => null,
     getFarm: () => null,
     getDurationEstimates: () => null,
@@ -55,10 +57,11 @@ test('/horizon/admin/deploys opens Deploy targets, and a click pushes /horizon/a
   expect(window.location.pathname).toBe('/horizon/admin/flaky')
 })
 
-test('/horizon/admin/nope shows Projects and is rewritten to /horizon/admin', async () => {
+// HZ-764: /horizon/admin then lands on New project (there is no project).
+test('/horizon/admin/nope is rewritten to /horizon/admin, which lands on New project', async () => {
   window.history.pushState({}, '', '/horizon/admin/nope')
   render(<App />)
-  expect(await screen.findByRole('heading', { name: 'Projects' })).toBeTruthy()
-  await waitFor(() => expect(window.location.pathname).toBe('/horizon/admin'))
+  expect(await screen.findByRole('heading', { name: 'New project' })).toBeTruthy()
+  await waitFor(() => expect(window.location.pathname).toBe('/horizon/admin/projects/new'))
   expect(document.querySelector('.tracker__id')).toBeNull()
 })

@@ -216,11 +216,20 @@ const PROVIDER_STEP_GROUPS = ITEM_KINDS.map((kind) => ({
 const providerSelectName = (project, step) =>
   step.itemKind ? `${project.name} ${itemKindInfo(step.itemKind).label} ${step.label}` : `${project.name} ${step.label}`
 
-export function ProjectStepProviders({ project }) {
+// HZ-764: `onlyOverrides` (the Agents tab) lists only the steps whose saved
+// value is not Default; the Settings tab lists every step. Both save the same
+// way.
+export function ProjectStepProviders({ project, onlyOverrides = false }) {
   const [pending, setPending] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   const savedFor = (index) => project.providerDefaults?.[index] ?? 'default'
+  const groups = onlyOverrides
+    ? PROVIDER_STEP_GROUPS.map((group) => ({
+        ...group,
+        steps: group.steps.filter((step) => savedFor(step.index) !== 'default'),
+      })).filter((group) => group.steps.length > 0)
+    : PROVIDER_STEP_GROUPS
 
   const cancel = () => {
     setPending(null)
@@ -245,7 +254,8 @@ export function ProjectStepProviders({ project }) {
   return (
     <div className="project-autopilot">
       <div>Runs on</div>
-      {PROVIDER_STEP_GROUPS.map((group) => (
+      {onlyOverrides && groups.length === 0 && <div className="gh-note">Every step uses the default.</div>}
+      {groups.map((group) => (
         <Fragment key={group.kind}>
           {group.steps[0].itemKind && <div>{itemKindInfo(group.kind).label} steps</div>}
           {group.steps.map((step) => (

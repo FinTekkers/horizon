@@ -41,7 +41,9 @@ const REPO = 'acme/web'
 
 function renderPage() {
   const projects = [{ id: 7, name: 'Pins', enabled: true, repos: [{ repo: REPO, prefix: 'AW' }] }]
-  return render(<AdminPage sync={{}} projects={projects} onBack={() => {}} route={{ section: 'projects' }} />)
+  // HZ-764: Disconnect lives on the repository's own page.
+  const route = { section: 'projects', project: '7', tab: 'repositories', repo: REPO }
+  return render(<AdminPage sync={{}} projects={projects} onBack={() => {}} route={route} />)
 }
 
 function pinNeeded() {
