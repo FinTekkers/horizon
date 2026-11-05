@@ -2084,6 +2084,10 @@ def _requires_recheck(kind: str, label: str, task: dict):
                 container_image=task.get("container_image"),
                 forbid=str(task_job.HORIZON_ROOT),  # Execute's own refusal root
                 deadline=deadline,
+                # HZ-769: Execute's env and user — farmd stamps the last two.
+                test_env_file=task.get("test_env_file"),
+                job_env_names=task.get("job_env_names"),
+                job_uid=task.get("job_uid"),
             )
         except run_plan_requires.Unavailable as exc:
             log(f"{label}: {exc}")

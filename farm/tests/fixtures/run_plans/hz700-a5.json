@@ -1,0 +1,83 @@
+{
+  "cwd": ".",
+  "commands": [
+    "set -euo pipefail\ncat > /tmp/hz-700-check.py <<'PY'\nimport os, sys, json, sqlite3, urllib.request, urllib.parse, urllib.error\nmode = sys.argv[1]\nK = os.environ['STRIPE_SECRET_KEY']\nE = os.environ['SHOREWARD_TENANT_EMAIL'].strip()\nC = os.environ['SHOREWARD_PROMO_CODE'].strip()\nREPO, COUPON = 'ParvatiRealEstate/parvati-site', 'ws2mLqH0'\ndef api(path, **q):\n    req = urllib.request.Request('https://api.stripe.com/v1/' + path + '?' + urllib.parse.urlencode(q, doseq=True), headers={'Authorization': 'Bearer ' + K})\n    try:\n        return json.load(urllib.request.urlopen(req, timeout=30))\n    except urllib.error.HTTPError as e:\n        sys.exit('stripe ' + path + ': HTTP ' + str(e.code))\ndef oid(x):\n    return x.get('id') if isinstance(x, dict) else x\ndb = sqlite3.connect('file:/opt/horizon/server/data/horizon.db?mode=ro', uri=True)\nusers = db.execute('SELECT id, account_status, stripe_customer_id, stripe_subscription_id, google_sub FROM user WHERE lower(email) = lower(?)', (E,)).fetchall()\nu = users[0] if len(users) == 1 else (None,) * 5\ndef projects(uid):\n    out = []\n    for (pid,) in db.execute('SELECT project_id FROM project_member WHERE user_id = ?', (uid,)).fetchall():\n        repos = [r for (r,) in db.execute('SELECT repo FROM project_repo WHERE project_id = ?', (pid,))]\n        members = [m for (m,) in db.execute('SELECT user_id FROM project_member WHERE project_id = ?', (pid,))]\n        out.append({'id': pid, 'repos': repos, 'members': members})\n    return out\nup = projects(u[0]) if u[0] else []\npcs = api('promotion_codes', code=C)['data']\npc = pcs[0] if len(pcs) == 1 else {}\npc_coupon = oid(pc.get('coupon') or (pc.get('promotion') or {}).get('coupon'))\ncusts = api('customers', email=E, limit=10)['data']\ndef subs(cus):\n    return api('subscriptions', customer=cus, status='active', **{'expand[]': ['data.discounts', 'data.latest_invoice']})['data']\nreport, ok = {}, True\ndef check(key, good, detail):\n    global ok\n    ok = ok and bool(good)\n    report[key] = dict(detail, ok=bool(good))\n    print(key, 'PASS' if good else 'FAIL', json.dumps(detail))\nif mode == 'pre':\n    check('PRE horizon', len(users) == 0 or (len(users) == 1 and u[1] == 'pending_payment' and not u[3] and not u[4] and not up), {'accounts': len(users), 'status': u[1], 'projects': len(up)})\n    check('PRE stripe-customer', len(custs) == 0 or (len(custs) == 1 and not subs(custs[0]['id'])), {'customers': len(custs)})\n    check('PRE stripe-promo', len(pcs) == 1 and pc.get('active') is True and pc.get('times_redeemed') == 0 and pc_coupon == COUPON, {'codes': len(pcs), 'active': pc.get('active'), 'times_redeemed': pc.get('times_redeemed'), 'coupon': pc_coupon})\nelse:\n    cus = custs[0]['id'] if len(custs) == 1 else None\n    ss = subs(cus) if cus else []\n    s = ss[0] if len(ss) == 1 else {}\n    ds = [d for d in (s.get('discounts') or []) if isinstance(d, dict)] + ([s['discount']] if s.get('discount') else [])\n    coupons = sorted({oid(d.get('coupon') or (d.get('source') or {}).get('coupon')) for d in ds} - {None})\n    inv = s.get('latest_invoice') or {}\n    check('METRIC3', cus is not None and cus == u[2] and len(ss) == 1 and s.get('id') == u[3] and COUPON in coupons and inv.get('total') == 0, {'customers': len(custs), 'matches_account': cus is not None and cus == u[2], 'active_subscriptions': len(ss), 'coupons': coupons, 'latest_invoice_total': inv.get('total')})\n    used = pc.get('times_redeemed') == 1 and (pc.get('active') is False or pc.get('times_redeemed') >= (pc.get('max_redemptions') or 2))\n    check('METRIC4', used, {'codes': len(pcs), 'times_redeemed': pc.get('times_redeemed'), 'max_redemptions': pc.get('max_redemptions'), 'active': pc.get('active')})\n    hit = [p for p in up if REPO in p['repos']]\n    check('METRIC5', u[1] == 'active' and len(hit) == 1 and hit[0]['members'] == [u[0]], {'accounts': len(users), 'status': u[1], 'projects_with_repo': len(hit), 'project_id': hit[0]['id'] if hit else None, 'members': len(hit[0]['members']) if hit else None})\njson.dump(report, open('/tmp/hz-700-' + mode + '.json', 'w'), indent=1)\nprint('CHECK', mode, 'OK' if ok else 'FAILED')\nsys.exit(0 if ok else 1)\nPY\nP=/home/ubuntu/parvati.profile\nif [ -d \"$P\" ] && [ -e \"$P/.parvati-profile\" ] && [ \"$(stat -c %a \"$P\")\" = 700 ]; then echo 'PRE profile PASS marker present, mode 700'; else echo 'PRE profile FAIL'; exit 1; fi\nset -a; source <(sudo -n cat /etc/horizon/recorder.env); . /etc/horizon/stripe.env; set +a\nfor v in SHOREWARD_PROMO_CODE SHOREWARD_TENANT_EMAIL PARVATI_GITHUB_TOKEN STRIPE_SECRET_KEY; do if [ -n \"${!v:-}\" ]; then echo \"PRE env $v set\"; else echo \"PRE env $v FAIL unset\"; exit 1; fi; done\nOUT=\"$HOME/recordings/solution-v2/raw\"\nall=$({ find \"$OUT\" -maxdepth 1 -name '*.mp4' 2>/dev/null || true; } | wc -l)\nodd=$({ find \"$OUT\" -maxdepth 1 -name '*.mp4' 2>/dev/null || true; } | { grep -Ev '/A[1-7](-[a-z-]+)?\\.mp4$' || true; } | wc -l)\necho \"PRE out $all MP4s, $odd with other names\"\n[ \"$odd\" = 0 ]\npython3 /tmp/hz-700-check.py pre",
+    "npm --prefix scripts/recorder ci",
+    "npx --prefix scripts/recorder playwright install chromium",
+    "set -uo pipefail\nset -a; source <(sudo -n cat /etc/horizon/recorder.env); set +a\nOUT=\"$HOME/recordings/solution-v2/raw\"\ndate -u +%Y-%m-%dT%H:%M:%S > /tmp/hz-700-run-start\nnode scripts/record-item.mjs --production https://shoreward.ai --profile /home/ubuntu/parvati.profile --chapter A --out \"$OUT/\" && exit 0\nfailed=$(awk -v s=\"$(cat /tmp/hz-700-run-start)\" 'substr($0,1,19)>=s' \"$OUT/run.log\" | grep -oE 'scene A[1-7] FAILED' | tail -1 | cut -d' ' -f2)\ncase \"$failed\" in\n  A5) rest=A5,A6,A7 ;;\n  A6) rest=A6,A7 ;;\n  A7) rest=A7 ;;\n  *) echo \"STOP: scene ${failed:-?} failed. A1-A4 are not re-shot here (single-use checkout; A4 needs A3). Report it.\"; exit 1 ;;\nesac\necho \"RESHOOT $failed once, headed; scenes $rest\"\nxvfb-run -a -s '-screen 0 1920x1080x24' node scripts/record-item.mjs --production https://shoreward.ai --profile /home/ubuntu/parvati.profile --scene \"$rest\" --headed --out \"$OUT/\"",
+    "python3 - <<'PY'\nimport os, re, json, glob, subprocess, sys\nOUT = os.path.expanduser('~/recordings/solution-v2/raw')\nstart = open('/tmp/hz-700-run-start').read().strip()\nNAMES = {'A1': 'A1-homepage', 'A2': 'A2-get-access', 'A3': 'A3-promo-checkout', 'A4': 'A4-welcome', 'A5': 'A5-google-sign-in', 'A6': 'A6-first-project', 'A7': 'A7-connect-repo'}\nlines = [l for l in open(os.path.join(OUT, 'run.log')) if l[:19] >= start]\nBOUND = re.compile(r' (run: |scene A\\d (ok \\d+ ms|FAILED))')\nfailed = sorted({m.group(1) for m in (re.search(r' scene (A\\d) FAILED', l) for l in lines) if m})\nscenes = {}\nfor sid, name in NAMES.items():\n    src, dst = os.path.join(OUT, sid + '.mp4'), os.path.join(OUT, name + '.mp4')\n    oks = [i for i, l in enumerate(lines) if re.search(r' scene ' + sid + r' ok \\d+ ms', l)]\n    info = {'attempts': sum(' scene ' + sid + ' launch:' in l for l in lines), 'passed': bool(oks)}\n    if oks and os.path.exists(src):\n        end = oks[-1]\n        begin = max([i for i in range(end) if BOUND.search(lines[i])], default=-1) + 1\n        part = [l for l in lines[begin:end + 1] if ' scene ' + sid in l]\n        os.replace(src, dst)\n        with os.fdopen(os.open(os.path.join(OUT, name + '.log'), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:\n            f.writelines(part)\n        size = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', dst], capture_output=True, text=True).stdout.strip()\n        errs = subprocess.run(['ffmpeg', '-v', 'error', '-i', dst, '-f', 'null', '-'], capture_output=True, text=True).stderr.strip()\n        info.update(size=size, decode_errors=len(errs.splitlines()), log_lines=len(part), failed_steps=sum('FAILED' in l for l in part))\n    scenes[name] = info\nmp4s = sorted(os.path.basename(p) for p in glob.glob(os.path.join(OUT, '*.mp4')))\nm1 = mp4s == sorted(n + '.mp4' for n in NAMES.values()) and all(s.get('size') == '1920,1080' and s.get('decode_errors') == 0 for s in scenes.values())\nm2 = all(os.path.exists(os.path.join(OUT, n + '.log')) and s.get('log_lines', 0) > 0 and s.get('failed_steps') == 0 for n, s in scenes.items())\nreshot = sorted(n for n, s in scenes.items() if s['attempts'] > 1)\njson.dump({'mp4s': mp4s, 'scenes': scenes, 'failed_attempts': failed, 'reshot': reshot, 'metric1': m1, 'metric2': m2}, open('/tmp/hz-700-recordings.json', 'w'), indent=1)\nprint('METRIC1', 'PASS' if m1 else 'FAIL', json.dumps({'mp4s': len(mp4s), 'sizes': sorted({s.get('size') for s in scenes.values()} - {None}), 'decode_errors': sum(s.get('decode_errors', 0) for s in scenes.values())}))\nprint('METRIC2', 'PASS' if m2 else 'FAIL', json.dumps({'logs': sum(os.path.exists(os.path.join(OUT, n + '.log')) for n in NAMES.values()), 'failed_steps': sum(s.get('failed_steps', 0) for s in scenes.values()), 'failed_attempts': failed, 'reshot': reshot}))\nsys.exit(0 if m1 and m2 else 1)\nPY",
+    "set -a; source <(sudo -n cat /etc/horizon/recorder.env); . /etc/horizon/stripe.env; set +a; python3 /tmp/hz-700-check.py post"
+  ],
+  "budget_minutes": 60,
+  "env": {
+    "HOME": "$HOME"
+  },
+  "reports": [
+    "/tmp/hz-700-pre.json",
+    "/tmp/hz-700-recordings.json",
+    "/tmp/hz-700-post.json"
+  ],
+  "requires": [
+    {
+      "tool": "node"
+    },
+    {
+      "tool": "npm"
+    },
+    {
+      "tool": "npx"
+    },
+    {
+      "tool": "python3"
+    },
+    {
+      "tool": "ffmpeg"
+    },
+    {
+      "tool": "ffprobe"
+    },
+    {
+      "tool": "sudo"
+    },
+    {
+      "tool": "xvfb-run"
+    },
+    {
+      "tool": "curl"
+    },
+    {
+      "tool": "openssl"
+    },
+    {
+      "path": "scripts/record-item.mjs"
+    },
+    {
+      "path": "scripts/recorder/package-lock.json"
+    },
+    {
+      "path": "scripts/recorder/walkthroughs/shoreward"
+    }
+  ],
+  "proof": [
+    {
+      "line": 1,
+      "command": 5
+    },
+    {
+      "line": 2,
+      "command": 5
+    },
+    {
+      "line": 3,
+      "command": 6
+    },
+    {
+      "line": 4,
+      "command": 6
+    },
+    {
+      "line": 5,
+      "command": 6
+    }
+  ]
+}

@@ -54,8 +54,11 @@ function validReports(reports) {
 
 // HZ-502: the same rule as run_plan.validate()'s `requires` check — one
 // `tool` or `path` key per item; a tool name never starts with `-`; a path is
-// relative, with no `..` part and no control character.
+// relative, with no `..` part and no control character. HZ-769: an `env`
+// name is a variable name with no `$`; a `file` is an absolute path with no
+// control character (the farm resolves it and allows only its config roots).
 const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 const CONTROL = /[\x00-\x1f\x7f]/
 
 function validRequires(requires) {
@@ -69,6 +72,8 @@ function validRequires(requires) {
     if (typeof value !== 'string' || !value) return false
     if (key === 'tool') return TOOL_NAME.test(value)
     if (key === 'path') return value.trim() !== '' && !value.startsWith('/') && !value.split('/').includes('..') && !CONTROL.test(value)
+    if (key === 'env') return ENV_NAME.test(value)
+    if (key === 'file') return value.startsWith('/') && !CONTROL.test(value)
     return false
   })
 }

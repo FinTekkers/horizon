@@ -74,6 +74,7 @@ const LABEL_MENTIONS_ALLOWED = {
   'farm/tests/fixtures/pm_prompts/role_prompt.txt': 'HZ-371 byte-for-byte snapshot of the rendered farm/roles/pm.md',
   'server/test/fixtures/substep-parity/steps-run.json':
     "HZ-539 golden /steps/run bodies written on main by server/scripts/substep-parity-golden.mjs — each body's step label",
+  'farm/tests/fixtures/run_plans/hz533.json': 'HZ-769 verbatim stored HZ-533 run plan, whose commands name its own items\' step labels',
   'farm/tests/fixtures/substep_parity_prompts.json': 'HZ-539 byte-for-byte snapshot of the prompts built from those golden bodies',
 }
 

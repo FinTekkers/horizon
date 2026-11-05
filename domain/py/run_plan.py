@@ -116,9 +116,19 @@ REPORTS_PARENT = "run_plan 'reports' paths must not contain '..'"
 # it reaches the check as exactly the path the plan named.
 TOOL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-REQUIRES_SHAPE = "run_plan 'requires' must be a list of {\"tool\": ...} or {\"path\": ...} objects, one key each"
+# HZ-769: `env` names a variable the commands read, checked as set in the
+# environment Execute will use; `file` is a host file outside the checkout,
+# checked readable by the job user. The farm resolves a file (`..`,
+# symlinks) and allows only its config roots, so `..` passes the shape.
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+REQUIRES_SHAPE = (
+    "run_plan 'requires' must be a list of {\"tool\": ...}, {\"path\": ...}, {\"env\": ...} or {\"file\": ...} "
+    "objects, one key each"
+)
 REQUIRES_TOOL = "run_plan 'requires' tool names must be letters, digits and . _ + -, not starting with -"
 REQUIRES_PATH = "run_plan 'requires' paths must be relative to the repo root, with no '..' and no control characters"
+REQUIRES_ENV = "run_plan 'requires' env names must be a variable name like GITHUB_TOKEN, with no `$`"
+REQUIRES_FILE = "run_plan 'requires' files must be absolute paths with no control characters"
 
 
 def _check_requires(requires: object) -> None:
@@ -128,7 +138,7 @@ def _check_requires(requires: object) -> None:
         if not isinstance(entry, dict) or len(entry) != 1:
             raise ValueError(REQUIRES_SHAPE)
         ((key, value),) = entry.items()
-        if key not in ("tool", "path") or not isinstance(value, str) or not value:
+        if key not in ("tool", "path", "env", "file") or not isinstance(value, str) or not value:
             raise ValueError(REQUIRES_SHAPE)
         if key == "tool" and not TOOL_NAME.fullmatch(value):
             raise ValueError(REQUIRES_TOOL)
@@ -136,6 +146,10 @@ def _check_requires(requires: object) -> None:
             os.path.isabs(value) or ".." in PurePosixPath(value).parts or _CONTROL.search(value) or not value.strip()
         ):
             raise ValueError(REQUIRES_PATH)
+        if key == "env" and not ENV_NAME.fullmatch(value):
+            raise ValueError(REQUIRES_ENV)
+        if key == "file" and (not os.path.isabs(value) or _CONTROL.search(value)):
+            raise ValueError(REQUIRES_FILE)
 
 # HZ-503: what proves each metric line. validate() checks the shape only, so
 # a plan approved before HZ-503 (no `proof`) still passes extract() at

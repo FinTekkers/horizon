@@ -1,0 +1,88 @@
+{
+  "cwd": ".",
+  "commands": [
+    "case \"$RECORD_SITE_URL\" in https://www.fintekkers.org/*) ;; *) echo 'RECORD_SITE_URL must be a https://www.fintekkers.org/ page'; exit 1;; esac; [[ \"$RECORD_ITEM\" =~ ^[A-Za-z0-9_-]+$ ]] || { echo 'RECORD_ITEM is not set to an item id'; exit 1; }; echo \"target: $RECORD_ITEM on $RECORD_SITE_URL\"",
+    "ffmpeg -hide_banner -version | head -n 1",
+    "test -r /etc/horizon/recorder.env && grep -c '^HORIZON_TOKEN=.' /etc/horizon/recorder.env",
+    "npm --prefix scripts/recorder ci",
+    "node scripts/recorder/node_modules/playwright/cli.js install chromium",
+    "node -e \"const {chromium}=require('./scripts/recorder/node_modules/playwright'); require('fs').accessSync(chromium.executablePath()); console.log('chromium ok')\"",
+    "node scripts/record-item.mjs --help",
+    "mkdir -p \"$HOME/recordings/solution/raw/3-work-item\"",
+    "set -o pipefail; HORIZON_RECORDER_ENV=/etc/horizon/recorder.env node scripts/record-item.mjs \"$RECORD_ITEM\" --site \"$RECORD_SITE_URL\" --out \"$HOME/recordings/solution/raw/3-work-item\" 2>&1 | tee \"$HOME/recordings/solution/raw/3-work-item/record.log\" && grep -qx \"closed: $RECORD_ITEM\" \"$HOME/recordings/solution/raw/3-work-item/record.log\" && echo \"RESULT closed: $RECORD_ITEM\"",
+    "cd \"$HOME/recordings/solution/raw/3-work-item\" && ls -l \"$RECORD_ITEM.mp4\" timeline.json frames/before.png frames/after.png frames/card-before.png frames/card-after.png",
+    "node -e \"const fs=require('fs'),os=require('os'),p=require('path');const d=p.join(os.homedir(),'recordings/solution/raw/3-work-item');const t=JSON.parse(fs.readFileSync(p.join(d,'timeline.json'),'utf8'));const log=fs.readFileSync(p.join(d,'record.log'),'utf8');const m=log.match(/\\((\\d+) timeline entries\\)/);const f=t[0],l=t[t.length-1];const s=t.filter(e=>e.kind==='step'||e.kind==='card');console.log('first: '+f.kind+' | '+f.caption);console.log('last: '+l.kind+' | '+l.caption);console.log('steps: '+s.map(e=>e.step).join(' > '));console.log('entries: '+t.length+' log: '+(m?m[1]:'none'));const ok=f.kind==='before'&&l.kind==='after'&&f.caption.startsWith('Before: https://www.fintekkers.org/')&&f.caption.slice(8)===l.caption.slice(7)&&s.length>0&&m&&Number(m[1])===t.length;console.log(ok?'timeline OK':'timeline FAIL');process.exit(ok?0:1)\"",
+    "d=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 \"$HOME/recordings/solution/raw/3-work-item/$RECORD_ITEM.mp4\") && echo \"duration: $d\" && awk -v d=\"$d\" 'BEGIN{exit !(d>=10 && d<=55)}' && echo 'video OK'"
+  ],
+  "budget_minutes": 1440,
+  "env": {
+    "RECORD_ITEM": "$RECORD_ITEM",
+    "RECORD_SITE_URL": "$RECORD_SITE_URL"
+  },
+  "requires": [
+    {
+      "tool": "node"
+    },
+    {
+      "tool": "npm"
+    },
+    {
+      "tool": "ffmpeg"
+    },
+    {
+      "tool": "ffprobe"
+    },
+    {
+      "tool": "grep"
+    },
+    {
+      "tool": "awk"
+    },
+    {
+      "tool": "tee"
+    },
+    {
+      "tool": "head"
+    },
+    {
+      "tool": "ls"
+    },
+    {
+      "tool": "mkdir"
+    },
+    {
+      "path": "scripts/record-item.mjs"
+    },
+    {
+      "path": "scripts/recorder/main.mjs"
+    },
+    {
+      "path": "scripts/recorder/package.json"
+    },
+    {
+      "path": "scripts/recorder/package-lock.json"
+    }
+  ],
+  "proof": [
+    {
+      "line": 1,
+      "command": 9
+    },
+    {
+      "line": 2,
+      "command": 10
+    },
+    {
+      "line": 3,
+      "command": 11
+    },
+    {
+      "line": 4,
+      "command": 12
+    },
+    {
+      "line": 5,
+      "command": 10
+    }
+  ]
+}

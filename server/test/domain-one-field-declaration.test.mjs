@@ -49,6 +49,9 @@ const PAIR_MENTIONS_ALLOWED = {
   // domain/fields.json. POST /api/items itself declares no length literal, which
   // api-field-limits-derived.test.mjs asserts separately.
   'server/src/app.js': 'repo-name request parameters on three unrelated routes (see comment)',
+  // HZ-769: the stored HZ-514 run plan, verbatim — a Companion Plan script
+  // whose own title/outcome text sits beside a number. Data, not a limit.
+  'farm/tests/fixtures/run_plans/hz514.json': 'verbatim stored HZ-514 run plan (test fixture), not a field limit',
 }
 
 const files = repoFiles().filter((f) => SCANNED.test(f) && !EXCLUDED.some((d) => relative(f).startsWith(d)))
