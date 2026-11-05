@@ -20,6 +20,9 @@ cannot be pulled; `pull` sleeps FAKE_PODMAN_PULL_DELAY seconds first.
 `cat /sys/fs/cgroup/memory.events` prints `oom_kill <n>`, n read from
 $FARM_FAKE_PODMAN_DIR/<name>.oom (0 when absent).
 In an image whose name contains "nobash", `sh -c "command -v bash"` exits 1.
+HZ-769: $FARM_FAKE_PODMAN_IMAGE_ENV, a JSON object, is the image's own `ENV`:
+every container starts with it, under any `--env`. A bare `--env NAME`
+passes the client's value on, in `run --rm` as in `run -d`.
 """
 
 import json
@@ -38,6 +41,13 @@ BASE_ENV = {
     "container": "podman",
 }
 SIZES = {"k": 1024, "m": 1024**2, "g": 1024**3}
+
+
+def _image_env() -> dict:
+    """HZ-769: the image's own ENV, from $FARM_FAKE_PODMAN_IMAGE_ENV."""
+    return json.loads(os.environ.get("FARM_FAKE_PODMAN_IMAGE_ENV") or "{}")
+
+
 VALUE_OPTS = ("--name", "--label", "--user", "--cpus", "--memory", "--memory-swap", "-v", "-w", "--env")
 
 
@@ -139,17 +149,19 @@ def _run(args):
     if "--rm" in opts["flags"] and not opts["detach"]:
         # HZ-502: a one-shot `run --rm` (the Run plan requires check): runs
         # the command in the foreground and leaves no record behind.
-        env = dict(BASE_ENV)
+        env = {**BASE_ENV, **_image_env()}
         for entry in opts["env"]:
             key, sep, value = entry.partition("=")
             if sep:
                 env[key] = value
+            elif key in os.environ:
+                env[key] = os.environ[key]
         return subprocess.run(command, cwd=_host_dir(opts, opts["workdir"]), env=env, stdin=subprocess.DEVNULL).returncode
     name = opts["name"] or f"fake-{os.getpid()}"
     if _record(name):
         print(f"Error: the container name \"{name}\" is already in use", file=sys.stderr)
         return 125
-    env = dict(BASE_ENV, HOSTNAME=name)
+    env = {**BASE_ENV, **_image_env(), "HOSTNAME": name}
     for entry in opts["env"]:
         key, sep, value = entry.partition("=")
         if sep:

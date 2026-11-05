@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, job_reports, knowledge, login_env, pause, premerge, rules, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, job_env, job_reports, knowledge, login_env, pause, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -251,46 +251,10 @@ def _adopt_jobs() -> None:
         print(f"farmd: removed {len(reaped)} orphaned job container(s): {', '.join(reaped)}", flush=True)
 
 
-def _read_dotenv(path: Path) -> dict:
-    """KEY=VALUE lines, no export, no quoting rules beyond stripping one pair
-    of matching quotes. Comments (#) and blank lines skipped. Never raises."""
-    values: dict[str, str] = {}
-    try:
-        text = path.read_text()
-    except OSError:
-        return values
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        if key:
-            values[key] = value
-    return values
-
-
-def _resolve_job_env(cwd: str, env_refs: dict, login: dict | None = None) -> dict:
-    """Farm-side secret resolution: every $NAME the plan's env block names is
-    read from <cwd>/.env first, then from the repo's test-login file (HZ-553,
-    `login`), then from this process's own environment. The server sends no
-    values — only the repo, the plan artifact and the file's path — so
-    dispatch bodies and task files never hold a secret. An empty value still
-    counts as set and hides the later sources, as an empty .env entry does."""
-    dotenv = _read_dotenv(Path(cwd) / ".env") if cwd else {}
-    login = login or {}
-    resolved: dict[str, str] = {}
-    for _local, ref in (env_refs or {}).items():
-        name = ref[1:] if isinstance(ref, str) and ref.startswith("$") else None
-        if not name:
-            continue
-        value = dotenv.get(name, login.get(name, os.environ.get(name)))
-        if isinstance(value, str) and value:
-            resolved[name] = value
-    return resolved
+# HZ-769: moved to farm/job_env.py, shared with the Run plan check. The
+# aliases keep farmd's own names, which its tests patch and call.
+_read_dotenv = job_env.read_dotenv
+_resolve_job_env = job_env.resolve_job_env
 
 
 def _host_redact_values() -> dict:
@@ -1338,6 +1302,13 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     # rules fresh here rather than trusting the enqueue-time stamp.
     if _refresh_rules(task):
         _write_task_atomic(claimed, task)
+    # HZ-769: Run plan checks a plan against Execute's env and user, which
+    # are farmd's — not the step session's (tmux, or a tenant's run user).
+    # Names only, never a value.
+    if task.get("step", {}).get("label") == run_plan_requires.RUN_PLAN_LABEL:
+        task["job_env_names"] = job_env.host_env_names()
+        task["job_uid"] = os.geteuid()
+        _write_task_atomic(claimed, task)
     name = _run_session_name(task)
     # HZ-212: same session naming, same per-run log, fresh interpreter and
     # env on every step. HZ-371: one runner for both lanes — the lane only
@@ -1358,15 +1329,8 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
 
 
 def _job_login_env(task: dict) -> dict[str, str]:
-    """HZ-553: the Task repo's test-login file, read now. The path is the one
-    the server sent from the item's own repo row in Admin — never anything
-    the run plan names. {} when none is set. Raises login_env.LoginEnvError
-    (path and cause, never a value) when the file cannot be used. Only called
-    once the cwd resolved, so repo_dir is set."""
-    path = task.get("test_env_file")
-    if not path:
-        return {}
-    return login_env.load_login_env(path, workspace=Path(task["repo_dir"]))
+    """HZ-553: the Task repo's test-login file (job_env.login_values)."""
+    return job_env.login_values(task.get("test_env_file"), task.get("repo_dir"))
 
 
 def launch_job(task: dict) -> str:

@@ -47,7 +47,7 @@
     { "case": "an unknown runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": "docker" }, "valid": false },
     { "case": "a non-string runner", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "runner": 7 }, "valid": false }
   ],
-  "$comment3": "HZ-502. `requires`: the tools and checkout-relative paths a plan needs on its runner, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). A tool name never starts with `-`; a path is relative, with no `..` part and no control character.",
+  "$comment3": "HZ-502. `requires`: the tools and checkout-relative paths a plan needs on its runner, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). A tool name never starts with `-`; a path is relative, with no `..` part and no control character. HZ-769: an `env` name is a variable name with no `$`; a `file` is absolute with no control character.",
   "requires": [
     { "case": "no requires list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1 }, "valid": true },
     { "case": "an empty requires list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [] }, "valid": true },
@@ -56,7 +56,7 @@
     { "case": "requires is a string, not a list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": "gh" }, "valid": false },
     { "case": "an item with both keys", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "gh", "path": "x" }] }, "valid": false },
     { "case": "an empty item", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{}] }, "valid": false },
-    { "case": "an unknown key", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "file": "x" }] }, "valid": false },
+    { "case": "an unknown key", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "dir": "x" }] }, "valid": false },
     { "case": "an empty tool name", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "" }] }, "valid": false },
     { "case": "a tool name with shell characters", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "x;rm -rf /" }] }, "valid": false },
     { "case": "a tool name that reads as an option", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "tool": "-v" }] }, "valid": false },
@@ -65,7 +65,15 @@
     { "case": "an absolute path", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "/etc/passwd" }] }, "valid": false },
     { "case": "a path with ..", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "../secrets.json" }] }, "valid": false },
     { "case": "a path with a newline", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "ok\nmissing" }] }, "valid": false },
-    { "case": "a path that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": 7 }] }, "valid": false }
+    { "case": "a path that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": 7 }] }, "valid": false },
+    { "case": "HZ-769: an env name and a host config file are kept", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" }, "requires": [{ "tool": "gh" }, { "env": "GITHUB_TOKEN" }, { "env": "npm_config_cache" }, { "file": "/etc/horizon/stripe.env" }] }, "valid": true },
+    { "case": "HZ-769: a file with .. passes the shape (the farm resolves it)", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "file": "/etc/horizon/../shadow" }] }, "valid": true },
+    { "case": "HZ-769: an env name written as a $ reference", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "env": "$GITHUB_TOKEN" }] }, "valid": false },
+    { "case": "HZ-769: an env name starting with a digit", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "env": "1TOKEN" }] }, "valid": false },
+    { "case": "HZ-769: an env name that reads as an option", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "env": "--env" }] }, "valid": false },
+    { "case": "HZ-769: a relative file", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "file": "etc/horizon/stripe.env" }] }, "valid": false },
+    { "case": "HZ-769: a file with a newline", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "file": "/etc/horizon/a\nb" }] }, "valid": false },
+    { "case": "HZ-769: an env name that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "env": 7 }] }, "valid": false }
   ],
   "$comment4": "HZ-503. `proof`: what proves each metric line, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). Shape only: a whole `line`, and exactly one of `command` (a 1-based index into `commands`) or `report` (`<path>#<field>`, both non-empty, the path listed in `reports`), or HZ-770's `manual` (non-blank text naming the owner check).",
   "proof": [
