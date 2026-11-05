@@ -18,7 +18,7 @@ process.env.FARM_STEP_TIMEOUT_MS = String(30 * 86_400_000)
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, IMPLEMENT_STEP_INDEX, DEPLOY_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, DEPLOY_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { REASON } = await import('../../domain/js/reasons.js')
 const { USAGE_LIMIT_DEFAULT_WAIT_MS, resetMs } = await import('../src/usageLimits.js')
@@ -291,6 +291,118 @@ test('a stale run’s usage limit writes nothing', async () => {
   assert.deepEqual(result, { ok: true, stale: true })
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM model_limit').get().n, 0)
   assert.equal(runs('UL-9').length, 1)
+})
+
+// HZ-713: "Release now" on a usage wait, through its route.
+async function releaseApp() {
+  const { buildApp } = await import('../src/app.js')
+  const auth = await import('../src/auth.js')
+  const config = await import('../src/config.js')
+  const { loginFixtureUser } = await import('./helpers/session.mjs')
+  const app = buildApp({ logger: false })
+  const { cookie } = loginFixtureUser(auth, config, { email: `release-${Date.now()}-${Math.random()}@example.com` })
+  const release = (id) => app.inject({ method: 'POST', url: `/api/items/${id}/usage-wait/release`, headers: { cookie }, payload: {} })
+  return { app, release }
+}
+const limitRows = () => db.prepare('SELECT model FROM model_limit ORDER BY model').all().map((r) => r.model)
+const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor
+
+test('HZ-713 metric 2: releasing a usage wait clears it, drops the chain’s limits and dispatches the same step once on the chain head', async () => {
+  startClock()
+  const { app, release } = await releaseApp()
+  newItem('UL-REL')
+  orchestrator.kick('UL-REL')
+  await settle()
+  const attempt = activeRun('UL-REL').attempt
+  limit('UL-REL', OPUS, new Date(NOW + 3 * HOUR).toISOString())
+  await settle()
+  limit('UL-REL', MUSE, new Date(NOW + 2 * HOUR).toISOString())
+  await settle()
+  limit('UL-REL', SONNET, new Date(NOW + 4 * HOUR).toISOString())
+  await settle()
+  assert.equal(sent('UL-REL').length, 3)
+  assert.equal(waitColumn('UL-REL'), new Date(NOW + 2 * HOUR).toISOString())
+  assert.deepEqual(limitRows(), [OPUS.model, SONNET.model, MUSE.model].sort(), 'every chain model is limited')
+  assert.equal(orchestrator.usageWaitArmed('UL-REL'), true)
+  const runsBefore = runs('UL-REL').length
+
+  const res = await release('UL-REL')
+  assert.equal(res.statusCode, 200, res.body)
+  const body = res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.released, true)
+  assert.equal(body.cursor, IMPLEMENT_STEP_INDEX)
+  assert.equal(body.item.usageWait, null)
+  await settle()
+
+  assert.equal(waitColumn('UL-REL'), null, 'the hold is cleared')
+  assert.deepEqual(limitRows(), [], 'the chain’s limits are gone')
+  assert.equal(orchestrator.usageWaitArmed('UL-REL'), false, 'the old timer is gone')
+  assert.equal(runs('UL-REL').length, runsBefore + 1, 'exactly one new run')
+  assert.equal(sent('UL-REL').length, 4, 'one dispatch')
+  const rerun = activeRun('UL-REL')
+  assert.equal(rerun.step_index, IMPLEMENT_STEP_INDEX, 'the same step')
+  assert.equal(rerun.attempt, attempt, 'the same attempt')
+  assert.equal(rerun.runs_on, 'claude:claude-opus-5-5', 'fresh limits: the chain head, not the exhausted fallback')
+  assert.equal(rerun.fallback_from, null)
+  assert.equal(sentOn(sent('UL-REL')[3]), undefined, 'the head runs on today’s routing')
+  assert.equal(cursorOf('UL-REL'), IMPLEMENT_STEP_INDEX, 'the cursor never moves')
+  assert.ok(db.prepare("SELECT 1 FROM event WHERE item_id = 'UL-REL' AND text LIKE 'released the usage wait%'").get())
+
+  // Past the old wait: the cleared timer never dispatches a second time. The
+  // rerun is stopped first (its farm watchdog would fail it under the jump);
+  // the item stays runnable, so a stale timer's kick() would dispatch again.
+  orchestrator.cancel('UL-REL')
+  mock.timers.tick(5 * HOUR)
+  await settle()
+  assert.equal(sent('UL-REL').length, 4, 'still one dispatch after the old reset')
+  assert.equal(runs('UL-REL').length, runsBefore + 1)
+
+  // A second release finds nothing to release and dispatches nothing.
+  const again = await release('UL-REL')
+  assert.equal(again.statusCode, 409)
+  assert.deepEqual(again.json(), { error: 'not_waiting' })
+  await settle()
+  assert.equal(sent('UL-REL').length, 4)
+  orchestrator.cancel('UL-REL')
+  await app.close()
+})
+
+test('HZ-713 guardrail 4: a paused, isolation-held or gate item is refused, keeps its wait and dispatches nothing', async () => {
+  startClock()
+  const { app, release } = await releaseApp()
+  const until = new Date(NOW + HOUR).toISOString()
+  const tenant = Number(db.prepare("INSERT INTO project (name, enabled, isolation) VALUES ('UL tenant', 1, 'tenant')").run().lastInsertRowid)
+
+  newItem('UL-PAUSED')
+  db.prepare(`UPDATE work_item SET ${store.PAUSE_SET} WHERE id = 'UL-PAUSED'`).run()
+  newItem('UL-ISO')
+  db.prepare('UPDATE work_item SET project_id = ? WHERE id = ?').run(tenant, 'UL-ISO')
+  assert.ok(store.projectIsolationRefusal(tenant), 'the tenant project refuses dispatch')
+  newItem('UL-GATE', ACCEPT_GATE_INDEX)
+  store.markModelLimited(OPUS.provider, OPUS.model, until)
+
+  for (const [id, error, cursor] of [
+    ['UL-PAUSED', 'paused', IMPLEMENT_STEP_INDEX],
+    ['UL-ISO', 'isolation_held', IMPLEMENT_STEP_INDEX],
+    ['UL-GATE', 'gate_step', ACCEPT_GATE_INDEX],
+  ]) {
+    store.setUsageWait(id, until)
+    const res = await release(id)
+    assert.equal(res.statusCode, 409, `${id}: ${res.body}`)
+    assert.deepEqual(res.json(), { error })
+    await settle()
+    assert.equal(waitColumn(id), until, `${id} keeps its wait`)
+    assert.equal(runs(id).length, 0, `${id}: no run`)
+    assert.equal(sent(id).length, 0, `${id}: no dispatch`)
+    assert.equal(cursorOf(id), cursor, `${id}: the cursor never moves`)
+  }
+  assert.deepEqual(limitRows(), [OPUS.model], 'a refused release clears no limit')
+
+  newItem('UL-NONE')
+  assert.deepEqual((await release('UL-NONE')).json(), { error: 'not_waiting' })
+  assert.equal((await release('UL-MISSING')).statusCode, 404)
+  await app.close()
 })
 
 test('the /fail route hands reset_at, provider and model to the fallback; a too-long field is 400, no farm secret is 401', async () => {

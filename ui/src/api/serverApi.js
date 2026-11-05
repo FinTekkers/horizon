@@ -928,6 +928,24 @@ export async function setPaused(id, paused) {
   return data
 }
 
+// HZ-713: Release with PIN on a rule-blocked item — the resume that clears
+// the block, which the server takes only from a browser session with the gate
+// PIN. The PIN is prompted for like any gate action and travels only in the
+// x-human-key header. Rejects with the server's error code (or pin_needed).
+export async function releaseRuleBlock(id) {
+  const data = await gateAction(`/items/${encodeURIComponent(id)}/pause`, { paused: false })
+  if (data.item) applyActionItem(data.item)
+  return data
+}
+
+// HZ-713: Release now on a usage wait — the held step runs again with fresh
+// model limits. Login only; rejects with the server's error code.
+export async function releaseUsageWait(id) {
+  const data = await postJson(`/items/${encodeURIComponent(id)}/usage-wait/release`, {})
+  if (data.item) applyActionItem(data.item)
+  return data
+}
+
 // HZ-544: adds (`off` true) or removes the issue's `autopilot-off` label.
 // Turning Autopilot off for the item needs only the login; handing the gates
 // back needs the gate PIN, prompted for like any gate action — a cancelled
