@@ -75,7 +75,6 @@ test('defaultReworkTarget mirrors the server: Accept-the-code routes to implemen
   expect(defaultReworkTarget(ACCEPT_GATE_INDEX)).toBe(IMPLEMENT_STEP_INDEX)
 })
 
-test('defaultReworkTarget mirrors the server: any other gate walks back to the nearest agent step', () => {
-  expect(defaultReworkTarget(PRE_EXECUTION_GATE_INDEX)).toBe(PRE_EXECUTION_GATE_INDEX - 1)
-  expect(STEPS[defaultReworkTarget(PRE_EXECUTION_GATE_INDEX)].kind).toBe('agent')
+test('defaultReworkTarget mirrors the server: Review before execution routes to the plan it reviews (HZ-708)', () => {
+  expect(STEPS[defaultReworkTarget(PRE_EXECUTION_GATE_INDEX)].label).toBe('Draft implementation plan')
 })

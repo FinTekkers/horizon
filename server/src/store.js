@@ -38,7 +38,8 @@ import {
   nextCursor,
   kindStepIndex,
   stepKeyAt,
-  sendBackTargetOf,
+  defaultReworkTarget,
+  mergedFloor,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 import { isPriority } from '../../domain/js/priorities.js'
@@ -2636,6 +2637,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // A send-back never crosses into another kind's rows: the walk and any
   // explicit target both stop at this item's own first step (HZ-377).
   const first = firstStepIndex(itemKindOf(it))
+  const atGate = STEPS[it.cursor]?.kind === 'gate'
   let substep = null
   if (targetSubstepId != null) {
     substep =
@@ -2645,7 +2647,6 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
     if (!substep) return { error: 'invalid_target' }
   }
   if (targetStepIndex != null) {
-    const atGate = STEPS[it.cursor]?.kind === 'gate'
     const validTarget =
       Number.isInteger(targetStepIndex) &&
       targetStepIndex >= first &&
@@ -2656,13 +2657,27 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
     if (!atGate || !validTarget) return { error: 'invalid_target' }
   }
 
+  // The target is resolved before any side effect, so a refusal below cancels
+  // and writes nothing.
+  let reworkIdx = it.cursor
+  if (atGate) {
+    // HZ-708: with no step chosen, the gate's declared default (steps.json
+    // sendBackTo) — the step that produced what the gate reviews. Accept the
+    // code sends back to the implement step, not the Review step before it;
+    // Approve the run to Run plan (HZ-384). A lane that skips the default
+    // walks back instead (HZ-435), never onto a server step (HZ-446).
+    reworkIdx = targetStepIndex != null ? targetStepIndex : defaultReworkTarget(it.cursor, itemKindOf(it), it)
+  }
+  // HZ-708: merged code is never rewound — no step before Accept the code.
+  const floor = mergedFloor(it)
+  if (floor !== null && reworkIdx < floor) return { error: 'merged_target' }
+
   agentRunner.cancel(id, 'rejected')
   // HZ-541: an approved golden-cases set survives every send-back but one to
   // the sub-step that writes it, which regenerates it for a new approval.
   if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === GOLDEN_CASES_OUTPUT) clearGoldenCases(id)
 
-  let reworkIdx = it.cursor
-  if (STEPS[it.cursor]?.kind === 'gate') {
+  if (atGate) {
     db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
       id,
       it.cursor,
@@ -2670,25 +2685,6 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
       feedbackText || '',
       actor,
     )
-    if (targetStepIndex != null) {
-      reworkIdx = targetStepIndex
-    } else if (sendBackTargetOf(it.cursor) !== null) {
-      // HZ-709: the gate's declared default, by key (steps.json sendBackTo).
-      // Accept the code sends back to the implement step: the automated
-      // Review step precedes it, but rejecting the code means the CODE is
-      // wrong, and walking back would only re-judge the same unchanged diff.
-      // HZ-384: Approve the run sends back to Run plan — Impact review sits
-      // right before it, but rejecting the run means the PLAN is wrong.
-      reworkIdx = sendBackTargetOf(it.cursor)
-    } else {
-      // HZ-435: never onto a row the item's lane skips. HZ-446: nor onto a
-      // server step — it has no agent to take the feedback, and HZ-449's File
-      // items files real issues, so a send-back must never re-run it.
-      const skips = laneSkips(it)
-      while (reworkIdx > first && (STEPS[reworkIdx].kind !== 'agent' || isServerStep(reworkIdx) || skips.has(reworkIdx))) {
-        reworkIdx--
-      }
-    }
   }
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
 
@@ -2809,6 +2805,10 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   // Abandonment must not be silently undone by a lever that predates it —
   // reopening an abandoned item is a deliberate act this function doesn't own.
   if (isAbandoned(it)) return { error: 'abandoned' }
+  // HZ-708: nor is a closed item reopened, or a phase skipped to — a forward
+  // restart would pass every gate in between unapproved. Each refusal comes
+  // before any cancel or write.
+  if (isClosed(it)) return { error: 'closed' }
   // The phase restarts within the item's own kind: phase numbers repeat
   // across kinds, so an unscoped lookup would land a task on change rows.
   const kind = itemKindOf(it)
@@ -2816,7 +2816,11 @@ export function restartPhase(id, phase, reason, actor = 'You') {
   const skips = laneSkips(it)
   const found = stepsFor(kind).find((st) => st.phase === phase && !skips.has(st.index))
   if (!found) return { error: 'bad_phase' }
+  if (phase > STEPS[it.cursor].phase) return { error: 'phase_ahead' }
   const firstIdx = found.index
+  // HZ-708: merged code is never rewound — no phase that starts before Accept the code.
+  const floor = mergedFloor(it)
+  if (floor !== null && firstIdx < floor) return { error: 'merged_target' }
 
   agentRunner.cancel(id, 'superseded')
   if (reason) {

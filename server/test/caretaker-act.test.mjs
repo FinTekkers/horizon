@@ -45,6 +45,9 @@ const { buildApp } = await import('../src/app.js')
 const caretaker = await import('../src/caretaker.js')
 const actor = await import('../src/caretakerActor.js')
 const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
+const { STEPS } = await import('../../domain/js/lifecycle.js')
+// HZ-708: Review before execution's default send-back target, the plan it reviews.
+const DRAFT_PLAN = STEPS.findIndex((s) => s.label === 'Draft implementation plan')
 
 const OWNER = '15550001111@s.whatsapp.net'
 const silent = { info() {}, warn() {}, error() {} }
@@ -172,7 +175,7 @@ test('on: items arriving at gates 5, 10 and 15 are approved or sent back by the 
     { id: 'M1-5', gate: 5, kind: 5, fn: 'approve', cursor: 6, text: /^auto-approved by caretaker \(recommended option A\)$/ },
     { id: 'M1-5b', gate: 5, kind: '5-back', fn: 'sendBack', cursor: 4, text: /^sent back by caretaker \(open blocker: the plan has no rollback\)$/ },
     { id: 'M1-10', gate: 10, kind: 10, fn: 'approve', cursor: 11, text: /^auto-approved by caretaker \(PM said PROCEED\)$/ },
-    { id: 'M1-10b', gate: 10, kind: '10-back', fn: 'sendBack', cursor: 9, text: /^sent back by caretaker \(PM said SEND BACK; 3 action\(s\), full comment stored with this decision\)$/ },
+    { id: 'M1-10b', gate: 10, kind: '10-back', fn: 'sendBack', cursor: DRAFT_PLAN, text: /^sent back by caretaker \(PM said SEND BACK; 3 action\(s\), full comment stored with this decision\)$/ },
     { id: 'M1-15', gate: 15, kind: 15, fn: 'approve', cursor: 16, text: /^auto-approved by caretaker \(release v2026\.10\.03-1 is the target's last-good deploy\)$/ },
   ]
   for (const c of cases) {
@@ -275,7 +278,7 @@ test('a gate-10 send-back carries the PM Actions list byte for byte', async () =
   item('M2-10', pid, 9)
   arrive('M2-10', 10, `## Recommendation\n**SEND BACK** — not ready.\n\n## Actions\n\n${ACTIONS}\n\n## Overlap\nnone\n`)
   await settle()
-  assert.equal(cursorOf('M2-10'), 9)
+  assert.equal(cursorOf('M2-10'), DRAFT_PLAN)
   const feedback = db.prepare('SELECT message FROM feedback WHERE item_id = ?').all('M2-10')
   assert.deepEqual(feedback, [{ message: ACTIONS }])
   assert.equal(decisionsOf('M2-10')[0].notes, ACTIONS)

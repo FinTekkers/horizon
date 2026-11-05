@@ -537,3 +537,11 @@ test('js/sendBackTargetOf: a gate\'s declared default, by key', () => {
     else assert.equal(target, c.expect, c.case)
   }
 })
+
+test('js/mergedFloor: a merged change item may not move before Accept the code', () => {
+  for (const c of js.mergedFloor) {
+    const floor = binding.mergedFloor(c.item)
+    if (c.expectLabel) assert.equal(binding.STEPS[floor].label, c.expectLabel, c.case)
+    else assert.equal(floor, c.expect, c.case)
+  }
+})

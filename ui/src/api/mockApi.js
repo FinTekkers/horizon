@@ -13,7 +13,7 @@
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
-import { STEPS, PHASES, isClosed, firstStepIndex, sendBackTargetOf } from '../../../domain/js/lifecycle.js'
+import { STEPS, PHASES, isClosed, firstStepIndex, defaultReworkTarget } from '../../../domain/js/lifecycle.js'
 import { DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 import { substepReworkTargets } from '../../../domain/js/substeps.js'
 import { PERSONAS, isPersona } from '../domain/personas'
@@ -394,14 +394,8 @@ export async function requestChanges(id, target, feedback, targetStepIndex, targ
   clearTimeout(timers[id])
   let reworkIdx = it.cursor
   if (atGate) {
-    if (targetStepIndex != null) {
-      reworkIdx = targetStepIndex
-    } else if (sendBackTargetOf(reworkIdx) !== null) {
-      // HZ-709: the gate's declared default (steps.json sendBackTo), as on the server.
-      reworkIdx = sendBackTargetOf(reworkIdx)
-    } else {
-      while (reworkIdx > 0 && STEPS[reworkIdx].kind !== 'agent') reworkIdx--
-    }
+    // HZ-708: the gate's default is the server's own (defaultReworkTarget).
+    reworkIdx = targetStepIndex != null ? targetStepIndex : defaultReworkTarget(reworkIdx, undefined, it)
   }
   const reworkLabel = (substep ? substep.label : STEPS[reworkIdx].label).toLowerCase()
   update(id, (x) => ({

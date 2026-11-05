@@ -270,14 +270,13 @@ test('an explicit target at or before the implement step resets review_cycle_cou
   assert.equal(reviewedItem.review_cycle_count, 4) // untouched — sending back to Review itself isn't a fresh Eng attempt
 })
 
-test('requestChanges with no targetStepIndex is unaffected — the default (no-target) path is unchanged', () => {
+test('requestChanges with no targetStepIndex takes the gate\'s default (HZ-708: the plan it reviews)', () => {
   db.prepare(
     'INSERT INTO work_item (id, title, priority, cursor, review_cycle_count) VALUES (?, ?, ?, ?, ?)',
   ).run('T-NO-TARGET', 'Awaiting pre-execution review', 'Medium', PRE_EXECUTION_GATE_INDEX, 0)
   const result = store.requestChanges('T-NO-TARGET', 'Review before execution', 'as before')
   assert.deepEqual(result, { ok: true })
-  // Same nearest-preceding-agent-step walk-back as today (Summarize reviews & recommend).
-  assert.equal(store.getItem('T-NO-TARGET').cursor, PRE_EXECUTION_GATE_INDEX - 1)
+  assert.equal(STEPS[store.getItem('T-NO-TARGET').cursor].label, 'Draft implementation plan')
 })
 
 test('setPersona validates, persists, logs an event and notifies', () => {
