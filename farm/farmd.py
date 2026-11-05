@@ -1209,6 +1209,34 @@ def _run_user_home(run_user: str) -> str:
         raise credentials.TenantEnvError("run_user has no account on this host") from None
 
 
+def _run_user_uid(run_user: str) -> int:
+    try:
+        return pwd.getpwnam(run_user).pw_uid
+    except KeyError:
+        raise credentials.TenantEnvError("run_user has no account on this host") from None
+
+
+def _stamp_job_context(task: dict) -> None:
+    """HZ-769: stamps a Run plan task with the env names Execute will resolve
+    from and the uid it runs as — names only, never a value. An internal
+    Execute is farmd's (its env, its uid). A tenant Execute (farm/tenant_job.py)
+    resolves from its tenant session env and runs as the run user, so a
+    tenant task gets those; when they cannot be built nothing is stamped, and
+    the launch itself fails on the same error."""
+    if not _is_tenant(task):
+        task["job_env_names"] = job_env.host_env_names()
+        task["job_uid"] = os.geteuid()
+        return
+    run_user = task["project"]["runUser"]
+    try:
+        env = credentials.tenant_session_env(task["project"], home=_run_user_home(run_user))
+        uid = _run_user_uid(run_user)
+    except credentials.TenantEnvError:
+        return
+    task["job_env_names"] = sorted(name for name, value in env.items() if value)
+    task["job_uid"] = uid
+
+
 def _tenant_spool(task: dict, entry: str = "agent") -> Path:
     """Writes the tenant session's whole env, its task and its test-env path
     to <run_id>.tenant.json, mode 0600, for farm.tenant_launch to hand to the
@@ -1299,12 +1327,10 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     # rules fresh here rather than trusting the enqueue-time stamp.
     if _refresh_rules(task):
         _write_task_atomic(claimed, task)
-    # HZ-769: Run plan checks a plan against Execute's env and user, which
-    # are farmd's — not the step session's (tmux, or a tenant's run user).
-    # Names only, never a value.
+    # HZ-769: Run plan checks a plan against Execute's env and user — not
+    # the step session's (tmux). Names only, never a value.
     if task.get("step", {}).get("label") == run_plan_requires.RUN_PLAN_LABEL:
-        task["job_env_names"] = job_env.host_env_names()
-        task["job_uid"] = os.geteuid()
+        _stamp_job_context(task)
         _write_task_atomic(claimed, task)
     name = _run_session_name(task)
     # HZ-212: same session naming, same per-run log, fresh interpreter and

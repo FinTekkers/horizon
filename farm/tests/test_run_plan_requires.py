@@ -594,3 +594,30 @@ def test_farmd_stamps_a_run_plan_task_with_its_env_names_and_uid_only(tmp_path, 
             assert "HZ769_FARMD_NAME" in written["job_env_names"] and written["job_uid"] == os.geteuid()
         else:
             assert "job_env_names" not in written and "job_uid" not in written
+
+
+def test_farmd_stamps_a_tenant_run_plan_task_with_its_session_env_names_and_run_user_uid(tmp_path, monkeypatch):
+    """A tenant Execute resolves from the tenant session env (built from
+    empty) and runs as the run user: a name only farmd's env sets is not
+    stamped, and the uid is the run user's."""
+    from farm import farmd
+
+    monkeypatch.setenv("HZ769_FARMD_NAME", SENTINEL)
+    monkeypatch.setenv("HZ769_TENANT_TOKEN", SENTINEL)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd, "_launch_tenant_session", lambda *a, **k: None)
+    monkeypatch.setattr(farmd, "_run_user_home", lambda run_user: f"/home/{run_user}")
+    monkeypatch.setattr(farmd, "_run_user_uid", lambda run_user: 76999)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    project = {"id": 7, "isolation": "tenant", "githubTokenRef": "$HZ769_TENANT_TOKEN", "runUser": "acme_run"}
+    task = {**make_task(step_agent.RUN_PLAN_LABEL), "run_id": 76903, "project": project}
+    (runs_dir / "76903.json").write_text(json.dumps(task))
+    farmd._claim_and_launch(runs_dir / "76903.json", runs_dir, tmp_path)
+    farmd.RUN_SESSIONS.pop("76903", None)
+    claimed = (runs_dir / "active" / "76903.json").read_text()
+    assert SENTINEL not in claimed
+    written = json.loads(claimed)
+    assert "HZ769_FARMD_NAME" not in written["job_env_names"]
+    assert {"GITHUB_TOKEN", "HOME"} <= set(written["job_env_names"])
+    assert written["job_uid"] == 76999
