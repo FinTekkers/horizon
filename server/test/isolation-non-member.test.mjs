@@ -295,6 +295,8 @@ const WRITE_CASES = {
   'POST /api/items/:id/job/stop': { expect: '404', url: `${ITEM}/job/stop`, owner: 409 },
   'POST /api/items/:id/job/resume': { expect: '404', url: `${ITEM}/job/resume`, owner: 409 },
   'POST /api/items/:id/forward-to-accept': { expect: '404', url: `${ITEM}/forward-to-accept`, owner: 409 },
+  // HZ-710: 409 stale_step — the owner names a step the item is not at.
+  'POST /api/items/:id/move': { expect: '404', url: `${ITEM}/move`, body: { action: 'retry', from: 'iso.not-here' }, owner: 409 },
   'POST /api/items/:id/resolve-conflicts': { expect: '404', url: `${ITEM}/resolve-conflicts`, owner: 409 },
   'POST /api/items/:id/screenshots/approve': { expect: '404', url: `${ITEM}/screenshots/approve`, body: { commit: SHOT_COMMIT, all: true }, owner: 200 },
   'POST /api/items/:id/phases/:phase/restart': { expect: '404', url: '/api/items/ISOA-2/phases/0/restart', body: {}, owner: 200 },

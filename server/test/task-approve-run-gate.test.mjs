@@ -266,12 +266,16 @@ test('approving stores the plan hash; approvedPlanCheck passes, then refuses onc
   orchestrator.cancel('T-HASH') // HZ-378: the approval dispatched the Execute job — clear its watchdog so the process can exit
 })
 
-test('a send-back clears the approved hash; re-approving records the NEW plan', async () => {
+test('a return to Run plan clears the approved hash; re-approving records the NEW plan', async () => {
   seedTask('T-RESET')
   assert.equal((await approveAs('T-RESET', withSession(PIN))).statusCode, 200)
   assert.equal(row('T-RESET').approved_plan_hash, sha256(PLAN))
 
+  // HZ-710: a send-back on Execute retries Execute alone — the approval of
+  // the gate before it stands. A return to Run plan redoes that gate.
   assert.deepEqual(store.requestChanges('T-RESET', 'Execute', 'hold on', 'Alice'), { ok: true })
+  assert.equal(row('T-RESET').approved_plan_hash, sha256(PLAN))
+  assert.equal(store.moveByHuman('T-RESET', { action: 'return', toKey: 'task.run-plan', who: 'Alice' }).ok, true)
   assert.equal(row('T-RESET').approved_plan_hash, null)
 
   // Run plan re-runs with a different plan and the item is back at the gate.

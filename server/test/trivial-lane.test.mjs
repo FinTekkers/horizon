@@ -42,7 +42,7 @@ globalThis.fetch = async (url, opts = {}) => {
   return { ok: true, json: async () => ({}) }
 }
 
-const { db } = await import('../src/db.js')
+const { db, dropLegacyRejectedColumn } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const gateNotifier = await import('../src/gateNotifier.js')
@@ -323,9 +323,12 @@ test('send-back: gates 10 and 13 and boot recovery never land on a skipped row',
   assert.deepEqual(store.requestChanges('SB-13', 'Eng', 'redo'), { ok: true })
   assert.equal(store.getItem('SB-13').cursor, IMPLEMENT)
 
+  // HZ-710: a legacy database still has the `rejected` column until boot drops it.
   insert.run('SB-BOOT', PLAN_GATE)
+  db.exec('ALTER TABLE work_item ADD COLUMN rejected INTEGER NOT NULL DEFAULT 0')
   db.prepare("UPDATE work_item SET rejected = 1 WHERE id = 'SB-BOOT'").run()
-  store.recoverRejectedItems()
+  store.recoverLegacyRejected()
+  dropLegacyRejectedColumn()
   assert.equal(store.getItem('SB-BOOT').cursor, QA)
   for (const id of ['SB-10', 'SB-13', 'SB-BOOT']) orchestrator.cancel(id)
 })

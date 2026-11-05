@@ -30,11 +30,11 @@ orchestrator.init({ info: () => {}, warn: () => {} })
 const PM_STEP_INDEX = STEPS.findIndex((s) => s.runsIn === 'pm')
 
 const insertItem = db.prepare(
-  `INSERT INTO work_item (id, title, priority, "desc", cursor, project_id, rejected, abandoned_at, updated_at)
-   VALUES (?, ?, 'Medium', ?, ?, ?, ?, ?, ?)`,
+  `INSERT INTO work_item (id, title, priority, "desc", cursor, project_id, abandoned_at, updated_at)
+   VALUES (?, ?, 'Medium', ?, ?, ?, ?, ?)`,
 )
-function item(id, { project = 1, cursor = 3, rejected = 0, abandoned = null, updated = '2026-09-01 00:00:00', desc = '' } = {}) {
-  insertItem.run(id, `Title ${id}`, desc, cursor, project, rejected, abandoned, updated)
+function item(id, { project = 1, cursor = 3, abandoned = null, updated = '2026-09-01 00:00:00', desc = '' } = {}) {
+  insertItem.run(id, `Title ${id}`, desc, cursor, project, abandoned, updated)
 }
 const insertFeedback = db.prepare(
   'INSERT INTO feedback (item_id, target, message, created_at, delivered_at) VALUES (?, ?, ?, ?, ?)',
@@ -51,7 +51,8 @@ async function dispatchFor(id) {
 
 test('buildProjectContext selects the 10 newest same-project items, keeping sent-back ones', () => {
   item('P1-CUR', { cursor: 0, updated: '2026-09-30 00:00:00' })
-  item('P1-SENTBACK', { rejected: 1, updated: '2026-09-29 00:00:00' })
+  // HZ-710: a sent-back item is an open one at an earlier step — no flag.
+  item('P1-SENTBACK', { cursor: 1, updated: '2026-09-29 00:00:00' })
   item('P1-ABANDONED', { abandoned: '2026-09-28 00:00:00', updated: '2026-09-28 00:00:00' })
   item('P2-OTHER', { project: 2, updated: '2026-09-29 12:00:00' })
   for (let n = 1; n <= 10; n++) item(`P1-${n}`, { updated: `2026-09-${String(n).padStart(2, '0')} 00:00:00` })
@@ -59,7 +60,7 @@ test('buildProjectContext selects the 10 newest same-project items, keeping sent
   const { items } = orchestrator.buildProjectContext('P1-CUR')
   const ids = items.map((i) => i.id)
   assert.equal(ids.length, 10)
-  assert.equal(ids[0], 'P1-SENTBACK') // rejected means "sent back right now", not excluded
+  assert.equal(ids[0], 'P1-SENTBACK') // sent back right now, not excluded
   assert.ok(!ids.includes('P1-CUR'), 'the current item is never its own context')
   assert.ok(!ids.includes('P1-ABANDONED'))
   assert.ok(!ids.includes('P2-OTHER'))
