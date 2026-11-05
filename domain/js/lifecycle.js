@@ -585,6 +585,25 @@ export function holdingBlockers(item, blockers) {
   return blockers.filter((b) => !isMergeReleased(b))
 }
 
+// HZ-731: the start check. Before the implement step (a Task's execute step) every blocking
+// ask must be dismissed, or filed with its item merged or closed. `asks` is
+// the item's open and filed blocking asks, oldest first, each
+// { id, status, title, filed } where `filed` is the filed item's row or null.
+// Returns the first one that holds the item, named by step label, or null.
+// Only the start step is checked: a gate holds for an ask raised later. A
+// filed ask whose item no longer exists can never merge, so it holds nothing.
+export function askStartHold(item, asks) {
+  if (item.cursor !== IMPLEMENT_STEP_INDEX && item.cursor !== EXECUTE_STEP_INDEX) return null
+  const holding = asks.find((a) => a.status === 'open' || (a.filed && !isMergeReleased(a.filed)))
+  if (!holding) return null
+  return {
+    askId: holding.id,
+    title: holding.title,
+    filedItem: holding.status === 'filed' ? { id: holding.filed.id, title: holding.filed.title } : null,
+    step: STEPS[item.cursor].label,
+  }
+}
+
 // ---- send-back-to-a-chosen-step (HZ-51) ----
 // Eligible destinations for a send-back from the gate at gateIndex: every
 // agent step of the gate's own item kind strictly earlier than it (never a

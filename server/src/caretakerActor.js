@@ -460,6 +460,7 @@ export async function actOnDecisions({
 }
 
 let drainingPings = false
+const AUTOPILOT_ONLY_PINGS = ['needs_human', 'blocking_ask', 'ask_escalated']
 
 // Delivers pending owner pings. A no-op unless WA_NOTIFY_ENABLED, like the
 // gate notifier; the rows wait. Same backoff and give-up rule as its outbox.
@@ -480,7 +481,8 @@ export async function drainPings({ send = sendWhatsApp, now = Date.now } = {}) {
       if (!row) break
       // HZ-274: a help ping still waiting when Autopilot left 'on' is not sent
       // — the owner switched the caretaker off, so it no longer asks for help.
-      if (row.reason === 'needs_human' && row.autopilot !== 'on') {
+      // HZ-731: the same for its ask pings; with Autopilot off the owner decides.
+      if (AUTOPILOT_ONLY_PINGS.includes(row.reason) && row.autopilot !== 'on') {
         db.prepare("UPDATE caretaker_ping SET status = 'failed', last_error = 'Autopilot is no longer on — not sent' WHERE id = ?").run(row.id)
         continue
       }

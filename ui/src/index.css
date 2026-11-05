@@ -892,6 +892,9 @@ button { font-family: var(--font-sans); }
   background: var(--warning-bg); border: 1px solid var(--warning-border-soft); color: var(--warning-ink);
 }
 .ask-banner__ask + .ask-banner__ask { margin-top: 12px; }
+.ask-banner__hold { font: 700 14px var(--font-sans); overflow-wrap: anywhere; }
+.ask-banner__hold + .ask-banner__ask { margin-top: 12px; }
+.ask-banner__hold a { color: inherit; }
 .ask-banner__headline { font: 700 14px var(--font-sans); margin-bottom: 8px; overflow-wrap: anywhere; }
 .approval-asks__label {
   font: 700 11px var(--font-sans); letter-spacing: 1px; text-transform: uppercase; color: var(--warning-ink); margin: 4px 0 8px;

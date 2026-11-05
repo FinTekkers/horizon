@@ -34,6 +34,12 @@
 // and the "caretaker would …" event still records what Autopilot would have
 // done. In a 'shadow' or 'off' project the label changes nothing here. The UI
 // shows the item as off under the same rule (StatusPill.jsx autopilotOffShown).
+//
+// HZ-731: an item with an open blocking ask is not judged at all, in any mode
+// — like releaseSettled, the arrival records nothing — so no decision is
+// locked in and nothing approves. Once the owner (or Autopilot,
+// caretakerAsks.js) files the ask or the owner dismisses it, the next sweep
+// judges the arrival as usual. caretakerAsks.js pings the owner meanwhile.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -44,6 +50,7 @@ import { ACTOR, DECISIONS, decide, parsePolicy, redact } from './caretakerRules.
 import { MERGEABLE_DEFER_CAP_MS, mergeableProbeState, reviewPassed } from './caretakerMergeable.js'
 import { deploySkipReason } from './deploySkip.js'
 import { FILING_GATES, narrowingStatus } from './narrowing.js'
+import { openBlockingAsks } from './asks.js'
 
 // Gate 3 is excluded HERE, in code, before any evaluation in any mode: new
 // work never enters without a human.
@@ -220,6 +227,7 @@ export function sweepCaretaker({ log, policy = loadPolicy, now = Date.now } = {}
     }
     for (const item of candidates) {
       try {
+        if (openBlockingAsks(item.id).length > 0) continue
         const sourceRun = selectSourceRun.get(item.id, item.cursor - 1) ?? null
         if (item.cursor === RELEASE_GATE && !releaseSettled(item, sourceRun, now())) continue
         const hold = mergeableHold(item, sourceRun, now())

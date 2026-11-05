@@ -14,6 +14,7 @@ import {
   isBlockedByAbandoned,
   isImplementBlocked,
   holdingBlockers,
+  askStartHold,
   curStep,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
@@ -56,7 +57,7 @@ import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
-import { openAsks } from './asks.js'
+import { askHolderIds, openAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 import { moveItem, planMove } from './moveItem.js'
@@ -1598,7 +1599,9 @@ function dependencyFields(id, row = selectCursorKind.get(id)) {
   const blockers = blockersOf(id)
   const dependents = selectDependents.all(id)
   return {
-    blocked: row ? holdingBlockers(row, blockers).length > 0 : false,
+    // HZ-731: a blocking ask holding the start step holds the item too, so the
+    // board shows it Blocked; startHold names the ask or item it waits for.
+    blocked: row ? holdingBlockers(row, blockers).length > 0 || !!startHoldOf({ id, ...row }) : false,
     blockedByAbandoned: isBlockedByAbandoned(blockers),
     blockedBy: blockers
       .filter((b) => !isClosed(b))
@@ -1655,6 +1658,21 @@ function wakeDependents(id) {
     releaseRuleBlockIfSatisfied(row.item_id)
     agentRunner.kick(row.item_id)
   }
+  // HZ-731: an item whose blocking ask filed `id` waits on it even with the
+  // dependency edge removed; kick() re-checks, so a second kick is harmless.
+  for (const holderId of askHolderIds(id)) agentRunner.kick(holderId)
+}
+
+// HZ-731: the blocking ask that holds `row` (id, cursor, kind) at Implement or
+// Execute, or null (domain/js/lifecycle.js askStartHold). The orchestrator
+// gates dispatch on this and the snapshot reports it — one derivation.
+export function startHoldOf(row) {
+  return askStartHold(row, startCheckAsks(row.id))
+}
+
+function startHoldFields(row) {
+  const startHold = startHoldOf(row)
+  return startHold ? { startHold } : {}
 }
 
 // HZ-580: the ids of the dependencies this item gained at or after `since` (a
@@ -2267,6 +2285,10 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...spawnFields(row.id),
     // HZ-728: open asks — drafted follow-up and prerequisite items — read-only.
     asks: openAsks(row.id),
+    // HZ-731: only on an item held at Implement or Execute — the blocking ask,
+    // or the item it filed, that the start waits for. Absent otherwise, so
+    // the payload of every item nothing holds is unchanged.
+    ...startHoldFields(row),
     ruleBlock: ruleBlock && ruleBlockView(row.id, ruleBlock, dependencies.blockedBy),
     // HZ-422: every model this step may run on is usage-limited until `until`.
     usageWait: usageWaitView(row),

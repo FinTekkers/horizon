@@ -65,6 +65,7 @@ import {
   sweepGateActions,
   recoverLegacyRejected,
   blockersOf,
+  startHoldOf,
   requestChanges,
   reviewRejected,
   isProjectEnabled,
@@ -1378,8 +1379,11 @@ export const MOCK_STEP_BEHAVIOR = {
 }
 
 // Whether an item may start a new step: its project must be enabled (HZ-207).
+// HZ-731: Implement (a Task's Execute) also waits until every blocking ask is
+// dismissed, or filed with its item merged or closed (store.startHoldOf). Only
+// a new dispatch waits: a run already in flight is never discarded for it.
 function runnable(item) {
-  return inFlightRunnable(item) && isProjectEnabled(item.project_id)
+  return inFlightRunnable(item) && isProjectEnabled(item.project_id) && !startHoldOf(item)
 }
 
 // The check a step already in flight is held to. It sets the project's

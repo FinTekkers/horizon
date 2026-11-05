@@ -230,6 +230,44 @@ export function openAsks(itemId) {
   })
 }
 
+// ---- HZ-731: blocking asks hold gates and the start of work ----
+
+// Only kind 'blocking' is read: a soft ask or a split never holds anything.
+const selectOpenBlocking = db.prepare("SELECT id, draft_json FROM ask WHERE item_id = ? AND kind = 'blocking' AND status = 'open' ORDER BY id")
+// Open and filed blocking asks, oldest first, each with the item it filed (the
+// work_item row's fields the start check reads, or NULLs while unfiled).
+const selectStartAsks = db.prepare(`
+  SELECT a.id, a.status, a.draft_json, w.id AS filed_id, w.title AS filed_title, w.cursor AS filed_cursor,
+         w.kind AS filed_kind, w.merged_at AS filed_merged_at, w.abandoned_at AS filed_abandoned_at
+    FROM ask a LEFT JOIN work_item w ON w.id = a.filed_item_id
+   WHERE a.item_id = ? AND a.kind = 'blocking' AND a.status IN ('open','filed') ORDER BY a.id`)
+const selectAskHolders = db.prepare("SELECT DISTINCT item_id FROM ask WHERE filed_item_id = ? AND kind = 'blocking' AND status = 'filed'")
+
+// The item's open blocking asks as { id, title }. Caretaker approves no gate
+// while this is non-empty.
+export function openBlockingAsks(itemId) {
+  return selectOpenBlocking.all(itemId).map((row) => ({ id: row.id, title: parseDraft(row.draft_json).title ?? '' }))
+}
+
+// What lifecycle.askStartHold judges: each open or filed blocking ask, with
+// its filed item as a work_item-shaped row (null while unfiled). A dismissed
+// or superseded ask is not listed, so it holds nothing.
+export function startCheckAsks(itemId) {
+  return selectStartAsks.all(itemId).map((row) => ({
+    id: row.id,
+    status: row.status,
+    title: parseDraft(row.draft_json).title ?? '',
+    filed:
+      row.filed_id == null
+        ? null
+        : { id: row.filed_id, title: row.filed_title, cursor: row.filed_cursor, kind: row.filed_kind, merged_at: row.filed_merged_at, abandoned_at: row.filed_abandoned_at },
+  }))
+}
+
+// The items whose blocking ask filed `filedItemId`: woken when it merges or
+// closes, even if the owner removed the dependency edge File it added.
+export const askHolderIds = (filedItemId) => selectAskHolders.all(filedItemId).map((row) => row.item_id)
+
 // ---- HZ-730: File it and Dismiss ----
 
 // The item_spawn request key one ask files under. One key per ask, so a

@@ -2450,6 +2450,9 @@ export function buildApp({
       if (result.ok && !result.alreadyDismissed) {
         store.addEvent(item.id, { who: actorOf(request), text: `dismissed the ask “${result.title}”: ${result.reason}`, color: '#9C333E', initials: 'HZ' })
         store.notifyChange()
+        // HZ-731: a dismissed blocking ask may have been all that held
+        // Implement or Execute; kick() re-checks and no-ops otherwise.
+        orchestrator.kick(item.id)
       }
       return sendAsk(reply, result.ok ? { ok: true, ...(result.alreadyDismissed ? { alreadyDismissed: true } : {}) } : result)
     },
