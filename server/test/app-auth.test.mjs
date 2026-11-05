@@ -694,6 +694,7 @@ async function googleSignIn(profile) {
   return cookie
 }
 
+// HZ-704 added pinVerifiedUntil: null on a session that has not entered the PIN.
 test('/api/auth/me returns the stored account_status; every other field is unchanged', async () => {
   const login = await app.inject({
     method: 'POST',
@@ -714,6 +715,7 @@ test('/api/auth/me returns the stored account_status; every other field is uncha
       authMethod: 'password',
       isAdmin: true,
       account_status: 'past_due',
+      pinVerifiedUntil: null,
     })
   } finally {
     auth.setAccountStatus(id, 'active', 'test')

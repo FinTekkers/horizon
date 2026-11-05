@@ -6,7 +6,9 @@
 // so the next real frame carries it, as in production.
 //
 // Each member sets their own gate PIN first: earlier specs rotate the
-// suite's, and a refused PIN would open a prompt and hang the test.
+// suite's. HZ-704: the connect POST is stubbed, so it never answers a PIN 401
+// and no PIN dialog opens; the members' sessions are their own, so locking
+// them leaves the shared owner session as it was.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
@@ -53,12 +55,11 @@ test.afterAll(() => {
   }
 })
 
-// A page signed in as `who`, holding their gate PIN, with no owner cookie. It
+// A page signed in as `who`, with no owner cookie. It
 // records page errors and console output, and fails any GitHub request.
 async function memberPage(browser, who) {
   const context = await browser.newContext({ baseURL: BASE_URL, storageState: { cookies: [], origins: [] } })
   await context.addCookies([{ name: 'horizon_session', value: who.token, url: BASE_URL }])
-  await context.addInitScript((pin) => localStorage.setItem('horizon_gate_pin', pin), PIN)
   const page = await context.newPage()
   const githubHits = []
   await page.route(/^https?:\/\/(?:[a-z0-9-]+\.)?github\.com\//i, (route) => {

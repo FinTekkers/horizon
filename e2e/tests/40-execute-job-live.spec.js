@@ -16,8 +16,12 @@
 // Podman, because with no farm no command ever runs. The same Stop and Resume in a container are
 // proven in farm/tests/test_container_runner.py (fake_podman, and real
 // rootless Podman where installed).
+//
+// HZ-704: setting the spec's own PIN locks the shared session, and nothing
+// here is PIN-protected (Stop run needs only the login), so afterAll
+// PIN-verifies the session again for the specs after this one.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, verifySharedSession } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS, EXECUTE_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -59,6 +63,8 @@ test.beforeAll(() => {
     db.close()
   }
 })
+
+test.afterAll(() => verifySharedSession(GATE_PIN))
 
 const COMMANDS = ['scripts/backfill.sh --dry-run', 'scripts/backfill.sh', 'scripts/verify-ledger.sh']
 const frame = (statuses, logTail) => ({

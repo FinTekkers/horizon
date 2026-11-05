@@ -2,9 +2,9 @@ import { Fragment, useEffect, useState } from 'react'
 import { getDeployTargetConfig, createDeployTarget, updateDeployTarget, deleteDeployTarget } from '../api'
 
 // HZ-259: one row per repo connected to an enabled project, joined to its
-// deploy_target row or shown as "none". Create, edit and delete each ask for
-// the gate PIN first; it lives in this component's state only, goes only in
-// the x-human-key header, and is cleared after every request. The server runs
+// deploy_target row or shown as "none". Create, edit and delete each ask to
+// confirm first, and are gate-PIN protected (HZ-704: the PIN dialog asks only
+// when the session is not PIN-verified; the PIN is never kept). The server runs
 // checkRunnable on every write, so a service horizon-deploy.sudoers does not
 // permit is refused — the sudoers file stays the boundary.
 
@@ -29,12 +29,12 @@ const FIELDS = [
 
 const OVERRIDE_ERROR = {
   400: 'Not saved — a field is missing or badly formatted.',
-  401: 'Gate PIN incorrect.',
   404: 'That target no longer exists.',
   409: 'Another target already uses that key or repo.',
 }
 
 function overrideError(err) {
+  if (err.message === 'pin_needed') return 'Gate PIN needed — nothing was saved.'
   if (err.code === 'deploy_target_invalid' && err.reason) return `Not saved — ${err.reason}.`
   return Object.hasOwn(OVERRIDE_ERROR, err.status ?? '') ? OVERRIDE_ERROR[err.status] : 'Request failed — try again.'
 }
@@ -75,18 +75,16 @@ function connectedRepos(projects) {
 }
 
 function OverrideRow({ repo, target, onChanged }) {
-  // mode: null | 'edit' | 'delete'; prompting: the PIN prompt is open.
+  // mode: null | 'edit' | 'delete'; prompting: the confirm step is open.
   const [mode, setMode] = useState(null)
   const [values, setValues] = useState(null)
   const [prompting, setPrompting] = useState(false)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const close = () => {
     setMode(null)
     setPrompting(false)
-    setPin('')
     setError(null)
   }
   const openEdit = () => {
@@ -100,30 +98,27 @@ function OverrideRow({ repo, target, onChanged }) {
     setPrompting(true)
   }
   const cancelPrompt = () => {
-    setPin('')
     setPrompting(false)
     if (mode === 'delete') setMode(null)
   }
 
   const confirm = async () => {
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      if (mode === 'delete') await deleteDeployTarget(target.key, pin)
-      else if (target) await updateDeployTarget(target.key, bodyOf(repo, values), pin)
-      else await createDeployTarget({ key: values.key.trim(), ...bodyOf(repo, values) }, pin)
+      if (mode === 'delete') await deleteDeployTarget(target.key)
+      else if (target) await updateDeployTarget(target.key, bodyOf(repo, values))
+      else await createDeployTarget({ key: values.key.trim(), ...bodyOf(repo, values) })
       close()
       onChanged()
     } catch (err) {
       setError(overrideError(err))
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
 
-  const action = mode === 'delete' ? 'delete' : 'save'
   return (
     <div role="group" aria-label={`Deploy target for ${repo}`}>
       <div className="deploy-target-row">
@@ -204,17 +199,7 @@ function OverrideRow({ repo, target, onChanged }) {
       )}
       {prompting && (
         <div className="project-block__add">
-          <input
-            className="field__input"
-            type="password"
-            autoComplete="off"
-            aria-label={`Gate PIN to ${action} deploy target for ${repo}`}
-            placeholder={`Gate PIN to ${action}`}
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && confirm()}
-          />
-          <button type="button" className="composer__submit" style={{ background: 'var(--primary)' }} onClick={confirm} disabled={!pin || busy}>
+          <button type="button" className="composer__submit" style={{ background: 'var(--primary)' }} onClick={confirm} disabled={busy}>
             {busy ? 'Working…' : mode === 'delete' ? 'Delete target' : 'Confirm save'}
           </button>
           <button type="button" className="repo-checks__toggle" onClick={cancelPrompt} disabled={busy}>

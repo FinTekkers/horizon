@@ -7,9 +7,11 @@
 //
 // The fixture is seeded paused at Assess in its own Autopilot 'on' project, so
 // no mock agent starts it until this spec resumes it. The spec sets its own
-// gate PIN: 23-project-enabled rotates the shared one.
+// gate PIN: 23-project-enabled rotates the shared one. HZ-704: setting it locks
+// the shared session, so the first gate action opens the PIN dialog; the spec
+// locks it again (setGatePinDirect) before the wrong-PIN step.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 import { kindStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -38,17 +40,9 @@ const stepCard = (page, label) =>
 
 test('Approve the run: the human-only card, Reject back to Run plan, a wrong PIN refused, the right PIN passes', async ({ page }) => {
   test.setTimeout(60_000)
-  // Every PIN prompt, answered in order; each answer records the prompt text.
-  const answers = []
-  const prompts = []
-  page.on('dialog', (dialog) => {
-    prompts.push(dialog.message())
-    const answer = answers.shift()
-    return answer === undefined ? dialog.dismiss() : dialog.accept(answer)
-  })
+  const pinDialog = page.getByRole('dialog', { name: 'Enter your gate PIN' })
 
   await page.goto(`/${ID.toLowerCase()}`)
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
   await page.getByRole('button', { name: 'Resume work' }).click()
 
   const gate = stepCard(page, 'Approve the run')
@@ -58,33 +52,42 @@ test('Approve the run: the human-only card, Reject back to Run plan, a wrong PIN
   await expect(gate.getByRole('button', { name: 'Approve the run' })).toBeVisible()
 
   // Reject with feedback: back to Run plan, which runs again and returns here.
-  answers.push(GATE_PIN)
+  // The first gate action since setGatePinDirect locked the session.
   await gate.getByRole('button', { name: 'Reject with feedback' }).click()
   await page.locator('.composer__input').fill('Run it against staging first.')
   await page.locator('.composer__submit').click()
+  await answerPinDialog(page, GATE_PIN)
   await expect(page.locator('.activity-row__text', { hasText: 'sent back to the run plan step' })).toBeVisible({
     timeout: 10_000,
   })
   await expect(stepCard(page, 'Run plan').getByRole('link', { name: /attempt 2 of 2/ })).toBeVisible({ timeout: 15_000 })
   await expect(gate.getByText('Always a human · even on Autopilot')).toBeVisible({ timeout: 15_000 })
 
-  // A wrong PIN: the server refuses, the prompt says so, the gate stays open.
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
-  answers.push('000000') // the retry prompt gets no answer: dismissed
-  const promptsBefore = prompts.length
+  // A wrong PIN: lock the session again so the dialog asks; the server
+  // refuses, the dialog says so, Cancel leaves the gate open.
+  const db = openDb(DB_PATH)
+  try {
+    setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
+  } finally {
+    db.close()
+  }
   await gate.getByRole('button', { name: 'Approve the run' }).click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
   await page.locator('.composer__submit').click()
-  await expect.poll(() => prompts.length, { timeout: 10_000 }).toBe(promptsBefore + 2)
-  expect(prompts.at(-1)).toContain('Gate PIN incorrect')
+  await expect(pinDialog).toBeVisible({ timeout: 10_000 })
+  await pinDialog.getByLabel('Gate PIN').fill('000000')
+  await pinDialog.getByRole('button', { name: 'Continue' }).click()
+  await expect(pinDialog.getByText('PIN incorrect — try again.')).toBeVisible({ timeout: 10_000 })
+  await pinDialog.getByRole('button', { name: 'Cancel' }).click()
+  await expect(pinDialog).toBeHidden()
   await expect(gate).toHaveClass(/step-card--awaiting/)
   await expect(gate.getByRole('button', { name: 'Approve the run' })).toBeVisible()
 
   // The right PIN passes the gate.
-  answers.push(GATE_PIN)
   await gate.getByRole('button', { name: 'Approve the run' }).click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
   await page.locator('.composer__submit').click()
+  await answerPinDialog(page, GATE_PIN)
   await expect(gate.locator('.step-card__meta')).toHaveText('Approved by you', { timeout: 10_000 })
   await expect(gate.getByText('Always a human · even on Autopilot')).toHaveCount(0)
 
@@ -93,4 +96,5 @@ test('Approve the run: the human-only card, Reject back to Run plan, a wrong PIN
   await expect(stepCard(page, 'Approve the run').locator('.step-card__meta')).toHaveText('Approved by you', {
     timeout: 10_000,
   })
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 })

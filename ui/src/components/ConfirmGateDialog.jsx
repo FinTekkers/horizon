@@ -2,7 +2,8 @@ import { useEffect, useRef } from 'react'
 
 // The explicit ceremony for a plain Approve (HZ-38): with the gate PIN
 // already cached in localStorage, clicking Approve used to hit the server
-// instantly with zero confirmation. This dialog is the one thing standing
+// instantly with zero confirmation. HZ-704: a PIN-verified session is the same
+// case now, so the dialog still stands. This dialog is the one thing standing
 // between the click and the request — it must always name the real decision
 // (item + gate), never a generic "Are you sure?".
 export default function ConfirmGateDialog({ itemId, gateLabel, onConfirm, onCancel }) {

@@ -167,7 +167,8 @@ db.exec(`
     id         TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES user(id),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at TEXT NOT NULL
+    expires_at TEXT NOT NULL,
+    pin_verified_until TEXT -- HZ-704: ISO-8601 UTC; NULL = not PIN-verified
   );
   CREATE INDEX IF NOT EXISTS idx_session_user ON session(user_id);
 
@@ -864,6 +865,12 @@ if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => colum
 // gate action is one long action per (item, kind) at a global gate.
 if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'substep_id')) {
   db.exec('ALTER TABLE gate_decision ADD COLUMN substep_id TEXT')
+}
+
+// HZ-704: until when a login session is PIN-verified (auth.js). Additive and
+// nullable: every existing session migrates to NULL and asks for the PIN once.
+if (!db.prepare('PRAGMA table_info(session)').all().some((column) => column.name === 'pin_verified_until')) {
+  db.exec('ALTER TABLE session ADD COLUMN pin_verified_until TEXT')
 }
 
 // HZ-709: the step's permanent key (domain/steps.json), beside the unchanged

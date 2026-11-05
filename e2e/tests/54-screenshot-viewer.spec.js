@@ -6,8 +6,13 @@
 // The shots are 1600x2400, wider than the panel and than a 390px screen, so
 // "rendered at its natural width" cannot pass by accident. GitHub's side is
 // canned as in 52-screenshot-approvals.
+//
+// HZ-704: setting the spec's own PIN locks the shared session, so the first
+// test's panel waits for "Show images", whose image requests open the PIN
+// dialog; answering it verifies the session, and the later tests' panels show
+// their images at once.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 import { solidPng } from '../fixtures/png.js'
 import { blobsOf, clearScreenshotSnapshot, publication, seedScreenshotSnapshot } from '../fixtures/screenshot-snapshot.js'
@@ -44,7 +49,7 @@ test.beforeAll(() => {
   }
 })
 
-test.beforeEach(async ({ page, request }) => {
+test.beforeEach(async ({ request }) => {
   await seedScreenshotSnapshot(
     request,
     {
@@ -53,7 +58,6 @@ test.beforeEach(async ({ page, request }) => {
     },
     BLOBS,
   )
-  await page.addInitScript((pin) => localStorage.setItem('horizon_gate_pin', pin), GATE_PIN)
 })
 
 test.afterAll(async ({ request }) => {
@@ -64,9 +68,17 @@ const rowOf = (page, screen) => page.getByRole('region', { name: 'Screenshots' }
 const viewerOf = (page) => page.getByRole('dialog', { name: 'board screenshot' })
 const naturalWidth = (img) => img.evaluate((el) => el.naturalWidth)
 
-async function openBoard(page, item) {
+// `pin`: the session is locked, so the images wait for "Show images" and the
+// PIN dialog.
+async function openBoard(page, item, { pin } = {}) {
   await page.goto(`/${item.toLowerCase()}`)
   const board = rowOf(page, 'board')
+  if (pin) {
+    await expect(board).toBeVisible()
+    await expect(board.getByRole('img')).toHaveCount(0)
+    await page.getByRole('region', { name: 'Screenshots' }).getByRole('button', { name: 'Show images' }).click()
+    await answerPinDialog(page, pin)
+  }
   for (const name of KINDS) await expect.poll(() => naturalWidth(board.getByRole('img', { name, exact: true }))).toBe(WIDTH)
   return board
 }
@@ -79,7 +91,8 @@ const visibleBaseline = (img) =>
   })
 
 test('a shot opens full size; the tabs switch it by click and by Left/Right; focus stays in the viewer and returns on Esc', async ({ page }) => {
-  const board = await openBoard(page, ITEMS.desktop)
+  // The first protected request since setGatePinDirect locked the session.
+  const board = await openBoard(page, ITEMS.desktop, { pin: GATE_PIN })
   const panelImg = board.getByRole('img', { name: 'Current', exact: true })
   expect((await panelImg.boundingBox()).width).toBeLessThan(WIDTH)
   const src = {}
@@ -118,6 +131,7 @@ test('a shot opens full size; the tabs switch it by click and by Left/Right; foc
   await page.keyboard.press('Escape')
   await expect(viewer).toHaveCount(0)
   await expect(opener).toBeFocused()
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
 })
 
 test('swipe layers baseline over current in one box; dragging and Left/Right move the divider', async ({ page }) => {

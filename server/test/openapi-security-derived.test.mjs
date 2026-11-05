@@ -74,11 +74,12 @@ test('every session-gated public route declares the cookie scheme', () => {
 })
 
 test('the cookie scheme is absent from the routes that really take no session', async () => {
-  // /api/auth/me and the gate-PIN regeneration route are exempt from the gate but
-  // check the session themselves and 401 without one, so they do declare the
-  // cookie. Every other exempt route must not — and each is checked here by
-  // actually calling it with no cookie and seeing a non-401.
-  const SELF_CHECKING = new Set(['GET /api/auth/me', 'POST /api/auth/gate-pin/regenerate'])
+  // /api/auth/me, the gate-PIN regeneration route and the PIN Lock route
+  // (HZ-704) are exempt from the gate but check the session themselves and 401
+  // without one, so they do declare the cookie. Every other exempt route must
+  // not — and each is checked here by actually calling it with no cookie and
+  // seeing a non-401.
+  const SELF_CHECKING = new Set(['GET /api/auth/me', 'POST /api/auth/gate-pin/regenerate', 'POST /api/auth/pin/lock'])
   const wrong = []
   for (const route of EXEMPT) {
     const declares = schemesOn(route).has('sessionCookie')

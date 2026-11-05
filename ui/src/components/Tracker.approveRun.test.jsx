@@ -2,7 +2,7 @@
 // with two additions — the "Always a human · even on Autopilot" line and the
 // run plan's size — and its two buttons named for what they do. Approve the
 // run opens the same ConfirmGateDialog every gate uses, whose confirm goes
-// through the PIN prompt (serverApi.test.js covers that leg).
+// through the PIN dialog (serverApi.test.js covers that leg).
 
 import { useState } from 'react'
 import { afterEach, expect, test, vi } from 'vitest'

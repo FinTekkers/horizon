@@ -26,6 +26,9 @@ vi.mock('../api', () => ({
   addRepoToProject: vi.fn(),
   disconnectRepo: vi.fn(),
   regenerateGatePin: vi.fn(),
+  lockPinSession: vi.fn(),
+  getPinVerifiedUntil: () => null,
+  pinSessionLikelyVerified: () => false,
   listApiTokens: vi.fn(async () => ({ tokens: [] })),
   createApiToken: vi.fn(),
   revokeApiToken: vi.fn(async () => ({ ok: true })),
@@ -136,13 +139,13 @@ test('in one project, each repo row carries its own impact text', async () => {
   expect(block.getAllByText(SYNC_DELAY_ONLY)).toHaveLength(1)
 })
 
-test('Fix webhook says what it does, before and after the PIN form opens', async () => {
+test('Fix webhook says what it does, before and after the confirm form opens', async () => {
   const { container } = renderWith({ repos: ['FinTekkers/ui-service'], webhooks: [hook('FinTekkers/ui-service', 'missing')] })
   const block = within(projectBlock(container, 'Hooks'))
   const button = await block.findByRole('button', { name: 'Fix webhook' })
   expect(block.getByText(FIX_HINT)).toBeTruthy()
   fireEvent.click(button)
-  expect(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook')).toBeTruthy()
+  expect(block.getByRole('button', { name: 'Fix' })).toBeTruthy()
   expect(block.getByText(FIX_HINT)).toBeTruthy()
 })
 
@@ -159,16 +162,15 @@ test('an ok webhook row shows none of the impact text', async () => {
   for (const text of ALL) expect(block.queryByText(text)).toBeNull()
 })
 
-test('fixing the webhook with the PIN clears all the impact text once it reads ok', async () => {
+test('fixing the webhook clears all the impact text once it reads ok', async () => {
   const { container } = renderWith({ repos: ['FinTekkers/ui-service'], webhooks: [hook('FinTekkers/ui-service', 'missing')] })
   const block = within(projectBlock(container, 'Hooks'))
   await block.findByText(RELEASES_BLOCKED)
   fireEvent.click(block.getByRole('button', { name: 'Fix webhook' }))
   api.getRepoWebhooks.mockResolvedValue({ webhooks: [hook('FinTekkers/ui-service', 'ok')] })
-  fireEvent.change(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook'), { target: { value: 'right-pin' } })
   fireEvent.click(block.getByRole('button', { name: 'Fix' }))
   await block.findByText('Webhook: ok')
-  expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service', 'right-pin')
+  expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service')
   for (const text of ALL) expect(block.queryByText(text)).toBeNull()
 })
 
@@ -196,9 +198,8 @@ test('an ok webhook on the legacy event set shows Fix webhook and no impact text
   const block = within(projectBlock(container, 'Hooks'))
   expect(await block.findByText('Webhook: ok (no repository events)')).toBeTruthy()
   fireEvent.click(block.getByRole('button', { name: 'Fix webhook' }))
-  fireEvent.change(block.getByLabelText('Gate PIN to fix the FinTekkers/ui-service webhook'), { target: { value: 'right-pin' } })
   fireEvent.click(block.getByRole('button', { name: 'Fix' }))
-  await waitFor(() => expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service', 'right-pin'))
+  await waitFor(() => expect(api.fixRepoWebhook).toHaveBeenCalledWith(7, 'FinTekkers/ui-service'))
   for (const text of [WEBHOOK_IMPACT.RELEASES_BLOCKED, WEBHOOK_IMPACT.SYNC_CONTINUES, WEBHOOK_IMPACT.SYNC_DELAY_ONLY]) {
     expect(block.queryByText(text)).toBeNull()
   }

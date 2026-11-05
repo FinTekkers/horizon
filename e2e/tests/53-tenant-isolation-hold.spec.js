@@ -4,6 +4,11 @@
 // run — and the reason survives a reload, so it comes from the database. Once
 // the owner sets the $NAME reference the reason goes away without a reload,
 // through the live feed.
+//
+// HZ-704: setting the spec's own PIN locks the shared session; the first
+// page.request with x-human-key carries the shared login cookie, so the PIN
+// verifies the session again and later specs inherit it. No dialog opens:
+// the browser makes no protected change.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'

@@ -116,7 +116,6 @@ beforeEach(() => {
 
 test('a stale tab that clicks Approve and gets {held: true} shows the card queued, not approved', async () => {
   vi.stubGlobal('EventSource', MockEventSource)
-  localStorage.setItem('horizon_gate_pin', 'test-pin')
   const serverApi = await import('../api/serverApi')
   serverApi.subscribe(() => {})
   // This tab never heard of the drain: no deployBlock in its snapshot.
@@ -125,8 +124,8 @@ test('a stale tab that clicks Approve and gets {held: true} shows the card queue
     'fetch',
     vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, held: true, latestEnd: LATEST_END, actor: 'Dana' }) })),
   )
+  // A PIN-verified session (HZ-704): the approval passes with no PIN dialog.
   await serverApi.approveGate('Q-stale', '')
-  localStorage.clear()
 
   const { container } = renderBoard(serverApi.getItems(), serverApi.getDeployBlock())
   const card = cardOf(container, 'Q-stale')

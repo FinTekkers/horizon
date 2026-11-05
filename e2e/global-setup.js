@@ -9,7 +9,6 @@ import { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, endIndex } from '../domain/js/
 const PORT = process.env.HORIZON_E2E_PORT
 const DB_PATH = process.env.HORIZON_E2E_DB
 const STORAGE_STATE_PATH = process.env.HORIZON_E2E_STORAGE_STATE
-const BASE_URL = process.env.HORIZON_E2E_BASE_URL
 // Matches config.js's dev-mode fallback (ADMIN_EMAIL/PASSWORD are left unset
 // for this suite, same as HORIZON_REPO/GITHUB_TOKEN/FARM_URL below).
 const ADMIN_EMAIL = 'admin@example.com'
@@ -130,26 +129,23 @@ export default async function globalSetup() {
       throw new Error(`e2e login failed: ${loginRes.status()} ${await loginRes.text()}`)
     }
     // Every account gets its own auto-generated gate PIN (HZ-21), separate
-    // from login, and every gate-mutating route requires it — there's no
-    // "not configured yet, gates stay open" fallback any more. Regenerating
-    // it here and preloading it into the saved browser storage (as
-    // localStorage, matching serverApi.js's PIN_STORAGE key) means every
-    // spec's gate actions succeed without a single window.prompt(), the same
-    // as this suite's pre-HZ-21 "no gate key configured" demo-mode behavior —
-    // except now it's a real per-account PIN, not an open gate.
-    // 10-gate-key.spec.js overwrites this PIN directly in the DB afterwards
-    // (it runs last) specifically to exercise the window.prompt() flow.
+    // from login, and every gate-mutating route requires it. HZ-704: the
+    // browser no longer keeps it; a correct PIN marks the login session
+    // PIN-verified for 12 hours instead. So one protected request with it
+    // here verifies the session every spec shares (storageState), and gate
+    // and Admin changes pass without the dialog. A spec that sets its own PIN
+    // (seed.js's setGatePinDirect) locks the session and answers the dialog
+    // (test-base.js's answerPinDialog), which verifies it again.
     const pinRes = await api.post('/api/auth/gate-pin/regenerate')
     if (!pinRes.ok()) throw new Error(`e2e gate-pin regenerate failed: ${pinRes.status()}`)
     const { pin } = await pinRes.json()
+    // A GET of an unknown item's screenshot: humanAuthorized runs, then 404.
+    const verifyRes = await api.get('/api/items/E2E-NO-SUCH-ITEM/screenshots/home/new', { headers: { 'x-human-key': pin } })
+    if (verifyRes.status() === 401 || verifyRes.status() === 403) {
+      throw new Error(`e2e PIN verify failed: ${verifyRes.status()}`)
+    }
 
-    const state = await api.storageState()
-    state.origins = state.origins || []
-    state.origins.push({
-      origin: BASE_URL,
-      localStorage: [{ name: 'horizon_gate_pin', value: pin }],
-    })
-    writeFileSync(STORAGE_STATE_PATH, JSON.stringify(state))
+    writeFileSync(STORAGE_STATE_PATH, JSON.stringify(await api.storageState()))
   } finally {
     await api.dispose()
   }

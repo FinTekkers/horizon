@@ -47,33 +47,30 @@ function WebhookImpact({ status, hasDeployTarget }) {
 }
 
 // HZ-244: Fix webhook — creates a missing hook or repairs Horizon's own
-// mismatched one. Same PIN handling as ProjectEnabledToggle: the PIN lives in
-// this form's state only until the request settles and goes out in a header.
+// mismatched one. Confirmed like ProjectEnabledToggle; the PIN dialog asks for
+// the gate PIN only when the session is not PIN-verified (HZ-704).
 function FixWebhookForm({ projectId, repo, onFixed }) {
   const [asking, setAsking] = useState(false)
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const cancel = () => {
     setAsking(false)
-    setPin('')
     setError(null)
   }
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await fixRepoWebhook(projectId, repo, pin)
+      await fixRepoWebhook(projectId, repo)
       setAsking(false)
       onFixed?.()
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -93,17 +90,7 @@ function FixWebhookForm({ projectId, repo, onFixed }) {
     <>
       <div className="gh-note repo-webhook__hint">{WEBHOOK_IMPACT.FIX_HINT}</div>
       <form className="project-block__add" style={{ marginTop: 0 }} onSubmit={submit}>
-        <input
-          className="field__input"
-          type="password"
-          autoComplete="off"
-          aria-label={`Gate PIN to fix the ${repo} webhook`}
-          placeholder="Gate PIN to fix this webhook"
-          value={pin}
-          onChange={(e) => setPin(e.target.value)}
-          autoFocus
-        />
-        <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={!pin || busy}>
+        <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
           {busy ? 'Fixing…' : 'Fix'}
         </button>
         <button type="button" className="composer__cancel" onClick={cancel}>
@@ -115,25 +102,21 @@ function FixWebhookForm({ projectId, repo, onFixed }) {
   )
 }
 
-// HZ-659: Disconnect is gate-PIN protected. Same PIN handling as
-// FixWebhookForm: the PIN lives in this form's state only until the request
-// settles and goes out in a header.
+// HZ-659: Disconnect is gate-PIN protected, like FixWebhookForm.
 function DisconnectForm({ projectId, repo, onCancel }) {
-  const [pin, setPin] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     try {
-      await disconnectRepo(projectId, repo, pin)
+      await disconnectRepo(projectId, repo)
     } catch (err) {
-      setError(err.status === 401 ? 'Wrong PIN' : err.message)
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was changed' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -141,17 +124,7 @@ function DisconnectForm({ projectId, repo, onCancel }) {
   return (
     <>
       <form className="project-block__add" style={{ marginTop: 0 }} onSubmit={submit}>
-        <input
-          className="field__input"
-          type="password"
-          autoComplete="off"
-          aria-label={`Gate PIN to disconnect ${repo}`}
-          placeholder="Gate PIN to disconnect this repo"
-          value={pin}
-          onChange={(e) => setPin(e.target.value)}
-          autoFocus
-        />
-        <button type="submit" className="composer__submit" style={{ background: 'var(--danger)' }} disabled={!pin || busy}>
+        <button type="submit" className="composer__submit" style={{ background: 'var(--danger)' }} disabled={busy}>
           {busy ? 'Disconnecting…' : 'Disconnect'}
         </button>
         <button type="button" className="composer__cancel" onClick={onCancel}>

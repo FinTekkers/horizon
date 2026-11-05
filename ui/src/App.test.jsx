@@ -76,7 +76,8 @@ function itemAtClosingGate(id) {
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
+  ;(await vi.importActual('./api/serverApi')).setPinRequester(null)
   cleanup()
   vi.clearAllMocks()
   window.history.pushState({}, '', '/')
@@ -682,7 +683,6 @@ for (const dialog of KILL_RESTART) {
   })
 
   test(`${dialog.name}: a failed request shows why, keeps the text, and lets the owner send it again`, async () => {
-    localStorage.setItem('horizon_gate_pin', '4729')
     api[dialog.apiFn].mockRejectedValue(Object.assign(new Error('HTTP 500'), { status: 500 }))
     const id = 'KR-2'
     setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
@@ -701,21 +701,23 @@ for (const dialog of KILL_RESTART) {
 
     fireEvent.click(document.querySelector('.composer__submit'))
     await waitFor(() => expect(api[dialog.apiFn]).toHaveBeenCalledTimes(2))
-    localStorage.removeItem('horizon_gate_pin')
   })
 
-  // Through the real serverApi: no stored PIN and a cancelled or empty prompt
-  // sends nothing and says so.
+  // Through the real serverApi: a cancelled or empty PIN dialog after the
+  // server's 401 sends nothing more and says so (HZ-704).
   for (const [label, entered] of [
     ['cancelled', null],
     ['empty', ''],
   ]) {
-    test(`${dialog.name}: a ${label} PIN prompt sends no request and shows "Gate PIN needed"`, async () => {
+    test(`${dialog.name}: a ${label} PIN dialog sends nothing more and shows "Gate PIN needed"`, async () => {
       const real = await vi.importActual('./api/serverApi')
       api[dialog.apiFn].mockImplementation(real[dialog.apiFn])
-      localStorage.removeItem('horizon_gate_pin')
-      vi.spyOn(window, 'prompt').mockImplementation(() => entered)
-      const fetchSpy = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }))
+      const requester = vi.fn(async () => entered)
+      real.setPinRequester(requester)
+      const fetchSpy = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 401, json: () => Promise.resolve({ error: 'human_gate_key_required' }) })
+        .mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) })
       vi.stubGlobal('fetch', fetchSpy)
       const id = 'KR-3'
       setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
@@ -725,9 +727,13 @@ for (const dialog of KILL_RESTART) {
       await dialog.open(findByRole, findAllByRole)
       submitDialog('superseded')
       expect((await findByRole('alert')).textContent).toBe('Gate PIN needed')
-      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(requester).toHaveBeenCalledTimes(1)
+      // Only the PIN-less first request went out.
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(fetchSpy.mock.calls[0][1].headers['x-horizon-csrf']).toBe('1')
+      expect(fetchSpy.mock.calls[0][1].headers).not.toHaveProperty('x-human-key')
       expect(document.querySelector('.composer')).not.toBeNull()
-      window.prompt.mockRestore()
+      expect(localStorage.getItem('horizon_gate_pin')).toBeNull()
     })
   }
 }

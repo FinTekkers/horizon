@@ -168,16 +168,19 @@ export function insertAsk(
 
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
 // Writing the hash directly (instead of through Admin's "Regenerate my PIN")
-// keeps the plaintext out of the browser's localStorage, so the next gate
-// action genuinely exercises the window.prompt() flow instead of silently
-// reusing a cached PIN. Targets the account global-setup.js already logged
-// in as (its row is created on that first successful login), by email.
+// lets a spec know the plaintext. Targets the account global-setup.js already
+// logged in as (its row is created on that first successful login), by email.
+// HZ-704: like regenerateGatePin, it also locks every session of the account,
+// so the spec's next gate or Admin change opens the PIN dialog
+// (answerPinDialog in test-base.js), and answering it verifies the shared
+// session again for the specs after it.
 export function setGatePinDirect(db, email, plaintext) {
   const salt = crypto.randomBytes(16)
   const hash = crypto.scryptSync(plaintext, salt, 32)
   const value = `${salt.toString('hex')}:${hash.toString('hex')}`
   const result = db.prepare('UPDATE user SET gate_pin_hash = ? WHERE email = ?').run(value, email)
   if (result.changes === 0) throw new Error(`setGatePinDirect: no user row for ${email} — did global setup log in first?`)
+  db.prepare('UPDATE session SET pin_verified_until = NULL WHERE user_id = (SELECT id FROM user WHERE email = ?)').run(email)
 }
 
 // HZ-231: a finished Accept-gate action row (server/src/db.js's gate_action),

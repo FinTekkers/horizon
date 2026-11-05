@@ -1,12 +1,10 @@
 // HZ-59: abandon is a soft delete gated by the same human PIN gate approval
-// requires (see auth.js) — not just a logged-in session. Named `10-` (not
-// `11-`) so it sorts and runs BEFORE 10-gate-key.spec.js: that file rewrites
-// the admin account's gate_pin_hash directly in the DB and never restores
-// the storageState-cached PIN afterwards, so any spec after it that relies
-// on the cached PIN (like this file's test) would 401 on every gated call.
-// A missing or wrong PIN is refused by the route (server/test/app.test.mjs
-// and server/test/gate-pin-routes.test.mjs); 10-gate-key.spec.js walks the
-// wrong / cancelled / right prompt flow once, on a gate.
+// requires (see auth.js) — not just a logged-in session. It relies on the
+// shared login session global-setup.js PIN-verified (HZ-704), so no PIN
+// dialog opens. A missing or wrong PIN is refused by the route
+// (server/test/app.test.mjs and server/test/gate-pin-routes.test.mjs);
+// 10-gate-key.spec.js walks the right / wrong / cancelled PIN dialog once,
+// on a gate.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
@@ -46,10 +44,8 @@ test('abandoning an item requires a reason, closes it out distinctly from comple
   await page.locator('.composer__input').fill('Superseded by a different approach — no longer needed.')
   await page.locator('.composer__submit').click()
 
-  // No PIN prompt fires here: global-setup.js already preloaded this
-  // browser's cached PIN (see serverApi.js's gatePin()), same as every other
-  // gated action in this suite except 10-gate-key.spec.js, which exists
-  // specifically to exercise the prompt() path.
+  // No PIN dialog opens here: global-setup.js PIN-verified the shared login
+  // session (HZ-704), and no spec before this one leaves it locked.
   await expect(page.locator('.tracker__status')).toContainText('Abandoned', { timeout: 10_000 })
   await expect(page.locator('.tracker__actions')).toContainText('Abandoned by')
   await expect(page.locator('.tracker__actions')).toContainText(

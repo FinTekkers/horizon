@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { approveScreenshots, getScreenshotImage, getScreenshots, hasGatePin } from '../api'
+import { approveScreenshots, getScreenshotImage, getScreenshots, pinSessionLikelyVerified } from '../api'
 import { getShotLayout, setShotLayout, subscribeShotLayout } from '../shotLayout'
 import ShotViewer, { VIEWER_LABEL } from './ShotViewer'
 
@@ -28,7 +28,7 @@ export default function ScreenshotPanel({ item }) {
   const [failed, setFailed] = useState(false)
   const [notice, setNotice] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [showImages, setShowImages] = useState(() => hasGatePin())
+  const [showImages, setShowImages] = useState(() => pinSessionLikelyVerified())
   const [images, setImages] = useState({})
   const [viewing, setViewing] = useState(null)
   const openerRef = useRef(null)

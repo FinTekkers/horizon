@@ -138,6 +138,17 @@ export async function regenerateGatePin() {
   return { ok: true, pin: '000000' }
 }
 
+// HZ-704: mock mode has no server session to lock, and never asks for a PIN.
+export async function lockPinSession() {
+  return { ok: true }
+}
+
+export function getPinVerifiedUntil() {
+  return null
+}
+
+export function setPinRequester() {}
+
 // ---- personal API tokens (HZ-179) ----
 // In-memory only; the mock raw token is a fixed-shape placeholder.
 
@@ -779,7 +790,7 @@ export async function savePlanDraft() {
 }
 
 // HZ-509: mock mode has no published screenshots, so no panel shows.
-export function hasGatePin() {
+export function pinSessionLikelyVerified() {
   return true
 }
 

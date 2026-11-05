@@ -39,6 +39,10 @@ const GROUPS = [
 
 const isRulesKind = (kind) => kind === 'project' || kind === 'repo'
 
+// HZ-704: the PIN dialog was cancelled. A rules save rejects with
+// 'pin_needed'; a definitions save answers with the server's 401 code.
+const pinNeeded = (err) => err.message === 'pin_needed' || err.message === 'human_gate_key_required'
+
 function itemNote(def) {
   if (!isRulesKind(def.kind)) return `${def.bytes} B`
   if (def.versions > 0) return `${def.versions} saved`
@@ -230,7 +234,6 @@ export default function AgentDefinitionsPage({ onBack, isOwner = true }) {
   const [saved, setSaved] = useState(null)
   const [preview, setPreview] = useState(null)
   const [rules, setRules] = useState(null)
-  const [pin, setPin] = useState('')
 
   const refreshTree = () =>
     Promise.all([isOwner ? listDefinitions() : { global: [] }, listRuleTargets()])
@@ -277,7 +280,7 @@ export default function AgentDefinitionsPage({ onBack, isOwner = true }) {
     setSaved(null)
     try {
       if (isRulesKind(selected.kind)) {
-        const result = await saveRule(selected.kind, selected.name, content, pin)
+        const result = await saveRule(selected.kind, selected.name, content)
         await loadRules(selected)
         setSaved(`Saved as version ${result.version.version}`)
         refreshTree()
@@ -288,9 +291,8 @@ export default function AgentDefinitionsPage({ onBack, isOwner = true }) {
       setSaved(result.unchanged ? 'No changes to save.' : `Saved — commit ${result.commit}${result.pushed ? ', pushed' : ' (local only)'}`)
       refreshTree()
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(pinNeeded(err) ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -301,14 +303,13 @@ export default function AgentDefinitionsPage({ onBack, isOwner = true }) {
     setError(null)
     setSaved(null)
     try {
-      const result = await restoreRule(selected.kind, selected.name, version, pin)
+      const result = await restoreRule(selected.kind, selected.name, version)
       await loadRules(selected)
       setSaved(`Restored version ${version} as version ${result.version.version}`)
       refreshTree()
     } catch (err) {
-      setError(err.status === 401 ? 'Gate PIN incorrect' : err.message)
+      setError(pinNeeded(err) ? 'Gate PIN needed — nothing was saved' : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -379,22 +380,11 @@ export default function AgentDefinitionsPage({ onBack, isOwner = true }) {
                 <button className="composer__cancel" onClick={showPreview}>
                   Preview effective prompt
                 </button>
-                {isRules && (
-                  <input
-                    className="field__input"
-                    type="password"
-                    autoComplete="off"
-                    aria-label="Gate PIN to save or restore rules"
-                    placeholder="Gate PIN"
-                    value={pin}
-                    onChange={(e) => setPin(e.target.value)}
-                  />
-                )}
                 <button
                   className="composer__submit"
                   style={{ background: 'var(--primary)' }}
                   onClick={save}
-                  disabled={busy || !dirty || (isRules && !pin)}
+                  disabled={busy || !dirty}
                 >
                   {busy ? 'Saving…' : isRules ? 'Save new version' : 'Save (commits to git)'}
                 </button>
@@ -402,7 +392,7 @@ export default function AgentDefinitionsPage({ onBack, isOwner = true }) {
               {isRules && rules && (
                 <div className="defs__preview">
                   <div className="defs__preview-title">Saved versions — restoring copies one into a new version</div>
-                  <RuleVersions rules={rules} onRestore={restore} busy={busy || !pin} />
+                  <RuleVersions rules={rules} onRestore={restore} busy={busy} />
                 </div>
               )}
               {preview != null && (

@@ -1,11 +1,12 @@
 // HZ-246: project rules saved in Admin as DB versions, end to end through the
-// real UI, API and DB. The right PIN stores v1, which survives a reload;
+// real UI, API and DB. The right PIN (HZ-704: asked once, in the PIN dialog)
+// stores v1, which survives a reload;
 // restoring v1 after a v2 adds v3 with v1's text, and the effective-prompt
 // preview serves it. A wrong PIN is refused by the route
 // (server/test/gate-pin-routes.test.mjs). Uses its own seeded project — never
 // fintekkers, whose file text 14-definitions-preview.spec.js asserts.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -33,10 +34,7 @@ const target = (page) =>
     .filter({ has: page.locator('.defs__group-title', { hasText: 'Projects' }) })
     .locator('.defs__item', { hasText: KEY })
 
-async function saveWith(page, pin) {
-  await page.getByLabel('Gate PIN to save or restore rules').fill(pin)
-  await page.getByRole('button', { name: 'Save new version' }).click()
-}
+const save = (page) => page.getByRole('button', { name: 'Save new version' }).click()
 
 test('saving project rules with the PIN lists every version, and restore adds a copy the preview serves', async ({ page }) => {
   await page.goto('/definitions')
@@ -47,7 +45,9 @@ test('saving project rules with the PIN lists every version, and restore adds a 
 
   const editor = page.getByLabel('Definition content')
   await editor.fill(V1)
-  await saveWith(page, GATE_PIN)
+  await save(page)
+  // beforeAll's setGatePinDirect locked the session: the first save asks.
+  await answerPinDialog(page, GATE_PIN)
   await expect(page.getByText('Saved as version 1')).toBeVisible()
   await expect(page.getByTestId('rule-version-1')).toContainText('serving')
 
@@ -58,10 +58,9 @@ test('saving project rules with the PIN lists every version, and restore adds a 
   await expect(page.getByText('Agents get saved version 1.')).toBeVisible()
 
   await editor.fill(V2)
-  await saveWith(page, GATE_PIN)
+  await save(page)
   await expect(page.getByText('Saved as version 2')).toBeVisible()
 
-  await page.getByLabel('Gate PIN to save or restore rules').fill(GATE_PIN)
   await page.getByRole('button', { name: 'Restore version 1' }).click()
   await expect(page.getByText('Restored version 1 as version 3')).toBeVisible()
   await expect(page.getByRole('list', { name: 'Saved versions' }).getByRole('listitem')).toHaveCount(3)

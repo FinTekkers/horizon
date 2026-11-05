@@ -20,7 +20,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertGateAction, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -132,7 +132,6 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await closeDrawer()
   const pending = Number(await badge.textContent())
   expect(pending).toBeGreaterThan(0)
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
 
   // Count main-frame navigations from here on: the card must update in place.
   let navigations = 0
@@ -142,8 +141,9 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
 
   await cardApprove.click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
-  page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
   await page.locator('.composer__submit').click()
+  // beforeAll's setGatePinDirect locked the session (HZ-704): Accept asks once.
+  await answerPinDialog(page, GATE_PIN)
 
   // Checks on both tabs while the run is in flight. The "Merging" text is a
   // hard expect: if the result lands first, this fails rather than skips.

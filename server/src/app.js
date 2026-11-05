@@ -329,12 +329,60 @@ function memberView(board, viewer, parents, userId) {
 // HZ-384: returns a human proof (humanProof.js), not just `true` — still
 // truthy for every `if (!humanAuthorized(...))` caller. The approve route hands
 // it on, and store.approveGate refuses a humanOnly gate without it.
+//
+// HZ-704: a correct PIN marks the session PIN-verified for 12 hours (auth.js),
+// and a verified session then passes without the PIN. A wrong PIN locks the
+// session, so it never rides on an earlier verify. Every request must also be
+// same-origin (sameOrigin below): a cross-site one gets 403 even with the PIN.
 function humanAuthorized(request, reply) {
-  if (request.auth?.via === 'session' && auth.verifyGatePin(request.user.id, request.headers['x-human-key'] || '')) {
+  if (request.auth?.via !== 'session') {
+    reply.code(401).send({ error: 'human_gate_key_required' })
+    return false
+  }
+  const origin = sameOrigin(request)
+  if (origin === 'refused') {
+    reply.code(403).send({ error: 'cross_site_refused' })
+    return false
+  }
+  const token = request.auth.token
+  const pin = request.headers['x-human-key']
+  if (pin) {
+    if (auth.verifyGatePin(request.user.id, pin)) {
+      auth.markSessionPinVerified(token)
+      return mintHumanProof({ userId: request.user.id })
+    }
+    auth.lockSession(token)
+  } else if (origin === 'ok' && auth.isSessionPinVerified(token)) {
     return mintHumanProof({ userId: request.user.id })
   }
   reply.code(401).send({ error: 'human_gate_key_required' })
   return false
+}
+
+// HZ-704: the one owner of the same-origin rule for PIN-protected routes.
+// 'refused' when the browser says the request came from another site: an
+// Origin that is neither UI_URL's nor this request's own Host (nginx passes
+// both through, and shoreward.ai is also served as www.shoreward.ai), or
+// Sec-Fetch-Site cross-site / same-site. 'unproven' when it carries neither
+// x-horizon-csrf nor x-human-key — a page on another site cannot send a
+// custom header without a CORS preflight, and this server allows no CORS, so
+// a bare cookie never passes. Else 'ok'.
+const UI_ORIGIN = new URL(UI_URL).origin
+function originAllowed(origin, host) {
+  if (origin === UI_ORIGIN) return true
+  try {
+    return typeof host === 'string' && new URL(origin).host === host
+  } catch {
+    return false
+  }
+}
+function sameOrigin(request) {
+  const origin = request.headers.origin
+  if (origin !== undefined && !originAllowed(origin, request.headers.host)) return 'refused'
+  const site = request.headers['sec-fetch-site']
+  if (site === 'cross-site' || site === 'same-site') return 'refused'
+  if (request.headers['x-horizon-csrf'] === '1' || request.headers['x-human-key']) return 'ok'
+  return 'unproven'
 }
 
 // HZ-179: a token may not mint, list or revoke tokens — a leaked token must
@@ -741,6 +789,9 @@ export function buildApp({
     if (user) {
       request.user = user
       request.auth = { via: 'session' }
+      // HZ-704: humanAuthorized reads and writes the session row through it.
+      // Not enumerable, so nothing that serialises request.auth carries it.
+      Object.defineProperty(request.auth, 'token', { value: request.cookies[SESSION_COOKIE_NAME], enumerable: false })
       return
     }
     const shotUser = testEnvUser(request.headers)
@@ -2963,7 +3014,31 @@ export function buildApp({
       const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME]) || testEnvUser(request.headers)
       if (!user) return reply.code(401).send({ error: 'login_required' })
       // HZ-563: the UI shows the Farm health entry only when this is true.
-      return { user: { ...user, isAdmin: access.isOwner(user.id) } }
+      // HZ-704: pinVerifiedUntil is when this session's PIN verification ends,
+      // or null — a timestamp, never the PIN.
+      const pinVerifiedUntil = auth.sessionPinVerifiedUntil(request.cookies[SESSION_COOKIE_NAME])
+      return { user: { ...user, isAdmin: access.isOwner(user.id), pinVerifiedUntil } }
+    },
+  )
+
+  // HZ-704: Lock ends this session's PIN verification now; the next gate or
+  // Admin change asks for the PIN again. A browser session only: like the
+  // other /api/auth/ routes, a token is not read and gets 401 login_required.
+  // A cross-site request gets 403 cross_site_refused.
+  fastify.post(
+    '/api/auth/pin/lock',
+    {
+      config: { scope: 'public' },
+      schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT }, security: SESSION_SECURITY },
+    },
+    (request, reply) => {
+      const token = request.cookies[SESSION_COOKIE_NAME]
+      if (!auth.getSessionUser(token)) return reply.code(401).send({ error: 'login_required' })
+      // Only a cross-site request is refused: Lock grants nothing, and the
+      // lax session cookie is not sent on a cross-site POST anyway.
+      if (sameOrigin(request) === 'refused') return reply.code(403).send({ error: 'cross_site_refused' })
+      auth.lockSession(token)
+      return { ok: true }
     },
   )
 

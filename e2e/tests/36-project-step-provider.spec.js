@@ -1,13 +1,13 @@
 // HZ-370: Admin's per-project "Runs on" default for each eligible step, end
 // to end. Each select starts at Default and offers Default / Claude / Muse; a
-// change asks for the gate PIN and the saved value survives a reload. Deploy
+// change is confirmed and gate-PIN protected (HZ-704: the PIN dialog) and the saved value survives a reload. Deploy
 // has no select. A wrong PIN is refused by the route
 // (server/test/gate-pin-routes.test.mjs).
 //
 // Its own project with no repo and no items, so no mock agent ever runs a PM
 // step against it. Sets its own PIN: earlier specs rotate it.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
 
@@ -41,9 +41,9 @@ test('a project step default starts at Default; the right PIN saves Muse and it 
   await expect(page.getByLabel(`${PROJECT} Deploy the changes Runs on`, { exact: true })).toHaveCount(0)
 
   await select.selectOption('muse')
-  const pin = page.getByLabel(`Gate PIN to set ${PROJECT} ${OUTCOME} to muse`)
-  await pin.fill(GATE_PIN)
   await page.getByRole('button', { name: 'Save', exact: true }).click()
+  // beforeAll's setGatePinDirect locked the session: this change asks once.
+  await answerPinDialog(page, GATE_PIN)
   await expect(select).toHaveValue('muse')
   await select.scrollIntoViewIfNeeded()
 

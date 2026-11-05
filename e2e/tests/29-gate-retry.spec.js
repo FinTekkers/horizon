@@ -1,6 +1,6 @@
 // HZ-231: an Accept run that timed out shows Retry beside its reason on the
 // Board card. The failure is the server's, so a reload keeps it. Retry is
-// Accept relabelled — the same confirm dialog and PIN prompt — and the card
+// Accept relabelled — the same confirm dialog and PIN dialog — and the card
 // moves to the running status, which replaces the old reason.
 //
 // Same set-up as 21-gate-in-flight.spec.js: only GitHub's answer is canned;
@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertGateAction, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -107,11 +107,11 @@ test('a timed-out Accept run shows Retry on the card; Retry with the PIN starts 
   await expect(status).toContainText(REASON)
   await expect(retry).toBeEnabled()
 
-  await page.evaluate(() => localStorage.removeItem('horizon_gate_pin'))
   await retry.click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
-  page.once('dialog', (dialog) => dialog.accept(GATE_PIN))
   await page.locator('.composer__submit').click()
+  // beforeAll's setGatePinDirect locked the session (HZ-704): Retry asks once.
+  await answerPinDialog(page, GATE_PIN)
 
   await expect(status).toContainText(`Merging: running checks on main + PR #${PR}`, { timeout: 15_000 })
   await expect(status).not.toContainText(REASON)

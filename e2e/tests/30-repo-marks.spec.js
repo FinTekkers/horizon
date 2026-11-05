@@ -1,12 +1,12 @@
 // HZ-304: a repo's 'No checks' and 'No deploy' marks in Admin, end to end
 // through the real UI, API and DB. An unconfigured repo carries a plain-words
-// warning. The gate PIN turns a mark on, which clears the warning, across a
+// warning. The gate PIN (HZ-704: the PIN dialog) turns a mark on, which clears the warning, across a
 // reload; a wrong PIN is refused by the route
 // (server/test/gate-pin-routes.test.mjs). The repo is
 // inserted directly (connecting through the API purges the demo items other
 // specs read); the seeded horizon and ui-service rows are never touched.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -38,9 +38,8 @@ function marksRow() {
 const marks = (page) => page.locator('.repo-marks').filter({ has: page.getByRole('switch', { name: `No checks for ${REPO}` }) })
 const toggle = (page, label) => marks(page).getByRole('switch', { name: `${label} for ${REPO}` })
 
-async function flip(page, label, pin) {
+async function flip(page, label) {
   await toggle(page, label).click()
-  await page.getByLabel(`Gate PIN to change ${label.toLowerCase()} for ${REPO}`).fill(pin)
   await marks(page).getByRole('button', { name: 'Set', exact: true }).click()
 }
 
@@ -54,13 +53,15 @@ test("the owner marks a repo 'no checks' and 'no deploy' in Admin, each behind t
 
   // The PIN turns it on and clears the warning. One reload at the end proves
   // what was stored, so this spec stays lean.
-  await flip(page, 'No checks', GATE_PIN)
+  await flip(page, 'No checks')
+  // beforeAll's setGatePinDirect locked the session: the first change asks.
+  await answerPinDialog(page, GATE_PIN)
   await expect(toggle(page, 'No checks')).toHaveAttribute('aria-checked', 'true')
   await expect(marks(page).getByText(WARNING)).toHaveCount(0)
   expect(marksRow()).toEqual({ no_checks: 1, no_deploy: 0 })
 
   // The same for 'No deploy'.
-  await flip(page, 'No deploy', GATE_PIN)
+  await flip(page, 'No deploy')
   await expect(toggle(page, 'No deploy')).toHaveAttribute('aria-checked', 'true')
   expect(marksRow()).toEqual({ no_checks: 1, no_deploy: 1 })
 

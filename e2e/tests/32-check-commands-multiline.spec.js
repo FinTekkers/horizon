@@ -1,10 +1,11 @@
 // HZ-334: a check slot holds several commands, one per line. The owner types
-// two lines into a repo's test slot in Admin, saves behind the gate PIN, and
-// after a reload both lines are shown exactly as typed. The repo is inserted
-// directly (connecting through the API purges the demo items other specs
-// read) and deleted again in afterAll; the seeded rows are never touched.
+// two lines into a repo's test slot in Admin, saves behind the gate PIN (the
+// HZ-704 PIN dialog), and after a reload both lines are shown exactly as
+// typed. The repo is inserted directly (connecting through the API purges the
+// demo items other specs read) and deleted again in afterAll; the seeded rows
+// are never touched.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertProject, insertProjectRepo, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -51,9 +52,13 @@ test('the owner saves two test commands, one per line, and both are shown after 
   await testSlot.fill(TWO_LINES)
   await expect(testSlot).toHaveValue(TWO_LINES)
 
-  await page.getByLabel(`Gate PIN to save check commands for ${REPO}`).fill(GATE_PIN)
-  const saved = page.waitForResponse((res) => res.url().includes('/repos/checks') && res.request().method() === 'PUT')
+  // beforeAll's setGatePinDirect locked the session: the PIN-less PUT gets a
+  // 401 and opens the PIN dialog; the PUT carrying the PIN is the save.
+  const saved = page.waitForResponse(
+    (res) => res.url().includes('/repos/checks') && res.request().method() === 'PUT' && !!res.request().headers()['x-human-key'],
+  )
   await block(page).getByRole('button', { name: 'Save commands' }).click()
+  await answerPinDialog(page, GATE_PIN)
   expect((await saved).status()).toBe(200)
   await expect(block(page).getByText('Check commands saved.')).toBeVisible()
 

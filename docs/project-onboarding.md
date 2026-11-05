@@ -42,8 +42,11 @@ Have these ready before step 1:
 
   ![The GitHub access panel, with no token saved](images/onboarding/00-github-access.png)
 
-- **Your gate PIN.** Every change in this guide asks for it. It is separate
-  from your login. If you don't have it, go to Admin's
+- **Your gate PIN.** Every change in this guide needs it. It is separate
+  from your login. The first change asks for it in the
+  **`Enter your gate PIN`** dialog. After that it covers your browser session
+  for up to 12 hours, until you press **`Lock`** or sign out. The browser never
+  stores it. If you don't have it, go to Admin's
   **`Security · your gate PIN`** panel and press **`Regenerate my PIN`**. The
   new PIN is shown once, so write it down somewhere safe. Regenerating it
   makes your old PIN stop working.
@@ -112,8 +115,8 @@ They wait there until the project is enabled in step 8.
   token in **`GitHub access`** (see [Before you start](#before-you-start)),
   then connect again.
 - The badge reads `Webhook: missing` or `Webhook: mismatched`. A note under
-  the row says what this breaks. Press **`Fix webhook`**, enter your PIN in
-  **`Gate PIN to fix this webhook`**, and press Fix.
+  the row says what this breaks. Press **`Fix webhook`**, then press Fix.
+  Enter your PIN if the dialog asks for it.
 
   ![A missing webhook, with the Fix webhook button](images/onboarding/02-webhook-missing.png)
 
@@ -134,8 +137,8 @@ per line. For example **`Install`** `npm ci`, **`Test`** `npm test`,
 secrets in a command (HZ-245).
 
 **Where:** **`/admin`**, under the repo's row: open **`Check commands`**.
-Fill the boxes, enter your PIN in **`Gate PIN to save`** and press
-**`Save commands`**. The grey hints in empty boxes are only suggestions. A
+Fill the boxes and press **`Save commands`**. Enter your PIN if the dialog
+asks for it. The grey hints in empty boxes are only suggestions. A
 hint never runs until you type it in.
 
 **Done when:** **`Check commands saved.`** appears. The red warning
@@ -146,8 +149,8 @@ the row has gone.
 
 **If it fails:**
 
-- **`Gate PIN incorrect`**: enter the PIN again, or regenerate it (see
-  [Before you start](#before-you-start)).
+- **`PIN incorrect — try again.`**: enter the PIN again, or regenerate it
+  (see [Before you start](#before-you-start)).
 - A repo with nothing to check, like a docs-only repo, can be marked
   **`No checks`** with the switch on the same row. Without commands or that
   mark, every item in the repo fails at implement.
@@ -167,7 +170,8 @@ values.
 **`Projects`** and the repo under **`Repositories`**. Each is listed by its
 key: the project name in lower case with dashes (`example-co`), and the repo
 with `__` for `/` (`example-org__example-app`). Pick one, type the rules into
-the editor, enter your PIN in **`Gate PIN`** and press **`Save new version`**.
+the editor and press **`Save new version`**. Enter your PIN if the dialog asks
+for it.
 Do the same for each repo.
 
 **Done when:** **`Saved as version`** `1` appears, and the note under the
@@ -181,7 +185,7 @@ editor reads **`Agents get saved version`** `1.` Press
 **If it fails:**
 
 - The project or repo is not in the list: reload the page after steps 1 and 2.
-- **`Gate PIN incorrect`**: enter it again.
+- **`PIN incorrect — try again.`**: enter it again.
 - A save that answers 503 means the server has no rules signing secret. Set
   `RULES_HMAC_SECRET` in `/etc/horizon/server.env`, as
   `infra/host/DEPLOY.md` section 2g says, and restart `horizon-server`.
@@ -200,10 +204,10 @@ service must already be merged into Horizon (see
 [Before you start](#before-you-start)).
 
 **Where:** **`/admin`**, the **`Deploy target overrides`** panel. Find the
-repo's row and press **`Add target`**. Fill the form, press Save, enter your
-PIN in **`Gate PIN to save`** and press **`Confirm save`**. Then go to the
-**`Deploy targets`** panel above it, open **`Dry run`** on the new target
-(HZ-258), enter your PIN in **`Gate PIN to dry-run`** and press **`Run`**.
+repo's row and press **`Add target`**. Fill the form, press Save, then
+**`Confirm save`**. Then go to the **`Deploy targets`** panel above it, open
+**`Dry run`** on the new target (HZ-258) and press **`Run`**. Enter your PIN
+if the dialog asks for it.
 A Dry run only reads. It never deploys, restarts or writes anything.
 
 **This panel lists only repos of enabled projects.** A disabled project's
@@ -231,7 +235,7 @@ checks fail. That is what a failure looks like.
   (`infra/host/DEPLOY.md` step 1).
 - `health` fails: the app is not answering on the **`Health URL`**. Check
   the service log with `journalctl -u <service>`.
-- **`Gate PIN incorrect`**: enter it again.
+- **`PIN incorrect — try again.`**: enter it again.
 
 ## 6. Choose the provider/model defaults
 
@@ -241,7 +245,7 @@ for this project: **`Default`**, **`Claude`** or **`Muse`**. Leave
 its own provider. The model is not a per-project choice yet.
 
 **Where:** **`/admin`**, inside the project's block, under **`Runs on`**. Pick
-a provider in a step's list, enter your PIN and press Save. To see which
+a provider in a step's list and press Save. To see which
 model each step uses, open **`/definitions`** and expand
 **`Models — which Claude model each agent call uses`**. That table is read
 only. See [Known gaps](#known-gaps).
@@ -254,8 +258,8 @@ step.
 
 ![The read-only models table](images/onboarding/06-models.png)
 
-**If it fails:** **`Gate PIN incorrect`** leaves the list as it was. Enter
-the PIN again. To change a model, someone has to edit
+**If it fails:** **`Gate PIN needed — nothing was saved`** leaves the list as
+it was. Try again and enter the PIN. To change a model, someone has to edit
 `domain/personas.json` in a reviewed Horizon PR. That change applies to
 every project.
 
@@ -303,17 +307,16 @@ project. Agents then do the work, and a person approves every gate.
   use it after a run of good shadow decisions.
 
 **Where:** **`/admin`**, the project's block. Click the
-**`Disabled`** switch, enter your PIN and press Enable. Change
-**`Autopilot`** with the list under the project's name. That also asks for
-your PIN.
+**`Disabled`** switch and press Enable. Change **`Autopilot`** with the list
+under the project's name, and press Save.
 
 **Done when:** the switch reads **`Enabled`**, and **`Autopilot`** shows the
 mode you chose. Items from the repo's open issues start moving on the board.
 
 ![The project enabled, with Autopilot left off](images/onboarding/08-enabled.png)
 
-**If it fails:** **`Gate PIN incorrect`** leaves the switch as it was.
-Enter the PIN again. To stop everything at once, turn the switch back to
+**If it fails:** **`Gate PIN needed — nothing was saved`** leaves the switch
+as it was. Try again and enter the PIN. To stop everything at once, turn the switch back to
 **`Disabled`**. Nothing new is dispatched for the project after that.
 
 Now go back to step 5 if you skipped it, then finish step 7's Dry run.

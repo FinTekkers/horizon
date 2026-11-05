@@ -1,11 +1,25 @@
 import { useEffect, useState } from 'react'
-import { saveToken, regenerateGatePin, listApiTokens, createApiToken, revokeApiToken } from '../../api'
+import {
+  saveToken,
+  regenerateGatePin,
+  listApiTokens,
+  createApiToken,
+  revokeApiToken,
+  getPinVerifiedUntil,
+  lockPinSession,
+  pinSessionLikelyVerified,
+} from '../../api'
 import { GithubIcon, LockIcon } from '../icons'
+
+const timeOf = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 function SecurityPanel() {
   const [pin, setPin] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  // HZ-704: whether this browser session is PIN-verified, as this tab knows it.
+  const [verified, setVerified] = useState(() => pinSessionLikelyVerified())
+  const verifiedUntil = verified ? getPinVerifiedUntil() : null
 
   const submit = async () => {
     setBusy(true)
@@ -13,6 +27,20 @@ function SecurityPanel() {
     try {
       const result = await regenerateGatePin()
       setPin(result.pin)
+      setVerified(false)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const lock = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await lockPinSession()
+      setVerified(false)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -29,22 +57,35 @@ function SecurityPanel() {
       <div className="panel__subtitle">
         A gate PIN is a cryptographic blocker, separate from your login, so an AI agent can never approve its own
         work — every account gets its own, generated automatically. Gate actions (approve, send back, restart
-        phase) require it; the server stores only a hash.
+        phase) and Admin changes require it; the server stores only a hash. You enter it once per browser session:
+        it then covers this session for up to 12 hours, until you Lock or sign out. This browser never stores it.
+      </div>
+
+      <div className="admin-status" aria-live="polite">
+        <span className="admin-status__dot" style={{ background: verified ? 'var(--success)' : 'var(--neutral-badge)' }} />
+        {verified
+          ? verifiedUntil
+            ? `PIN verified until ${timeOf(verifiedUntil)}`
+            : 'PIN verified for this session'
+          : 'PIN not entered in this session — the next gate or Admin change asks for it'}
       </div>
 
       {pin && (
         <div className="admin-status">
           <span className="admin-status__dot" style={{ background: 'var(--success)' }} />
           Your new PIN: <strong style={{ fontFamily: 'var(--font-mono)', marginLeft: 4 }}>{pin}</strong> — shown
-          once, saved in this browser.
+          once, never saved. Every open session is locked and asks for it again.
         </div>
       )}
 
       {error && <div className="gh-error">{error}</div>}
 
       <div className="composer__actions">
+        <button className="composer__cancel" onClick={lock} disabled={busy}>
+          Lock
+        </button>
         <button className="composer__submit" style={{ background: 'var(--success)' }} onClick={submit} disabled={busy}>
-          {busy ? 'Generating…' : 'Regenerate my PIN'}
+          {busy ? 'Working…' : 'Regenerate my PIN'}
         </button>
       </div>
     </div>

@@ -11,10 +11,10 @@ vi.mock('../api', () => ({
   getScreenshots: vi.fn(),
   getScreenshotImage: vi.fn(),
   approveScreenshots: vi.fn(),
-  hasGatePin: vi.fn(() => true),
+  pinSessionLikelyVerified: vi.fn(() => true),
 }))
 
-import { approveScreenshots, getScreenshotImage, getScreenshots, hasGatePin } from '../api'
+import { approveScreenshots, getScreenshotImage, getScreenshots, pinSessionLikelyVerified } from '../api'
 import * as shotLayout from '../shotLayout'
 import ScreenshotPanel from './ScreenshotPanel'
 
@@ -129,7 +129,7 @@ test('Close returns to the panel and focuses the image that opened the viewer', 
 })
 
 test('images load only after Show images; opening the viewer fetches nothing more', async () => {
-  hasGatePin.mockReturnValueOnce(false)
+  pinSessionLikelyVerified.mockReturnValueOnce(false)
   render(<ScreenshotPanel item={item} />)
   const board = await screen.findByRole('listitem', { name: 'board' })
   expect(within(board).queryAllByRole('button', { name: /Baseline|Current|Diff/ })).toHaveLength(0)

@@ -13,12 +13,14 @@
 // every PR regardless of which item's change actually broke it; this is not
 // HZ-100 scope creep, it's the pre-existing stale-test gap HZ-106 left.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertDependency, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ADMIN_EMAIL = 'admin@example.com'
 // Its own PIN: 10-gate-key.spec.js runs earlier and rotates the admin PIN.
+// Setting it locks the shared session, so the abandon below opens the PIN
+// dialog (HZ-704).
 const GATE_PIN = '354354'
 
 test.beforeAll(() => {
@@ -62,7 +64,6 @@ test('one dependency edge renders as "Blocked by" on the dependent and "Blocks" 
 // frees what it blocked in the same request — nothing left silently blocked.
 test('abandoning a blocker with "Remove these links" leaves its dependent unblocked, with one event naming it', async ({ page }) => {
   await page.goto('/depab-1')
-  await page.evaluate((pin) => localStorage.setItem('horizon_gate_pin', pin), GATE_PIN)
   await expect(page.locator('.tracker__id')).toHaveText('DEPAB-1')
 
   await page.getByRole('button', { name: 'Abandon', exact: true }).click()
@@ -71,6 +72,8 @@ test('abandoning a blocker with "Remove these links" leaves its dependent unbloc
   await expect(dialog.getByRole('checkbox', { name: 'Remove these links' })).toBeChecked()
   await page.locator('.composer__input').fill('Superseded — no longer needed.')
   await page.locator('.composer__submit').click()
+  // beforeAll's setGatePinDirect locked the session: the abandon asks once.
+  await answerPinDialog(page, GATE_PIN)
   await expect(page.locator('.tracker__status')).toContainText('Abandoned', { timeout: 10_000 })
 
   // Reloaded, not optimistic: the abandon request is fire-and-forget.

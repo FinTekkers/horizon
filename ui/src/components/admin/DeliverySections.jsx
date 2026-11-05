@@ -4,30 +4,29 @@ import DeployTargetOverrides from '../DeployTargetOverrides'
 
 const RESULT_COLOR = { ok: 'var(--success)', failed: 'var(--danger)', never: 'var(--neutral-badge)' }
 
-const DRY_RUN_ERROR = { 401: 'Gate PIN incorrect', 409: 'Dry run already running' }
+const DRY_RUN_ERROR = { 409: 'Dry run already running' }
 
 // HZ-258: five read-only checks of the stored target (script, repo dir,
-// service, sudo, health). Asks for the gate PIN on every run and sends it in
-// a header only; the request carries nothing else, so it cannot change what is
-// probed. Results live in this component only.
+// service, sudo, health). Gate-PIN protected; the request carries nothing
+// else, so it cannot change what is probed. Results live in this component
+// only.
 function DeployDryRun({ target }) {
-  const [pin, setPin] = useState('')
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const run = async () => {
-    if (!pin || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     setResults(null)
     try {
-      const result = await dryRunDeployTarget(target.key, pin)
+      const result = await dryRunDeployTarget(target.key)
       setResults(result.results || [])
     } catch (err) {
-      setError(Object.hasOwn(DRY_RUN_ERROR, err.status ?? '') ? DRY_RUN_ERROR[err.status] : err.message)
+      if (err.message === 'pin_needed') setError('Gate PIN needed — nothing was run')
+      else setError(Object.hasOwn(DRY_RUN_ERROR, err.status ?? '') ? DRY_RUN_ERROR[err.status] : err.message)
     } finally {
-      setPin('')
       setBusy(false)
     }
   }
@@ -35,17 +34,7 @@ function DeployDryRun({ target }) {
   return (
     <div className="deploy-dry-run">
       <div className="project-block__add">
-        <input
-          className="field__input"
-          type="password"
-          autoComplete="off"
-          aria-label={`Gate PIN to dry-run ${target.repo}`}
-          placeholder="Gate PIN to dry-run"
-          value={pin}
-          onChange={(e) => setPin(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && run()}
-        />
-        <button type="button" className="composer__submit" style={{ background: 'var(--primary)' }} onClick={run} disabled={!pin || busy}>
+        <button type="button" className="composer__submit" style={{ background: 'var(--primary)' }} onClick={run} disabled={busy}>
           {busy ? 'Running…' : 'Run'}
         </button>
       </div>

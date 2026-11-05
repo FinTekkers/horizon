@@ -284,14 +284,17 @@ export function login(email, password) {
 }
 
 export function logout() {
+  pinVerifiedUntil = null
   return postJson('/auth/logout', {})
 }
 
 // Resolves to the logged-in user, or null if there is no session.
+// HZ-704: user.pinVerifiedUntil is when this session's PIN verification ends.
 export async function getCurrentUser() {
   const res = await fetch(`${API_BASE}/auth/me`).catch(() => null)
   if (!res || res.status === 401) return null
   const data = await res.json().catch(() => ({}))
+  if (data.user) pinVerifiedUntil = data.user.pinVerifiedUntil ?? null
   return data.user || null
 }
 
@@ -300,50 +303,110 @@ export function googleLoginUrl() {
   return `${API_BASE}/auth/google/start`
 }
 
-// ---- gate PIN ----
+// ---- gate PIN (HZ-704) ----
 // A cryptographic blocker kept separate from login: every account gets its
 // own PIN, auto-generated (never chosen) so an AI agent can't self-approve a
-// gate. The plaintext lives ONLY here (browser localStorage); the server
-// keeps a hash. Gate actions send it as a header; agents have no way to get it.
+// gate. The browser never stores it. A correct PIN marks the server's login
+// session PIN-verified for 12 hours, so the PIN dialog (PinDialog.jsx) is
+// asked only when a protected route answers 401, and the PIN lives only in
+// that one request. Every protected request sends x-horizon-csrf, which the
+// server requires on a request that carries no PIN (same-origin check).
 
-const PIN_STORAGE = 'horizon_gate_pin'
-
-function gatePin() {
-  return localStorage.getItem(PIN_STORAGE) || ''
-}
-
-function promptForPin(message) {
-  const pin = window.prompt(message)
-  if (pin) localStorage.setItem(PIN_STORAGE, pin)
-  return pin || ''
-}
-
-// HZ-509: whether this browser holds a gate PIN, so a panel can wait for a
-// click before a request would prompt for one.
-export function hasGatePin() {
-  return !!gatePin()
-}
-
-// A GET carries no body: fetch refuses one, and the caller would only see null.
-async function gatePost(path, body, method = 'POST') {
-  let pin = gatePin()
-  if (!pin) {
-    pin = promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')
+// Before HZ-704 the PIN was kept here in plain text. Removed on load.
+const LEGACY_PIN_STORAGE = 'horizon_gate_pin'
+for (const storage of [globalThis.localStorage, globalThis.sessionStorage]) {
+  try {
+    storage?.removeItem(LEGACY_PIN_STORAGE)
+  } catch {
+    // Storage can be unavailable (privacy mode); there is nothing to purge.
   }
-  const doFetch = (p) =>
-    fetch(
-      `${API_BASE}${path}`,
-      method === 'GET'
-        ? { method, headers: { 'x-human-key': p } }
-        : { method, headers: { 'Content-Type': 'application/json', 'x-human-key': p }, body: JSON.stringify(body ?? {}) },
-    )
-  let res = await doFetch(pin).catch(() => null)
-  if (res && res.status === 401) {
-    localStorage.removeItem(PIN_STORAGE)
-    const retryPin = promptForPin('Gate PIN incorrect — enter your gate PIN:')
-    if (retryPin) res = await doFetch(retryPin).catch(() => null)
+}
+
+// ({ retry }) => Promise<string | null>: the PIN the person typed, or null when
+// they cancelled. Set by PinDialogProvider on mount.
+let pinRequester = null
+
+export function setPinRequester(fn) {
+  pinRequester = fn
+}
+
+// What this tab last heard about the session's verification: an ISO time
+// from /auth/me, 'yes' after a protected request passed, or null.
+let pinVerifiedUntil = null
+
+// HZ-509: whether a protected request would likely pass without the dialog,
+// so a panel can wait for a click before a request would ask for the PIN.
+export function pinSessionLikelyVerified() {
+  if (pinVerifiedUntil === 'yes') return true
+  return !!pinVerifiedUntil && Date.parse(pinVerifiedUntil) > Date.now()
+}
+
+// The session's PIN verification end time from /auth/me, or null when this
+// tab does not know one.
+export function getPinVerifiedUntil() {
+  return pinVerifiedUntil && pinVerifiedUntil !== 'yes' ? pinVerifiedUntil : null
+}
+
+// A 401 that a PIN can answer — not a lost login.
+async function pinRefused(res) {
+  if (res.status !== 401) return false
+  const data = await (typeof res.clone === 'function' ? res.clone() : res).json().catch(() => ({}))
+  return data?.error !== 'login_required' && data?.error !== 'invalid_token'
+}
+
+// The one fetch for every PIN-protected route. Sends without a PIN first; on
+// a PIN 401 it asks the dialog and resends with the PIN, and asks again with
+// "PIN incorrect" for as long as the PIN is wrong. Rejects with
+// Error('pin_needed') when the dialog is cancelled (err.response is the 401),
+// and with fetch's own error when no answer came.
+async function pinFetch(path, init = {}) {
+  const send = (pin) =>
+    fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: { ...init.headers, 'x-horizon-csrf': '1', ...(pin ? { 'x-human-key': pin } : {}) },
+    })
+  let res = await send(null)
+  let retry = false
+  while (await pinRefused(res)) {
+    pinVerifiedUntil = null
+    const pin = pinRequester ? await pinRequester({ retry }) : null
+    if (!pin) {
+      const err = new Error('pin_needed')
+      err.response = res
+      throw err
+    }
+    res = await send(pin)
+    retry = true
   }
+  if (res.ok && !pinSessionLikelyVerified()) pinVerifiedUntil = 'yes'
   return res
+}
+
+// A PIN-protected request with a JSON body. A GET carries no body: fetch
+// refuses one.
+function pinSend(path, method, body) {
+  if (method === 'GET' || body === undefined) return pinFetch(path, { method })
+  return pinFetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) })
+}
+
+// Resolves to the Response, or null when no answer came. A cancelled dialog
+// resolves to the server's 401, so the caller reports it like any refusal.
+async function gatePost(path, body, method = 'POST') {
+  try {
+    return await pinSend(path, method, method === 'GET' ? undefined : body)
+  } catch (err) {
+    if (err.message === 'pin_needed') return err.response
+    return null
+  }
+}
+
+// HZ-704: Lock — ends this session's PIN verification now.
+export async function lockPinSession() {
+  const res = await fetch(`${API_BASE}/auth/pin/lock`, { method: 'POST', headers: { 'x-horizon-csrf': '1' } })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  pinVerifiedUntil = null
+  return data
 }
 
 // HZ-449: a Plan's current item drafts and what has been filed from them
@@ -357,14 +420,11 @@ export async function getPlanDraft(id) {
 }
 
 // HZ-449: saves an owner's edit of the whole draft, made on `baseVersion`.
-// The gate PIN goes in the x-human-key header, as gatePost sends it. Rejects
+// A PIN-protected request, like gatePost's (HZ-704: pinFetch). Rejects
 // like gateAction, with the server's `errors` (a 422) and `currentVersion`
 // (a 409 stale_version) on the error.
 export async function savePlanDraft(id, baseVersion, doc) {
-  if (!gatePin() && !promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')) {
-    throw new Error('pin_needed')
-  }
-  const res = await gatePost(`/items/${encodeURIComponent(id)}/plan-draft`, { base_version: baseVersion, doc }, 'PUT')
+  const res = await pinSend(`/items/${encodeURIComponent(id)}/plan-draft`, 'PUT', { base_version: baseVersion, doc }).catch(networkOrPin)
   if (!res) throw new Error('network')
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -377,18 +437,18 @@ export async function savePlanDraft(id, baseVersion, doc) {
   return data
 }
 
+// pinFetch's rejection, for a caller that reports a lost answer as
+// Error('network'): Error('pin_needed') is passed on, anything else is null.
+function networkOrPin(err) {
+  if (err.message === 'pin_needed') throw err
+  return null
+}
+
 // HZ-470: an awaited gate action (Kill, Restart phase). Rejects with
-// Error('pin_needed') when no PIN is stored and the prompt is cancelled or
-// empty — nothing is sent; Error('network') when no answer came; else
-// Error(<error code>) with `status` on a non-2xx. Never retries on its own
-// beyond gatePost's single 401 re-prompt.
+// Error('pin_needed') when the PIN dialog is cancelled; Error('network') when
+// no answer came; else Error(<error code>) with `status` on a non-2xx.
 async function gateAction(path, body, method = 'POST') {
-  // promptForPin stores the PIN it gets, so gatePost reads it back from
-  // storage and does not prompt a second time.
-  if (!gatePin() && !promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')) {
-    throw new Error('pin_needed')
-  }
-  const res = await gatePost(path, body, method)
+  const res = await pinSend(path, method, body).catch(networkOrPin)
   if (!res) throw new Error('network')
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -415,7 +475,8 @@ export async function getScreenshots(id) {
 }
 
 // One image as an object URL (the caller revokes it). An <img> cannot send
-// the PIN header, so the bytes are fetched here. Rejects like gateAction.
+// the same-origin header, so the bytes are fetched here. Rejects like
+// gateAction.
 export async function getScreenshotImage(id, screen, kind) {
   const path = `/items/${encodeURIComponent(id)}/screenshots/${encodeURIComponent(screen)}/${encodeURIComponent(kind)}`
   const res = await gatePost(path, null, 'GET')
@@ -436,17 +497,17 @@ export function approveScreenshots(id, commit, { screens, all } = {}) {
 }
 
 // Regenerating replaces the old PIN outright — returns the new plaintext,
-// shown once, same as account creation.
+// shown once, same as account creation. HZ-704: it also locks every session.
 export async function regenerateGatePin() {
   const result = await postJson('/auth/gate-pin/regenerate', {})
-  localStorage.setItem(PIN_STORAGE, result.pin) // this browser is the PIN holder
+  pinVerifiedUntil = null
   return result
 }
 
 // ---- personal API tokens (HZ-179) ----
 // The raw token comes back once, from createApiToken, and is handed straight
-// to the caller to show — it is never stored here (no localStorage, unlike
-// the gate PIN above): the browser has no use for it after the user copies it.
+// to the caller to show — it is never stored here, like the gate PIN above:
+// the browser has no use for it after the user copies it.
 
 export function listApiTokens() {
   return getJson('/tokens')
@@ -489,15 +550,12 @@ export function getPlanProgress() {
   return planProgress
 }
 
-// HZ-208: flip a project's enabled flag. The PIN is asked for on every flip
-// and sent only in the x-human-key header — never cached (unlike gatePost,
-// which keeps it in localStorage), never logged, never in the URL.
-export async function setProjectEnabled(projectId, enabled, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/enabled`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ enabled }),
-  })
+// HZ-208: flip a project's enabled flag. PIN-protected through pinFetch
+// (HZ-704): the PIN dialog opens only when the session is not PIN-verified,
+// and the PIN goes only in that request's x-human-key header — never stored,
+// logged or put in the URL. A cancelled dialog rejects with Error('pin_needed').
+export async function setProjectEnabled(projectId, enabled) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/enabled`, 'POST', { enabled })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -508,13 +566,9 @@ export async function setProjectEnabled(projectId, enabled, pin) {
 }
 
 // HZ-270: a project's Autopilot mode (off | shadow | on). Same PIN handling
-// as setProjectEnabled: sent only in the x-human-key header, never cached.
-export async function setProjectAutopilot(projectId, mode, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/autopilot`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ mode }),
-  })
+// as setProjectEnabled.
+export async function setProjectAutopilot(projectId, mode) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/autopilot`, 'POST', { mode })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -526,12 +580,8 @@ export async function setProjectAutopilot(projectId, mode, pin) {
 
 // HZ-535: a project's definitions switch. Same PIN handling as
 // setProjectAutopilot, so a 401 carries its status for the Admin message.
-export async function setProjectDefinitionsEnabled(projectId, enabled, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/definitions-enabled`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ enabled }),
-  })
+export async function setProjectDefinitionsEnabled(projectId, enabled) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/definitions-enabled`, 'POST', { enabled })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -542,15 +592,14 @@ export async function setProjectDefinitionsEnabled(projectId, enabled, pin) {
 }
 
 // HZ-245: a repo's check commands (install, test, lint, e2e, screenshots). Same PIN
-// handling as setProjectEnabled: asked for on every save, sent only in the
-// x-human-key header, never cached.
+// handling as setProjectEnabled.
 // HZ-750: `targeted` (the slots opted into a fix round's targeted run) goes
 // beside the commands; undefined leaves the stored list unchanged.
-export async function saveRepoChecks(projectId, repo, checks, pin, targeted) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/checks`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ repo, ...checks, ...(targeted === undefined ? {} : { targeted }) }),
+export async function saveRepoChecks(projectId, repo, checks, targeted) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/repos/checks`, 'PUT', {
+    repo,
+    ...checks,
+    ...(targeted === undefined ? {} : { targeted }),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -562,13 +611,9 @@ export async function saveRepoChecks(projectId, repo, checks, pin, targeted) {
 }
 
 // HZ-304: a repo's 'no checks' / 'no deploy' marks ({noChecks?, noDeploy?}).
-// Same PIN handling as saveRepoChecks: sent only in the x-human-key header.
-export async function saveRepoMarks(projectId, repo, marks, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/marks`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ repo, ...marks }),
-  })
+// Same PIN handling as saveRepoChecks.
+export async function saveRepoMarks(projectId, repo, marks) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/repos/marks`, 'PUT', { repo, ...marks })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -579,13 +624,9 @@ export async function saveRepoMarks(projectId, repo, marks, pin) {
 }
 
 // HZ-494: a repo's test-login env file — a host PATH only ("" clears it).
-// Same PIN handling as saveRepoChecks: sent only in the x-human-key header.
-export async function saveRepoTestEnvFile(projectId, repo, path, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/test-env`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ repo, path }),
-  })
+// Same PIN handling as saveRepoChecks.
+export async function saveRepoTestEnvFile(projectId, repo, path) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/repos/test-env`, 'PUT', { repo, path })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -650,10 +691,7 @@ export function addRepoToProject(projectId, repo) {
 // the error code with `status`), plus `code`, the server's own `serverMessage`
 // to show as is (null when it sent none) and the missing `permission`.
 export async function connectTenantRepo(projectId, repo, token) {
-  if (!gatePin() && !promptForPin('Enter your gate PIN (shown when it was last generated — regenerate it in Admin if lost):')) {
-    throw new Error('pin_needed')
-  }
-  const res = await gatePost(`/tenant/projects/${encodeURIComponent(projectId)}/repos`, { repo, token })
+  const res = await pinSend(`/tenant/projects/${encodeURIComponent(projectId)}/repos`, 'POST', { repo, token }).catch(networkOrPin)
   if (!res) throw new Error('network')
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -689,14 +727,9 @@ export function listProjects() {
   return getJson('/projects')
 }
 
-// HZ-659: gate-PIN protected like fixRepoWebhook — the PIN goes only in the
-// x-human-key header, never cached or put in the URL.
-export async function disconnectRepo(projectId, repo, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/disconnect`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ repo }),
-  })
+// HZ-659: gate-PIN protected like fixRepoWebhook.
+export async function disconnectRepo(projectId, repo) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/repos/disconnect`, 'POST', { repo })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -712,14 +745,9 @@ export function getRepoWebhooks(projectId) {
 }
 
 // HZ-244: create a missing webhook or repair a mismatched one. Gate-PIN
-// protected like setProjectEnabled — the PIN goes only in the x-human-key
-// header, never cached or put in the URL.
-export async function fixRepoWebhook(projectId, repo, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/repos/webhook/fix`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ repo }),
-  })
+// protected like setProjectEnabled.
+export async function fixRepoWebhook(projectId, repo) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/repos/webhook/fix`, 'POST', { repo })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -943,12 +971,8 @@ export function setPersona(id, agent, persona) {
 // the picker can say why; the saved choice comes back on the board stream.
 // HZ-370: a project's default "Runs on" for one step; PIN-gated like
 // setProjectAutopilot, so a 401 carries its status for the Admin message.
-export async function setProjectStepProvider(projectId, stepIndex, provider, pin) {
-  const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/step-providers/${stepIndex}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({ provider }),
-  })
+export async function setProjectStepProvider(projectId, stepIndex, provider) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/step-providers/${stepIndex}`, 'PUT', { provider })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -1002,14 +1026,10 @@ export function getFarmHealth() {
 }
 
 // HZ-258: a target's Dry run — five read-only checks. Gate-PIN protected like
-// fixRepoWebhook: the PIN goes only in the x-human-key header, never cached.
+// fixRepoWebhook.
 // The body is always empty: the server probes only the stored target.
-export async function dryRunDeployTarget(key, pin) {
-  const res = await fetch(`${API_BASE}/admin/deploy-targets/${encodeURIComponent(key)}/dry-run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify({}),
-  })
+export async function dryRunDeployTarget(key) {
+  const res = await pinSend(`/admin/deploy-targets/${encodeURIComponent(key)}/dry-run`, 'POST', {})
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -1020,22 +1040,16 @@ export async function dryRunDeployTarget(key, pin) {
 }
 
 // ---- deploy target overrides (HZ-259) ----
-// The stored rows, and PIN-gated create / edit / delete. The PIN goes only in
-// the x-human-key header — never the URL, body or storage. Errors carry the
+// The stored rows, and PIN-gated create / edit / delete, like setProjectEnabled.
+// The PIN is never in the URL, body or storage. Errors carry the
 // status, the server's error code and checkRunnable's reason, nothing else.
 
 export function getDeployTargetConfig() {
   return getJson('/admin/deploy-targets/config')
 }
 
-async function deployTargetWrite(method, path, body, pin) {
-  const headers = { 'x-human-key': pin }
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
-  const res = await fetch(`${API_BASE}/admin/deploy-targets${path}`, {
-    method,
-    headers,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  })
+async function deployTargetWrite(method, path, body) {
+  const res = await pinSend(`/admin/deploy-targets${path}`, method, body)
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
@@ -1047,16 +1061,16 @@ async function deployTargetWrite(method, path, body, pin) {
   return data
 }
 
-export function createDeployTarget(target, pin) {
-  return deployTargetWrite('POST', '', target, pin)
+export function createDeployTarget(target) {
+  return deployTargetWrite('POST', '', target)
 }
 
-export function updateDeployTarget(key, fields, pin) {
-  return deployTargetWrite('PUT', `/${encodeURIComponent(key)}`, fields, pin)
+export function updateDeployTarget(key, fields) {
+  return deployTargetWrite('PUT', `/${encodeURIComponent(key)}`, fields)
 }
 
-export function deleteDeployTarget(key, pin) {
-  return deployTargetWrite('DELETE', `/${encodeURIComponent(key)}`, undefined, pin)
+export function deleteDeployTarget(key) {
+  return deployTargetWrite('DELETE', `/${encodeURIComponent(key)}`, undefined)
 }
 
 export function getDefinition(kind, name) {
@@ -1128,14 +1142,9 @@ export function listRuleVersions(scope, key) {
   return getJson(`/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}/versions`)
 }
 
-// Same PIN handling as setProjectEnabled: asked for on every save or restore,
-// sent only in the x-human-key header, never cached.
-async function rulesPost(path, body, pin) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-human-key': pin },
-    body: JSON.stringify(body ?? {}),
-  })
+// Same PIN handling as setProjectEnabled.
+async function rulesPost(path, body) {
+  const res = await pinSend(`${path}`, 'POST', body ?? {})
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     let message = data.error || `HTTP ${res.status}`
@@ -1150,14 +1159,10 @@ async function rulesPost(path, body, pin) {
   return data
 }
 
-export function saveRule(scope, key, content, pin) {
-  return rulesPost(`/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`, { content }, pin)
+export function saveRule(scope, key, content) {
+  return rulesPost(`/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`, { content })
 }
 
-export function restoreRule(scope, key, version, pin) {
-  return rulesPost(
-    `/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}/versions/${encodeURIComponent(version)}/restore`,
-    {},
-    pin,
-  )
+export function restoreRule(scope, key, version) {
+  return rulesPost(`/rules/${encodeURIComponent(scope)}/${encodeURIComponent(key)}/versions/${encodeURIComponent(version)}/restore`, {})
 }
