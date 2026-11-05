@@ -286,6 +286,8 @@ const WRITE_CASES = {
   'POST /api/items/:id/asks/:askId/file': { expect: '404', url: `${ITEM}/asks/${ASK_A}/file`, body: {}, owner: 409 },
   'POST /api/items/:id/asks/:askId/dismiss': { expect: '404', url: `${ITEM}/asks/${ASK_A}/dismiss`, body: { reason: 'iso reason' }, owner: 200 },
   'POST /api/items/:id/pause': { expect: '404', url: `${ITEM}/pause`, body: { paused: false }, owner: 200 },
+  // HZ-713: 409 not_waiting — the seeded item has no usage wait to release.
+  'POST /api/items/:id/usage-wait/release': { expect: '404', url: `${ITEM}/usage-wait/release`, body: {}, owner: 409 },
   'POST /api/items/:id/persona': { expect: '404', url: `${ITEM}/persona`, body: { agent: PERSONA_AGENT, persona: PERSONA_ID }, owner: 200 },
   'POST /api/items/:id/priority': { expect: '404', url: `${ITEM}/priority`, body: { priority: 'High' }, owner: 200 },
   'PUT /api/items/:id/steps/:stepIndex/provider': { expect: '404', url: `${ITEM}/steps/0/provider`, body: { provider: 'default' }, owner: 200 },

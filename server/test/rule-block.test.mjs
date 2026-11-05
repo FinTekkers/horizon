@@ -272,8 +272,8 @@ test('each block pings the owner once; a re-poll, a second drain and a repeat re
   assert.ok(body.includes(`Rule: "${BLOCK.rule}"`))
   assert.ok(body.includes(`Needs: ${BLOCK.needs}`))
   assert.ok(body.endsWith('\nhttps://shoreward.ai/horizon/rb-ping'))
-  assert.ok(body.includes('\nAdd a dependency on the item that delivers it, resume to retry, or abandon.\n'))
-  assert.ok(body.toLowerCase().includes(`${ruleBlockActionsText()}.`))
+  assert.ok(body.includes('\nAdd a dependency on the item that delivers it, release it with your gate PIN, or abandon.\n'))
+  assert.ok(body.toLowerCase().includes(`${ruleBlockActionsText()}.`.toLowerCase()))
 
   // Re-poll, re-report, re-drain, re-sweep: nothing new.
   for (let i = 0; i < 3; i++) assert.equal((await inject({ method: 'GET', url: '/api/items' })).statusCode, 200)

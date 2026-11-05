@@ -9,7 +9,8 @@
 //   GET  /items                                → getItems()
 //   POST /items/:id/gates/:step/approve        → approveGate(id)
 //   POST /items/:id/reject                     → requestChanges(id, target, feedback)
-//   POST /items/:id/pause                      → setPaused(id, paused)
+//   POST /items/:id/pause                      → setPaused(id, paused), releaseRuleBlock(id)
+//   POST /items/:id/usage-wait/release         → releaseUsageWait(id)
 //   POST /items/:id/phases/:phase/restart      → restartPhase(id, phase, reason)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
@@ -469,6 +470,24 @@ export async function setPaused(id, paused) {
   if (paused) clearTimeout(timers[id])
   else runAgents(id)
   return { ok: true, paused, item: items.find((x) => x.id === id) }
+}
+
+// HZ-713: mirrors serverApi.releaseRuleBlock. The mock has no gate PIN, so
+// releasing is the resume that clears the block.
+export async function releaseRuleBlock(id) {
+  return setPaused(id, false)
+}
+
+// HZ-713: mirrors serverApi.releaseUsageWait. The mock never limits a model;
+// it clears the wait and runs the step again.
+export async function releaseUsageWait(id) {
+  const it = items.find((x) => x.id === id)
+  if (!it) throw new Error('not_found')
+  if (!it.usageWait) throw new Error('not_waiting')
+  update(id, (x) => ({ ...x, usageWait: null }))
+  pushEvent(id, { who: 'You', text: 'released the usage wait', color: '#5E4380', initials: 'YOU' })
+  runAgents(id)
+  return { ok: true, released: true, cursor: it.cursor, clearedModels: [], item: items.find((x) => x.id === id) }
 }
 
 // HZ-407: mock items run no Execute job, so there is never one to stop or

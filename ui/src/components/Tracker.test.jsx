@@ -459,14 +459,17 @@ test('the banner never reads as just "Paused" with nothing else — a title alon
   expect(banner.querySelector('.pause-banner__detail').textContent.length).toBeGreaterThan(0)
 })
 
-test('a human-initiated manual pause (not a failure) shows no pause banner', () => {
+// HZ-713: a manual pause shows the plain paused hold — no failure details.
+test('a human-initiated manual pause (not a failure) shows the paused banner, not a failure one', () => {
   const item = {
     ...baseItem,
     paused: true,
     events: [{ created_at: '2026-01-01 00:00:00', text: 'paused agent work on this item' }],
   }
   const { container } = renderTracker(item)
-  expect(container.querySelector('.pause-banner')).toBeNull()
+  expect(container.querySelectorAll('.pause-banner').length).toBe(1)
+  expect(container.querySelector('.pause-banner').getAttribute('data-hold-banner')).toBe('paused')
+  expect(container.querySelector('.pause-banner__meta')).toBeNull()
 })
 
 test('the pause banner coexists with the Resume control and the activity feed, replacing neither', () => {
@@ -552,14 +555,15 @@ test('the "No failure details" fallback shows only when no pause event exists si
   expect(present.queryByText(/No failure details were recorded/)).toBeNull()
 })
 
-test('a manual pause under newer events still shows no pause banner', () => {
+test('a manual pause under newer events still shows the paused banner, not a failure one', () => {
   const item = {
     ...baseItem,
     paused: true,
     events: [FORWARD_REFUSED_EVENT, FORWARD_REFUSED_EVENT, { created_at: '2026-10-07 10:00:00', text: 'paused agent work on this item' }],
   }
   const { container } = renderTracker(item)
-  expect(container.querySelector('.pause-banner')).toBeNull()
+  expect(container.querySelector('.pause-banner').getAttribute('data-hold-banner')).toBe('paused')
+  expect(container.querySelector('.pause-banner__meta')).toBeNull()
 })
 
 test('a cause containing markup renders as literal text, never as HTML', () => {

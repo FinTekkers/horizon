@@ -123,12 +123,21 @@ const HUMAN_GATE_CALL_SITES =
     /if \(!humanAuthorized\(request, reply\)\) return|const proof = humanAuthorized\(request, reply\)\n\s*if \(!proof\) return/g,
   ) || []
 
+// HZ-713: the one conditional gate. /pause asks for the PIN only on a resume
+// that would clear a rule block; pausing, and resuming an unblocked item, take
+// the login alone, so the route stays documented as an ordinary one. Named
+// exactly, so any other conditional humanAuthorized call still fails the count.
+const CONDITIONAL_GATE_CALL_SITES =
+  APP_SOURCE.match(/if \(request\.body\.paused === false && store\.hasRuleBlock\(request\.params\.id\) && !humanAuthorized\(request, reply\)\) return/g) ||
+  []
+
 test('the call-site count is a real count, and excludes the declaration', () => {
   assert.ok(HUMAN_GATE_CALL_SITES.length >= 3, `found ${HUMAN_GATE_CALL_SITES.length} humanAuthorized call sites`)
+  assert.equal(CONDITIONAL_GATE_CALL_SITES.length, 1, 'the /pause rule-block check moved — re-anchor this scan')
   assert.match(APP_SOURCE, /function humanAuthorized\(request, reply\) \{/, 'the declaration moved — re-anchor this scan')
   assert.equal(
     (APP_SOURCE.match(/humanAuthorized\(request, reply\)/g) || []).length,
-    HUMAN_GATE_CALL_SITES.length + 1,
+    HUMAN_GATE_CALL_SITES.length + CONDITIONAL_GATE_CALL_SITES.length + 1,
     'the call form and the bare form should differ by exactly the one declaration',
   )
 })

@@ -93,6 +93,7 @@ import {
   PAUSE_SET,
   markModelLimited,
   activeModelLimits,
+  clearModelLimits,
   setUsageWait,
   listUsageWaits,
   projectOverlayFor,
@@ -1540,15 +1541,21 @@ function holdForIsolation(id, item) {
   return true
 }
 
+// HZ-422: the models one step may run on, in order — its "Runs on" choice
+// first, then domain/providers.json's fallbackChain. Throws if the chain
+// cannot be built. Shared by pickRunsOn and releaseUsageWait (HZ-713).
+function stepChain(item, stepIndex) {
+  const step = STEPS[stepIndex]
+  return effectiveChain(chainHead(stepChoicesFor(item)[stepIndex], step), step)
+}
+
 // HZ-422: pickModel() over this step's chain — its "Runs on" choice first,
 // then domain/providers.json's fallbackChain — against the limits active now.
 // null (today's routing, no fallback) if the chain cannot be built, so a bad
 // model table never strands the item mid-dispatch.
 function pickRunsOn(item, stepIndex) {
-  const step = STEPS[stepIndex]
   try {
-    const chain = effectiveChain(chainHead(stepChoicesFor(item)[stepIndex], step), step)
-    return pickModel(chain, activeModelLimits(Date.now()), Date.now())
+    return pickModel(stepChain(item, stepIndex), activeModelLimits(Date.now()), Date.now())
   } catch (err) {
     console.warn(`usage limits: no fallback chain for ${item.id} step ${stepIndex}: ${err.message}`)
     return null
@@ -1580,6 +1587,50 @@ function armUsageWait(id, untilMs) {
       kick(id)
     }, ms).unref(),
   )
+}
+
+// HZ-713: the owner's "Release now" on a usage wait. Drops the limits on every
+// model the held step may run on — the ledger is shared, so every item's next
+// dispatch sees them free — clears the wait and its timer, and kicks the item
+// once. The cursor never moves and no gate is touched: the same step runs
+// again at the same attempt. A paused or isolation-held item is refused and
+// keeps its wait, since kick() would dispatch nothing for it.
+export function releaseUsageWait(id, actor = 'You') {
+  const item = getItem(id)
+  if (!item) return { error: 'not_found' }
+  if (!isProjectEnabled(item.project_id)) return { error: 'project_not_active' }
+  if (isClosed(item)) return { error: 'closed' }
+  if (isAbandoned(item)) return { error: 'abandoned' }
+  if (!item.usage_wait_until || !(Date.parse(item.usage_wait_until) > Date.now())) return { error: 'not_waiting' }
+  if (STEPS[item.cursor]?.kind === 'gate') return { error: 'gate_step' }
+  if (item.paused) return { error: 'paused' }
+  if (projectIsolationRefusal(item.project_id)) return { error: 'isolation_held' }
+
+  const step = STEPS[item.cursor]
+  let models = []
+  try {
+    models = stepChain(item, item.cursor).map((entry) => entry.model)
+  } catch (err) {
+    console.warn(`usage limits: no fallback chain for ${id} step ${item.cursor}: ${err.message}`)
+  }
+  clearModelLimits(models)
+  setUsageWait(id, null)
+  clearTimeout(usageWaitTimers.get(id))
+  usageWaitTimers.delete(id)
+  addEvent(id, {
+    who: actor,
+    text: `released the usage wait — “${step.label}” runs again with fresh model limits (cleared for every item)`,
+    color: '#5E4380',
+    initials: 'YOU',
+  })
+  notifyChange()
+  kick(id)
+  return { ok: true, released: true, cursor: item.cursor, clearedModels: models }
+}
+
+// Whether a usage-wait timer is armed for the item. Exported for tests.
+export function usageWaitArmed(id) {
+  return usageWaitTimers.has(id)
 }
 
 // Boot: every item still waiting on a usage limit gets its timer back. A wait

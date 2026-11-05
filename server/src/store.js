@@ -1439,6 +1439,15 @@ export function activeModelLimits(nowMs) {
   return limits
 }
 
+// HZ-713: a hand release of a usage wait drops these models' limits. The
+// ledger is shared, so every item's next dispatch sees them free again. Only
+// models named here are touched; returns the rows removed.
+export function clearModelLimits(models) {
+  const unique = [...new Set(models.filter(Boolean))]
+  if (unique.length === 0) return 0
+  return db.prepare(`DELETE FROM model_limit WHERE model IN (${unique.map(() => '?').join(', ')})`).run(...unique).changes
+}
+
 export function setUsageWait(id, untilIso) {
   db.prepare(`UPDATE work_item SET usage_wait_until = ?, ${touch} WHERE id = ?`).run(untilIso, id)
 }
@@ -2713,6 +2722,12 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   notify()
   agentRunner.kick(id)
   return { ok: true }
+}
+
+// HZ-713: whether the item carries a rule block — the /pause route asks for
+// the gate PIN before a resume that would clear one.
+export function hasRuleBlock(id) {
+  return db.prepare('SELECT rule_block_json IS NOT NULL AS blocked FROM work_item WHERE id = ?').get(id)?.blocked === 1
 }
 
 export function setPaused(id, paused) {

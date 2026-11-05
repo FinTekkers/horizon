@@ -39,6 +39,8 @@ vi.mock('./api', () => ({
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   restartPhase: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),

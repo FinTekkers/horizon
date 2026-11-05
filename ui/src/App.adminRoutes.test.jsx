@@ -39,6 +39,8 @@ vi.mock('./api', () => ({
   getPlanProgress: () => [],
   getRestartSent: () => null,
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   approveGate: vi.fn(),
   requestChanges: vi.fn(),
   restartPhase: vi.fn(),
