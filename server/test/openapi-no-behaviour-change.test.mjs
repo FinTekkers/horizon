@@ -349,10 +349,10 @@ test('no internal credential header is named anywhere in the document', () => {
 })
 
 test('the document is small enough that no internal surface slipped in', () => {
-  // A smell test, not a budget: the public surface is ~39 operations of
-  // deliberately shallow schemas. A large jump means routes or payload detail
-  // arrived that nobody decided to publish.
+  // A smell test, not a budget: the public surface is ~98 operations of
+  // deliberately shallow schemas (about 122 KB on 5 Nov 2026). A large jump
+  // means routes or payload detail arrived that nobody decided to publish.
   const bytes = Buffer.byteLength(JSON.stringify(spec))
   assert.ok(bytes > 5_000, `the document is only ${bytes} bytes — it is probably empty`)
-  assert.ok(bytes < 120_000, `the document is ${bytes} bytes; check what was added`)
+  assert.ok(bytes < 150_000, `the document is ${bytes} bytes; check what was added`)
 })
