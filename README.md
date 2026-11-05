@@ -186,7 +186,7 @@ because HZ-77 has nothing to render until HZ-76's categories exist.
   `store.startHoldOf`). The item reads `blocked: true`, and `startHold` in its
   payload names what it waits for: `{ askId, title, filedItem, step }`, with
   `filedItem` null while the ask is unfiled, and `step` the start step's
-  label. The item page shows "Waiting for ask “…” before “Specialist agent
+  label; the field is absent when nothing holds the start. The item page shows "Waiting for ask “…” before “Specialist agent
   implements”" or "Waiting for HZ-… to merge or close before “…”". The filed
   item's merge or close, or a Dismiss, wakes it. A run already in flight is
   never discarded for it. Soft asks never hold.

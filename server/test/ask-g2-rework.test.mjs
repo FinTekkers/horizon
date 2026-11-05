@@ -109,5 +109,5 @@ test('G2 rework: a running Implement returns to planning and is superseded; a bl
     assert.equal(store.approveGate(ID, gate, '').ok, true, `approve “${STEPS[gate].label}”`)
   }
   assert.deepEqual(runs(IMPLEMENT_STEP_INDEX).map((r) => r.status), ['superseded', 'done'])
-  assert.equal(store.itemViewById(ID).startHold, null)
+  assert.equal(Object.hasOwn(store.itemViewById(ID), 'startHold'), false)
 })

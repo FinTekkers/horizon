@@ -114,7 +114,7 @@ test('metric 4: Implement waits for an open blocking ask, then for its filed ite
   assert.equal(store.markMerged(childId), true)
   assert.equal(runsAt(id, IMPLEMENT_STEP_INDEX), 1, 'Implement starts once the filed item merges')
   view = await apiItem(id)
-  assert.equal(view.startHold, null)
+  assert.equal(Object.hasOwn(view, 'startHold'), false)
   assert.equal(view.blocked, false)
 })
 
@@ -147,7 +147,7 @@ test('metric 4: a Task’s Execute waits for an open blocking ask and starts as 
   assert.equal(res.statusCode, 200, res.body)
   // The Dismiss route kicks the item; nothing waits for a re-sweep.
   assert.equal(runsAt(id, EXECUTE_STEP_INDEX), 1, 'Execute starts right after the Dismiss')
-  assert.equal((await apiItem(id)).startHold, null)
+  assert.equal(Object.hasOwn(await apiItem(id), 'startHold'), false)
 })
 
 test('guardrail 2: an open soft ask never holds Implement', async () => {
@@ -157,7 +157,7 @@ test('guardrail 2: an open soft ask never holds Implement', async () => {
   orchestrator.kick(id)
   assert.equal(runsAt(id, IMPLEMENT_STEP_INDEX), 1)
   const view = await apiItem(id)
-  assert.equal(view.startHold, null)
+  assert.equal(Object.hasOwn(view, 'startHold'), false)
   assert.equal(view.blocked, false)
 })
 
@@ -168,5 +168,5 @@ test('only the start step is held: an item before Implement plans past an open b
   assert.equal(STEPS[ARCH + 1].kind, 'agent')
   orchestrator.kick(id)
   assert.equal(runsAt(id, ARCH + 1), 1)
-  assert.equal((await apiItem(id)).startHold, null)
+  assert.equal(Object.hasOwn(await apiItem(id), 'startHold'), false)
 })

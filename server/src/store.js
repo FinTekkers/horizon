@@ -1670,6 +1670,11 @@ export function startHoldOf(row) {
   return askStartHold(row, startCheckAsks(row.id))
 }
 
+function startHoldFields(row) {
+  const startHold = startHoldOf(row)
+  return startHold ? { startHold } : {}
+}
+
 // HZ-580: the ids of the dependencies this item gained at or after `since` (a
 // rule block's blockedAt). Both columns are SQLite text in the same
 // `YYYY-MM-DD HH:MM:SS` form, so the comparison stays here, in one place:
@@ -2279,9 +2284,10 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...spawnFields(row.id),
     // HZ-728: open asks — drafted follow-up and prerequisite items — read-only.
     asks: openAsks(row.id),
-    // HZ-731: the blocking ask, or the item it filed, that Implement or
-    // Execute waits for; null when nothing holds the start.
-    startHold: startHoldOf(row),
+    // HZ-731: only on an item held at Implement or Execute — the blocking ask,
+    // or the item it filed, that the start waits for. Absent otherwise, so
+    // the payload of every item nothing holds is unchanged.
+    ...startHoldFields(row),
     ruleBlock: ruleBlock && ruleBlockView(row.id, ruleBlock, dependencies.blockedBy),
     // HZ-422: every model this step may run on is usage-limited until `until`.
     usageWait: usageWaitView(row),

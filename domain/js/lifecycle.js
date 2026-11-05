@@ -585,7 +585,7 @@ export function holdingBlockers(item, blockers) {
   return blockers.filter((b) => !isMergeReleased(b))
 }
 
-// HZ-731: the start check. Before Implement (a Task's Execute) every blocking
+// HZ-731: the start check. Before the implement step (a Task's execute step) every blocking
 // ask must be dismissed, or filed with its item merged or closed. `asks` is
 // the item's open and filed blocking asks, oldest first, each
 // { id, status, title, filed } where `filed` is the filed item's row or null.

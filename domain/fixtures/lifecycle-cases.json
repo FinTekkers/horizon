@@ -735,6 +735,14 @@
     "agentStepIndexes": [
       { "case": "agent entries only, in order", "expect": [0, 2] }
     ],
+    "askStartHold": [
+      { "case": "an item before implement is held by nothing, even with an open blocking ask", "item": { "cursor": 7 }, "asks": [{ "id": 1, "status": "open", "title": "A", "filed": null }], "expect": null },
+      { "case": "a change item at implement is held by an open blocking ask", "item": { "cursor": 11 }, "asks": [{ "id": 1, "status": "open", "title": "A", "filed": null }], "expect": { "askId": 1, "title": "A", "filedItemId": null } },
+      { "case": "a change item at implement is held by a filed ask until its item merges", "item": { "cursor": 11 }, "asks": [{ "id": 2, "status": "filed", "title": "B", "filed": { "id": "HZ-2", "title": "B", "cursor": 12, "kind": "change" } }], "expect": { "askId": 2, "title": "B", "filedItemId": "HZ-2" } },
+      { "case": "a filed ask whose item merged holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 3, "status": "filed", "title": "C", "filed": { "id": "HZ-3", "title": "C", "cursor": 14, "kind": "change", "merged_at": "2026-11-05 00:00:00" } }], "expect": null },
+      { "case": "a filed ask whose item no longer exists holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 4, "status": "filed", "title": "D", "filed": null }], "expect": null },
+      { "case": "a task at execute is held by an open blocking ask", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 5, "status": "open", "title": "E", "filed": null }], "expect": { "askId": 5, "title": "E", "filedItemId": null } }
+    ],
 
     "gateStepIndexes": [
       { "case": "gate entries only, in order", "expect": [1] }
