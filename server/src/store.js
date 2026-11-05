@@ -35,11 +35,9 @@ import {
   gateStepIndexes,
   laneOf,
   laneSkips,
-  nextCursor,
   kindStepIndex,
   stepKeyAt,
   defaultReworkTarget,
-  mergedFloor,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 import { isPriority } from '../../domain/js/priorities.js'

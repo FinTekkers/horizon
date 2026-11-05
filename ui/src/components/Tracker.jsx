@@ -130,9 +130,10 @@ const PAUSE_ERRORS = {
 // HZ-185: on an item the latest automated review just rejected, sends it to
 // Accept the code with that verdict attached instead of another implement
 // cycle. HZ-710: "Accept despite review findings" — the findings it accepts
-// despite are listed above the button, so they are read before the PIN. The ref is the guard (two clicks in one tick both read the same
-// stale state); `busy` only renders it. Disabled until the request settles,
-// and while a gate action runs (HZ-216).
+// despite are listed above the button, so they are read before the PIN. The
+// ref is the guard (two clicks in one tick both read the same stale state);
+// `busy` only renders it. Disabled until the request settles, and while a
+// gate action runs (HZ-216).
 function ForwardToAcceptButton({ item, onForwardToAccept, disabled }) {
   const inFlight = useRef(false)
   const [busy, setBusy] = useState(false)
