@@ -43,6 +43,9 @@
 // owner's even once the label is removed — only the next arrival is Autopilot's
 // again. claim() re-reads the label beside the mode, for a label that lands
 // between the candidate read and the claim.
+//
+// HZ-731: an open blocking ask is a wait, not a stop, so the pass presses
+// Accept on the next tick after the ask is filed or dismissed.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -52,6 +55,7 @@ import { isDeployBlocked } from './deployDrain.js'
 import * as heldAccept from './heldAccept.js'
 import { MERGEABLE_PROBE_DELAYS_MS, MERGEABLE_PROBE_ATTEMPTS, reviewPassed as passedReview } from './caretakerMergeable.js'
 import { itemAutopilotOff } from './caretakerItemOff.js'
+import { openBlockingAsks } from './asks.js'
 
 const HOUR_MS = 60 * 60 * 1000
 const GATE_LABEL = STEPS[ACCEPT_GATE_INDEX].label
@@ -154,11 +158,15 @@ export function gatherAcceptFacts(row) {
     resolve: current('resolve')?.state ?? null,
     acceptClaim: claim('accept'),
     resolveClaim: claim('resolve'),
+    blockingAsks: openBlockingAsks(row.item_id).length,
   }
 }
 
+export const BLOCKING_ASK_WAIT = 'an open blocking ask needs the owner'
+
 // Pure. First match wins. { kind: 'accept' | 'resolve' | 'wait' | 'stop', reason }
 export function decideAcceptGate(f) {
+  if (f.blockingAsks > 0) return { kind: 'wait', reason: BLOCKING_ASK_WAIT }
   if (f.running) return { kind: 'wait', reason: 'a pre-merge or Resolve-conflicts run is in progress' }
   // A forwarded failing review (or none on record) is a human's call.
   if (!f.reviewPassed) return { kind: 'wait', reason: 'the automated review did not pass' }
