@@ -77,6 +77,8 @@ function oldSchemaDb() {
   full.exec('ALTER TABLE user DROP COLUMN owner_notified_at')
   // HZ-641's access_ended_at, likewise.
   full.exec('ALTER TABLE user DROP COLUMN access_ended_at')
+  // HZ-773's gate_pin_revealed_at, likewise.
+  full.exec('ALTER TABLE user DROP COLUMN gate_pin_revealed_at')
   // HZ-654's membership columns and table, likewise, with the setting that
   // marks that migration done.
   for (const column of ['role', 'active_project_id', 'disabled_at', 'credentials_valid_after']) {
