@@ -35,6 +35,11 @@ SUMMARY_STRING_MAX_CHARS = 200
 # digestToFit() in server/src/orchestrator.js keeps a section with this
 # heading prefix whole or omits it whole.
 REPORT_HEADING_PREFIX = "Report: "
+# HZ-771: the Execute artifact's section headings (farmd.job_artifact_md),
+# which farm/verify_evidence.py reads the artifact back by.
+COMMANDS_HEADING = "## Commands"
+REPORTS_HEADING = "## Reports"
+ATTEMPT_LOG_HEADING = "## Log (this attempt)"
 
 
 def report_paths(commands: list[str], declared: list[str] | None = None) -> list[str]:
@@ -192,7 +197,7 @@ def reports_md(reports: list[dict]) -> str:
     """The Execute artifact's `## Reports` section; "" with no reports."""
     if not reports:
         return ""
-    parts = ["## Reports"]
+    parts = [REPORTS_HEADING]
     for r in reports:
         if not isinstance(r, dict):
             continue

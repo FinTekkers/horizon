@@ -67,6 +67,7 @@ from . import (
     targeted_checks,
     task_clone,
     task_job,
+    verify_evidence,
 )
 from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
@@ -2205,6 +2206,7 @@ def _run_and_parse(
     disallowed_tools: str | None = None,
     recheck=None,
     overlay: dict | None = None,
+    add_dirs: list[str] | None = None,
 ) -> tuple[dict, dict, list[str]]:
     """run_agent + the shared reply parser, with one retry-with-feedback on a
     parse failure (HZ-44) — the PM steps' recovery (_execute_pm) too. Asking the
@@ -2234,6 +2236,9 @@ def _run_and_parse(
     raises AgentExhaustedError — see _on_exhaustion(). Only the first call may
     be salvaged; an exhaustion inside the retry is handed off and re-raised.
     A salvaged reply's provenance is the provider that ran, no command_id.
+
+    HZ-771: add_dirs are folders outside cwd the agent may read (Verify &
+    report's evidence files); None for every other step.
 
     HZ-502: `recheck(parsed, deadline)` returns the gaps in a reply that
     parsed and validated (Run plan's `requires` check). Each gap list goes
@@ -2267,6 +2272,7 @@ def _run_and_parse(
             provider_locked=provider_locked,
             disallowed_tools=disallowed_tools,
             overlay=overlay,
+            add_dirs=add_dirs,
         )
     except AgentExhaustedError as exc:
         parsed, notes = _on_exhaustion(exc, required_keys=required_keys, ctx=ctx, guard=guard, salvage=True)
@@ -2292,6 +2298,7 @@ def _run_and_parse(
             provider_locked=provider_locked,
             disallowed_tools=disallowed_tools,
             overlay=overlay,
+            add_dirs=add_dirs,
         )
         return produced["result"]
 
@@ -3654,6 +3661,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # allowlist at all.
     allowed_tools = tools if ws or kind in TOOLS_WITHOUT_WORKSPACE_KINDS else None
     disallowed_tools, cwd, prompt_extra = persona_deny, str(ws) if ws else None, ""
+    # HZ-771: Verify & report reads its evidence from a scratch folder the
+    # agent may read, outside the worktree; removed however the run ends.
+    add_dirs = None
     # HZ-447: a bundle step reads every in-scope repo from a read-only copy,
     # held to the copy's tool rules, guarded over the copy and every hub, with
     # its run log scrubbed. Its errors are scrubbed too, and the copy is
@@ -3673,6 +3683,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 watch = stack.enter_context(plan_bundle.guard(bundle, effective_provider(provider_override)))
             else:
                 watch = stack.enter_context(read_only_guard.guard(read_only_ws, effective_provider(provider_override)))
+            if label == VERIFY_REPORT_LABEL and isinstance(task.get("evidence"), list):
+                evidence_root, reports = verify_evidence.write(task["evidence"])
+                stack.callback(verify_evidence.remove, evidence_root)
+                prompt_extra = verify_evidence.prompt_section(evidence_root, task["evidence"], reports)
+                add_dirs = [str(evidence_root)]
             parsed, reply_provenance, notes = _run_and_parse(
                 build_prompt(task) + prompt_extra + "\n\nRespond with ONLY the JSON object described in your role instructions.",
                 agent=model_agent,
@@ -3693,6 +3708,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 disallowed_tools=disallowed_tools,
                 recheck=_requires_recheck(kind, label, task),
                 overlay=overlay,
+                add_dirs=add_dirs,
             )
             watch.provider = reply_provenance.get("provider") or watch.provider
         leaks = plan_bundle.leaked_paths(json.dumps(parsed, ensure_ascii=False), bundle) if bundle else []
