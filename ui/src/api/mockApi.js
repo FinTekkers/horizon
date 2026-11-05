@@ -30,12 +30,15 @@ const ret = (key, label, redo, reapprovals = [], isDefault = false, stopsRunning
   stopsRunning,
 })
 const retry = (key, label, stopsRunning = true) => ({ key, label, action: 'retry', isDefault: false, redo: `Runs “${label}” again.`, reapprovals: [], stopsRunning })
+// The first step's label by its key, so this file holds no copy of a step
+// label (domain-one-declaration.test.mjs) — a display name, not a move rule.
+const OUTCOME = STEPS[stepIndexOf('change.define-outcome')].label
 const SEED_MOVES = {
-  'BF-145': { approve: null, targets: [ret('change.define-outcome', 'Define the outcome', 'Redoes 2 steps, from “Define the outcome” to “Define how we measure success”.', [], true, true), retry('change.define-success', 'Define how we measure success')], canAbandon: true, amend: null },
+  'BF-145': { approve: null, targets: [ret('change.define-outcome', OUTCOME, `Redoes 2 steps, from “${OUTCOME}” to “Define how we measure success”.`, [], true, true), retry('change.define-success', 'Define how we measure success')], canAbandon: true, amend: null },
   'BF-128': {
     approve: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
     targets: [
-      ret('change.define-outcome', 'Define the outcome', 'Redoes 4 steps, from “Define the outcome” to “Approve & prioritize this work”.', [], true),
+      ret('change.define-outcome', OUTCOME, `Redoes 4 steps, from “${OUTCOME}” to “Approve & prioritize this work”.`, [], true),
       ret('change.define-success', 'Define how we measure success', 'Redoes 3 steps, from “Define how we measure success” to “Approve & prioritize this work”.'),
       ret('change.set-guardrails', 'Set guardrails', 'Redoes 2 steps, from “Set guardrails” to “Approve & prioritize this work”.'),
     ],

@@ -491,15 +491,18 @@ test('a browser with only the old saved project value sees today\'s view, every 
 
 // HZ-711: the server's moves at Specialist agent implements — the item page
 // offers only these.
+// The first step's label is read off STEPS, so this file holds no copy of it
+// (domain-one-declaration.test.mjs).
+const FIRST_LABEL = STEPS[0].label
 const IMPLEMENT_MOVES = {
   approve: null,
   targets: [
     {
       key: 'change.define-outcome',
-      label: 'Define the outcome',
+      label: FIRST_LABEL,
       action: 'return',
       isDefault: false,
-      redo: 'Redoes 12 steps, from “Define the outcome” to “Specialist agent implements”.',
+      redo: `Redoes 12 steps, from “${FIRST_LABEL}” to “Specialist agent implements”.`,
       reapprovals: ['Approve & prioritize this work', 'Approve the high-level design', 'Review before execution'],
       stopsRunning: false,
     },
@@ -706,8 +709,8 @@ const KILL_RESTART = [
       const dialog = await findByRole('dialog', { name: `Return to an earlier step · ${id}` })
       // The gate's default is preselected; the phase's first step is a choice.
       expect(within(dialog).getByRole('radio', { name: /Draft implementation plan/ }).checked).toBe(true)
-      fireEvent.click(within(dialog).getByRole('radio', { name: /Define the outcome/ }))
-      expect(within(dialog).getByText('Redoes 12 steps, from “Define the outcome” to “Specialist agent implements”.')).toBeTruthy()
+      fireEvent.click(within(dialog).getByRole('radio', { name: new RegExp(FIRST_LABEL) }))
+      expect(within(dialog).getByText(`Redoes 12 steps, from “${FIRST_LABEL}” to “Specialist agent implements”.`)).toBeTruthy()
       const reapprovals = within(dialog).getByRole('list', { name: 'Approvals given again' })
       expect([...reapprovals.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
         'Approve & prioritize this work',
