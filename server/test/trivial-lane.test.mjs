@@ -307,7 +307,7 @@ test('send-back: gates 10 and 13 and boot recovery never land on a skipped row',
   const insert = db.prepare("INSERT INTO work_item (id, title, priority, cursor, lane) VALUES (?, 'Send back', 'Medium', ?, 'trivial')")
   const item = { kind: 'change', lane: 'trivial' }
   for (const t of reworkTargets(PLAN_GATE, 'change', item)) assert.equal(SKIPPED.includes(t.index), false, t.label)
-  // HZ-708: gate 10's default is the plan it reviews, which the lane keeps.
+  // HZ-708: Review before execution's default is the plan it reviews, which the lane keeps.
   assert.equal(defaultReworkTarget(PLAN_GATE, 'change', item), PLAN)
   assert.equal(defaultReworkTarget(ACCEPT, 'change', item), IMPLEMENT)
   assert.equal(defaultReworkTarget(PLAN_GATE), PLAN)

@@ -46,7 +46,7 @@ const caretaker = await import('../src/caretaker.js')
 const actor = await import('../src/caretakerActor.js')
 const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
 const { STEPS } = await import('../../domain/js/lifecycle.js')
-// HZ-708: gate 10's default send-back target, the plan it reviews.
+// HZ-708: Review before execution's default send-back target, the plan it reviews.
 const DRAFT_PLAN = STEPS.findIndex((s) => s.label === 'Draft implementation plan')
 
 const OWNER = '15550001111@s.whatsapp.net'
