@@ -124,10 +124,11 @@ test('restartPhase on a task restarts that kind\'s phase, never a change row', (
 })
 
 // HZ-384: Approve the run sends back to Run plan instead (task-approve-run-gate.test.mjs).
-test('a send-back from a task gate walks to that kind\'s nearest agent step', () => {
+// HZ-708: the intake gate's default is the task's first step.
+test('a send-back from a task gate lands on that kind\'s default step', () => {
   insertItem.run('K-SENDBACK', 'Task send-back', 'Medium', kindStepIndex('Approve & prioritize', 'task'), 'task')
   assert.deepEqual(store.requestChanges('K-SENDBACK', 'intake gate', 'needs work'), { ok: true })
-  assert.equal(store.getItem('K-SENDBACK').cursor, kindStepIndex('Guardrails', 'task'))
+  assert.equal(store.getItem('K-SENDBACK').cursor, firstStepIndex('task'))
 })
 
 test('a send-back naming a change step from a task gate is an invalid target', () => {

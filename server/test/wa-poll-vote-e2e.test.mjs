@@ -57,7 +57,7 @@ const STRANGER = '19998887777@s.whatsapp.net'
 const WA_SECRET = 'wa-approval-secret-e2e'
 const FARM_SECRET = 'farm-shared-secret-e2e'
 
-const { STEPS, gateStepIndexes } = await import('../../domain/js/lifecycle.js')
+const { STEPS, gateStepIndexes, defaultReworkTarget } = await import('../../domain/js/lifecycle.js')
 const GATES = gateStepIndexes()
 const POLL_APPROVE = '✅ Approve'
 const POLL_SEND_BACK = '↩️ Send back'
@@ -305,9 +305,9 @@ test('a Send back tap routes the item to the gate default rework target (metric 
   assert.match(rejected[0].decided_by, /via WhatsApp poll$/)
 
   // The default rework target, derived by store.requestChanges (the single
-  // derivation) — the nearest agent step at or before the gate.
-  let expected = gate
-  while (expected > 0 && STEPS[expected].kind !== 'agent') expected--
+  // derivation) — HZ-708: the gate's declared default, the step that produced
+  // what it reviews.
+  const expected = defaultReworkTarget(gate)
   const fb = feedbackRows(SEND_BACK_ITEM).at(-1)
   assert.equal(fb.target, STEPS[expected].agent, `feedback went to ${fb.target}, not the default rework agent`)
   // A bound, not an equality: the pipeline starts re-running that step at once.

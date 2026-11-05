@@ -64,6 +64,8 @@ const STORE_REFUSALS = new Set([
   'closed',
   'abandoned',
   'invalid_target',
+  // HZ-708: a merged item's code is never rewound — retrying cannot help.
+  'merged_target',
   // HZ-384: a humanOnly gate never passes from WhatsApp — retrying cannot help.
   'human_pin_required',
 ])

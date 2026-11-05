@@ -128,7 +128,7 @@ test("send-back to an unknown key, another kind's key or a position in targetSte
 
 // ---- default send-back targets (steps.json sendBackTo) ----
 
-test('a send-back with no target follows the gate\'s declared default, else walks back as before', async () => {
+test('a send-back with no target follows the gate\'s declared default', async () => {
   seed('RD-1', 'change.accept-code')
   assert.equal((await reject('RD-1')).statusCode, 200)
   assert.equal(cursorKey('RD-1'), 'change.implement')
@@ -139,7 +139,8 @@ test('a send-back with no target follows the gate\'s declared default, else walk
 
   seed('RD-3', 'change.review-before-exec')
   assert.equal((await reject('RD-3')).statusCode, 200)
-  assert.equal(cursorKey('RD-3'), 'change.summarize-reviews')
+  // HZ-708: every gate declares one — Review before execution, the plan it reviews.
+  assert.equal(cursorKey('RD-3'), 'change.draft-plan')
 })
 
 // ---- the snapshot ----

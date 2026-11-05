@@ -931,9 +931,13 @@ export async function resolveConflicts(id, actor = 'You', { startedBy = 'human',
     addEvent(id, { who: 'Horizon', text: startedEvent, color: '#0E6E74', initials: 'HZ' })
   }
 
+  // HZ-708: the item's newest run when the claim was taken. An escalation that
+  // comes back after the item left the gate — even one that has since returned —
+  // must not send fresh work back (see staleEscalationReason).
+  const arrivalRunId = lastStepRunId(id)
   let outcome = { state: 'failed', reason: 'conflict resolution stopped unexpectedly' }
   try {
-    const run = await runConflictResolution(id, item, actor)
+    const run = await runConflictResolution(id, item, actor, arrivalRunId)
     outcome = { state: run.state, reason: run.reason }
     return run.result
   } finally {
@@ -951,9 +955,50 @@ function recordFarmCheckPass(item, report, source) {
   recordCheckPass({ repo: item.repo, itemId: item.id, sha, finishedAt: report[CHECKS_FINISHED_AT_KEY], source })
 }
 
+function lastStepRunId(id) {
+  return db.prepare('SELECT MAX(id) AS id FROM step_run WHERE item_id = ?').get(id)?.id ?? null
+}
+
+// HZ-708: why an escalation that just came back must not move the item, or
+// null when the item still waits at Accept the code as it did when the claim
+// was taken. Coming back to the gate always re-runs the implement and review
+// steps, so a newer step_run means the item left and returned meanwhile.
+function staleEscalationReason(id, arrivalRunId) {
+  const gate = STEPS[ACCEPT_GATE_INDEX].label
+  const now = getItem(id)
+  if (!now) return 'the item is no longer on the board'
+  if (isClosed(now)) return `the item is no longer waiting at ${gate} (it is closed)`
+  if (isAbandoned(now)) return `the item is no longer waiting at ${gate} (it was abandoned)`
+  if (now.merged_at) return `the item is no longer waiting at ${gate} (its PR has merged)`
+  if (now.cursor !== ACCEPT_GATE_INDEX) {
+    return `the item is no longer waiting at ${gate} (now at ${STEPS[now.cursor]?.label ?? 'another step'})`
+  }
+  if (lastStepRunId(id) !== arrivalRunId) return `the item left ${gate} and came back while the resolver ran`
+  return null
+}
+
+// The resolver's escalation: send the item back to implement, unless it has
+// moved on since the claim. The check and the send-back run in one tick, so
+// nothing can move the item between them.
+function escalate(id, item, reason, actor, arrivalRunId) {
+  const stale = staleEscalationReason(id, arrivalRunId)
+  if (stale) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: `ignored the conflict resolver's escalation on PR #${item.pr} (${reason}): ${stale} — nothing was sent back`,
+      color: '#0E6E74',
+      initials: 'RS',
+    })
+    const why = `escalation not applied: ${stale}`
+    return { result: { error: 'stale_escalation', reason: why }, state: 'failed', reason: why }
+  }
+  requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
+  return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
+}
+
 // The resolver call itself; returns { result, state, reason } — the route's
 // reply plus the conflictRun outcome resolveConflicts() records.
-async function runConflictResolution(id, item, actor) {
+async function runConflictResolution(id, item, actor, arrivalRunId) {
   const branch = `horizon/${id.toLowerCase()}`
   let result
   try {
@@ -978,9 +1023,7 @@ async function runConflictResolution(id, item, actor) {
     if (err.status === 409 && err.code === 'cancelled') {
       return { result: { error: 'cancelled' }, state: 'failed', reason: FARM_RESOLVE_CANCELLED_REASON }
     }
-    const reason = `automatic conflict resolution could not run (${err.message})`
-    requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
-    return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
+    return escalate(id, item, `automatic conflict resolution could not run (${err.message})`, actor, arrivalRunId)
   }
 
   // HZ-327: the resolver's flakes and per-test results, resolved or not.
@@ -1011,8 +1054,7 @@ async function runConflictResolution(id, item, actor) {
   }
 
   const reason = CONFLICT_ESCALATION_REASONS[result.reason] || result.detail || 'conflict resolution could not complete automatically'
-  requestChanges(id, 'Accept the code', `PR #${item.pr}: ${reason}`, actor)
-  return { result: { ok: true, resolved: false, escalated: true, reason }, state: 'escalated', reason }
+  return escalate(id, item, reason, actor, arrivalRunId)
 }
 
 function projectPayload(projectId) {

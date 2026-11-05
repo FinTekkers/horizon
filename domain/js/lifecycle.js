@@ -606,17 +606,27 @@ export function reworkTargets(gateIndex, kind = stepKindOf(STEPS[gateIndex]), it
   )
 }
 
-// Mirrors the server's default (no-target) destination, purely so the picker
-// can show what "default" means — the actual default routing happens
-// server-side when no target is sent.
+// The default (no-target) destination of a send-back from a gate. The server's
+// requestChanges routes by it and the picker shows it, so the two never differ.
 export function defaultReworkTarget(gateIndex, kind = stepKindOf(STEPS[gateIndex]), item = null) {
   assertItemKind(kind)
-  // HZ-709: a gate's declared default (steps.json sendBackTo), by key.
-  const declared = sendBackTargetOf(gateIndex)
-  if (declared !== null) return declared
-  const first = firstStepIndex(kind)
   const skips = laneSkips(item)
+  // HZ-709/HZ-708: a gate's declared default (steps.json sendBackTo), by key —
+  // the step that produced what the gate reviews.
+  const declared = sendBackTargetOf(gateIndex)
+  if (declared !== null && !skips.has(declared)) return declared
+  // HZ-435: a lane that skips the declared target walks back instead, never
+  // past the item's own first step (HZ-377).
+  const first = firstStepIndex(kind)
   let idx = gateIndex
   while (idx > first && (STEPS[idx].kind !== 'agent' || isServerStep(idx) || skips.has(idx))) idx--
   return idx
+}
+
+// HZ-708: the earliest step a merged item may still move to — the accept gate
+// (ACCEPT_GATE_INDEX), for the kind whose PR merges — or null when nothing has
+// merged. A send-back or restart before it would rewind code already on main.
+export function mergedFloor(item) {
+  if (!item?.merged_at || itemKindOf(item) !== IMPLEMENT_ITEM_KIND) return null
+  return ACCEPT_GATE_INDEX
 }
