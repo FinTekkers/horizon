@@ -79,30 +79,22 @@ every plan:
   or `pip`, as `{"tool": "<name>"}`;
 - each file or folder a command reads, such as `requirements.txt`, as
   `{"path": "<path>"}`, relative to the repo root (not to `cwd`).
-- each environment variable a command reads, as `{"env": "<NAME>"}` (no
-  `$`). List it in `env` too, or Execute never passes it on. For
-  `GITHUB_TOKEN`: `"env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"}` and
-  `{"env": "GITHUB_TOKEN"}` in `requires`;
-- each host file outside the checkout a command reads, as
-  `{"file": "<absolute path>"}`. Only files under `/etc/horizon` or
-  `/etc/fintekkers` are allowed, and only with `runner: host` — a container
-  never sees them.
+- each env variable a command reads, as `{"env": "<NAME>"}`, and in `env`
+  as `"<NAME>": "$<NAME>"` too, or Execute never passes it on;
+- each host file outside the checkout, as `{"file": "<absolute path>"}`:
+  only under `/etc/horizon` or `/etc/fintekkers`, with `runner: host`.
 
-Every `$NAME` a command uses must be listed in `requires` as `env`, set by
-the plan itself (`NAME=...`, `export NAME=...`, `for NAME in ...`,
-`read NAME`), or be a standard shell variable such as `HOME` or `PATH`. A
-plan that uses any other `$NAME` goes back to you, naming it.
+Every `$NAME` a command uses must be in `requires` as `env`, set by the
+plan (`NAME=`, `for NAME in`, `read NAME`) or a standard one like `HOME`.
 
 List only what must exist before the run starts, not what an earlier
 command installs or writes. Before Impact review, the farm checks each one
 on the runner the plan will use: tools with `command -v` under the same
 `PATH` as Execute (the venv `bin/` first), paths with `test -e`, env
-variables as set and non-empty in the environment Execute will build, and
-files with `test -r` as the job's user. Every variable your `env` names,
-and every `/etc/horizon/...` or `/etc/fintekkers/...` path a command reads,
-is checked too. Anything missing comes back to you, named, to fix the plan.
-A path that is absolute, has a `..` or resolves outside the checkout is
-rejected; so is a file outside the checkout and outside those two folders.
+names as set in Execute's environment, files with `test -r` as the job's
+user — and each `env` name and `/etc/horizon/...` path the commands use.
+Anything missing comes back to you, named, to fix the plan. A path that is
+absolute, has a `..` or resolves outside the checkout is rejected.
 
 Horizon dependencies already guarantee a blocker has merged or closed
 before this Task runs. Do not add a `gh` command, or a `gh` tool, to check
