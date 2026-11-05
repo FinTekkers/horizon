@@ -33,6 +33,153 @@
     "gate": false
   },
   "currentStepKey": "change.implement",
+  "moves": {
+    "approve": null,
+    "targets": [
+      {
+        "key": "change.define-outcome",
+        "label": "Define the outcome",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 12 steps, from “Define the outcome” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Approve & prioritize this work",
+          "Approve the high-level design",
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.define-success",
+        "label": "Define how we measure success",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 11 steps, from “Define how we measure success” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Approve & prioritize this work",
+          "Approve the high-level design",
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.set-guardrails",
+        "label": "Set guardrails",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 10 steps, from “Set guardrails” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Approve & prioritize this work",
+          "Approve the high-level design",
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.approve-prioritize",
+        "label": "Approve & prioritize this work",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 9 steps, from “Approve & prioritize this work” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Approve & prioritize this work",
+          "Approve the high-level design",
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.plan-options",
+        "label": "Plan options & trade-offs (pros / cons)",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 8 steps, from “Plan options & trade-offs (pros / cons)” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Approve the high-level design",
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.approve-design",
+        "label": "Approve the high-level design",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 7 steps, from “Approve the high-level design” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Approve the high-level design",
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.draft-plan",
+        "label": "Draft implementation plan",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 6 steps, from “Draft implementation plan” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.arch-review",
+        "label": "Architecture review",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 5 steps, from “Architecture review” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.qa-test-plan",
+        "label": "QA reviews the test plan",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 4 steps, from “QA reviews the test plan” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.summarize-reviews",
+        "label": "Summarize reviews & recommend",
+        "action": "return",
+        "isDefault": false,
+        "redo": "Redoes 3 steps, from “Summarize reviews & recommend” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.review-before-exec",
+        "label": "Review before execution",
+        "action": "return",
+        "isDefault": true,
+        "redo": "Redoes 2 steps, from “Review before execution” to “Specialist agent implements”.",
+        "reapprovals": [
+          "Review before execution"
+        ],
+        "stopsRunning": false
+      },
+      {
+        "key": "change.implement",
+        "label": "Specialist agent implements",
+        "action": "retry",
+        "isDefault": false,
+        "redo": "Runs “Specialist agent implements” again.",
+        "reapprovals": [],
+        "stopsRunning": false
+      }
+    ],
+    "canAbandon": true,
+    "amend": null
+  },
   "paused": false,
   "last_activity_at": "2026-10-01T10:00:00Z",
   "abandoned_at": null,

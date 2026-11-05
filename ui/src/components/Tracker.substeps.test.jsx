@@ -54,7 +54,9 @@ test('each snapshot sub-step is a row right under its anchor step, and nothing f
     // The nearest global step before the row is its anchor.
     let prev = row.previousElementSibling
     while (prev?.dataset.testid === 'substep-row') prev = prev.previousElementSibling
-    expect(prev.querySelector('.step-card__label').textContent).toBe(STEPS[sub.anchor].label)
+    // HZ-711: the label's first text; a step the snapshot offers a move on
+    // also carries its hint (Return here, Retry, Approve).
+    expect(prev.querySelector('.step-card__label').firstChild.textContent).toBe(STEPS[sub.anchor].label)
   }
   for (const label of FILE_ONLY_LABELS) expect(container.textContent).not.toContain(label)
 })
