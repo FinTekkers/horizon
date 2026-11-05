@@ -42,7 +42,8 @@ import {
   stepKeyAt,
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
-import { patchLimits, addedCriteriaLines } from '../../domain/js/fields.js'
+import { patchLimits, addedCriteriaLines, criteriaLines } from '../../domain/js/fields.js'
+import { circularProofs } from '../../domain/js/runPlan.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { isCommitSha } from '../../domain/js/codeRefs.js'
 import { ingestDraft } from './planDraft.js'
@@ -121,6 +122,7 @@ import {
   FIX_PASS_TURN_DIVISOR,
   FIX_PASS_MAX_LINES,
   REVIEW_CYCLE_CAP,
+  IMPACT_SENDBACK_CAP,
 } from './config.js'
 import { PRIMARY_PERSONA_AGENT, isPersona, personaLabel, proposePersona } from './personas.js'
 import { SUMMARIZE_STEP_INDEX, OVERLAP_INPUT_LABEL, computeOverlap, overlapFailure, applyOverlap } from './overlapService.js'
@@ -1118,6 +1120,14 @@ function mockPlanDraft(repo) {
   }
 }
 
+// HZ-770: the mock Run plan's block. Its one command proves every line of
+// the item's metric, so a demo Task's Approve the run card shows no
+// uncovered-line warning.
+function mockRunPlanBlock(it) {
+  const proof = criteriaLines(it?.metric).map((_, i) => ({ line: i + 1, command: 1 }))
+  return { cwd: '.', commands: ['echo demo'], budget_minutes: 5, proof }
+}
+
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
 // pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
@@ -1193,11 +1203,11 @@ export const MOCK_STEP_BEHAVIOR = {
     summary: 'assessed the task: found the scripts it needs; no new code needed (mock)',
     artifact_md: '## Scripts found\n- (mock) none — demo mode\n\n## Code needed\n**none**',
   }),
-  'Run plan': () => ({
+  'Run plan': (it) => ({
     summary: 'planned 1 command in the repo root with a 5 minute budget (mock)',
     artifact_md:
       '## Commands\n1. `echo demo` (mock)\n\n## Dry run\nExpected output: `demo` — described, never executed\n\n' +
-      '## Run plan block\n```json run-plan\n{"cwd": ".", "commands": ["echo demo"], "budget_minutes": 5, "proof": [{"line": 1, "command": 1}]}\n```',
+      `## Run plan block\n\`\`\`json run-plan\n${JSON.stringify(mockRunPlanBlock(it))}\n\`\`\``,
   }),
   'Impact review': () => ({
     summary: 'impact review passed — no load, rate-limit or deploy-overlap concerns (mock)',
@@ -1694,15 +1704,44 @@ function requeueLostResults(id, attempt) {
 // Back to implement with one feedback row for it: a failed review under its
 // cap (with its fix-pass state) and HZ-570's lost-results re-queue (without).
 function sendBackToImplement(id, { feedback, fix = null, event }) {
-  db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(id, STEPS[IMPLEMENT_STEP_INDEX].agent, feedback)
+  sendBackTo(id, IMPLEMENT_STEP_INDEX, { feedback, fix, event })
+}
+
+// HZ-770: the cursor goes back to `stepIndex` with one feedback row for that
+// step's agent. `source` tags the row, so a cap can count its own send-backs
+// and never a human's (a human's feedback is 'ui').
+function sendBackTo(id, stepIndex, { feedback, fix = null, event, source = 'ui' }) {
+  db.prepare('INSERT INTO feedback (item_id, target, message, source) VALUES (?, ?, ?, ?)').run(id, STEPS[stepIndex].agent, feedback, source)
   if (fix) {
     db.prepare(
       "UPDATE work_item SET cursor = ?, fix_pass = ?, fix_findings_json = ?, updated_at = datetime('now') WHERE id = ?",
-    ).run(IMPLEMENT_STEP_INDEX, fix.pass, fix.findingsJson, id)
+    ).run(stepIndex, fix.pass, fix.findingsJson, id)
   } else {
-    db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(IMPLEMENT_STEP_INDEX, id)
+    db.prepare("UPDATE work_item SET cursor = ?, updated_at = datetime('now') WHERE id = ?").run(stepIndex, id)
   }
   addEvent(id, event)
+}
+
+// HZ-770: Impact review's circular-proof send-back. Each one is a feedback
+// row tagged with this source; the cap counts those rows, never a human's
+// Reject with feedback.
+export const IMPACT_SENDBACK_SOURCE = 'impact-review'
+
+// What Impact review's `circular_proofs` does to the item: null when it
+// flagged no line (or sent a shape domain/js/runPlan.js refuses — the farm
+// checked it already), else the flagged lines, the feedback naming each, and
+// whether the cap still allows a send-back.
+export function impactSendBack(id, raw, metric) {
+  const circular = circularProofs(raw, metric) ?? []
+  if (circular.length === 0) return null
+  const lines = circular.map((entry) => entry.line)
+  const named = `${lines.length === 1 ? 'line' : 'lines'} ${lines.join(', ')}`
+  const feedback = [
+    `Impact review found a circular proof for metric ${named}. Each proof below only reads back what the same run wrote. Prove the line from an independent source (the published figure, a different service or a stored fixture), or mark it manual.`,
+    ...circular.map((entry) => `- Line ${entry.line}: ${entry.reason}`),
+  ].join('\n')
+  const sent = db.prepare('SELECT COUNT(*) AS n FROM feedback WHERE item_id = ? AND source = ?').get(id, IMPACT_SENDBACK_SOURCE).n
+  return { lines, named, feedback, sent, capped: sent >= IMPACT_SENDBACK_CAP }
 }
 
 // HZ-379: the hold in kick() above. One check per item at a time; a check
@@ -3260,6 +3299,11 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     recordFarmCheckPass(item, artifacts, 'implement')
   }
 
+  // HZ-770: a circular proof sends the plan back to Run plan before Approve
+  // the run, naming each line, up to IMPACT_SENDBACK_CAP times; after that
+  // the item goes on to the gate and a human decides.
+  const circular = run.step_index === IMPACT_REVIEW_STEP_INDEX ? impactSendBack(id, artifacts?.circular_proofs, item.metric) : null
+
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
   db.prepare(
@@ -3276,9 +3320,6 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     verify?.summary ?? null,
     runId,
   )
-  // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
-  // back to (store.js requestChanges).
-  db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${text.slice(0, 300)}`,
@@ -3287,6 +3328,30 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     detail: verify?.summary ?? null,
     verdict: verify?.verdict ?? null,
   })
+  if (circular && !circular.capped) {
+    sendBackTo(id, RUN_PLAN_STEP_INDEX, {
+      feedback: circular.feedback,
+      source: IMPACT_SENDBACK_SOURCE,
+      event: {
+        who: 'Horizon',
+        text: `Impact review found a circular proof for metric ${circular.named} (send-back ${circular.sent + 1}/${IMPACT_SENDBACK_CAP}) — sent back to “${STEPS[RUN_PLAN_STEP_INDEX].label}”`,
+        color: '#DFA200',
+        initials: 'HZ',
+      },
+    })
+  } else {
+    // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
+    // back to (store.js requestChanges).
+    db.prepare("UPDATE work_item SET cursor = ?, substep_cursor = NULL, updated_at = datetime('now') WHERE id = ?").run(nextCursor(getItem(id)), id)
+    if (circular) {
+      addEvent(id, {
+        who: 'Horizon',
+        text: `Impact review still finds a circular proof for metric ${circular.named}, but the send-back cap (${IMPACT_SENDBACK_CAP}) is reached — a human decides at the gate`,
+        color: '#9C333E',
+        initials: 'HZ',
+      })
+    }
+  }
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
   notifyChange()
   dispatching.delete(id)

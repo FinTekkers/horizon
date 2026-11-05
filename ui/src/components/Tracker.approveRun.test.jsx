@@ -128,6 +128,21 @@ test('an explicit container plan with no image shows the "no container image for
   expect(warning()).toBeNull()
 })
 
+// HZ-770: metric lines the plan's proof leaves uncovered are warned about on
+// the card. A warning only: Approve the run stays enabled, so a plan written
+// before the rule still approves.
+test('uncovered metric lines show "metric lines 3, 4 have no proof" and Approve stays enabled', () => {
+  const plan = { ...taskItem.runPlan, uncoveredLines: [3, 4] }
+  const { container, rerender, getByRole } = render(<Harness item={{ ...taskItem, runPlan: plan }} onReject={noop} />)
+  const warning = () => awaitingCard(container).querySelector('[data-testid="run-plan-uncovered-lines"]')
+  expect(warning().textContent).toContain('metric lines 3, 4 have no proof')
+  expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
+
+  rerender(<Harness item={{ ...taskItem, runPlan: { ...plan, uncoveredLines: [] } }} onReject={noop} />)
+  expect(warning()).toBeNull()
+  expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
+})
+
 test("a change item's gate card is unchanged: no human-only line, the usual button names", () => {
   const changeItem = { ...taskItem, id: 'CH-1', kind: 'change', cursor: requiredStepIndex('Approve the high-level design') }
   delete changeItem.runPlan

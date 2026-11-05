@@ -44,7 +44,7 @@ import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/j
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
-import { effectiveRunner, extractRunPlan } from '../../domain/js/runPlan.js'
+import { effectiveRunner, extractRunPlan, unprovenLines } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
 import { PERSONAS, isPersona, personaDisplay, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
@@ -1313,8 +1313,10 @@ const NO_IMAGE_WARNING = 'no container image for this repo'
 // What the Approve the run card shows, and the hash and runner its Approve
 // sends back. HZ-491: `runner` is the effective runner, so a reload shows the
 // same label the approver saw; `imagePinned` tells the card why a host run is
-// on the host.
-function runPlanView(itemId) {
+// on the host. HZ-770: `uncoveredLines` are the metric lines the plan's
+// `proof` leaves without a proof or manual mark. Display only: a plan written
+// before the rule still approves.
+function runPlanView(itemId, metric) {
   const plan = currentRunPlan(itemId)
   if (!plan) return null
   return {
@@ -1324,6 +1326,7 @@ function runPlanView(itemId) {
     runner: plan.runner,
     imagePinned: plan.imagePinned,
     runnerWarning: plan.runner === 'container' && !plan.imagePinned ? NO_IMAGE_WARNING : null,
+    uncoveredLines: unprovenLines(plan.block, metric),
   }
 }
 
@@ -2270,7 +2273,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     paused_at: row.paused ? toIsoUtc(row.paused_at) : null,
     waiting_since: waitingSince(row, ruleBlock),
     // HZ-384: the plan the Approve the run gate shows, and the one approved.
-    ...(approvesRunPlan(itemKindOf(row)) ? { runPlan: runPlanView(row.id), approvedPlanHash: row.approved_plan_hash ?? null } : {}),
+    ...(approvesRunPlan(itemKindOf(row)) ? { runPlan: runPlanView(row.id, row.metric), approvedPlanHash: row.approved_plan_hash ?? null } : {}),
     // HZ-540: only on an item with a sub-step snapshot.
     ...substepFields(row, overlay),
     // HZ-541: only on an item whose first gate approves golden cases.

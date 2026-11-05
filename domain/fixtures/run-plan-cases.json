@@ -67,7 +67,7 @@
     { "case": "a path with a newline", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": "ok\nmissing" }] }, "valid": false },
     { "case": "a path that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{ "path": 7 }] }, "valid": false }
   ],
-  "$comment4": "HZ-503. `proof`: what proves each metric line, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). Shape only: a whole `line`, and exactly one of `command` (a 1-based index into `commands`) or `report` (`<path>#<field>`, both non-empty, the path listed in `reports`).",
+  "$comment4": "HZ-503. `proof`: what proves each metric line, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). Shape only: a whole `line`, and exactly one of `command` (a 1-based index into `commands`) or `report` (`<path>#<field>`, both non-empty, the path listed in `reports`), or HZ-770's `manual` (non-blank text naming the owner check).",
   "proof": [
     { "case": "no proof list", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1 }, "valid": true },
     { "case": "an empty proof list", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [] }, "valid": true },
@@ -110,9 +110,25 @@
       "case": "a report path not listed in reports",
       "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"], "proof": [{ "line": 1, "report": "/tmp/other.json#rows" }] },
       "valid": false
-    }
+    },
+    { "case": "a manual proof", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "manual": "the owner compares the close on the vendor site" }] }, "valid": true },
+    {
+      "case": "a command, a report and a manual proof",
+      "block": {
+        "cwd": ".",
+        "commands": ["echo hi", "./count.sh"],
+        "budget_minutes": 1,
+        "reports": ["/tmp/r.json"],
+        "proof": [{ "line": 1, "command": 2 }, { "line": 2, "report": "/tmp/r.json#rows" }, { "line": 3, "manual": "the owner opens the published page" }]
+      },
+      "valid": true
+    },
+    { "case": "an empty manual proof", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "manual": "" }] }, "valid": false },
+    { "case": "a whitespace-only manual proof", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "manual": "  \n " }] }, "valid": false },
+    { "case": "a manual proof that is not text", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "manual": true }] }, "valid": false },
+    { "case": "an entry with a command and a manual proof", "block": { "cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": [{ "line": 1, "command": 1, "manual": "the owner checks" }] }, "valid": false }
   ],
-  "$comment5": "HZ-503. PY-ONLY: read by farm/tests/test_job_reports.py (domain/py/run_plan.py unproven) alone. Coverage of the metric is the farm's check when a Run plan reply is written; the JS reader checks shape only and has no parity case here. `names` lists every line number the reason must name; empty means the proof covers the metric.",
+  "$comment5": "HZ-503, HZ-770. Coverage of the metric, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js unprovenLines, unprovenReason) and farm/tests/test_job_reports.py (domain/py/run_plan.py unproven_lines, unproven). Each case's block has `commands` [\"echo hi\", \"./count.sh\"] and `reports` [\"/tmp/r.json\"] plus the case's `proof`; a case with no `proof` key sends a block with none. `names` is every line the reason must name; empty means the proof covers the metric. `reason`, when present, is the exact text both bindings give.",
   "proof_coverage": [
     { "case": "every line once", "metric": "1. rows written\n2. failures listed", "proof": [{ "line": 1, "command": 1 }, { "line": 2, "command": 2 }], "names": [] },
     { "case": "no metric and no proof", "metric": "", "proof": [], "names": [] },
@@ -131,6 +147,22 @@
       "metric": "1. a\n2. b\nDeferred to a follow-up item (not in scope here): c",
       "proof": [{ "line": 1, "command": 1 }, { "line": 2, "command": 1 }, { "line": 3, "command": 1 }],
       "names": [3]
-    }
+    },
+    { "case": "no proof key at all", "metric": "1. a\n2. b\n3. c", "names": [1, 2, 3], "reason": "proof has no entry for metric lines 1, 2, 3" },
+    { "case": "two separate gaps", "metric": "1. a\n2. b\n3. c\n4. d", "proof": [{ "line": 1, "command": 1 }, { "line": 3, "command": 2 }], "names": [2, 4], "reason": "proof has no entry for metric lines 2, 4" },
+    { "case": "every line manual", "metric": "1. a\n2. b\n3. c", "proof": [{ "line": 1, "manual": "the owner checks line 1" }, { "line": 2, "manual": "the owner checks line 2" }, { "line": 3, "manual": "the owner checks line 3" }], "names": [] },
+    { "case": "a command, a report and a manual line", "metric": "1. a\n2. b\n3. c", "proof": [{ "line": 1, "command": 2 }, { "line": 2, "report": "/tmp/r.json#rows" }, { "line": 3, "manual": "the owner opens the published page" }], "names": [] }
+  ],
+  "$comment6": "HZ-770. Impact review's `circular_proofs`, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js circularProofs) and farm/tests/test_job_reports.py (domain/py/run_plan.py check_circular). A case with no `value` key sends none. `lines` is the flagged lines in line order; null means the value is refused.",
+  "circular_proofs": [
+    { "case": "no key", "metric": "1. a\n2. b", "lines": [] },
+    { "case": "an empty list", "metric": "1. a\n2. b", "value": [], "lines": [] },
+    { "case": "two lines, out of order", "metric": "1. a\n2. b\n3. c\n4. d\n5. e", "value": [{ "line": 5, "reason": "re-reads the file the loader wrote" }, { "line": 3, "reason": "parses the loader's own output" }], "lines": [3, 5] },
+    { "case": "not a list", "metric": "1. a", "value": { "line": 1, "reason": "x" }, "lines": null },
+    { "case": "a blank reason", "metric": "1. a", "value": [{ "line": 1, "reason": "  " }], "lines": null },
+    { "case": "no reason", "metric": "1. a", "value": [{ "line": 1 }], "lines": null },
+    { "case": "an unknown key", "metric": "1. a", "value": [{ "line": 1, "reason": "x", "note": "y" }], "lines": null },
+    { "case": "a line sent as a string", "metric": "1. a\n2. b", "value": [{ "line": "2", "reason": "x" }], "lines": null },
+    { "case": "a line past the metric", "metric": "1. a\n2. b", "value": [{ "line": 3, "reason": "x" }], "lines": null }
   ]
 }

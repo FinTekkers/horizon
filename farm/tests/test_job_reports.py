@@ -227,15 +227,97 @@ def test_shared_proof_cases(case):
             run_plan.validate(dict(case["block"]))
 
 
+def _coverage_block(case: dict) -> dict:
+    block = {"cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "reports": ["/tmp/r.json"]}
+    if "proof" in case:
+        block["proof"] = case["proof"]
+    return run_plan.validate(block)
+
+
 @pytest.mark.parametrize("case", CASES["proof_coverage"], ids=lambda c: c["case"])
 def test_proof_coverage_cases(case):
-    block = {"cwd": ".", "commands": ["echo hi", "./count.sh"], "budget_minutes": 1, "proof": case["proof"]}
-    reason = run_plan.unproven(run_plan.validate(block), case["metric"])
+    block = _coverage_block(case)
+    reason = run_plan.unproven(block, case["metric"])
+    assert run_plan.unproven_lines(block, case["metric"]) == sorted(case["names"])
     if not case["names"]:
         assert reason is None
     else:
         for line in case["names"]:
             assert re.search(rf"\bline[s]? (?:\d+, )*{line}\b", reason), reason
+    if "reason" in case:
+        assert reason == case["reason"]
+
+
+def test_the_coverage_fixture_has_a_manual_only_plan_a_mixed_plan_and_a_plan_with_no_proof():
+    """HZ-770: the shared cases the rule turns on, so dropping one fails here."""
+    sources = [{key for entry in c.get("proof", []) for key in entry} - {"line"} for c in CASES["proof_coverage"]]
+    assert {"manual"} in sources
+    assert {"command", "report", "manual"} in sources
+    assert any("proof" not in c and c["names"] for c in CASES["proof_coverage"])
+
+
+# ---- HZ-770: Impact review's `circular_proofs`, the same rule as domain/js/runPlan.js ----
+
+
+@pytest.mark.parametrize("case", CASES["circular_proofs"], ids=lambda c: c["case"])
+def test_shared_circular_proofs_cases(case):
+    if case["lines"] is None:
+        with pytest.raises(ValueError, match="'circular_proofs'"):
+            run_plan.check_circular(case.get("value"), case["metric"])
+    else:
+        assert [entry["line"] for entry in run_plan.check_circular(case.get("value"), case["metric"])] == case["lines"]
+
+
+# ---- HZ-770: a stored plan replayed through coverage ----
+
+REPLAYS = json.loads((REPO_ROOT / "domain/fixtures/run-plan-replays.json").read_text())
+
+
+def test_mdi56_replay_names_uncovered_lines():
+    """MDI-56 loaded its prices, but its plan had no command for the spot
+    checks of metric lines 3 to 5. Replayed through Run plan validation it
+    fails and names them. Its block predates HZ-503's `proof` map, so lines
+    1 and 2 are named too: the fixture is the stored plan, not edited."""
+    replay = REPLAYS["MDI-56"]
+    block = run_plan.validate(replay["run_plan"])
+    lines = run_plan.unproven_lines(block, replay["metric"])
+    reason = run_plan.unproven(block, replay["metric"])
+    assert {3, 4, 5} <= set(lines)
+    assert lines == [1, 2, 3, 4, 5]
+    assert reason is not None
+    for line in (3, 4, 5):
+        assert re.search(rf"\blines (?:\d+, )*{line}\b", reason), reason
+
+
+# ---- HZ-770 guardrail: no repo-specific logic in the rules ----
+
+REPO_NAME = re.compile(r"\b(?:MDI|US)-\d+")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "domain/py/run_plan.py",
+        "domain/js/runPlan.js",
+        "farm/roles/task_run_plan.md",
+        "farm/roles/task_impact_review.md",
+        "farm/roles/task_verify.md",
+        "server/src/orchestrator.js",
+    ],
+)
+def test_the_coverage_and_circular_proof_rules_name_no_repo_items(path):
+    assert not REPO_NAME.findall((REPO_ROOT / path).read_text())
+
+
+def test_the_farm_reply_check_names_no_repo_items():
+    """farm/step_agent.py is scanned where the rules live: its reply check
+    and the result pass-through (an older comment elsewhere names a US item)."""
+    import inspect
+
+    from farm import step_agent
+
+    for fn in (step_agent._task_reply_validator, step_agent._metric_check_section):
+        assert not REPO_NAME.findall(inspect.getsource(fn))
 
 
 def test_unproven_counts_a_numbered_test_metric_as_one_line_each():

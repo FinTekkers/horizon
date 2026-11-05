@@ -456,6 +456,85 @@ def test_verify_still_judges_a_plan_approved_before_the_proof_map():
     assert "judge each line on the job's\nevidence as a whole." in verify
 
 
+# ---- HZ-770: Verify & report reports every metric line ----
+
+
+def verify_task(metric: str = PROOF_METRIC, plan: dict | None = None) -> dict:
+    task = make_task(step_agent.VERIFY_REPORT_LABEL)
+    task["item"]["metric"] = metric
+    if plan is not None:
+        block = run_plan.render(plan)
+        task["artifacts"] = [{"label": step_agent.RUN_PLAN_LABEL, "content": f"## Commands\n\n## Run plan block\n{block}"}]
+    return task
+
+
+FULL_CHECK = [
+    {"line": 1, "command": "./backfill.sh", "result": "exit 0; rows_written=120 matches the count"},
+    {"line": 2, "report": "/tmp/r.json#failed", "result": "failed=0"},
+    {"line": 3, "manual": "the owner opens the batch page and counts 12 batches"},
+]
+
+
+def test_a_verify_reply_with_one_entry_per_line_passes_and_renders_each_proof_and_result(monkeypatch):
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.VERIFY_REPORT_LABEL, metric_check=FULL_CHECK)])
+    result = step_agent.execute(verify_task())
+    assert len(calls) == 1
+    assert result["artifacts"]["metric_check"] == FULL_CHECK
+    md = result["artifacts"]["artifact_md"]
+    assert md.startswith(f"## {step_agent.VERIFY_REPORT_LABEL}\nbody")
+    assert "## Metric check" in md
+    assert "| 1 | `./backfill.sh` | exit 0; rows_written=120 matches the count |" in md
+    assert "| 2 | report `/tmp/r.json#failed` | failed=0 |" in md
+    assert "| 3 | manual: the owner opens the batch page and counts 12 batches | manual |" in md
+
+
+@pytest.mark.parametrize(
+    "entries,named",
+    [
+        (FULL_CHECK[:2], "metric_check has no entry for metric line 3"),
+        ([*FULL_CHECK, {"line": 2, "command": "./x", "result": "ok"}], "metric_check names metric line 2 more than once"),
+        ([{"line": 1, "command": "./backfill.sh"}, *FULL_CHECK[1:]], "metric_check has no result for metric line 1"),
+        ([{"line": 1, "command": "./backfill.sh", "result": "  "}, *FULL_CHECK[1:]], "metric_check has no result for metric line 1"),
+        (None, "'metric_check' must be a list"),
+    ],
+    ids=["a missing line", "a doubled line", "a command with no result", "a command with a blank result", "no metric_check"],
+)
+def test_a_verify_reply_missing_a_line_takes_the_retry_and_names_it(monkeypatch, entries, named):
+    overrides = {} if entries is None else {"metric_check": entries}
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.VERIFY_REPORT_LABEL, **overrides)])
+    with pytest.raises(AgentError, match="invalid metric check") as raised:
+        step_agent.execute(verify_task())
+    assert len(calls) == 2
+    assert named in str(raised.value)
+    assert named in calls[1]["prompt"]
+
+
+def test_verify_on_a_plan_approved_before_the_proof_map_passes_citing_its_commands(monkeypatch):
+    """Guardrail 4: a Task past Approve the run whose plan has no `proof` is
+    not re-validated; Verify cites the commands whose output it judged."""
+    entries = [{"line": n, "command": VALID_PLAN["commands"][1], "result": f"line {n} holds"} for n in (1, 2, 3)]
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.VERIFY_REPORT_LABEL, metric_check=entries)])
+    result = step_agent.execute(verify_task(plan=dict(VALID_PLAN)))
+    assert len(calls) == 1
+    assert result["artifacts"]["metric_check"] == entries
+
+
+def test_impact_review_passes_flagged_circular_proofs_through(monkeypatch):
+    flagged = [{"line": 3, "reason": "it parses the file the run itself wrote"}]
+    task = make_task(step_agent.IMPACT_REVIEW_LABEL)
+    task["item"]["metric"] = PROOF_METRIC
+    stub_agent(monkeypatch, [reply_for(step_agent.IMPACT_REVIEW_LABEL, circular_proofs=flagged)])
+    assert step_agent.execute(task)["artifacts"]["circular_proofs"] == flagged
+
+    stub_agent(monkeypatch, [reply_for(step_agent.IMPACT_REVIEW_LABEL, circular_proofs=[])])
+    assert "circular_proofs" not in step_agent.execute(task).get("artifacts", {})
+
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.IMPACT_REVIEW_LABEL, circular_proofs=[{"line": 9, "reason": "x"}])])
+    with pytest.raises(AgentError, match="metric line 9"):
+        step_agent.execute(task)
+    assert len(calls) == 2
+
+
 # ---- guardrail 4: secrets are references only ----
 
 

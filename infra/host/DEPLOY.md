@@ -1189,6 +1189,20 @@ is refused. `venvDir` is relative to the task dir when one is set.
 - **Roll back** by clearing Task dir on the target: Task jobs go back to
   `repoDir`.
 
+## Every metric line has a proof (HZ-770)
+
+No host setup. A Run plan's `proof` map may now mark a line `manual` (an
+owner check), and a new Run plan reply fails unless every metric line has a
+proof or a manual mark. Impact review can send a plan back to Run plan for a
+circular proof, at most twice (`IMPACT_SENDBACK_CAP` in
+`server/src/config.js`); then a human decides at **Approve the run**. Tasks
+already past Run plan are not re-checked.
+
+- **Roll back** by redeploying the last good tag. Then re-run Run plan on
+  every Task waiting at **Approve the run**: the older code reads a plan with
+  a `manual` proof as no plan, so its card shows "not found" and Approve is
+  refused until the plan is rewritten.
+
 ## Task containers: rootless Podman (HZ-416)
 
 A Task's Execute runs its approved commands in a throwaway rootless Podman

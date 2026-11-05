@@ -1,0 +1,15 @@
+{
+  "$comment": "HZ-770. Stored Run plans replayed through coverage, verbatim: the item's metric and the `run_plan` block of its last done Run plan run, copied from Horizon's database. Test fixtures only (farm/tests/test_job_reports.py); no rule in domain/ or farm/ names these items. MDI-56's block was written before HZ-503's `proof` map, so it carries none.",
+  "MDI-56": {
+    "metric": "1. **Every day accounted for.** The report has one row for each business day from 13 Oct 2025 to FedInvest's latest date. Days with no file have zero counts and a reason. Each row shows: CUSIPs in FedInvest's file, ledger Treasuries among them, prices written, skipped as already stored, and failed. On every row, written + skipped + failed = ledger matches.\n2. **Failures reported.** Every day with no load is listed with its reason: holiday, no file, or HTTP error. Every failed price write is listed with CUSIP, date and error. No day fails with a `403`. HTTP-error days plus failed writes are 5% or less of days plus writes attempted. Holidays and no-file days are not failures.\n3. **Gap closed.** After the run, more than 570 securities have at least one stored price. `912810UT3`, `912810UR7`, `91282CQK0` and the 12 reopened CUSIPs MDI-51 skipped (e.g. `912810US5`, `91282CPU9`) each have a stored price for 9 Oct 2026, or are in the report's not-quoted-by-FedInvest list.\n4. **Spot-checked.** 5 CUSIPs, including `912810UT3`, `912810US5` and one bill, on 3 dates: 14 Oct 2025, one in April 2026, and 9 Oct 2026. In all 15 checks, the stored clean price equals FedInvest's end-of-day price for that CUSIP and date.\n5. **Curve uses them.** `/data/treasury_curve` for 9 Oct 2026 returns a par yield for every tenor. Every CUSIP it uses has a stored FedInvest price for 9 Oct 2026.",
+    "run_plan": {
+      "cwd": ".",
+      "commands": [
+        "git merge-base --is-ancestor 73ee286 HEAD",
+        "python3 -m bond.backfill_fedinvest --ledger-wide --from 2025-10-13 --to 2026-10-13 --report /tmp/mdi-56-fedinvest-backfill.json",
+        "python3 -c \"import json;r=json.load(open('/tmp/mdi-56-fedinvest-backfill.json'));d=r['days'];s=lambda k:sum(x[k] for x in d);bad=[x['date'] for x in d if x['written']+x['skipped']+x['no_eod']+x['failed']!=x['ledger_matches']];print('exit',r['exit_code'],'complete',r['complete'],'stopped',r['stopped'],'aborted',r['aborted'],'error',r['error']);print('days',len(d),'written',s('written'),'skipped',s('skipped'),'no_eod',s('no_eod'),'failed',s('failed'));print('missing_days',len(r['missing_days']),'failed_writes',len(r['failed_writes']),'failure',r['failure']);print('rows_not_balanced',bad);print('not_quoted',len(r['not_quoted']));w=['912810UT3','912810UR7','91282CQK0','912810US5','91282CPU9'];print('watch_not_quoted',[c for c in w if c in r['not_quoted']])\""
+      ],
+      "budget_minutes": 60
+    }
+  }
+}
