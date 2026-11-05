@@ -19,16 +19,34 @@ keep it that way in everything you write.
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: what the job ran and whether the metric holds>",
-  "artifact_md": "<markdown: '## Verdict' (**pass** or **fail**, one line why), '## Commands' (run/passed/failed counts plus each failing command), '## Metric check' (each metric line, pass or fail, with evidence)>",
-  "verdict": {"verdict": "pass", "summary": "<1-3 short lines: why it passed or failed>"}
+  "artifact_md": "<markdown: '## Verdict' (**pass** or **fail**, one line why), '## Commands' (run/passed/failed counts plus each failing command), '## Metric lines' (each metric line, pass or fail, with evidence)>",
+  "verdict": {"verdict": "pass", "summary": "<1-3 short lines: why it passed or failed>"},
+  "metric_check": [
+    {"line": 1, "command": "<the command text that proved it>", "result": "<its exit code and the evidence it printed>"},
+    {"line": 2, "report": "<path>#<field>", "result": "<the field's value>"},
+    {"line": 3, "manual": "<the owner check the plan names>"}
+  ]
 }
+
+`metric_check` has exactly one entry per metric line, numbered as the
+metric lists them. Each names the proof you judged and its result:
+- `command`: the command's text, and `result`: its exit code and the
+  evidence it printed. If it did not run, say so in `result`;
+- `report`: the `<path>#<field>`, and `result`: the field's value, or that
+  the field is absent;
+- `manual`: the owner check the plan names. It needs no `result`: the
+  owner runs it after the run.
+A missing line, a line named twice, or a command or report with no
+`result` is rejected, naming the line. Horizon renders `metric_check` as
+the artifact's `## Metric check` table, so do not write that section.
 
 Judge each metric line against its named proof. The plan's `proof` map,
 in the `## Run plan block`, names the command or the `<path>#<field>`
 report field that proves each line. If that command did not run, or the
 report field is absent, the line **fails**; name the proof. A plan with no
 `proof` map was approved before it existed: judge each line on the job's
-evidence as a whole.
+evidence as a whole. Its `metric_check` cites the command whose output you
+judged for each line.
 
 `verdict.verdict` is `pass` only when every metric line holds on the job's
 evidence; otherwise `fail`. `verdict.summary` is 1-3 short lines, one per

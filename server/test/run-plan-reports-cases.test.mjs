@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { effectiveRunner, extractRunPlan } from '../../domain/js/runPlan.js'
+import { circularProofs, effectiveRunner, extractRunPlan, unprovenLines, unprovenReason } from '../../domain/js/runPlan.js'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const cases = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/run-plan-cases.json'), 'utf8'))
@@ -69,5 +69,37 @@ for (const c of cases.proof) {
     const block = extractRunPlan(artifactOf(c.block))
     if (c.valid) assert.deepEqual(block, c.block)
     else assert.equal(block, null)
+  })
+}
+
+// HZ-770: the same fixture's `proof_coverage` cases (farm/tests/test_job_reports.py
+// is the Python half): both bindings name the same uncovered lines, in the
+// same words.
+test('the coverage fixture has a plan with no proof, a manual-only plan and a mixed plan', () => {
+  const sources = cases.proof_coverage.map((c) => new Set((c.proof ?? []).flatMap((entry) => Object.keys(entry)).filter((k) => k !== 'line')))
+  assert.ok(cases.proof_coverage.some((c) => c.proof === undefined && c.names.length))
+  assert.ok(sources.some((s) => s.size === 1 && s.has('manual')))
+  assert.ok(sources.some((s) => s.size === 3))
+})
+
+for (const c of cases.proof_coverage) {
+  test(`proof coverage: ${c.case}`, () => {
+    const plan = { cwd: '.', commands: ['echo hi', './count.sh'], budget_minutes: 1, reports: ['/tmp/r.json'], ...(c.proof ? { proof: c.proof } : {}) }
+    const block = extractRunPlan(artifactOf(plan))
+    assert.deepEqual(block, plan)
+    assert.deepEqual(unprovenLines(block, c.metric), [...c.names].sort((a, b) => a - b))
+    const reason = unprovenReason(block, c.metric)
+    if (c.names.length === 0) assert.equal(reason, null)
+    for (const line of c.names) assert.match(reason, new RegExp(`\\blines? (?:\\d+, )*${line}\\b`))
+    if (c.reason !== undefined) assert.equal(reason, c.reason)
+  })
+}
+
+// HZ-770: the same fixture's `circular_proofs` cases (farm/tests/test_job_reports.py
+// is the Python half).
+for (const c of cases.circular_proofs) {
+  test(`circular proofs: ${c.case}`, () => {
+    const got = circularProofs(c.value, c.metric)
+    assert.deepEqual(got && got.map((entry) => entry.line), c.lines)
   })
 }

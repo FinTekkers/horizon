@@ -2007,7 +2007,11 @@ def _task_reply_validator(label: str, metric: str | None = None):
     retry; a second bad reply fails the step. The message and the log name
     the field or the secret's shape, never the value. HZ-503: the block's
     `proof` must name each line of the item's `metric` exactly once; the
-    reason names every missing, doubled or out-of-range line."""
+    reason names every missing, doubled or out-of-range line. HZ-770:
+    Impact review's `circular_proofs` must name metric lines with a reason,
+    and Verify & report's `metric_check` must report every metric line with
+    its proof and result, or as manual; the reason names each line that falls
+    short."""
 
     def check(parsed):
         if not isinstance(parsed, dict):
@@ -2027,6 +2031,17 @@ def _task_reply_validator(label: str, metric: str | None = None):
                 texts.append(run_plan.render(block))
             except ValueError as exc:
                 raise AgentError(f"invalid run plan: {exc}") from None
+        if label == IMPACT_REVIEW_LABEL:
+            try:
+                run_plan.check_circular(parsed.get("circular_proofs"), metric)
+            except ValueError as exc:
+                raise AgentError(f"invalid Impact review reply: {exc}") from None
+            texts.append(json.dumps(parsed.get("circular_proofs")))
+        if label == VERIFY_REPORT_LABEL:
+            gaps = run_plan.metric_check_gaps(parsed.get("metric_check"), metric)
+            if gaps:
+                raise AgentError(f"invalid metric check: {gaps}")
+            texts.append(json.dumps(parsed.get("metric_check")))
         found = sorted({name for text in texts for name in run_plan.literal_secrets(text)})
         if found:
             log(f"{label}: reply carries a literal secret ({', '.join(found)}) — rejected")
@@ -2037,6 +2052,17 @@ def _task_reply_validator(label: str, metric: str | None = None):
         return parsed
 
     return check
+
+
+def _metric_check_section(label: str, parsed: dict) -> str | None:
+    """HZ-770: Verify & report's `## Metric check` table, rendered from its
+    validated `metric_check` so each metric line shows the command that
+    proved it and that command's result, or `manual`. None for every other
+    step, and for a reply with no entries (a metric with no lines)."""
+    entries = parsed.get("metric_check")
+    if label != VERIFY_REPORT_LABEL or not isinstance(entries, list) or not entries:
+        return None
+    return run_plan.render_metric_check(entries)
 
 
 def _requires_recheck(kind: str, label: str, task: dict):
@@ -3751,6 +3777,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
         # HZ-378's Execute reads it back with run_plan.extract().
         if kind == "task" and label == RUN_PLAN_LABEL:
             artifact = f"{artifact}\n\n## Run plan block\n{run_plan.render(parsed['run_plan'])}"
+        if metric_check := _metric_check_section(label, parsed):
+            artifact = f"{artifact}\n\n{metric_check}"
         # HZ-447: Design reads the validated Inventory block back from here.
         if bundle_step and label == PLAN_INVENTORY_LABEL:
             artifact = f"{artifact}\n\n## Inventory block\n{plan_inventory.render(parsed['inventory'])}"
@@ -3793,6 +3821,14 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # other Task step's `verdict` is dropped.
     if label == VERIFY_REPORT_LABEL and isinstance(parsed.get("verdict"), dict):
         result.setdefault("artifacts", {})["verdict"] = parsed["verdict"]
+    # HZ-770: Impact review's flagged circular proofs ride through; the
+    # server sends the plan back to Run plan naming each line
+    # (orchestrator.impactSendBack). Verify's validated metric_check rides
+    # beside its verdict.
+    if label == IMPACT_REVIEW_LABEL and parsed.get("circular_proofs"):
+        result.setdefault("artifacts", {})["circular_proofs"] = parsed["circular_proofs"]
+    if label == VERIFY_REPORT_LABEL and isinstance(parsed.get("metric_check"), list):
+        result.setdefault("artifacts", {})["metric_check"] = parsed["metric_check"]
     # HZ-448: the validated drafts ride through; the server re-checks them,
     # saves them as the Plan's draft and files nothing.
     if label == PLAN_DRAFT_LABEL:

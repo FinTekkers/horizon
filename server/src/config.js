@@ -225,6 +225,10 @@ export const FIX_PASS_MAX_LINES = fixPassMaxLines >= 1 ? fixPassMaxLines : 200
 // and read by the Autopilot caretaker (HZ-271), which only stops on it.
 // Deliberately NOT read from the environment: nothing may raise it.
 export const REVIEW_CYCLE_CAP = 3
+// HZ-770: how many times Impact review may send a Task's plan back to Run
+// plan for a circular proof. At the cap the item goes on to Approve the run
+// and a human decides. Not read from the environment, like the cap above.
+export const IMPACT_SENDBACK_CAP = 2
 // HZ-271: the most automatic gate actions the caretaker takes per project in
 // any rolling hour, counted from persisted caretaker_action rows. Whole
 // numbers >= 1 only; anything else falls back to 10.

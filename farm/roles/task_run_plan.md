@@ -31,7 +31,7 @@ Respond with ONLY a JSON object (no prose, no fences):
     "env": {"<NAME>": "$<NAME>"},
     "reports": ["<optional: a file the run writes as its result>"],
     "requires": [{"tool": "<a tool the commands call>"}, {"path": "<a file or folder they read, relative to the repo root>"}],
-    "proof": [{"line": 1, "command": 2}, {"line": 2, "report": "<a path in reports>#<field>"}],
+    "proof": [{"line": 1, "command": 2}, {"line": 2, "report": "<a path in reports>#<field>"}, {"line": 3, "manual": "<what the owner checks, and where>"}],
     "runner": "<optional: omit it and the `runner` line in your input decides; set \"host\" or \"container\" only to override it>"
   }
 }
@@ -53,12 +53,25 @@ line, numbered as the metric lists them, starting at 1:
 - `{"line": <n>, "command": <k>}` when command `k` (1-based, in
   `commands` order) prints the evidence;
 - `{"line": <n>, "report": "<path>#<field>"}` when a report field holds
-  it. The path must be listed in `reports`.
+  it. The path must be listed in `reports`;
+- `{"line": <n>, "manual": "<owner check>"}` when only the owner can
+  check it after the run. Say what they check and where. Use this only
+  when no command can show it.
 
-Each line must be provable from this one run's output. A metric line with
-no entry, a line named twice, or a line the metric does not have fails the
-step, and the reason names the line. If a line cannot be proved by one run,
-say so in `## Proof` as a blocking finding.
+Every metric line needs a proof or a manual mark. A metric line with no
+entry, a line named twice, or a line the metric does not have fails the
+step, and the reason names every such line. One proof per line: if a line
+needs two checks, write one command that runs both.
+
+A proof must read an independent source: the published figure, a
+different service, or a stored fixture. Reading back only what the same
+run wrote is **circular** and does not count — for example, re-parsing
+the loader's own output to check the loader. Impact review sends a plan
+with a circular proof back to you, naming the line.
+
+Each line must be provable from this one run's output, or marked manual.
+If a line cannot be proved by one run, say so in `## Proof` as a blocking
+finding.
 
 `requires` lists every tool and file the commands need. Fill it in for
 every plan:

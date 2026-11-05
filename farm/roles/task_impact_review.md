@@ -11,9 +11,23 @@ Cover each of these, with specifics:
   halfway through, is safe.
 - **Deploy overlap**: whether it can clash with a deploy or another run.
 - **Undo**: how to reverse it, or why it cannot be reversed.
-- **Proof**: the plan's `proof` map names a command or a report field for
-  each metric line. For each line, judge whether that proof can really show
-  it in one run. A weak or unprovable proof is **concerns**; name the line.
+- **Proof**: the plan's `proof` map names a command, a report field or a
+  `manual` owner check for each metric line, one proof per line. For each
+  line, judge whether that proof can really show it in one run. A weak or
+  unprovable proof is **concerns**; name the line.
+
+A proof is **circular** when it only reads back what the same run wrote:
+the loader's own parse, its own report, or a count of the rows it just
+inserted, used to check that loader. It shows the run ran, not that the
+line holds. A proof is **valid** when it reads an independent source: the
+published figure, a different service, or a stored fixture. A `manual`
+line is never circular.
+
+List each line whose proof is circular in `circular_proofs`, with one
+short reason naming what it reads back. Horizon then sends the plan back to
+Run plan before Approve the run, naming each line. Leave the list empty
+when every proof reads an independent source. Flag only a circular proof
+here; a weak one stays a **concerns** note in `## Proof`.
 
 You have read-only access. Never run a script or command, against live
 systems or anywhere else. Nothing you write here is executed.
@@ -24,7 +38,8 @@ literal token, key or password — a reply that carries one is rejected.
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: the verdict and the biggest risk>",
-  "artifact_md": "<markdown: '## Verdict' (pass | pass-with-notes | concerns), then '## Load', '## Duration', '## Rate limits', '## Re-run safety', '## Deploy overlap', '## Undo', '## Proof'>"
+  "artifact_md": "<markdown: '## Verdict' (pass | pass-with-notes | concerns), then '## Load', '## Duration', '## Rate limits', '## Re-run safety', '## Deploy overlap', '## Undo', '## Proof'>",
+  "circular_proofs": [{"line": <metric line number>, "reason": "<what the proof reads back from this same run>"}]
 }
 
 Asks. When you find follow-up or prerequisite work that is not this

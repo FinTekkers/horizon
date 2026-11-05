@@ -9,6 +9,8 @@
 // card says the plan was not found. The full contract is
 // domain/runPlan.schema.json; only the fields a reader relies on are checked.
 
+import { criteriaLines } from './fields.js'
+
 const FENCED = /```json run-plan\n([\s\S]*?)\n```/g
 
 export function extractRunPlan(artifact) {
@@ -73,23 +75,72 @@ function validRequires(requires) {
 
 // HZ-503: the same shape rule as run_plan.validate()'s `proof` check — a
 // whole `line` and exactly one source: `command`, a 1-based index into
-// `commands`, or `report`, `<path>#<field>` with both parts non-empty and the
-// path listed in `reports`. Coverage of the metric is the farm's check alone.
-const PROOF_KEYS = new Set(['line', 'command', 'report'])
+// `commands`; `report`, `<path>#<field>` with both parts non-empty and the
+// path listed in `reports`; or HZ-770's `manual`, the owner check, as
+// non-blank text.
+const PROOF_SOURCES = ['command', 'report', 'manual']
+const PROOF_KEYS = new Set(['line', ...PROOF_SOURCES])
 const whole = (n) => Number.isInteger(n) && n >= 1
+const text = (s) => typeof s === 'string' && s.trim() !== ''
 
 function validProof(proof, commandCount, reports) {
   if (!Array.isArray(proof)) return false
   return proof.every((entry) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
     if (!Object.keys(entry).every((key) => PROOF_KEYS.has(key)) || !whole(entry.line)) return false
-    const hasCommand = Object.hasOwn(entry, 'command')
-    if (hasCommand === Object.hasOwn(entry, 'report')) return false
-    if (hasCommand) return whole(entry.command) && entry.command <= commandCount
+    const sources = PROOF_SOURCES.filter((key) => Object.hasOwn(entry, key))
+    if (sources.length !== 1) return false
+    if (sources[0] === 'command') return whole(entry.command) && entry.command <= commandCount
+    if (sources[0] === 'manual') return text(entry.manual)
     if (typeof entry.report !== 'string') return false
     const at = entry.report.indexOf('#')
     if (at < 0) return false
     const reportPath = entry.report.slice(0, at)
     return reportPath.trim() !== '' && entry.report.slice(at + 1).trim() !== '' && reports.includes(reportPath)
   })
+}
+
+const numbers = (lines) => `${lines.length === 1 ? 'line' : 'lines'} ${lines.join(', ')}`
+
+function proofGaps(block, metric) {
+  const total = criteriaLines(metric).length
+  const named = (block.proof ?? []).map((entry) => entry.line)
+  const missing = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !named.includes(n))
+  const doubled = [...new Set(named.filter((n, i) => named.indexOf(n) !== i))].sort((a, b) => a - b)
+  const beyond = [...new Set(named.filter((n) => n > total))].sort((a, b) => a - b)
+  return { total, missing, doubled, beyond }
+}
+
+// HZ-770: the same coverage rule as run_plan.unproven_lines() — every metric
+// line an extracted block's `proof` leaves uncovered (missing, doubled or out
+// of range), sorted. The Approve the run card shows them; it never refuses.
+export function unprovenLines(block, metric) {
+  const { missing, doubled, beyond } = proofGaps(block, metric)
+  return [...new Set([...missing, ...doubled, ...beyond])].sort((a, b) => a - b)
+}
+
+// HZ-770: run_plan.unproven()'s reason, word for word, or null.
+export function unprovenReason(block, metric) {
+  const { total, missing, doubled, beyond } = proofGaps(block, metric)
+  const gaps = []
+  if (missing.length) gaps.push(`proof has no entry for metric ${numbers(missing)}`)
+  if (doubled.length) gaps.push(`proof names metric ${numbers(doubled)} more than once`)
+  if (beyond.length) gaps.push(`proof names metric ${numbers(beyond)}, but the metric has ${total} line${total === 1 ? '' : 's'}`)
+  return gaps.join('; ') || null
+}
+
+// HZ-770: the same rule as run_plan.check_circular() for Impact review's
+// `circular_proofs` — the flagged entries sorted by line, [] for none (no key
+// or an empty list), or null for a bad shape, a blank reason or a line the
+// metric does not have.
+export function circularProofs(value, metric) {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) return null
+  const total = criteriaLines(metric).length
+  const valid = value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+    const keys = Object.keys(entry)
+    return keys.length === 2 && keys.includes('line') && keys.includes('reason') && whole(entry.line) && entry.line <= total && text(entry.reason)
+  })
+  return valid ? [...value].sort((a, b) => a.line - b.line) : null
 }

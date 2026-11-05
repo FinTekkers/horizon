@@ -420,6 +420,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   ⚠ {item.runPlan.runnerWarning} — Execute will refuse this container plan
                 </div>
               )}
+              {/* HZ-770: metric lines the plan's proof leaves uncovered. A warning only: Approve stays enabled. */}
+              {index === APPROVE_RUN_GATE_INDEX && item.runPlan?.uncoveredLines?.length > 0 && (
+                <div className="step-card__run-plan-warning" data-testid="run-plan-uncovered-lines" style={{ color: 'var(--danger-ink)' }}>
+                  ⚠ metric {item.runPlan.uncoveredLines.length === 1 ? 'line' : 'lines'} {item.runPlan.uncoveredLines.join(', ')}{' '}
+                  {item.runPlan.uncoveredLines.length === 1 ? 'has' : 'have'} no proof
+                </div>
+              )}
             </div>
           )}
           {goldenCases && (
