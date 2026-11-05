@@ -253,6 +253,11 @@ TENANT_ENV_ROOT = Path(os.environ.get("FARM_TENANT_ENV_ROOT", "/etc/horizon/tena
 # from the environment: infra/host/horizon-tenant.sudoers (HZ-697) names this
 # path, run as any member of hz-tenants.
 TENANT_ENTRY = "/usr/local/libexec/horizon/tenant-entry"
+# HZ-772: a tenant job's state and log, in TENANT_JOBS_DIR/<project id>/ —
+# owned by the run user, group the farm user's, mode 2750, so farmd reads them
+# and no other tenant can. Fixed like TENANT_ENTRY: tenant-entry and
+# infra/host/horizon-provision-run-user name the same path.
+TENANT_JOBS_DIR = Path("/var/lib/horizon/tenant-jobs")
 
 
 def ensure_dirs() -> None:

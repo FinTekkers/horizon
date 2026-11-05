@@ -243,8 +243,35 @@ def ensure_tenant_hub(repo_full: str) -> Path:
     for directory in (FARM_HOME, WORKSPACES_DIR):
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
-    path = hub_path(repo_full)
-    with open(_tenant_provision_lock_path(repo_full), "a") as fh:
+    return _tenant_clone(repo_full, hub_path(repo_full), _tenant_provision_lock_path(repo_full), "hub")
+
+
+# HZ-772: a tenant Task job's own clone, under the run user's FARM_HOME.
+TENANT_TASK_CLONES_DIR = FARM_HOME / "task-clones"
+
+
+def tenant_task_clone_path(repo_full: str) -> Path:
+    return TENANT_TASK_CLONES_DIR / repo_full.replace("/", "__")
+
+
+def ensure_tenant_task_clone(repo_full: str) -> Path:
+    """HZ-772: a tenant Task job's own task clone, cloned by the run user into
+    $FARM_HOME/task-clones/<owner>__<repo> the same way as ensure_tenant_hub
+    — no credential in the URL. The Execute runner then fast-forwards it
+    under clone_lock, as it does an internal target's taskDir. Returns at
+    once when the clone exists; RuntimeError names the repo only."""
+    for directory in (FARM_HOME, TENANT_TASK_CLONES_DIR):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+    path = tenant_task_clone_path(repo_full)
+    return _tenant_clone(repo_full, path, path.with_name(f".{path.name}.provision.lock"), "task clone")
+
+
+def _tenant_clone(repo_full: str, path: Path, lock_path: Path, what: str) -> Path:
+    """Clones repo_full to `path` as the calling run user, holding `lock_path`,
+    with TENANT_CREDENTIAL_HELPER as the only helper. On failure the partial
+    clone is removed and a RuntimeError names the repo only."""
+    with open(lock_path, "a") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
             if (path / ".git").exists():
@@ -265,7 +292,7 @@ def ensure_tenant_hub(repo_full: str) -> Path:
                 _git(path, "config", "--add", "credential.helper", TENANT_CREDENTIAL_HELPER)
             except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
                 shutil.rmtree(path, ignore_errors=True)
-                raise RuntimeError(f"tenant hub clone of {repo_full} failed ({type(exc).__name__})") from None
+                raise RuntimeError(f"tenant {what} clone of {repo_full} failed ({type(exc).__name__})") from None
             return path
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)

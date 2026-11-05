@@ -15,15 +15,28 @@ and the step then runs with none. Otherwise it writes the task, 0600, under
 the run user's own FARM_HOME and execs `python -m farm.step_agent` with exactly
 the env it was given — nothing from its own environment is merged in, and no
 value goes on argv. Errors name a field only, never a value.
+
+HZ-772: the spool's optional "entry" picks what runs: "agent" (the default)
+execs farm.step_agent as above; "job" execs `python -m farm.tenant_job`, a
+tenant Task's Execute runner, with umask 027. A job's task rides under "job"
+instead of "task", so a tenant-entry from before HZ-772 refuses it. It must name
+results_dir = TENANT_JOBS_DIR/<its project id>: a real directory (not a
+symlink) owned by this run user, where the runner writes its state and log
+for farmd to read. Any other entry, or any other results_dir, is refused.
 """
 
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# HZ-772: the same path as farm/config.py's TENANT_JOBS_DIR.
+TENANT_JOBS_DIR = "/var/lib/horizon/tenant-jobs"
+ENTRIES = {"agent": "farm.step_agent", "job": "farm.tenant_job"}
+TASK_KEYS = {"agent": "task", "job": "job"}
 
 
 def refuse(why: str):
@@ -31,14 +44,17 @@ def refuse(why: str):
     sys.exit(2)
 
 
-def read_payload(stream) -> tuple[dict, dict, str | None]:
+def read_payload(stream) -> tuple[dict, dict, str | None, str]:
     try:
         payload = json.loads(stream.read())
     except (ValueError, UnicodeDecodeError):
         refuse("stdin is not one JSON object")
     if not isinstance(payload, dict):
         refuse("stdin is not one JSON object")
-    env, task, test_env_file = payload.get("env"), payload.get("task"), payload.get("test_env_file")
+    entry = payload.get("entry", "agent")
+    if not isinstance(entry, str) or entry not in ENTRIES:
+        refuse("entry must be agent or job")
+    env, task, test_env_file = payload.get("env"), payload.get(TASK_KEYS[entry]), payload.get("test_env_file")
     if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
         refuse("env must map names to strings")
     if not isinstance(task, dict) or not RUN_ID_RE.match(str(task.get("run_id", ""))):
@@ -47,7 +63,23 @@ def read_payload(stream) -> tuple[dict, dict, str | None]:
         refuse("test_env_file must be null or an absolute path")
     if not isinstance(env.get("FARM_HOME"), str) or not os.path.isabs(env["FARM_HOME"]):
         refuse("env names no absolute FARM_HOME")
-    return env, task, test_env_file
+    if entry == "job":
+        check_results_dir(task)
+    return env, task, test_env_file, entry
+
+
+def check_results_dir(task: dict) -> None:
+    """HZ-772: a job's results_dir is its own project's, and this run user's."""
+    project = task.get("project")
+    project_id = str(project.get("id", "")) if isinstance(project, dict) else ""
+    if not project_id.isdigit() or task.get("results_dir") != f"{TENANT_JOBS_DIR}/{project_id}":
+        refuse("results_dir must be this project's tenant jobs directory")
+    try:
+        info = os.lstat(task["results_dir"])
+    except OSError:
+        refuse("results_dir is missing")
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        refuse("results_dir must be a directory owned by this run user")
 
 
 def write_task(farm_home: str, task: dict) -> Path:
@@ -66,7 +98,7 @@ def main(stream=None) -> None:
     invoker = os.environ.get("SUDO_UID", "")
     if uid == 0 or not invoker.isdigit() or uid == int(invoker):
         refuse("must run as a tenant run user, via sudo from the farm user")
-    env, task, test_env_file = read_payload(sys.stdin if stream is None else stream)
+    env, task, test_env_file, entry = read_payload(sys.stdin if stream is None else stream)
     if test_env_file is not None:
         if not os.path.isfile(test_env_file) or not os.access(test_env_file, os.R_OK):
             refuse("test_env_file is missing or unreadable")
@@ -74,8 +106,11 @@ def main(stream=None) -> None:
     else:
         task.pop("test_env_file", None)
     path = write_task(env["FARM_HOME"], task)
+    if entry == "job":
+        # The results dir is 2750: its files reach the farm user's group only.
+        os.umask(0o027)
     python = sys.executable
-    os.execve(python, [python, "-m", "farm.step_agent", "--task", str(path)], env)
+    os.execve(python, [python, "-m", ENTRIES[entry], "--task", str(path)], env)
 
 
 if __name__ == "__main__":

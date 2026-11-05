@@ -688,7 +688,7 @@ project's `hz-p<id>` and clones its own hub into
 `/home/hz-p<id>/.horizon-farm/workspaces` (mode `0700`), authenticating with
 the project's own token through a git credential helper — never a token in a
 URL. A tenant project may have no test-env file. A tenant's job step
-(a Task's Execute) is still refused. There is no sudoers change, but
+(a Task's Execute) is still refused (until HZ-772, below). There is no sudoers change, but
 `tenant-entry` changed, so after this release re-run:
 
 ```bash
@@ -737,6 +737,49 @@ Check: `stat -c '%U %a' /usr/local/libexec/horizon/tenant-entry` prints
 `root 755`, and `head -1` of it prints the venv's python. Rollback: revert the
 release; the installed `tenant-entry` and written `.gitconfig` files are
 harmless and can stay.
+
+### Tenant Task jobs (HZ-772)
+
+A tenant Task's **Execute** now runs instead of being refused. farmd launches
+it the way it launches a tenant agent step: `farm.tenant_launch` →
+`sudo -n -u hz-p<id> tenant-entry`, with the session env on stdin and
+`"entry": "job"`. As `hz-p<id>`, `farm.tenant_job` clones its own task clone
+into `/home/hz-p<id>/.horizon-farm/task-clones/` (credential helper, no token
+in a URL), reads the plan's env from that clone's `.env`, the project's own
+test-env file and its own session env (only that project's token), and runs
+the approved commands. The server's `repo_dir` is ignored for a tenant.
+Tenant jobs run on the host runner only; a `container` runner is refused.
+
+The job's state and log go to `/var/lib/horizon/tenant-jobs/<id>/`:
+`hz-p<id>`-owned, group `ubuntu`, mode `2750`, files `0640`. farmd reads them
+there; no other tenant can. Report files ride inside the state file. Stop
+kills the session; the runner itself kills its command and records `stopped`.
+**No sudoers change.**
+
+Before the first tenant Execute after this release, run once:
+
+```bash
+sudo bash infra/host/install-tenant-host.sh
+```
+
+It reinstalls `tenant-entry` (it changed), creates
+`/var/lib/horizon/tenant-jobs` (`root:ubuntu`, `0711`) and re-runs
+`horizon-provision-run-user` for each existing `hz-p<id>`, which creates its
+results dir. Until it runs, a tenant Execute fails closed (`tenant-entry`
+refuses the job, or the results dir is missing) — never as the farm user.
+
+Check, after a Parvati Real Estate Execute:
+
+```bash
+stat -c '%U %G %a' /var/lib/horizon/tenant-jobs/4      # hz-p4 ubuntu 2750
+head -1 /var/lib/horizon/tenant-jobs/4/farm-job-*.log  # running as hz-p4 (uid …)
+ps -o user= -p "$(pgrep -f 'farm.tenant_job' | head -1)"  # hz-p4, while it runs
+```
+
+Rollback: revert the release (tenant jobs are refused again) and re-run
+`install-tenant-host.sh` from it to put the old `tenant-entry` back.
+`/var/lib/horizon/tenant-jobs` and `/home/hz-p*/.horizon-farm/task-clones`
+are harmless; remove them as root if wanted.
 
 ## 2m. farmd under systemd (HZ-714)
 
