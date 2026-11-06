@@ -249,6 +249,24 @@ test('metric 5: an item on a sub-step lists it by key, and a move there keeps it
   assert.equal(moveCount(id), 1)
 })
 
+test('metric 1: at Implement after a failed review, change.accept-code is listed and forwards the item there', async () => {
+  const key = 'change.implement'
+  const id = seed(stepIndexOf(key))
+  const review = stepIndexOf('change.auto-review')
+  db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, ended_at) VALUES (?, ?, 1, 'QA', 'done', datetime('now'))").run(id, review)
+  db.prepare('UPDATE work_item SET fix_pass = 1, fix_findings_json = ? WHERE id = ?').run(
+    JSON.stringify([{ file: 'server/src/x.js', line: 7, detail: 'unchecked input' }]),
+    id,
+  )
+  const target = targetsOf(id).find((t) => t.stepKey === 'change.accept-code')
+  assert.ok(target, `change.accept-code not listed: ${JSON.stringify(targetsOf(id).map((t) => t.stepKey))}`)
+  const res = await move(id, { stepKey: 'change.accept-code', from: key })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(moveKeyOf(row(id)), 'change.accept-code')
+  assert.equal(moveCount(id), 1)
+  assert.equal(res.json().item.cursor, stepIndexOf('change.accept-code'), 'the answer carries the moved item')
+})
+
 test('metric 4 and guardrail 2: the move answer, the list and the v2 stream carry the same moves, with no server-only field', async () => {
   // Seeded before the stream opens, so its snapshot frame carries the item.
   const key = 'change.approve-design'
