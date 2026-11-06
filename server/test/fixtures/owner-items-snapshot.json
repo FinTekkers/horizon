@@ -288,6 +288,17 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ]
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -451,6 +462,38 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": "2026-01-02T03:04:05Z",
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.plan-options",
+            "isDefault": false,
+            "redo": "Approves “<step-label:3>” and moves on to “<step-label:4>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          },
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>” and 3 later steps",
+            "reapprovals": [],
+            "stopsRunning": false
+          },
+          {
+            "stepKey": "change.define-success",
+            "isDefault": false,
+            "redo": "Redoes “<step-label:1>” and 2 later steps",
+            "reapprovals": [],
+            "stopsRunning": false
+          },
+          {
+            "stepKey": "change.set-guardrails",
+            "isDefault": false,
+            "redo": "Redoes “<step-label:2>” and 1 later step",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ]
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -594,6 +637,17 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ]
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -754,6 +808,17 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ]
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -897,6 +962,17 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ]
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -1057,6 +1133,17 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ]
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -1217,6 +1304,17 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ]
+      },
       "acceptWaiting": "<pinned>"
     }
   ],

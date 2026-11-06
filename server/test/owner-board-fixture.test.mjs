@@ -53,8 +53,13 @@ const LABEL_TOKENS = new Map()
 STEPS.forEach((step, i) => {
   if (!LABEL_TOKENS.has(step.label)) LABEL_TOKENS.set(step.label, `<step-label:${i}>`)
 })
+// HZ-799: a label quoted inside a longer string (moves.targets[].redo) is a
+// reference too.
+const QUOTED_LABEL = /“([^”]+)”/g
 function encodeSteps(value) {
-  if (typeof value === 'string') return LABEL_TOKENS.get(value) ?? value
+  if (typeof value === 'string') {
+    return LABEL_TOKENS.get(value) ?? value.replace(QUOTED_LABEL, (quoted, label) => (LABEL_TOKENS.has(label) ? `“${LABEL_TOKENS.get(label)}”` : quoted))
+  }
   if (Array.isArray(value)) return value.map(encodeSteps)
   if (value == null || typeof value !== 'object') return value
   return Object.fromEntries(
