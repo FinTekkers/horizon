@@ -73,10 +73,18 @@ class StubHorizon:
     autopilot_off_result: HZ-274's kill switch. None -> 200 naming the
       payload's project; or a fixed (status, body) tuple; or a
       callable(payload) -> (status, body).
+    retry_result: HZ-786's retry-via-whatsapp. None -> auto (404 for unknown
+      ids, else 200 with a retry move); or a fixed (status, body) tuple.
     """
 
     def __init__(
-        self, items=None, feedback_rerun=False, create_item_result=None, approve_result=None, autopilot_off_result=None
+        self,
+        items=None,
+        feedback_rerun=False,
+        create_item_result=None,
+        approve_result=None,
+        autopilot_off_result=None,
+        retry_result=None,
     ):
         self.items = items or []
         self.feedback_rerun = feedback_rerun
@@ -93,6 +101,7 @@ class StubHorizon:
         self.approve_result = approve_result
         self.autopilot_offs: list[dict] = []  # payloads POSTed to the kill switch
         self.autopilot_off_result = autopilot_off_result
+        self.retry_result = retry_result
         self._create_seq = 0
         stub = self
 
@@ -146,6 +155,9 @@ class StubHorizon:
                     if action == "feedback":
                         key = "rerun" if stub.feedback_rerun else "queued"
                         return self._reply(200, {"ok": True, key: True})
+                    if action == "retry-via-whatsapp":
+                        status, body = stub._handle_retry(item_id, payload)
+                        return self._reply(status, body)
                 # /api/items/<id>/gates/<step>/approve-via-whatsapp
                 if len(parts) == 6 and parts[:2] == ["api", "items"] and parts[3] == "gates" and parts[5] == "approve-via-whatsapp":
                     item_id, step_index = parts[2], int(parts[4]) if parts[4].isdigit() else parts[4]
@@ -201,6 +213,13 @@ class StubHorizon:
         if self.autopilot_off_result is not None:
             return self.autopilot_off_result
         return 200, {"ok": True, "project": payload.get("project"), "old": "on", "new": "off"}
+
+    def _handle_retry(self, item_id, payload):
+        if self.retry_result is not None:
+            return self.retry_result
+        step = payload.get("from")
+        move = {"itemId": item_id, "fromKey": step, "toKey": step, "action": "retry", "note": payload.get("note")}
+        return 200, {"ok": True, "move": move}
 
     def close(self):
         self._server.shutdown()

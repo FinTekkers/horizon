@@ -71,3 +71,25 @@ test('every approval is 503, even from a plausible sender with a plausible heade
   assert.equal(decisions(), before.decisions)
   assert.equal(events(), before.events)
 })
+
+// HZ-786: the WhatsApp retry route fails closed the same way, before any
+// lookup, so an unknown item is 503 too and no move row is written.
+test('every WhatsApp retry is 503 and writes no move row', async () => {
+  const moves = () => db.prepare('SELECT COUNT(*) AS n FROM item_move').get().n
+  const before = { cursor: cursor(), moves: moves(), events: events() }
+  for (const id of ['W-UNSET', 'W-NO-SUCH']) {
+    for (const headers of [{}, { 'x-wa-approval-secret': 'anything' }]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/items/${id}/retry-via-whatsapp`,
+        payload: { senderJid: DAVID, sender: 'David', from: 'change.draft-plan', note: 'a note' },
+        headers,
+      })
+      assert.equal(res.statusCode, 503)
+      assert.deepEqual(res.json(), { error: 'wa_approval_not_configured' })
+    }
+  }
+  assert.equal(cursor(), before.cursor)
+  assert.equal(moves(), before.moves)
+  assert.equal(events(), before.events)
+})

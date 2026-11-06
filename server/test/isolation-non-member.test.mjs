@@ -337,6 +337,8 @@ const WRITE_CASES = {
   // exempt: wa. Step 0 is not ISOA-1's gate, so its own credential approves nothing.
   'POST /api/items/:id/gates/:step/approve-via-whatsapp': { expect: 'exempt', url: `${ITEM}/gates/0/approve-via-whatsapp`, body: { senderJid: WA_JID }, own: { headers: WA, status: 409 } },
   'POST /api/wa/poll-vote': { expect: 'exempt', url: '/api/wa/poll-vote', body: { voteId: 'iso-vote', pollMessageId: 'iso-poll', voterJid: WA_JID, selectedOption: 'Approve' }, own: { headers: WA, status: 404 } }, // ignored_unknown_poll, past the secret and the allowlist
+  // HZ-786: a `from` ISOA-1 is not at is refused stale, past the secret and the allowlist, and retries nothing.
+  'POST /api/items/:id/retry-via-whatsapp': { expect: 'exempt', url: `${ITEM}/retry-via-whatsapp`, body: { senderJid: WA_JID, from: 'change.not-here', note: 'iso note' }, own: { headers: WA, status: 409 } },
   'POST /api/projects/autopilot-off-via-whatsapp': { expect: 'exempt', url: '/api/projects/autopilot-off-via-whatsapp', body: { project: 'ISO Alpha', senderJid: WA_JID }, own: { headers: WA, status: 200 } },
   // exempt: farm
   'POST /api/farm/deploy-drain': { expect: 'exempt', url: '/api/farm/deploy-drain', body: { ttl_s: 0 }, own: { headers: FARM, status: 200 } },

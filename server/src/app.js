@@ -55,7 +55,16 @@ import { memberProject, viewSnapshot } from './boardView.js'
 import { googleAuth } from './googleAuth.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
-import { STEPS, endIndex, isItemKind, itemKindOf, resolveStepRef, stepKeyAt } from '../../domain/js/lifecycle.js'
+import {
+  STEPS,
+  endIndex,
+  isAbandoned,
+  isClosed,
+  isItemKind,
+  itemKindOf,
+  resolveStepRef,
+  stepKeyAt,
+} from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
 import { SUBSTEP_ID_PATTERN, stepLabel, substepsOf } from '../../domain/js/substeps.js'
 import { intakeFields } from '../../domain/js/fields.js'
@@ -422,6 +431,27 @@ function actorOf(request) {
   return request.user.name
 }
 
+// HZ-786: the WhatsApp caller ladder — 503 with no WA_APPROVAL_SECRET on this
+// host, 401 for a wrong credential, 403 for a sender off WA_APPROVER_JIDS — in
+// that order and before any lookup, so a refused caller gets no oracle and
+// writes nothing. Answers and returns false on a refusal. approve-via-whatsapp,
+// poll-vote and autopilot-off-via-whatsapp still run their own copies.
+function waCallerOk(request, reply, senderJid) {
+  if (!approvalSecretConfigured()) {
+    reply.code(503).send({ error: 'wa_approval_not_configured' })
+    return false
+  }
+  if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
+    reply.code(401).send({ error: 'bad_approval_secret' })
+    return false
+  }
+  if (!isAllowedApprover(senderJid)) {
+    reply.code(403).send({ error: 'sender_not_allowed' })
+    return false
+  }
+  return true
+}
+
 // The raw value of an `Authorization: Bearer <token>` header, or null.
 function bearerToken(request) {
   const match = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.authorization || '')
@@ -460,6 +490,9 @@ export const SESSION_EXEMPT = [
   // HZ-274's WhatsApp kill switch: the concierge has no session either. Same
   // credential, and only the owner's jid is accepted.
   /^\/api\/projects\/autopilot-off-via-whatsapp$/,
+  // HZ-786: a WhatsApp note on a running agent step. Same credential and the
+  // same allowlist as approve-via-whatsapp.
+  /^\/api\/items\/[^/]+\/retry-via-whatsapp$/,
   /^\/api\/health$/,
   // HZ-178: the generated API reference. Reachable like /api/health is, and for
   // the same reason — a published reference nobody can fetch is not published.
@@ -2127,6 +2160,60 @@ export function buildApp({
       const result = await gateActions.approve(id, stepIndex, notes, actor)
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
+    },
+  )
+
+  // HZ-786: a WhatsApp note on an item whose agent step is running re-runs
+  // that step with the note — the same store.moveByHuman Retry the UI's /move
+  // Retry runs. The concierge has no session and no gate PIN, so it cannot
+  // call /move; it proves itself with the waCallerOk ladder instead. Retry
+  // needs no human proof (planMove), so none is passed.
+  //
+  // `from` is the step key the concierge's snapshot showed. A note on an item
+  // that has moved on, or that is not at a running agent step, is refused with
+  // 409 and nothing is written — the concierge texts back ✗ naming the item.
+  // Notes on gated items keep going to /feedback, not here.
+  fastify.post(
+    '/api/items/:id/retry-via-whatsapp',
+    {
+      config: { scope: 'wa' },
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['senderJid', 'from', 'note'],
+          propertyNames: { enum: ['senderJid', 'sender', 'from', 'note'] },
+          properties: {
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
+            from: { type: 'string', minLength: 1, maxLength: 80 },
+            note: { type: 'string', minLength: 1, maxLength: 2000 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      const { senderJid, from } = request.body
+      if (!waCallerOk(request, reply, senderJid)) return
+      // A blank note would re-run the step with nothing to act on.
+      const note = request.body.note.trim()
+      if (!note) return reply.code(400).send({ error: 'note_required' })
+      const { id } = request.params
+      // The view, not the raw row: it carries activeRun.
+      const item = store.itemViewById(id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
+      const running =
+        !isAbandoned(item) &&
+        !isClosed(item) &&
+        STEPS[item.cursor]?.kind === 'agent' &&
+        !item.paused &&
+        item.activeRun?.step_index === item.cursor
+      if (!running) return reply.code(409).send({ error: 'not_running_step' })
+      const label = (request.body.sender || '').trim() || `...${normalizeJid(senderJid).slice(-4)}`
+      const result = store.moveByHuman(id, { action: 'retry', note, who: `${label} via WhatsApp` })
+      if (result.error) return send(reply, result)
+      return reply.send({ ok: true, move: store.lastMove(id) })
     },
   )
 
