@@ -456,3 +456,10 @@ test('gotoSite opens only the tenant live site, and followLink needs a selector'
   write('follow-empty', [{ action: 'followLink', selector: '' }])
   await assert.rejects(loadScenario('follow-empty', scenarios))
 })
+
+test('a typing step gets time in proportion to its text, never less than 30 s', async () => {
+  const { typeTimeoutMs } = await import('../walkthrough-page.mjs')
+  assert.equal(typeTimeoutMs('short', 25), 30_000)
+  assert.equal(typeTimeoutMs('x'.repeat(400), 25), 110_000)
+  assert.equal(typeTimeoutMs('x'.repeat(400)), 100_000)
+})

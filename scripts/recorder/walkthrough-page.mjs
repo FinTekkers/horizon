@@ -76,6 +76,14 @@ function maskPage({ color, selector, layerId, captionId, pattern }) {
   tick()
 }
 
+// A typing step's time limit: Playwright's 30 s default covers the whole
+// string, and a headed browser spends well over `delayMs` per key, so a long
+// field (C1's outcome, ~400 characters) ran out mid-sentence. Allow 250 ms a
+// key on top of the delay, never less than the default.
+export function typeTimeoutMs(text, delayMs = 0) {
+  return Math.max(30_000, String(text).length * ((delayMs ?? 0) + 250))
+}
+
 // The mask script, masking `values` (HZ-698: the typeEnv values) wherever
 // they show, as well as addresses.
 export function maskValuesScript(values = []) {
@@ -111,7 +119,7 @@ export async function runAction(page, action, boardUrl, { env = {}, log = () => 
       await page.locator(action.selector).first().click()
       return
     case 'type':
-      await page.locator(action.selector).first().pressSequentially(action.text, { delay: action.delayMs })
+      await page.locator(action.selector).first().pressSequentially(action.text, { delay: action.delayMs, timeout: typeTimeoutMs(action.text, action.delayMs) })
       return
     case 'waitFor':
       await page.locator(action.selector).first().waitFor({ state: 'visible', timeout: action.timeoutMs ?? 10000 })
@@ -129,7 +137,7 @@ export async function runAction(page, action, boardUrl, { env = {}, log = () => 
       const field = page.locator(action.selector).first()
       // Masked before the first key, so no prefix of the value is ever filmed.
       await field.evaluate((el, attr) => el.setAttribute(attr, ''), MASK_ATTR)
-      await field.pressSequentially(value, { delay: action.delayMs })
+      await field.pressSequentially(value, { delay: action.delayMs, timeout: typeTimeoutMs(value, action.delayMs) })
       return
     }
     case 'pause':
