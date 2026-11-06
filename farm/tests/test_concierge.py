@@ -297,19 +297,150 @@ def test_send_failure_never_reexecutes_the_action(stub):
     assert len(stub.posts("/feedback")) == 1
 
 
+# ---- HZ-786: a note on a running agent step goes through Retry ----
+
+# Punctuation, a comma and a newline: any trimming or rewording of the note
+# on its way to the server fails the exact-text assertions below.
+NOTE = "use the shorter button copy, please!\nAnd keep the old tests"
+RETRY = "/retry-via-whatsapp"
+
+
+def _item(**overrides):
+    item = {"id": "HZ-7", "title": "x", "priority": "Medium", "desc": "", "metric": "", "paused": False,
+            "activeRun": {"step_index": 11}, "stepOutputs": {},
+            "currentStep": {"index": 11, "key": "change.implement", "label": "Implement", "kind": "agent",
+                            "gate": False}}
+    item.update(overrides)
+    return item
+
+
+GATE_STEP = {"index": 10, "key": "change.approve-run", "label": "Approve the run", "kind": "gate", "gate": True}
+
+
+def _note(stub, slug, base_url=None):
+    t = FakeTransport()
+    state = make_state(t, slug)
+    msg = t.seed(f"feedback for HZ-7: {NOTE}")
+    ca.poll_messages_once(t, state, base_url or stub.url, farmd_url=stub.url)
+    assert len(t.sent) == 1
+    return msg, t.sent[0][1]
+
+
 def test_feedback_on_active_item_warns_about_the_rerun():
-    stub = StubHorizon(
-        items=[{"id": "HZ-7", "title": "x", "priority": "Medium", "desc": "", "metric": "",
-                "paused": False, "activeRun": {"step_index": 11}, "stepOutputs": {}}],
-        feedback_rerun=True,
-    )
+    """Metrics 1 and 2: a note on a running agent step posts once to
+    retry-via-whatsapp, with the exact note and the current step key, and never
+    to /feedback."""
+    stub = StubHorizon(items=[_item()], feedback_rerun=True)
     try:
-        t = FakeTransport()
-        state = make_state(t, "rerun")
-        t.seed("feedback for HZ-7: change the button copy")
-        ca.poll_messages_once(t, state, stub.url, farmd_url=stub.url)
-        assert len(t.sent) == 1
-        assert "re-runs with your note" in t.sent[0][1]
+        msg, reply = _note(stub, "rerun")
+        assert stub.posts("/feedback") == []
+        posts = stub.posts(RETRY)
+        assert [path for path, _ in posts] == ["/api/items/HZ-7/retry-via-whatsapp"]
+        body = posts[0][1]
+        # The exact key set server/test/retry-via-whatsapp.test.mjs posts; the
+        # route refuses any other key.
+        assert set(body) == {"senderJid", "sender", "from", "note"}
+        assert body["note"] == NOTE
+        assert body["from"] == "change.implement"
+        assert body["senderJid"] == msg.sender_jid
+        assert stub.credential_headers_for(RETRY) == [["x-wa-approval-secret"]]
+        assert "✓" in reply and "HZ-7" in reply
+        assert "re-running" in reply
+    finally:
+        stub.close()
+
+
+def test_a_note_at_a_gate_still_posts_to_feedback_and_never_to_retry():
+    """Metric 3: the gate path is unchanged — one /feedback post with the exact
+    note, the same reply wording as before, and no retry request."""
+    stub = StubHorizon(items=[_item(activeRun=None, currentStep=GATE_STEP)])
+    try:
+        _msg, reply = _note(stub, "gate-note")
+        assert stub.posts("/feedback") == [("/api/items/HZ-7/feedback", {"message": NOTE})]
+        assert stub.posts(RETRY) == []
+        assert "✓ feedback queued for HZ-7 (and mirrored to its GitHub issue)" in reply
+    finally:
+        stub.close()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"paused": True},  # paused, with a stale activeRun
+        {"activeRun": None},  # queued: an agent step with no run yet
+        {"abandoned_at": "2026-11-01 00:00:00"},  # abandoned, with a stale activeRun
+        {"activeRun": {"step_index": 10}, "currentStep": GATE_STEP},  # a gate, with a stale activeRun
+        {"currentStep": {"index": 99, "label": "Closed", "kind": "done", "gate": False}},  # finished
+    ],
+    ids=["paused", "queued", "abandoned", "gate-stale-run", "finished"],
+)
+def test_only_a_running_agent_step_goes_to_retry(overrides, request):
+    """Guardrail 3: every other state keeps today's /feedback call."""
+    stub = StubHorizon(items=[_item(**overrides)])
+    try:
+        _note(stub, f"not-running-{request.node.callspec.id}")
+        assert stub.posts(RETRY) == []
+        assert stub.posts("/feedback") == [("/api/items/HZ-7/feedback", {"message": NOTE})]
+    finally:
+        stub.close()
+
+
+def test_a_note_for_an_item_missing_from_the_snapshot_goes_to_feedback():
+    actions = [{"type": "feedback", "item_id": "HZ-7", "message": NOTE}]
+    stub = StubHorizon(items=[_item()])
+    try:
+        notes = ca.execute_actions(actions, stub.url, items=[], sender="David", sender_jid="15550001111@s.whatsapp.net")
+        assert stub.posts(RETRY) == []
+        assert stub.posts("/feedback") == [("/api/items/HZ-7/feedback", {"message": NOTE})]
+        assert len(notes) == 1
+    finally:
+        stub.close()
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        (500, {"error": "boom"}),
+        (404, {"error": "not_found"}),  # an old server, from before the route
+        (409, {"error": "stale_step"}),
+        (403, {"error": "sender_not_allowed"}),
+    ],
+    ids=["server-error", "old-server", "stale", "not-an-approver"],
+)
+def test_a_failed_retry_replies_with_a_cross_and_the_item_id(result):
+    """Metric 5: a non-200 answer gives a ✗ naming the item, and the note is
+    not quietly sent to /feedback instead."""
+    stub = StubHorizon(items=[_item()], retry_result=result)
+    try:
+        _msg, reply = _note(stub, f"retry-fail-{result[0]}")
+        assert len(stub.posts(RETRY)) == 1
+        assert stub.posts("/feedback") == []
+        assert "✗" in reply and "HZ-7" in reply
+        assert "✓" not in reply
+    finally:
+        stub.close()
+
+
+def test_an_unreachable_server_replies_with_a_cross_and_the_item_id():
+    """Metric 5, network error: nothing listens at the action URL."""
+    stub = StubHorizon(items=[_item()])
+    try:
+        _msg, reply = _note(stub, "retry-unreachable", base_url="http://127.0.0.1:1")
+        assert "✗" in reply and "HZ-7" in reply
+        assert "(Horizon unreachable)" in reply
+    finally:
+        stub.close()
+
+
+def test_no_approval_credential_replies_with_a_cross_and_sends_nothing(monkeypatch):
+    """Guardrail 4: a host without WA_APPROVAL_SECRET drops no note silently."""
+    monkeypatch.setattr(config, "WA_APPROVAL_SECRET", "")
+    stub = StubHorizon(items=[_item()])
+    try:
+        _msg, reply = _note(stub, "retry-no-secret")
+        assert stub.posts() == []
+        assert "✗" in reply and "HZ-7" in reply
+        assert "WA_APPROVAL_SECRET" not in reply
     finally:
         stub.close()
 

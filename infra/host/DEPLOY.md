@@ -74,6 +74,13 @@ Diagnosing a failed approval without reading code:
 - **Silence, no reply at all** — the sender is missing from the farm's own
   `FARM_WA_ALLOWED_JIDS`, which drops the message before it is ever read.
 
+HZ-786: a WhatsApp note on an item whose agent step is running re-runs that
+step through `POST /api/items/:id/retry-via-whatsapp`, which uses the same
+credential and the same approver list — the same 503/401/403 above apply, and
+the sender gets a `✗` naming the item. A `409` (`stale_step`,
+`not_running_step`) means the item moved on before the note landed; nothing
+was saved. Notes on any other item still go to `POST /api/items/:id/feedback`.
+
 After deploying, restart `horizon-server`, then restart farmd. Existing tmux
 sessions keep the environment they were launched with, so a pre-upgrade
 session still holds the old credential until farmd's teardown kills it.

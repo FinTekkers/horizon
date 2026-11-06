@@ -324,12 +324,69 @@ def validate_reply(parsed: dict) -> tuple[str, list[dict], list[str], list[dict]
     return reply[:1500], actions, notes, gate_options
 
 
-def execute_actions(actions: list[dict], base_url: str = HORIZON_URL) -> list[str]:
+def _running_agent_step(item: dict | None) -> str | None:
+    """The step key when the snapshot shows this item's agent step running —
+    not paused, not abandoned — else None. Only then does a note go to
+    retry-via-whatsapp; every other state keeps the /feedback call."""
+    if not item or not item.get("activeRun") or item.get("paused") or item.get("abandoned_at"):
+        return None
+    step = item.get("currentStep") or {}
+    if step.get("kind") != "agent" or not step.get("key"):
+        return None
+    return step["key"]
+
+
+def _retry_via_whatsapp(base_url: str, item_id: str, step_key: str, note: str, sender: str, sender_jid: str) -> str:
+    """HZ-786: re-runs a running agent step with the note, through the server's
+    moveByHuman Retry — the path the UI's /move Retry takes. The concierge has
+    no session or gate PIN for /move, so it proves itself the way
+    wizard._approve_gate does. Returns one reply line; every failure is a ✗
+    naming the item, so no note is dropped without the sender knowing."""
+    if not config.WA_APPROVAL_SECRET:
+        return f"✗ note for {item_id} not sent (the approval credential isn't configured on this host)"
+    try:
+        res = httpx.post(
+            f"{base_url}/api/items/{item_id}/retry-via-whatsapp",
+            json={"senderJid": sender_jid, "sender": sender[:120], "from": step_key, "note": note},
+            headers={"x-wa-approval-secret": config.WA_APPROVAL_SECRET},
+            timeout=15,
+        )
+    except httpx.HTTPError as exc:
+        log(f"retry-via-whatsapp for {item_id} errored: {exc}")
+        return f"✗ note for {item_id} failed (Horizon unreachable)"
+    if res.status_code == 200:
+        return f"✓ re-running {item_id}'s step with your note"
+    error = _error_of(res)
+    if res.status_code == 409 and error in ("stale_step", "not_running_step"):
+        return f"✗ {item_id} moved on before your note landed — nothing was saved; send it again"
+    if res.status_code == 403:
+        return f"✗ {item_id}: this WhatsApp number isn't on Horizon's approver list"
+    return f"✗ note for {item_id} failed ({error})"
+
+
+def execute_actions(
+    actions: list[dict],
+    base_url: str = HORIZON_URL,
+    *,
+    items: list[dict] | None = None,
+    sender: str = "",
+    sender_jid: str = "",
+) -> list[str]:
     """Runs validated actions against the Node server; returns human-readable
-    notes for the WhatsApp reply. Never raises — every outcome becomes a note."""
+    notes for the WhatsApp reply. Never raises — every outcome becomes a note.
+
+    items is the snapshot the message was answered from: a feedback action on
+    an item whose agent step is running there goes to retry-via-whatsapp
+    instead of /feedback (HZ-786)."""
+    by_id = {it.get("id"): it for it in items or [] if isinstance(it, dict)}
     notes: list[str] = []
     for action in actions:
         item_id = action["item_id"]
+        if action["type"] == "feedback":
+            step_key = _running_agent_step(by_id.get(item_id))
+            if step_key:
+                notes.append(_retry_via_whatsapp(base_url, item_id, step_key, action["message"], sender, sender_jid))
+                continue
         try:
             if action["type"] == "set_priority":
                 res = httpx.post(
@@ -458,7 +515,14 @@ def process_message(
         what = "reply was repaired to parse" if note in REPAIR_NOTES else "parser note"
         log(f"message {msg.msg_id}: {what} — {note}")
     # Appended last, after the action results, and a no-op when empty.
-    notes = execute_actions(actions, base_url) + notes + parse_notes
+    results = execute_actions(
+        actions,
+        base_url,
+        items=route.snapshot.get("items"),
+        sender=wizard.sender_label(msg.sender_jid),
+        sender_jid=msg.sender_jid,
+    )
+    notes = results + notes + parse_notes
     # Remembers this sender's numbered choices (or clears stale ones) so a
     # later bare-number reply from them resolves deterministically.
     wizard.offer_gate_choices(msg.chat_jid, msg.sender_jid, gate_options, state.choice_store)
