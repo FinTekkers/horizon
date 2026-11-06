@@ -1,13 +1,21 @@
 {
   "setup": [
     {"action": "goto", "path": "/horizon/"},
-    {"action": "waitFor", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")", "timeoutMs": 30000},
-    {"action": "click", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")"},
+    {"action": "waitFor", "selector": ".card:has-text(\"find-comps.mjs\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"find-comps.mjs\")"},
     {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
   ],
   "actions": [
-    {"action": "caption", "text": "An agent runs the task", "ms": 3500},
-    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Execute\")) :text(\"Completed\")", "timeoutMs": 7200000, "reloadEveryMs": 60000},
-    {"action": "pause", "ms": 4000}
+    {"action": "caption", "text": "The agents plan the tool", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Approve the high-level design\")) .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 30000},
+    {"action": "pause", "ms": 2500},
+    {"action": "click", "selector": ".step:has(.step-card__label:text-is(\"Approve the high-level design\")) .btn-gate-approve"},
+    {"action": "waitFor", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "pause", "ms": 800},
+    {"action": "click", "selector": "[role=\"alertdialog\"] button.composer__submit"},
+    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Review before execution\")) .btn-gate-approve", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 2000},
+    {"action": "followLink", "selector": ".step:has(.step-card__label:text-is(\"Draft implementation plan\")) a.step-card__artifact-link"},
+    {"action": "pause", "ms": 10000}
   ]
 }

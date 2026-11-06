@@ -1,0 +1,13 @@
+{
+  "setup": [
+    {"action": "goto", "path": "/horizon/"},
+    {"action": "waitFor", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")", "timeoutMs": 30000},
+    {"action": "click", "selector": ".card:has-text(\"Find comparable sales for an Upper West Side co-op\")"},
+    {"action": "waitFor", "selector": ".tracker", "timeoutMs": 30000}
+  ],
+  "actions": [
+    {"action": "caption", "text": "An agent runs the task", "ms": 3500},
+    {"action": "waitUntil", "selector": ".step:has(.step-card__label:text-is(\"Execute\")) :text(\"Completed\")", "timeoutMs": 7200000, "reloadEveryMs": 60000},
+    {"action": "pause", "ms": 4000}
+  ]
+}
