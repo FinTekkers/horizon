@@ -1231,6 +1231,8 @@ button { font-family: var(--font-sans); }
 .step-card__agent-dot { width: 7px; height: 7px; border-radius: 2px; }
 .step-card__meta { font: 500 12px var(--font-sans); margin-top: 5px; }
 .step-card__attempt { color: var(--warning-ink); }
+/* HZ-803: when the shown result ran; wraps rather than overflowing at 375px. */
+.step-card__run-time { margin-top: 2px; font: 500 12px var(--font-sans); color: var(--muted); overflow-wrap: anywhere; }
 .step-card__verdict {
   margin-top: 6px; font: 600 12px var(--font-sans); line-height: 1.4; color: var(--danger-ink);
   white-space: pre-line; overflow-wrap: anywhere;
