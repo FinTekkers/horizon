@@ -166,6 +166,7 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/abandon': { payload: { reason: 'drop it' } },
   'POST /api/items/:id/asks/:askId/file': { payload: {} },
   'POST /api/items/:id/asks/:askId/dismiss': { payload: { reason: 'covered elsewhere' } },
+  'POST /api/items/:id/asks/:askId/release': { payload: { reason: 'covered elsewhere' } },
 }
 const fillUrl = (url, id) =>
   url
@@ -191,7 +192,7 @@ test('metric 1: a non-member gets exactly 404 on every member:item route; nothin
     .filter((r) => r.scope === 'member:item' && r.method !== 'GET' && r.method !== 'HEAD')
     .map((r) => `${r.method} ${r.url}`)
   assert.deepEqual(routes.sort(), Object.keys(MEMBER_ITEM_ROUTES).sort())
-  assert.equal(routes.length, 20)
+  assert.equal(routes.length, 21)
 
   const overlapBefore = overlapCalls
   const before = snapshot()

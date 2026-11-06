@@ -314,6 +314,25 @@ function Sections({ data, now, onOpenItem }) {
               </tbody>
             </table>
           )}
+          {/* HZ-802: items at an agent step with nothing running, and why. Hidden when there are none. */}
+          {data.notDispatched?.length > 0 && (
+            <>
+              <h3 className="farm-health__h3">Not dispatched</h3>
+              <table className="farm-health__table" data-testid="farm-health-not-dispatched">
+                <tbody>
+                  {data.notDispatched.map((n, i) => (
+                    <tr key={`${n.itemId}-${i}`}>
+                      <td>
+                        <ItemLink id={n.itemId} onOpenItem={onOpenItem} />
+                      </td>
+                      <td>{n.step}</td>
+                      <td className="farm-health__muted">{n.message}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
           <p className="farm-health__foot">
             Items waiting at a gate for a person are not listed here: they are under Pending approvals.
           </p>

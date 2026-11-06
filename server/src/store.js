@@ -78,11 +78,12 @@ export function notifyChange() {
 }
 
 // The orchestrator registers itself here at init (avoids a module cycle).
-let agentRunner = { kick: () => {}, cancel: () => {}, pause: () => {} }
+let agentRunner = { kick: () => {}, cancel: () => {}, pause: () => {}, waitReason: () => null }
 
 // A runner without pause() (HZ-194 added it) pauses by cancelling, as before.
+// HZ-802: one without waitReason() names no wait of its own.
 export function registerAgentRunner(runner) {
-  agentRunner = { pause: (id) => runner.cancel(id, 'cancelled'), ...runner }
+  agentRunner = { pause: (id) => runner.cancel(id, 'cancelled'), waitReason: () => null, ...runner }
 }
 
 // The orchestrator polls the farm for {state, reason} per active run_id and
@@ -1684,6 +1685,66 @@ function startHoldFields(row) {
   return startHold ? { startHold } : {}
 }
 
+// HZ-802: what holds `row` (a work_item row) at its step that no dispatch can
+// clear, as { kind, message, itemId? }, or null. The orchestrator's runnable()
+// is this returning null (plus the farm, project and step checks), and Restart
+// and the page read the same answer, so they never disagree. `inFlight` keeps
+// only what a run already in flight is held to: a blocking ask and a stale
+// run plan hold a new dispatch only.
+export function dispatchHold(row, { inFlight = false } = {}) {
+  if (row.paused) return { kind: 'paused', message: 'Paused. Resume the item first.' }
+  // HZ-346: a run stopped on a rule holds the item until it is released.
+  if (row.rule_block_json) return { kind: 'rule_block', message: 'Stopped on a rule. Resume it or send it back.' }
+  const [blocker] = holdingBlockers(row, blockersOf(row.id))
+  if (blocker) {
+    const state = isAbandoned(blocker) ? ', abandoned' : ''
+    return { kind: 'blocked_by', message: `Blocked by ${blocker.id} (${blocker.title}${state})`, itemId: blocker.id }
+  }
+  if (inFlight) return null
+  const hold = startHoldOf(row)
+  if (hold) {
+    return hold.filedItem
+      ? { kind: 'held_by_ask', message: `Held by ask: ${hold.title} → ${hold.filedItem.id}, open`, itemId: hold.filedItem.id }
+      : { kind: 'held_by_ask', message: `Held by ask: ${hold.title}, open. File it or dismiss it.` }
+  }
+  // HZ-384: Execute runs only the plan a human approved. A plan changed since
+  // then waits here for re-approval, before any run row is written.
+  if (row.cursor === EXECUTE_STEP_INDEX && approvedPlanCheck(row.id).error === REASON.PLAN_CHANGED_SINCE_APPROVAL) {
+    return { kind: 'needs_reapproval', message: 'Needs re-approval: the run plan changed since it was approved. Send it back to Run plan.' }
+  }
+  return null
+}
+
+// HZ-802: why an item at an agent step with no active run is not running, or
+// null (a run is active, or the step is not one the dispatcher starts). With
+// no hold, the orchestrator's own wait names it (a stopped farm, a usage
+// limit, …, else a free agent slot); a runner that names none adds nothing.
+function notDispatchedOf(row, activeRun) {
+  if (activeRun || isClosed(row) || isAbandoned(row)) return null
+  const step = STEPS[row.cursor]
+  if (step?.kind !== 'agent' || step.runsIn === 'none') return null
+  return dispatchHold(row) ?? agentRunner.waitReason(row.id)
+}
+
+function notDispatchedFields(row, activeRun) {
+  const notDispatched = notDispatchedOf(row, activeRun)
+  return notDispatched ? { notDispatched } : {}
+}
+
+// HZ-802: every open item at an agent step with nothing running, and why —
+// for Farm health. A held item is a normal state, so this raises no alert.
+const selectOpenAgentStepRows = db.prepare('SELECT * FROM work_item WHERE abandoned_at IS NULL ORDER BY id')
+
+export function notDispatchedItems() {
+  const found = []
+  for (const row of selectOpenAgentStepRows.all()) {
+    if (STEPS[row.cursor]?.kind !== 'agent') continue
+    const reason = notDispatchedOf(row, selectActiveRun.get(row.id) || null)
+    if (reason) found.push({ itemId: row.id, title: row.title, step: STEPS[row.cursor].label, kind: reason.kind, message: reason.message })
+  }
+  return found
+}
+
 // HZ-580: the ids of the dependencies this item gained at or after `since` (a
 // rule block's blockedAt). Both columns are SQLite text in the same
 // `YYYY-MM-DD HH:MM:SS` form, so the comparison stays here, in one place:
@@ -2298,6 +2359,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     // or the item it filed, that the start waits for. Absent otherwise, so
     // the payload of every item nothing holds is unchanged.
     ...startHoldFields(row),
+    // HZ-802: only on an item at an agent step with nothing running — why it
+    // is not dispatched. Absent otherwise, like startHold.
+    ...notDispatchedFields(row, activeRun),
     ruleBlock: ruleBlock && ruleBlockView(row.id, ruleBlock, dependencies.blockedBy),
     // HZ-422: every model this step may run on is usage-limited until `until`.
     usageWait: usageWaitView(row),
@@ -2926,6 +2990,13 @@ export function restartPhase(id, phase, reason, actor = 'You', { proof = null } 
   // HZ-708: merged code is never rewound — no phase that starts before Accept the code.
   const planned = planMove(it, move)
   if (planned.error) return { error: planned.error === 'merged' ? 'merged_target' : planned.error }
+  // HZ-802: a retry that could not dispatch says why instead of logging a
+  // restart that starts nothing. The retry itself releases the pause, and a
+  // rule block with the human proof, so neither refuses it. Before any write.
+  if (move.action === 'retry') {
+    const hold = dispatchHold({ ...it, paused: false, rule_block_json: isHumanProof(proof) ? null : it.rule_block_json })
+    if (hold) return { error: hold.kind, message: hold.message, ...(hold.itemId ? { itemId: hold.itemId } : {}) }
+  }
 
   agentRunner.cancel(id, 'superseded')
   const moved = db.transaction(() => {
@@ -3003,7 +3074,19 @@ export function abandonItem(id, reason, actor = 'You', { removeDependentLinks = 
     }
     return dependentIds
   })()
+  // HZ-802: an abandoned item never merges, so a blocking ask that filed it
+  // stops holding its asker (lifecycle askStartHold). An asker at its start
+  // step is told; every asker is kicked, and kick() re-checks, so one still
+  // blocked by the edge no-ops.
+  const askHolders = askHolderIds(id)
+  for (const holderId of askHolders) {
+    const holder = getItem(holderId)
+    if (holder && (holder.cursor === IMPLEMENT_STEP_INDEX || holder.cursor === EXECUTE_STEP_INDEX) && !isAbandoned(holder)) {
+      addEvent(holderId, { who: 'Horizon', text: `ask hold released: ${id} was abandoned`, color: '#5E4380', initials: 'HZ' })
+    }
+  }
   notify()
+  for (const holderId of askHolders) agentRunner.kick(holderId)
   if (!removeDependentLinks) return { ok: true }
   // Same as removeDependency: a dependent whose last open blocker just went
   // is runnable again and must start without waiting for another trigger.

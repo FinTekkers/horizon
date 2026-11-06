@@ -99,6 +99,8 @@ const SEND_BACK_ERRORS = {
 function sendBackError(err) {
   if (Object.hasOwn(SEND_BACK_ERRORS, err?.message)) return SEND_BACK_ERRORS[err.message]
   if (err?.status === 401) return 'Gate PIN incorrect or not entered — nothing was sent.'
+  // HZ-802: a Restart that cannot dispatch says why ("Blocked by HZ-5 (…)").
+  if (typeof err?.serverMessage === 'string' && err.serverMessage) return err.serverMessage
   return 'That did not go through — try again.'
 }
 

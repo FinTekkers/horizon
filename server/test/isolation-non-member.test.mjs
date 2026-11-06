@@ -285,6 +285,8 @@ const WRITE_CASES = {
   // HZ-730: 409 ask_not_reviewed — ISOA-1's ask has no review, so File it waits; Dismiss closes it.
   'POST /api/items/:id/asks/:askId/file': { expect: '404', url: `${ITEM}/asks/${ASK_A}/file`, body: {}, owner: 409 },
   'POST /api/items/:id/asks/:askId/dismiss': { expect: '404', url: `${ITEM}/asks/${ASK_A}/dismiss`, body: { reason: 'iso reason' }, owner: 200 },
+  // HZ-802: 409 ask_not_filed — only a filed ask is released, and ISOA-1's never was.
+  'POST /api/items/:id/asks/:askId/release': { expect: '404', url: `${ITEM}/asks/${ASK_A}/release`, body: { reason: 'iso reason' }, owner: 409 },
   'POST /api/items/:id/pause': { expect: '404', url: `${ITEM}/pause`, body: { paused: false }, owner: 200 },
   // HZ-713: 409 not_waiting — the seeded item has no usage wait to release.
   'POST /api/items/:id/usage-wait/release': { expect: '404', url: `${ITEM}/usage-wait/release`, body: {}, owner: 409 },

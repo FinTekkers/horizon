@@ -19,7 +19,6 @@ import {
   STEPS,
   isClosed,
   isAbandoned,
-  holdingBlockers,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
@@ -64,8 +63,7 @@ import {
   getConflictRun as conflictRunOf,
   sweepGateActions,
   recoverLegacyRejected,
-  blockersOf,
-  startHoldOf,
+  dispatchHold,
   requestChanges,
   reviewRejected,
   isProjectEnabled,
@@ -1380,34 +1378,53 @@ export const MOCK_STEP_BEHAVIOR = {
 }
 
 // Whether an item may start a new step: its project must be enabled (HZ-207).
-// HZ-731: Implement (a Task's Execute) also waits until every blocking ask is
-// dismissed, or filed with its item merged or closed (store.startHoldOf). Only
-// a new dispatch waits: a run already in flight is never discarded for it.
+// HZ-802: and nothing in store.dispatchHold holds it — the one derivation the
+// page and Restart read too. That covers HZ-731's blocking asks (Implement, a
+// Task's Execute) and a run plan changed since approval, which hold only a new
+// dispatch: a run already in flight is never discarded for them.
 function runnable(item) {
-  return inFlightRunnable(item) && isProjectEnabled(item.project_id) && !startHoldOf(item)
+  return dispatchableStep(item) && isProjectEnabled(item.project_id) && !dispatchHold(item)
 }
 
 // The check a step already in flight is held to. It sets the project's
 // enabled flag aside, so disabling a project never discards a running step's
 // result — the step finishes normally and only the next dispatch is held.
+// dispatchHold's in-flight holds: a pause, a rule block (HZ-346) and, HZ-467,
+// a blocker that has not merged or closed (domain/js/lifecycle.js).
 function inFlightRunnable(item) {
+  return dispatchableStep(item) && !dispatchHold(item, { inFlight: true })
+}
+
+function dispatchableStep(item) {
   return (
     farm.status === 'running' &&
-    item &&
+    !!item &&
     !isClosed(item) &&
     !isAbandoned(item) &&
-    !item.paused &&
-    // HZ-346: a run stopped on a rule holds the item until a dependency it
-    // gained merges or closes, or a human resumes or sends it back (store.js).
-    !item.rule_block_json &&
     STEPS[item.cursor].kind === 'agent' &&
     // HZ-377: a step with no runner waits where it is — it is never
     // dispatched, to the farm or to the mock path, so no run is ever recorded.
-    STEPS[item.cursor].runsIn !== 'none' &&
-    // HZ-467: a change item plans past open dependencies; implement and later
-    // wait until each blocker has merged or closed (domain/js/lifecycle.js).
-    holdingBlockers(item, blockersOf(item.id)).length === 0
+    STEPS[item.cursor].runsIn !== 'none'
   )
+}
+
+// HZ-802: why kick() would hold an item that nothing in dispatchHold holds,
+// as { kind, message } — the page's "not dispatched" reason. Never empty for
+// an item that exists: with no wait of its own, it waits for an agent slot.
+export function waitReason(id) {
+  const item = getItem(id)
+  if (!item) return null
+  if (farm.status !== 'running') return { kind: 'farm_stopped', message: 'The farm is stopped. Start it to dispatch.' }
+  if (!isProjectEnabled(item.project_id)) return { kind: 'project_disabled', message: 'Its project is disabled.' }
+  if (isDeployBlocked()) return { kind: 'deploy_drain', message: 'Waiting for a self-deploy to finish.' }
+  const isolation = projectIsolationRefusal(item.project_id)
+  if (isolation) return { kind: 'isolation', message: `Held: ${isolation}` }
+  if (item.usage_wait_until && Date.parse(item.usage_wait_until) > Date.now()) {
+    return { kind: 'usage_wait', message: `Every model it may run on is usage-limited until ${item.usage_wait_until}` }
+  }
+  const spawnHold = spawnHolds.get(id)
+  if (spawnHold) return { kind: 'spawned_code', message: `Waits for the code it asked for: ${spawnHold}` }
+  return { kind: 'waiting_for_slot', message: 'Waiting for a free agent slot' }
 }
 
 export function kick(id, opts = {}) {
@@ -4248,7 +4265,7 @@ registerProjectOverlayLoader(projectPersonaOverlay)
 registerSubstepsSnapshotter(snapshotSubsteps)
 
 export async function init(log) {
-  registerAgentRunner({ kick, cancel, pause })
+  registerAgentRunner({ kick, cancel, pause, waitReason })
   onDrainEnd(releaseDeployHeld)
   // store.js reads this to attach {state, reason} onto activeRun in
   // listItems() — a plain object lookup, never a network call, so

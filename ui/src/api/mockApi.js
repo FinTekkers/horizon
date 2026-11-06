@@ -853,6 +853,21 @@ export async function dismissAsk(itemId, askId, reason) {
   return { ok: true }
 }
 
+// HZ-802: the demo's hold lifts with the release.
+export async function releaseAsk(itemId, askId, reason) {
+  if (!String(reason ?? '').trim()) throw Object.assign(new Error('reason_required'), { status: 400 })
+  if (!items.some((x) => x.id === itemId)) throw new Error('not_found')
+  update(itemId, (x) => {
+    const next = { ...x }
+    if (next.startHold?.askId === askId) {
+      delete next.startHold
+      delete next.notDispatched
+    }
+    return next
+  })
+  return { ok: true }
+}
+
 // Soft delete (HZ-59) — mock mirror of store.abandonItem: stops dispatch by
 // clearing the mock agent timer and setting abandoned_at. HZ-354:
 // removeDependentLinks drops every edge where this item is the blocker, on

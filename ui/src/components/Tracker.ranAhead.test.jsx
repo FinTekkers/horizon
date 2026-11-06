@@ -167,3 +167,21 @@ test('a newest attempt with no artifact stays queued', () => {
   expect(metaOf(container, REVIEW)).toBe('Queued')
   expect(within(stepRow(container, REVIEW)).queryByRole('link')).toBeNull()
 })
+
+// HZ-802: MDI-115 sat at Execute with nothing running while the page showed
+// the previous attempt's failed verdict, as if it had just failed again. Not
+// dispatched, the current step says why and the old verdict is hidden.
+test('an item not dispatched shows why on the current step and hides the earlier failed verdict', () => {
+  const notDispatched = { kind: 'held_by_ask', message: 'Held by ask: Add FX feed → MDI-122, open', itemId: 'MDI-122' }
+  const { container } = renderTracker({ reviewRejected: true, notDispatched, stepOutputs: { ...behindOutputs, [REVIEW]: run(REVIEW, 1) } })
+  expect(within(stepRow(container, IMPL)).getByTestId('not-dispatched').textContent).toBe(`Not dispatched: ${notDispatched.message}`)
+  expect(metaOf(container, REVIEW)).toBe('Queued')
+  expect(container.querySelector('.step-card--ran-ahead')).toBeNull()
+  expect(container.querySelectorAll('[data-testid="not-dispatched"]').length).toBe(1)
+})
+
+test('a paused item keeps the review outcome that sent it back', () => {
+  const notDispatched = { kind: 'paused', message: 'Paused. Resume the item first.' }
+  const { container } = renderTracker({ paused: true, reviewRejected: true, notDispatched, stepOutputs: { ...behindOutputs, [REVIEW]: run(REVIEW, 1) } })
+  expect(metaOf(container, REVIEW)).toBe('Failed, sent back · attempt 1')
+})
