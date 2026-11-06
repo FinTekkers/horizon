@@ -250,14 +250,18 @@ test('metric 5: an item on a sub-step lists it by key, and a move there keeps it
 })
 
 test('metric 4 and guardrail 2: the move answer, the list and the v2 stream carry the same moves, with no server-only field', async () => {
+  // Seeded before the stream opens, so its snapshot frame carries the item.
+  const key = 'change.approve-design'
+  const id = seed(stepIndexOf(key))
   const controller = new AbortController()
   const res = await fetch(`${base}/api/stream?v=2`, { headers: { cookie }, signal: controller.signal })
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let text = ''
   const frames = (event) =>
+    // Complete frames only: none until the first one has fully arrived.
     text
-      .slice(0, text.lastIndexOf('\n\n'))
+      .slice(0, Math.max(0, text.lastIndexOf('\n\n')))
       .split('\n\n')
       .filter((block) => block.startsWith(`event: ${event}\n`))
       .map((block) => JSON.parse(block.slice(block.indexOf('data: ') + 6)))
@@ -278,13 +282,9 @@ test('metric 4 and guardrail 2: the move answer, the list and the v2 stream carr
     return done()
   }
   try {
-    const key = 'change.approve-design'
-    const id = seed(stepIndexOf(key))
-    store.notifyChange()
-    appModule.flushStream()
     assert.ok(await readUntil(() => frames('snapshot').length > 0))
     const snap = frames('snapshot')[0]
-    assert.ok(snap.items.length > 0)
+    assert.ok(snap.items.some((item) => item.id === id), 'the snapshot frame misses the seeded item')
     for (const item of snap.items) assertTargetShape(item.moves.targets, `stream snapshot ${item.id}`)
 
     const target = targetsOf(id).find((t) => t.isDefault).stepKey
