@@ -79,7 +79,17 @@ step through `POST /api/items/:id/retry-via-whatsapp`, which uses the same
 credential and the same approver list — the same 503/401/403 above apply, and
 the sender gets a `✗` naming the item. A `409` (`stale_step`,
 `not_running_step`) means the item moved on before the note landed; nothing
-was saved. Notes on any other item still go to `POST /api/items/:id/feedback`.
+was saved.
+
+HZ-790: a WhatsApp note on an item parked at a gate goes to
+`POST /api/items/:id/gates/:step/note-via-whatsapp`, and every WhatsApp
+priority change to `POST /api/items/:id/priority-via-whatsapp`. Same
+credential, same approver list, same 503/401/403. The note only queues for the
+next dispatch; it never approves or moves the gate. A `409 not_at_gate` means
+the item left that gate before the note landed; nothing was saved. Notes on any
+other item still go to `POST /api/items/:id/feedback`, which needs a login
+session and so answers the concierge 401. Deploy the server before the farm: a
+new farm on an old server gets 404 on these routes and saves nothing.
 
 After deploying, restart `horizon-server`, then restart farmd. Existing tmux
 sessions keep the environment they were launched with, so a pre-upgrade

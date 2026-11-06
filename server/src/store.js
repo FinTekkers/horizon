@@ -3016,7 +3016,9 @@ export function abandonItem(id, reason, actor = 'You', { removeDependentLinks = 
 // the step re-runs (attempt N+1) with this feedback injected; otherwise the
 // row waits (delivered_at NULL) for the next dispatch — dispatchToFarm picks
 // up all undelivered rows. Rejection feedback still flows via requestChanges.
-export function addFeedback(id, { message, target = '', source = 'ui', ghCommentId = null }) {
+// `actor` names who left it in the event log (HZ-790: "<name> via WhatsApp");
+// without one the event says 'You', or 'GitHub' for an ingested comment.
+export function addFeedback(id, { message, target = '', source = 'ui', ghCommentId = null, actor = null }) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -3040,7 +3042,7 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
   )
   const fromGithub = source === 'github'
   addEvent(id, {
-    who: fromGithub ? 'GitHub' : 'You',
+    who: actor ?? (fromGithub ? 'GitHub' : 'You'),
     text: `left feedback: ${text.slice(0, 200)}`,
     color: fromGithub ? '#2A2A2E' : '#5E4380',
     initials: fromGithub ? 'GH' : 'YOU',

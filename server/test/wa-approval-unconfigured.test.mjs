@@ -93,3 +93,24 @@ test('every WhatsApp retry is 503 and writes no move row', async () => {
   assert.equal(moves(), before.moves)
   assert.equal(events(), before.events)
 })
+
+// HZ-790: the WhatsApp gate note and priority change fail closed the same
+// way, before any lookup, so an unknown item is 503 too and nothing is written.
+test('every WhatsApp gate note and priority change is 503 and writes nothing', async () => {
+  const feedback = () => db.prepare('SELECT COUNT(*) AS n FROM feedback').get().n
+  const priority = () => db.prepare("SELECT priority FROM work_item WHERE id = 'W-UNSET'").get().priority
+  const before = { cursor: cursor(), feedback: feedback(), priority: priority(), events: events() }
+  for (const id of ['W-UNSET', 'W-NO-SUCH']) {
+    for (const headers of [{}, { 'x-wa-approval-secret': 'anything' }]) {
+      for (const [url, payload] of [
+        [`/api/items/${id}/gates/${GATE_INDEX}/note-via-whatsapp`, { senderJid: DAVID, sender: 'David', message: 'a note' }],
+        [`/api/items/${id}/priority-via-whatsapp`, { senderJid: DAVID, sender: 'David', priority: 'Critical' }],
+      ]) {
+        const res = await app.inject({ method: 'POST', url, payload, headers })
+        assert.equal(res.statusCode, 503, url)
+        assert.deepEqual(res.json(), { error: 'wa_approval_not_configured' })
+      }
+    }
+  }
+  assert.deepEqual({ cursor: cursor(), feedback: feedback(), priority: priority(), events: events() }, before)
+})

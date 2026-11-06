@@ -103,6 +103,8 @@ test('every /api/items/:id/* write is member:item or member:items, the WhatsApp 
   const WA_ROUTES = new Set([
     'POST /api/items/:id/gates/:step/approve-via-whatsapp',
     'POST /api/items/:id/retry-via-whatsapp',
+    'POST /api/items/:id/gates/:step/note-via-whatsapp',
+    'POST /api/items/:id/priority-via-whatsapp',
   ])
   const writes = routes.filter((r) => r.url.startsWith('/api/items/:id/') && r.method !== 'GET' && r.method !== 'HEAD')
   assert.ok(writes.length >= 19)
@@ -114,6 +116,8 @@ test('every /api/items/:id/* write is member:item or member:items, the WhatsApp 
   const byKey = new Map(routes.map((r) => [`${r.method} ${r.url}`, r.scope]))
   assert.equal(byKey.get('POST /api/items/:id/gates/:step/approve-via-whatsapp'), 'wa')
   assert.equal(byKey.get('POST /api/items/:id/retry-via-whatsapp'), 'wa')
+  assert.equal(byKey.get('POST /api/items/:id/gates/:step/note-via-whatsapp'), 'wa')
+  assert.equal(byKey.get('POST /api/items/:id/priority-via-whatsapp'), 'wa')
   assert.equal(byKey.get('POST /api/items/:id/dependencies'), 'member:items')
   assert.equal(byKey.get('POST /api/items/:id/dependencies/remove'), 'member:items')
   assert.equal(byKey.get('POST /api/items'), 'member:repo')
