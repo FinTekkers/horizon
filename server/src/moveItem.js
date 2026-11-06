@@ -26,6 +26,7 @@ import {
   REVIEW_STEP_INDEX,
   RUN_PLAN_STEP_INDEX,
   STEPS,
+  defaultReworkTarget,
   endIndex,
   firstStepIndex,
   isAbandoned,
@@ -40,6 +41,7 @@ import {
   stepKeyAt,
   stepsFor,
 } from '../../domain/js/lifecycle.js'
+import { currentSubstep, encodeMoveKey, substepReworkTargets } from '../../domain/js/substeps.js'
 
 // The five a human (or the route) can ask for, plus 'close', which only a
 // GitHub issue close makes — the route never offers it.
@@ -215,6 +217,91 @@ export function allowedTargets(item) {
   if (isAbandoned(item) || isClosed(item)) return []
   return stepsFor(itemKindOf(item))
     .filter((step) => !planMove(item, { action: 'return', toKey: step.key }).error)
+    .map((step) => step.key)
+}
+
+// HZ-799: every step the item may be moved to now — item.moves.targets — so a
+// client shows step actions without working out any move rule itself. Built
+// only from planMove and the send-back rules (allowedTargets, the gate's
+// default, the sub-steps a gate offers): no rule of its own. Pure.
+//   running     the item has a live run, which a retry or return stops
+//   enabled     its project takes human actions (store.js disabledProject)
+//   approvable  the gate's approve has what approveGate checks besides the
+//               step: a run plan, approved golden cases
+// Each target also carries `action` and `toIndex`, which only the route
+// dispatches on; toPublicTarget drops them.
+export function moveTargets(item, { running = false, enabled = true, approvable = true } = {}) {
+  if (!enabled || isAbandoned(item) || isClosed(item)) return []
+  const atGate = STEPS[item.cursor].kind === 'gate'
+  const targets = []
+  const add = (action, toIndex, stepKey, { isDefault = false, label = null } = {}) =>
+    targets.push({
+      stepKey,
+      isDefault,
+      redo: redoLine(item, action, toIndex, label),
+      reapprovals: action === 'return' ? reapprovalKeys(item, toIndex) : [],
+      // Approving a gate stops nothing; a retry, a return and the forward to
+      // Accept the code each stop the live run first.
+      stopsRunning: running && !(action === 'approve' && atGate),
+      action,
+      toIndex,
+    })
+
+  if (atGate) {
+    const approve = planMove(item, { action: 'approve' })
+    if (approve.ok && approvable) add('approve', approve.toIndex, approve.toKey)
+    const fallback = defaultReworkTarget(item.cursor, itemKindOf(item), item)
+    for (const key of allowedTargets(item)) add('return', stepIndexOf(key), key, { isDefault: stepIndexOf(key) === fallback })
+    for (const sub of substepReworkTargets(item)) {
+      const anchorKey = stepKeyAt(sub.index)
+      if (planMove(item, { action: 'return', toKey: anchorKey, substepId: sub.substepId }).error) continue
+      add('return', sub.index, encodeMoveKey(anchorKey, sub.substepId), { label: sub.label })
+    }
+    return targets
+  }
+
+  const retry = planMove(item, { action: 'retry' })
+  if (retry.ok) {
+    const sub = currentSubstep(item)
+    add('retry', item.cursor, encodeMoveKey(retry.fromKey, sub?.id ?? null), { isDefault: true, label: sub?.label ?? null })
+  }
+  // "Accept despite review findings" (HZ-185): offered only where planMove allows it.
+  const forward = planMove(item, { action: 'approve', toKey: stepKeyAt(ACCEPT_GATE_INDEX) })
+  if (forward.ok) add('approve', forward.toIndex, forward.toKey)
+  for (const key of allowedTargets(item)) add('return', stepIndexOf(key), key)
+  return targets
+}
+
+// A target as item.moves serves it: without the route's own fields.
+export function toPublicTarget({ action, toIndex, ...target }) {
+  return target
+}
+
+const quoted = (index, label = null) => `“${label ?? STEPS[index].label}”`
+
+// The rows the item's lane runs.
+function laneRows(item) {
+  const skips = laneSkips(item)
+  return stepsFor(itemKindOf(item)).filter((step) => !skips.has(step.index))
+}
+
+// One line on what the move redoes, or approves.
+function redoLine(item, action, toIndex, label) {
+  if (action === 'approve') {
+    const what =
+      STEPS[item.cursor].kind === 'gate' ? `Approves ${quoted(item.cursor)}` : 'Accepts the code despite the review findings'
+    return toIndex >= endIndex(itemKindOf(item)) ? `${what} and closes the item` : `${what} and moves on to ${quoted(toIndex)}`
+  }
+  const later = laneRows(item).filter((step) => step.index > toIndex && step.index <= item.cursor).length
+  const tail = later ? ` and ${later} later step${later === 1 ? '' : 's'}` : ''
+  return `Redoes ${quoted(toIndex, label)}${tail}`
+}
+
+// The gates a return to `toIndex` crosses again, each to be approved again —
+// the rows resetFor treats as redone: at or after the target, before here.
+function reapprovalKeys(item, toIndex) {
+  return laneRows(item)
+    .filter((step) => step.kind === 'gate' && step.index >= toIndex && step.index < item.cursor)
     .map((step) => step.key)
 }
 

@@ -19,7 +19,7 @@ const mover = await import('../src/moveItem.js')
 const { mintHumanProof } = await import('../src/humanProof.js')
 const golden = await import('../src/goldenCases.js')
 const lifecycle = await import('../../domain/js/lifecycle.js')
-const { planMove, moveItem, allowedTargets, writeStepCompletion, resetFor, CLOSED_KEY, MERGED_HINT, GOLDEN_GATE_KEYS } = mover
+const { planMove, moveItem, allowedTargets, moveTargets, toPublicTarget, writeStepCompletion, resetFor, CLOSED_KEY, MERGED_HINT, GOLDEN_GATE_KEYS } = mover
 const { stepIndexOf, stepKeyAt, endIndex } = lifecycle
 
 const source = JSON.parse(readFileSync(join(REPO_ROOT, 'domain/steps.json'), 'utf8'))
@@ -186,6 +186,67 @@ test('metric 1: a return to a sub-step keeps its sub-step; a retry keeps the one
   assert.equal(planMove(item, { action: 'return', toKey: IMPLEMENT }).substepId, null)
   const running = itemAt('change', IMPLEMENT, { substep_cursor: 'impl-audit' })
   assert.equal(planMove(running, { action: 'retry' }).substepId, 'impl-audit')
+})
+
+// HZ-799: item.moves.targets — built from planMove and the send-back rules
+// alone. The route walk is move-targets.test.mjs; these are the field rules.
+test('moveTargets: a gate lists its approve, its earlier steps and its sub-steps, each said in one line', () => {
+  const substeps_json = JSON.stringify([{ id: 'impl-audit', label: 'Audit the change', anchor: stepIndexOf(IMPLEMENT) }])
+  const gate = itemAt('change', ACCEPT, { substeps_json })
+  const targets = moveTargets(gate)
+  const byKey = Object.fromEntries(targets.map((t) => [t.stepKey, t]))
+  assert.deepEqual(
+    targets.map((t) => t.stepKey),
+    ['change.deploy', ...allowedTargets(gate), `${IMPLEMENT}#impl-audit`],
+  )
+  assert.deepEqual(byKey['change.deploy'], {
+    stepKey: 'change.deploy',
+    isDefault: false,
+    redo: `Approves “${rowOf(ACCEPT).label}” and moves on to “${rowOf('change.deploy').label}”`,
+    reapprovals: [],
+    stopsRunning: false,
+    action: 'approve',
+    toIndex: stepIndexOf('change.deploy'),
+  })
+  assert.deepEqual(targets.filter((t) => t.isDefault).map((t) => t.stepKey), [IMPLEMENT], 'the gate’s declared default')
+  assert.equal(byKey[AFTER_IMPLEMENT].redo, `Redoes “${rowOf(AFTER_IMPLEMENT).label}” and 1 later step`)
+  assert.deepEqual(byKey['change.plan-options'].reapprovals, ['change.approve-design', 'change.review-before-exec'])
+  assert.equal(byKey[`${IMPLEMENT}#impl-audit`].redo, 'Redoes “Audit the change” and 2 later steps')
+  assert.deepEqual(Object.keys(toPublicTarget(byKey[IMPLEMENT])), ['stepKey', 'isDefault', 'redo', 'reapprovals', 'stopsRunning'])
+
+  // Merged: nothing before Accept the code, sub-steps included.
+  assert.deepEqual(moveTargets({ ...gate, merged_at: '2026-11-01 00:00:00' }).map((t) => t.stepKey), ['change.deploy'])
+  assert.deepEqual(moveTargets(gate, { approvable: false }).map((t) => t.action).filter((a) => a === 'approve'), [])
+  assert.deepEqual(moveTargets(gate, { enabled: false }), [])
+  assert.deepEqual(moveTargets({ ...gate, abandoned_at: '2026-11-01 00:00:00' }), [])
+  assert.deepEqual(moveTargets(itemAt('change', 'change.define-outcome', { cursor: endIndex('change') })), [])
+  const last = moveTargets(itemAt('plan', 'plan.review-close'))[0]
+  assert.deepEqual([last.stepKey, last.redo], [CLOSED_KEY, `Approves “${rowOf('plan.review-close').label}” and closes the item`])
+  assert.ok(moveTargets(gate, { running: true }).every((t) => t.stopsRunning === (t.action !== 'approve')))
+})
+
+test('moveTargets: an agent step lists its retry as the default, the forward to Accept after a failed review, and its earlier steps', () => {
+  const running = itemAt('change', 'change.draft-plan')
+  assert.deepEqual(
+    moveTargets(running, { running: true }).map((t) => [t.stepKey, t.action, t.isDefault, t.stopsRunning]),
+    [['change.draft-plan', 'retry', true, true], ...allowedTargets(running).map((key) => [key, 'return', false, true])],
+  )
+  assert.equal(moveTargets(running)[0].redo, `Redoes “${rowOf('change.draft-plan').label}”`)
+  const sub = itemAt('change', IMPLEMENT, {
+    substep_cursor: 'impl-audit',
+    substeps_json: JSON.stringify([{ id: 'impl-audit', label: 'Audit the change', anchor: stepIndexOf(IMPLEMENT) }]),
+  })
+  assert.deepEqual([moveTargets(sub)[0].stepKey, moveTargets(sub)[0].redo], [`${IMPLEMENT}#impl-audit`, 'Redoes “Audit the change”'])
+  const rejected = moveTargets(itemAt('change', IMPLEMENT, { fix_findings_json: '[]' }), { running: true })
+  assert.deepEqual(rejected[1], {
+    stepKey: ACCEPT,
+    isDefault: false,
+    redo: `Accepts the code despite the review findings and moves on to “${rowOf(ACCEPT).label}”`,
+    reapprovals: [],
+    stopsRunning: true,
+    action: 'approve',
+    toIndex: stepIndexOf(ACCEPT),
+  })
 })
 
 test('every other action: approve, retry, abandon, reopen, close — and their refusals', () => {

@@ -66,7 +66,7 @@ import {
   stepKeyAt,
 } from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
-import { SUBSTEP_ID_PATTERN, stepLabel, substepsOf } from '../../domain/js/substeps.js'
+import { SUBSTEP_ID_PATTERN, decodeMoveKey, stepLabel, substepsOf } from '../../domain/js/substeps.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
@@ -2889,6 +2889,13 @@ export function buildApp({
   // written. Approve and abandon run the paths their own routes run, so a
   // merge, a filing and the golden-case checks still happen; return, retry
   // and reopen are store.moveByHuman. Answers { ok, move } — the item_move row.
+  //
+  // HZ-799: or `stepKey` instead of `action` — one of the item's
+  // moves.targets, which the server works out (moveItem.js moveTargets). Any
+  // other key is invalid_target. The target names the path it runs, the same
+  // ones as above; a sub-step target (`<step>#<sub-step>`) is the gate's
+  // send-back. Answers { ok, move, item } — the item as the v2 stream would
+  // upsert it. The `action` form stays until "Retire the old move routes".
   fastify.post(
     '/api/items/:id/move',
     {
@@ -2897,16 +2904,17 @@ export function buildApp({
         params: idParam,
         body: {
           type: 'object',
-          required: ['action', 'from'],
+          required: ['from'],
           properties: {
             action: { type: 'string', enum: ROUTE_MOVE_ACTIONS },
+            stepKey: { type: 'string', minLength: 1, maxLength: 160 },
             from: { type: 'string', minLength: 1, maxLength: 80 },
             to: { type: 'string', minLength: 1, maxLength: 80 },
             note: { type: 'string', maxLength: 2000 },
           },
         },
         response: {
-          200: OK_OBJECT,
+          200: { ...OK_OBJECT, description: '`{ ok, move }` for `action`; `{ ok, move, item }` for `stepKey`.' },
           400: ERROR_OBJECT,
           401: ERROR_OBJECT,
           403: ERROR_OBJECT,
@@ -2921,14 +2929,24 @@ export function buildApp({
       const proof = humanAuthorized(request, reply)
       if (!proof) return
       const { id } = request.params
-      const { action, from, to = null } = request.body
+      const { action = null, stepKey = null, from, to = null } = request.body
       const note = (request.body.note || '').trim()
       const item = store.getItem(id)
       if (!item) return reply.code(404).send({ error: 'not_found' })
+      // Exactly one of the two forms.
+      if ((action == null) === (stepKey == null)) return reply.code(400).send({ error: 'bad_action' })
       if (action === 'return' && to == null) return reply.code(400).send({ error: 'bad_target_key' })
       if (action === 'abandon' && !note) return reply.code(400).send({ error: 'note_required' })
       if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
       const actor = actorOf(request)
+      if (stepKey != null) {
+        const target = store.moveTargetsOf(id).find((t) => t.stepKey === stepKey)
+        if (!target) return reply.code(400).send({ error: 'invalid_target' })
+        const result = await moveToTarget(item, target, { note, actor, proof })
+        if (result.status) return reply.code(result.status).send(gateFailureBody(result))
+        if (result.error) return send(reply, result)
+        return reply.send({ ok: true, move: store.lastMove(id), item: store.itemViewById(id) })
+      }
       let result
       if (action === 'approve') {
         const planned = planMove(item, { action, toKey: to })
@@ -2947,6 +2965,27 @@ export function buildApp({
       return reply.send({ ok: true, move: store.lastMove(id) })
     },
   )
+
+  // HZ-799: one of the item's moves.targets, through the path its action
+  // names — the same ones the `action` form runs. A sub-step return is the
+  // gate's send-back (store.requestChanges), which alone lands on a sub-step.
+  async function moveToTarget(item, target, { note, actor, proof }) {
+    const { id } = item
+    if (target.action === 'approve') {
+      return STEPS[item.cursor].kind === 'gate'
+        ? gateActions.approve(id, item.cursor, note, actor, { proof })
+        : orchestrator.forwardRejectedReview(id, actor)
+    }
+    const { stepKey, substepId } = decodeMoveKey(target.stepKey)
+    if (target.action === 'return' && substepId) {
+      return gateActions.sendBack(
+        id,
+        { target: stepLabel(item), feedback: note, targetStepIndex: target.toIndex, targetSubstepId: substepId, proof },
+        actor,
+      )
+    }
+    return store.moveByHuman(id, { action: target.action, toKey: stepKey, note, who: actor, proof })
+  }
 
   // ---- auth (HZ-21: hardcoded credential OR Google SSO, per-account gate PIN) ----
 

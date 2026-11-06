@@ -85,3 +85,17 @@ export function decodeTarget(value) {
   if (!Number.isInteger(index)) return null
   return { index, substepId: at === -1 ? null : value.slice(at + 1) || null }
 }
+
+// HZ-799: a move target (item.moves.targets[].stepKey) as one key and back:
+// 'change.implement' is the global step, 'change.implement#impl-audit' a
+// sub-step of it. Always a step key, never a position.
+export function encodeMoveKey(stepKey, substepId = null) {
+  return substepId ? `${stepKey}#${substepId}` : stepKey
+}
+
+export function decodeMoveKey(value) {
+  if (typeof value !== 'string' || value === '') return null
+  const at = value.indexOf('#')
+  if (at === -1) return { stepKey: value, substepId: null }
+  return { stepKey: value.slice(0, at), substepId: value.slice(at + 1) || null }
+}
