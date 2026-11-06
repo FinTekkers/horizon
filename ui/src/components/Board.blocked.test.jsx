@@ -2,7 +2,7 @@
 // working, never Pause work, no elapsed line or "usually ~Xm". It names each
 // blocker as a link from item.blockedBy (HZ-95: read as the API gives it).
 
-import { expect, test, vi, afterEach } from 'vitest'
+import { expect, test, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, act, fireEvent } from '@testing-library/react'
 
 vi.mock('../api', () => ({
@@ -13,6 +13,13 @@ vi.mock('../api', () => ({
 import Board from './Board'
 import { IMPLEMENT_STEP_INDEX, phaseIdx } from '../../../domain/js/lifecycle.js'
 import * as boardFilters from '../boardFilters'
+
+// The fixtures are dated against NOW, so the board's 30-day stale filter must
+// see NOW as today — on the real clock every card here ages out of view.
+// Only Date is faked, so promises and React's scheduling run as normal.
+beforeEach(() => {
+  vi.useFakeTimers({ now: NOW, toFake: ['Date'] })
+})
 
 afterEach(() => {
   cleanup()
