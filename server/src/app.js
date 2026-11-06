@@ -434,9 +434,11 @@ function actorOf(request) {
 // HZ-786: the WhatsApp caller ladder — 503 with no WA_APPROVAL_SECRET on this
 // host, 401 for a wrong credential, 403 for a sender off WA_APPROVER_JIDS — in
 // that order and before any lookup, so a refused caller gets no oracle and
-// writes nothing. Answers and returns false on a refusal. approve-via-whatsapp,
-// poll-vote and autopilot-off-via-whatsapp still run their own copies.
-function waCallerOk(request, reply, senderJid) {
+// writes nothing. Answers and returns false on a refusal. HZ-791: the one copy
+// of the ladder — every WhatsApp route calls it. `allowed` and `refusal` set
+// the 403 step, for routes that admit a narrower sender (the owner) or answer
+// with a route-specific code; the defaults are the approver allowlist.
+function waCallerOk(request, reply, senderJid, { allowed = isAllowedApprover, refusal = 'sender_not_allowed' } = {}) {
   if (!approvalSecretConfigured()) {
     reply.code(503).send({ error: 'wa_approval_not_configured' })
     return false
@@ -445,8 +447,8 @@ function waCallerOk(request, reply, senderJid) {
     reply.code(401).send({ error: 'bad_approval_secret' })
     return false
   }
-  if (!isAllowedApprover(senderJid)) {
-    reply.code(403).send({ error: 'sender_not_allowed' })
+  if (!allowed(senderJid)) {
+    reply.code(403).send({ error: refusal })
     return false
   }
   return true
@@ -2150,15 +2152,11 @@ export function buildApp({
       },
     },
     async (request, reply) => {
-      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
-      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
-        return reply.code(401).send({ error: 'bad_approval_secret' })
-      }
       const senderJid = request.body.senderJid
       // Checked before the item is even looked up, so a rejected sender gets
       // no oracle for which item ids exist.
-      if (!isAllowedApprover(senderJid)) return reply.code(403).send({ error: 'sender_not_allowed' })
-      // HZ-709: resolved only after the 503/401/403 ladder, so a refused
+      if (!waCallerOk(request, reply, senderJid, { allowed: isAllowedApprover, refusal: 'sender_not_allowed' })) return
+      // HZ-709: resolved only after the waCallerOk ladder above, so a refused
       // caller learns nothing about which step keys exist.
       const stepIndex = gateStepOf(request, reply, 'approve-via-whatsapp')
       if (stepIndex === null) return
@@ -2243,8 +2241,8 @@ export function buildApp({
   // the two actions below are handed to it rather than imported by it, so
   // this file importing the orchestrator does not widen its reach.
   //
-  // The 503/401/403 ladder is the same three helpers, in the same order, as
-  // approve-via-whatsapp: all three run before any lookup or any write, so a
+  // The 503/401/403 ladder is the shared waCallerOk, as on
+  // approve-via-whatsapp: it runs before any lookup or any write, so a
   // rejected caller gets no oracle and an unauthorised flood writes no rows.
   //
   // EVERY 4xx IS FINAL. The bridge retries 5xx and network failures only — a
@@ -2267,12 +2265,8 @@ export function buildApp({
       },
     },
     async (request, reply) => {
-      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
-      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
-        return reply.code(401).send({ error: 'bad_approval_secret' })
-      }
       const { voteId, pollMessageId, voterJid, selectedOption } = request.body
-      if (!isAllowedApprover(voterJid)) return reply.code(403).send({ error: 'voter_not_allowed' })
+      if (!waCallerOk(request, reply, voterJid, { allowed: isAllowedApprover, refusal: 'voter_not_allowed' })) return
 
       const result = await waPollVotes.applyVote(
         { voteId, pollMsgId: pollMessageId, voterJid, selectedOption },
@@ -4503,8 +4497,8 @@ export function buildApp({
   // Admin + PIN only. There is no mode field — this route can only write
   // 'off' — and a body naming any other key is a 400.
   //
-  // The 503/401/403 ladder runs before the project lookup, the same helpers
-  // in the same order as approve-via-whatsapp, so a non-owner gets one
+  // The shared waCallerOk ladder runs before the project lookup, with isOwner
+  // as its 403 step, so a non-owner gets one
   // identical refusal whether or not the project exists and learns nothing
   // about its setting. 404 is reachable by the owner only.
   fastify.post(
@@ -4527,11 +4521,7 @@ export function buildApp({
       },
     },
     (request, reply) => {
-      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
-      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
-        return reply.code(401).send({ error: 'bad_approval_secret' })
-      }
-      if (!isOwner(request.body.senderJid)) return reply.code(403).send({ error: 'refused' })
+      if (!waCallerOk(request, reply, request.body.senderJid, { allowed: isOwner, refusal: 'refused' })) return
       const project = store.findProjectByName(request.body.project)
       if (!project) return reply.code(404).send({ error: 'project_not_found' })
       // The audit row records the source; no jid is stored.
