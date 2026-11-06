@@ -34,6 +34,7 @@ import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeS
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
 import { metricLines } from '../../../domain/js/goldenCases.js'
+import { parseStoredUtc, runTimeText } from '../../../domain/js/runTime.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import AsksPanel from './AsksPanel'
@@ -83,10 +84,22 @@ function ranAheadOf(item, index, status, output) {
 }
 
 function elapsedMinutes(startedAt) {
-  if (!startedAt) return null
-  const t = Date.parse(startedAt.includes('T') ? startedAt : startedAt.replace(' ', 'T') + 'Z')
-  if (Number.isNaN(t)) return null
+  const t = parseStoredUtc(startedAt)
+  if (t === null) return null
   return Math.max(0, Math.floor((Date.now() - t) / 60_000))
+}
+
+// HZ-803: when the result a card shows finished ("5 Nov 20:06 · 20 h ago"), in
+// the viewer's timezone. `previous` marks an old result shown after the step
+// was sent back or restarted. `timeZone` is for tests; omitted, the browser's.
+function RunTimeNote({ stored, previous = false, timeZone }) {
+  const text = runTimeText(stored, Date.now(), timeZone)
+  if (!text) return null
+  return (
+    <div className="step-card__run-time" data-testid="run-time">
+      {previous ? `previous attempt · ${text}` : text}
+    </div>
+  )
 }
 
 const STEP_META = {
@@ -327,7 +340,7 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -429,6 +442,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               <span> · no output recorded (step predates this item's run or was skipped)</span>
             )}
           </div>
+          {status === 'done' && !isGate && output && <RunTimeNote stored={output.endedAt} timeZone={runTimeZone} />}
+          {ranAhead && <RunTimeNote stored={output.endedAt} previous timeZone={runTimeZone} />}
           {/* HZ-802: an agent step with nothing running says why (server/src/store.js notDispatchedOf). */}
           {index === item.cursor && item.notDispatched && (
             <div className="step-card__not-dispatched" data-testid="not-dispatched" style={{ color: 'var(--warning-ink)' }}>
@@ -1105,7 +1120,7 @@ function FarmUnreachableBanner({ onOpenFarmHealth }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1343,6 +1358,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                       onSetStepProvider={onSetStepProvider}
                       filedAutopilot={filedAutopilot}
                       onSetFiledAutopilot={onSetFiledAutopilot}
+                      runTimeZone={runTimeZone}
                     />
                     {substepsAt(item, i).map((sub) => (
                       <SubstepRow key={sub.id} item={item} sub={sub} />

@@ -403,7 +403,9 @@
           "model": null,
           "verdict": null,
           "verdictSummary": null,
-          "fallbackNote": null
+          "fallbackNote": null,
+          "startedAt": "2026-01-02 03:04:05",
+          "endedAt": "2026-01-02 03:04:05"
         }
       },
       "activeRun": null,

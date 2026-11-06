@@ -76,6 +76,7 @@ import * as projectDefinitions from './projectDefinitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
+import * as runTimeView from './runTimeView.js'
 import * as split from './split.js'
 import { narrowingStatus } from './narrowing.js'
 import * as planDraft from './planDraft.js'
@@ -211,6 +212,12 @@ function cssHrefFor(routePath) {
   return `${'../'.repeat(depth)}agent-pages.css`
 }
 
+// HZ-803: " · started … · finished …" for a page's meta line, '' with neither.
+function runTimesSuffix(run) {
+  const times = runTimeView.runTimesHtml(run)
+  return times ? ` · ${times}` : ''
+}
+
 // Full-page artifact viewer shell shared by the latest-attempt route and the
 // specific-attempt route below (HZ-46) — same markup either way, only the
 // route (for the stylesheet's relative "../" depth) and which `run` row is
@@ -246,10 +253,12 @@ function renderArtifactPage(id, stepIndex, run, routePath, substep = null) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <link rel="stylesheet" href="${cssHrefFor(routePath)}"></head><body><div class="page">
-<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · ${esc(run.ended_at)} UTC</div>
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title}${runTimesSuffix(run)}</div>
 ${nav}
 <article>${renderLinkedMarkdown(run.artifact, pageLinkContext(id, run))}</article>
-</div></body></html>`
+</div>
+<script>${runTimeView.clientScript()}</script>
+</body></html>`
 }
 
 // ---- SSE ----
@@ -1107,7 +1116,7 @@ export function buildApp({
         ? (store.substepDoneRuns(id, stepIndex, substep.id).filter((r) => r.artifact != null).at(-1) ?? null)
         : db
             .prepare(
-              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
+              "SELECT artifact, attempt, started_at, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
             )
             .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
@@ -1153,7 +1162,7 @@ export function buildApp({
         ? (store.substepDoneRuns(id, stepIndex, substep.id).find((r) => r.attempt === attempt && r.artifact != null) ?? null)
         : db
             .prepare(
-              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
+              "SELECT artifact, attempt, started_at, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
             )
             .get(id, stepIndex, attempt)
       if (!run) return reply.code(404).send({ error: 'no artifact for that attempt' })
@@ -1213,7 +1222,7 @@ export function buildApp({
       const { id, stepIndex } = request.params
       const run = db
         .prepare(
-          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
+          "SELECT output, attempt, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
         )
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no output for that step' })
@@ -1223,11 +1232,13 @@ export function buildApp({
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <link rel="stylesheet" href="${cssHrefFor(OUTPUT_ROUTE)}"></head><body><div class="page">
-<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt}${runTimesSuffix(run)}</div>
 <pre>${splitItemIds(run.output, pageLinkContext(id, run))
         .map((piece) => (piece.id ? `<a href="${escAttr(piece.href)}">${esc(piece.id)}</a>` : esc(piece.text)))
         .join('')}</pre>
-</div></body></html>`
+</div>
+<script>${runTimeView.clientScript()}</script>
+</body></html>`
       return reply.type('text/html').send(html)
     },
   )

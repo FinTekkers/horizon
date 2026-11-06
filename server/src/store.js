@@ -1150,7 +1150,7 @@ const selectEvents = db.prepare(
   'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
 )
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas, started_at, ended_at FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -1192,6 +1192,10 @@ function stepOutputs(itemId) {
       // HZ-422: "fell back from X: usage limit until <time>" when this attempt
       // ran on a fallback model, else null.
       fallbackNote: row.fallback_from ? fallbackNoteText(row.fallback_from, row.fallback_reset_at) : null,
+      // HZ-803: when this attempt ran, as stored (UTC, unconverted), so a card
+      // can say when the result it shows is from. null when not recorded.
+      startedAt: row.started_at ?? null,
+      endedAt: row.ended_at ?? null,
     }
     // HZ-546: { 'owner/name': sha } the attempt read, so its code references
     // link at that commit. Absent when none was recorded (every earlier run).
