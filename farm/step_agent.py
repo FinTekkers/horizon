@@ -77,7 +77,7 @@ from .persona_tools import apply as apply_persona_tools
 from .personas import compose_role, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
-from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, ensure_tenant_hub, hub_lock, item_lock
+from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, ensure_tenant_hub, hub_lock, item_lock, tenant_task_clone_path
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -545,10 +545,26 @@ def _persona_line(task: dict) -> str:
     return f"  persona: {persona_agent}/{resolved}"
 
 
+def _tenant_interpreter_line(task: dict) -> str:
+    """HZ-787: a tenant Execute ignores repo_dir and runs in the run user's
+    own task clone (tenant_job.prepare). The path is a string join only:
+    nothing under the run user's home is read, statted or listed."""
+    repo = (task.get("item") or {}).get("repo")
+    if not isinstance(repo, str) or not repo:
+        return "  interpreter: refused — the task names no item repo. Execute will refuse until the item has a repo"
+    venv = tenant_task_clone_path(repo) / ".venv"
+    return (
+        f"  interpreter: {venv}/bin/python if that venv exists at Execute, else system python3 "
+        f"(env: the run user's task clone {venv.parent}; the clone and venv are checked at Execute)"
+    )
+
+
 def _interpreter_line(task: dict) -> str:
     """HZ-431: the interpreter Execute will run the plan's commands with —
     the same resolve_venv() check task_job.py makes at start. Shows only the
     venv path or `system`, never PATH or another env value."""
+    if is_tenant_project(task.get("project")):
+        return _tenant_interpreter_line(task)
     try:
         run_plan.resolve_cwd(task.get("repo_dir"), ".", forbid=str(REPO_ROOT))
         venv = run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(REPO_ROOT))
