@@ -70,7 +70,10 @@ const VERIFY_FAILED_LABEL = 'Verify & report failed'
 // (item-level, so only for the review step), any other step by its stored
 // verdict. null when the step never ran, is running again, or its newest
 // attempt recorded no artifact — then it reads "Queued" as before, on purpose.
+// HZ-802: nor while the item is not dispatched — an old failed verdict would
+// read as if the item had just failed again; the cursor step says why instead.
 function ranAheadOf(item, index, status, output) {
+  if (item.notDispatched) return null
   if (status !== 'pending' || !output?.artifact || item.activeRun?.step_index === index) return null
   const failed = (index === REVIEW_STEP_INDEX && item.reviewRejected === true) || output.verdict === 'fail'
   return { attempt: output.attempt, failed }
@@ -423,6 +426,12 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               <span> · no output recorded (step predates this item's run or was skipped)</span>
             )}
           </div>
+          {/* HZ-802: an agent step with nothing running says why (server/src/store.js notDispatchedOf). */}
+          {index === item.cursor && item.notDispatched && (
+            <div className="step-card__not-dispatched" data-testid="not-dispatched" style={{ color: 'var(--warning-ink)' }}>
+              Not dispatched: {item.notDispatched.message}
+            </div>
+          )}
           {verdict === 'fail' && output?.verdictSummary && (
             <div className="step-card__verdict" data-testid="verify-verdict-summary">
               {output.verdictSummary}

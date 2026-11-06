@@ -592,9 +592,12 @@ export function holdingBlockers(item, blockers) {
 // Returns the first one that holds the item, named by step label, or null.
 // Only the start step is checked: a gate holds for an ask raised later. A
 // filed ask whose item no longer exists can never merge, so it holds nothing.
+// HZ-802: nor does one whose item was abandoned — it never merges either. A
+// dependency edge still on that item keeps holding through holdingBlockers,
+// so its HZ-78 escalation is unchanged; only the ask stops holding.
 export function askStartHold(item, asks) {
   if (item.cursor !== IMPLEMENT_STEP_INDEX && item.cursor !== EXECUTE_STEP_INDEX) return null
-  const holding = asks.find((a) => a.status === 'open' || (a.filed && !isMergeReleased(a.filed)))
+  const holding = asks.find((a) => a.status === 'open' || (a.filed && !isMergeReleased(a.filed) && !isAbandoned(a.filed)))
   if (!holding) return null
   return {
     askId: holding.id,

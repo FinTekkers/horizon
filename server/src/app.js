@@ -8,7 +8,7 @@ import fastifyCookie from '@fastify/cookie'
 import { fastifySwagger } from '@fastify/swagger'
 import crypto from 'node:crypto'
 import * as store from './store.js'
-import { dismissAsk, fileAsk } from './asks.js'
+import { dismissAsk, fileAsk, releaseAsk } from './asks.js'
 import { linkSpawned, spawnItems } from './spawn.js'
 import * as github from './github.js'
 import * as deploy from './deploy.js'
@@ -2621,6 +2621,45 @@ export function buildApp({
         orchestrator.kick(item.id)
       }
       return sendAsk(reply, result.ok ? { ok: true, ...(result.alreadyDismissed ? { alreadyDismissed: true } : {}) } : result)
+    },
+  )
+
+  // HZ-802: the owner's override for a filed blocking ask that still holds
+  // Implement or Execute (its item stuck open, say). PIN and a reason, like
+  // Dismiss; the ask stops holding, its item and dependency edge stay.
+  fastify.post(
+    '/api/items/:id/asks/:askId/release',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: askParams,
+        body: {
+          type: 'object',
+          required: ['reason'],
+          properties: { reason: { type: 'string', maxLength: 500 } },
+        },
+        response: DISMISS_ASK_RESPONSES,
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      const result = releaseAsk(item, request.params.askId, { reason: request.body.reason, actor: actorOf(request) })
+      if (result.ok && !result.alreadyReleased) {
+        store.addEvent(item.id, {
+          who: actorOf(request),
+          text: `released the ask “${result.title}” (${result.filedItemId}): ${result.reason}`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+        store.notifyChange()
+        // The released ask may have been all that held the start step;
+        // kick() re-checks and no-ops otherwise.
+        orchestrator.kick(item.id)
+      }
+      return sendAsk(reply, result)
     },
   )
 

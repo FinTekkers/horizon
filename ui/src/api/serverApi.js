@@ -446,7 +446,8 @@ function networkOrPin(err) {
 
 // HZ-470: an awaited gate action (Kill, Restart phase). Rejects with
 // Error('pin_needed') when the PIN dialog is cancelled; Error('network') when
-// no answer came; else Error(<error code>) with `status` on a non-2xx.
+// no answer came; else Error(<error code>) with `status` on a non-2xx. HZ-802:
+// and `serverMessage`, the server's own words, when it sent a `message`.
 async function gateAction(path, body, method = 'POST') {
   const res = await pinSend(path, method, body).catch(networkOrPin)
   if (!res) throw new Error('network')
@@ -454,6 +455,7 @@ async function gateAction(path, body, method = 'POST') {
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
     err.status = res.status
+    if (typeof data.message === 'string' && data.message) err.serverMessage = data.message
     throw err
   }
   return data
@@ -1006,6 +1008,11 @@ export async function fileAsk(itemId, askId) {
 
 export async function dismissAsk(itemId, askId, reason) {
   return gateAction(`/items/${encodeURIComponent(itemId)}/asks/${askId}/dismiss`, { reason })
+}
+
+// HZ-802: releases a filed blocking ask that still holds Implement or Execute.
+export async function releaseAsk(itemId, askId, reason) {
+  return gateAction(`/items/${encodeURIComponent(itemId)}/asks/${askId}/release`, { reason })
 }
 
 // Personas are agent-scoped (HZ-125): one slot per composing agent, so the

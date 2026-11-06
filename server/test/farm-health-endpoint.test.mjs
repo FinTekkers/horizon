@@ -109,6 +109,10 @@ const deps = {
   liveDeploysSince: (since) => store.listLiveDeploysSince(since),
   serverBootedAt: () => new Date(NOW - 30 * 60 * 1000).toISOString(),
   deployTargets: () => TARGETS,
+  // HZ-802: only the named fields reach the body.
+  notDispatchedItems: () => [
+    { itemId: 'HZ-4', title: 'Held task', step: 'Execute', kind: 'blocked_by', message: 'Blocked by HZ-5 (Rates)', output: SECRET },
+  ],
 }
 
 const get = (cookie) => app.inject({ method: 'GET', url: '/api/admin/farm-health', headers: { cookie } })
@@ -170,6 +174,7 @@ const SHAPE = {
   ],
   services: [['detail', 'name', 'state', 'unit', 'up']],
   recent: [['at', 'kind', 'tag', 'target']],
+  notDispatched: [['itemId', 'kind', 'message', 'step', 'title']],
 }
 
 // Walks the body against SHAPE: an object's keys must equal the allowlist
@@ -248,6 +253,10 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
     ],
     at: '2026-10-23T09:00:00+00:00',
   })
+  // HZ-802: an item not dispatched is listed with its reason, and is no alert.
+  assert.deepEqual(body.notDispatched, [
+    { itemId: 'HZ-4', title: 'Held task', step: 'Execute', kind: 'blocked_by', message: 'Blocked by HZ-5 (Rates)' },
+  ])
   assert.equal(body.state, 'amber')
 })
 

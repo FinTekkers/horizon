@@ -836,7 +836,32 @@ const GATE_PIN = '4729'
 const GATE_ACTIONS = [
   ['abandonItem', (api) => api.abandonItem('K-1', 'why', { removeDependentLinks: true }), '/items/K-1/abandon'],
   ['restartPhase', (api) => api.restartPhase('K-1', 2, 'why'), '/items/K-1/phases/2/restart'],
+  // HZ-802: Release on a filed ask's hold.
+  ['releaseAsk', (api) => api.releaseAsk('K-1', 7, 'why'), '/items/K-1/asks/7/release'],
 ]
+
+// HZ-802: a Restart that cannot dispatch says why; the rejection carries the
+// server's words, so the composer can show them.
+test("restartPhase's 409 carries the server's message as serverMessage", async () => {
+  const serverApi = await import('./serverApi')
+  answerPins(serverApi, GATE_PIN)
+  const fetchSpy = vi.fn(gateAnswer(409, { error: 'blocked_by', message: 'Blocked by MDI-129 (Add rates)', itemId: 'MDI-129' }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  const err = await serverApi.restartPhase('K-1', 2, '').catch((e) => e)
+  expect(err.message).toBe('blocked_by')
+  expect(err.status).toBe(409)
+  expect(err.serverMessage).toBe('Blocked by MDI-129 (Add rates)')
+  expect(fetchSpy).toHaveBeenCalledTimes(1)
+})
+
+test('a 409 with no message leaves serverMessage unset', async () => {
+  const serverApi = await import('./serverApi')
+  answerPins(serverApi, GATE_PIN)
+  vi.stubGlobal('fetch', vi.fn(gateAnswer(409, { error: 'closed' })))
+  const err = await serverApi.restartPhase('K-1', 2, '').catch((e) => e)
+  expect(err.serverMessage).toBeUndefined()
+})
 
 function gateAnswer(status, body) {
   return () => Promise.resolve({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) })

@@ -739,3 +739,20 @@ for (const dialog of KILL_RESTART) {
     })
   }
 }
+
+// HZ-802: a Restart that cannot dispatch answers 409 with why; the dialog
+// shows the server's words, not the generic retry line.
+test('Restart phase refused with a reason shows that reason in the dialog', async () => {
+  api.restartPhase.mockRejectedValue(
+    Object.assign(new Error('blocked_by'), { status: 409, serverMessage: 'Blocked by MDI-129 (Add rates)' }),
+  )
+  const id = 'KR-802'
+  setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
+  window.history.pushState({}, '', `/${id.toLowerCase()}`)
+
+  const { findByRole, findAllByRole } = render(<App />)
+  await KILL_RESTART[1].open(findByRole, findAllByRole)
+  submitDialog('')
+  expect((await findByRole('alert')).textContent).toBe('Blocked by MDI-129 (Add rates)')
+  expect(document.querySelector('.composer')).not.toBeNull()
+})
