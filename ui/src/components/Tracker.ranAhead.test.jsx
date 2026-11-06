@@ -179,3 +179,9 @@ test('an item not dispatched shows why on the current step and hides the earlier
   expect(container.querySelector('.step-card--ran-ahead')).toBeNull()
   expect(container.querySelectorAll('[data-testid="not-dispatched"]').length).toBe(1)
 })
+
+test('a paused item keeps the review outcome that sent it back', () => {
+  const notDispatched = { kind: 'paused', message: 'Paused. Resume the item first.' }
+  const { container } = renderTracker({ paused: true, reviewRejected: true, notDispatched, stepOutputs: { ...behindOutputs, [REVIEW]: run(REVIEW, 1) } })
+  expect(metaOf(container, REVIEW)).toBe('Failed, sent back · attempt 1')
+})

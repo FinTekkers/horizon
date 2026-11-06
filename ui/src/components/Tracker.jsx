@@ -70,10 +70,13 @@ const VERIFY_FAILED_LABEL = 'Verify & report failed'
 // (item-level, so only for the review step), any other step by its stored
 // verdict. null when the step never ran, is running again, or its newest
 // attempt recorded no artifact — then it reads "Queued" as before, on purpose.
-// HZ-802: nor while the item is not dispatched — an old failed verdict would
-// read as if the item had just failed again; the cursor step says why instead.
+// HZ-802: nor while something other than its own stop holds the item (a
+// dependency, an ask, a stale plan, a wait) — an old failed verdict would read
+// as if it had just failed again; the cursor step says why instead. Paused or
+// stopped on a rule, the last outcome is still why, so it stays.
+const KEEPS_RAN_AHEAD = new Set(['paused', 'rule_block'])
 function ranAheadOf(item, index, status, output) {
-  if (item.notDispatched) return null
+  if (item.notDispatched && !KEEPS_RAN_AHEAD.has(item.notDispatched.kind)) return null
   if (status !== 'pending' || !output?.artifact || item.activeRun?.step_index === index) return null
   const failed = (index === REVIEW_STEP_INDEX && item.reviewRejected === true) || output.verdict === 'fail'
   return { attempt: output.attempt, failed }
