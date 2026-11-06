@@ -57,6 +57,7 @@ from . import (
     check_record,
     handoff,
     login_env,
+    owner_digest,
     pause,
     plan_bundle,
     read_only_guard,
@@ -2719,6 +2720,16 @@ def execute(task: dict) -> dict:
         return _execute(task, guard)
 
 
+def _owner_digest_notes(task: dict, artifact: str) -> list[str]:
+    """One `owner digest:` note per shape problem; a checker that raises is
+    one note too, never a failed step."""
+    try:
+        problems = owner_digest.check_task_digest(task, artifact)
+    except Exception as exc:  # noqa: BLE001 — advisory check, never fatal
+        return [f"owner digest: check failed ({type(exc).__name__})"]
+    return [f"owner digest: {p}" for p in problems]
+
+
 def _execute_pm(task: dict) -> dict:
     """HZ-371: one PM step (0, 1, 2 or 9), on the shared runner — PM steps
     used to have a runner of their own. The prompt, role prompt, validation
@@ -2792,6 +2803,11 @@ def _execute_pm(task: dict) -> dict:
         return result
 
     (summary, patch, artifact), notes = parse_agent_reply(reply["result"], retry_once, validate=validate)
+    # HZ-801: the owner digest's shape problems become parser notes. Advisory:
+    # the artifact is stored either way and nothing is retried. Only a task
+    # the server gave links to (artifact_url): the link rules need them.
+    if label == pm_steps.DIGEST_STEP_LABEL and artifact and task.get("artifact_url"):
+        notes = [*notes, *_owner_digest_notes(task, artifact)]
     outcome = pm_steps.finish(
         task, summary, patch, artifact, notes, split=accepted.get("split"), asks=accepted.get("asks")
     )

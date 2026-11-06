@@ -1,0 +1,37 @@
+{
+  "_comment": "HZ-801: LS-210's step-9 inputs as the server sends them (label, url) with a real excerpt of each stored artifact, and the step's own artifact_url. Excerpts are quoted from LS-210 artifacts 4, 6, 7 and 8; the overlap input is rebuilt from the server's Overlap section in the stored step-9 digest.",
+  "item": {
+    "id": "LS-210"
+  },
+  "step": {
+    "index": 9,
+    "label": "Summarize reviews & recommend"
+  },
+  "artifact_url": "https://shoreward.ai/horizon/api/items/LS-210/artifacts/9",
+  "artifacts": [
+    {
+      "label": "Plan options & trade-offs (pros / cons)",
+      "url": "https://shoreward.ai/horizon/api/items/LS-210/artifacts/4",
+      "content": "- **LS-208 is not merged.** `addCheckedTransaction`, `checkCreate` and `ReprocessPlan` exist only on branch `horizon/ls-208`.\n\n### C. Per-portfolio lock\n- **Cons:** **misses the outcome.** The SOMA loader writes 433 CUSIPs into one portfolio, and it stays fully serial."
+    },
+    {
+      "label": "Draft implementation plan",
+      "url": "https://shoreward.ai/horizon/api/items/LS-210/artifacts/6",
+      "content": "## Blocker\n\n- **LS-208 is not on `main`.** `origin/main` is at `9a73e69` (LS-206).\n- **Decision:** start LS-210 after LS-208 merges, on a fresh branch from `main`. Do not stack on or copy LS-208's code."
+    },
+    {
+      "label": "Architecture review",
+      "url": "https://shoreward.ai/horizon/api/items/LS-210/artifacts/7",
+      "content": "### Blocking: the key-set lookup can miss the stored pair\n\n- Result: **T is live on two pairs.** The LS-208 `isOutdated` check is also wrong in that window.\n- `AbstractTransactionConnector.delete` stays unlocked. That is fine for this item."
+    },
+    {
+      "label": "QA reviews the test plan",
+      "url": "https://shoreward.ai/horizon/api/items/LS-210/artifacts/8",
+      "content": "- **Dependency:** these tests assume LS-208's `addCheckedTransaction`/`checkCreate`. They cannot run until LS-208 is on `main`."
+    },
+    {
+      "label": "Overlap check (deterministic)",
+      "content": "Other in-flight items in `FinTekkers/ledger-service` (steps 6–14):\n- **LS-208**\n  - Functions/endpoints: `getTaxLotQuantity()`, `processTransaction()`\n  - Computed decision: **depends-on**\n- **LS-211**\n  - Files: `scripts/checks/test.sh`\n  - Computed decision: **shared-contract**"
+    }
+  ]
+}
