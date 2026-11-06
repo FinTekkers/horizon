@@ -161,18 +161,21 @@ test('metric 4: an item at Accept the code in another repo does not hold the win
   assert.equal(stub.posts.length, 1)
 })
 
-test('metric 5: with an item at Accept the code and an open dependent, only the dependency close is logged', async () => {
+test('metric 5 (HZ-783): with an item at Accept the code and an open dependent, the window is held to the 10-minute cap', async () => {
   addComingItem(db, REPO, 'AL-ACCEPT')
   const batchId = await joinFirst()
   addItem('AL-DEP', 4)
   db.prepare("INSERT INTO work_item_dependency (item_id, depends_on_id) VALUES ('AL-DEP', 'AL-1')").run()
 
   await deployQueue.tick(T0 + TICK_MS)
-  assert.notEqual(batch(batchId).status, 'open')
-  const events = earlyEvents('AL-1')
-  assert.equal(events.length, 1)
-  assert.match(events[0].text, /AL-DEP is waiting on it/)
-  assert.doesNotMatch(events[0].text, notComing)
+  assert.equal(batch(batchId).status, 'open')
+  assert.equal(batch(batchId).window_closes_at, sqlTime(T0 + TICK_MS + 600_000))
+  const held = db.prepare("SELECT text FROM event WHERE item_id = 'AL-1' AND text LIKE 'deploy window held%'").all()
+  assert.equal(held.length, 1)
+  assert.match(held[0].text, /AL-DEP is waiting on it/)
+  assert.match(held[0].text, /10-minute cap/)
+  assert.doesNotMatch(held[0].text, notComing)
+  assert.equal(earlyEvents('AL-1').length, 0)
 })
 
 test('guardrail 1: a lone merge with a running job in the repo moves its close time but starts only once the job ends', async () => {
