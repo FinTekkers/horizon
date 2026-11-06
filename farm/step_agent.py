@@ -64,6 +64,7 @@ from . import (
     run_plan_requires,
     screenshot_runner,
     screenshots_config,
+    smoke_config,
     targeted_checks,
     task_clone,
     task_job,
@@ -2366,10 +2367,14 @@ def _run_and_parse(
 # deploy gate trusts.
 
 
-def run_smoke_check(url: str, expected_text: str, test_env_file: str | None = None) -> tuple[str, str]:
+def run_smoke_check(
+    url: str, expected_text: str, test_env_file: str | None = None, live: str | None = None
+) -> tuple[str, str]:
     """HZ-494: test_env_file is the repo's test-login env file. Its values
     reach check.mjs's environment only, and are redacted from the line this
-    returns; a file that cannot be loaded fails the check, naming the path."""
+    returns; a file that cannot be loaded fails the check, naming the path.
+    HZ-789: live is smoke_live_arg()'s JSON for a page the repo declares in
+    .horizon/smoke.json; check.mjs then also needs one live value."""
     values: dict[str, str] = {}
     if test_env_file:
         try:
@@ -2379,7 +2384,7 @@ def run_smoke_check(url: str, expected_text: str, test_env_file: str | None = No
     secrets = {f"login_env:{k}": v for k, v in values.items()}
     try:
         result = subprocess.run(
-            ["node", str(SMOKE_CHECK_SCRIPT), url, expected_text],
+            ["node", str(SMOKE_CHECK_SCRIPT), url, expected_text, *([f"--live={live}"] if live else [])],
             capture_output=True,
             text=True,
             timeout=SMOKE_CHECK_TIMEOUT_S,
@@ -2400,6 +2405,22 @@ def run_smoke_check(url: str, expected_text: str, test_env_file: str | None = No
         return "fail", line
     stderr = redact(result.stderr.strip(), secrets)[:200]
     return "fail", f"SMOKE_RESULT=fail: check.mjs exited {result.returncode} with no result line ({stderr})"
+
+
+def smoke_live_arg(ws: Path | None, url: str) -> tuple[str | None, str | None]:
+    """HZ-789: (check.mjs's --live JSON, None) when the workspace's
+    .horizon/smoke.json declares the page `url` loads; (None, None) when there
+    is no workspace, no file or no matching page, so the static-text check
+    runs as before; (None, fail line) when the file is bad, so the deploy fails
+    closed and check.mjs never runs."""
+    if ws is None:
+        return None, None
+    try:
+        pages = smoke_config.load(ws)
+    except smoke_config.ConfigError as exc:
+        return None, f"SMOKE_RESULT=fail: {smoke_config.headline(exc)}"
+    page = smoke_config.page_for(pages, url) if pages else None
+    return (smoke_config.to_arg(page) if page else None), None
 
 
 # A grpc-health deploy target serves gRPC only, so the browser check above
@@ -3668,7 +3689,14 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
             # HZ-494: the repo's test-login env file, only when one is set.
             login = {"test_env_file": task["test_env_file"]} if task.get("test_env_file") else {}
-            verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip(), **login)
+            # HZ-789: a page the repo declares live is also held to one live value.
+            live, bad_file = smoke_live_arg(ws, url.strip())
+            if bad_file:
+                verdict, smoke_line = "fail", bad_file
+            else:
+                verdict, smoke_line = run_smoke_check(
+                    url.strip(), expected_text.strip(), **login, **({"live": live} if live else {})
+                )
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
             "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),

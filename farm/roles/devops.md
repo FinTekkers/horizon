@@ -41,6 +41,11 @@ thing:
    earlier artifact on this item) already names the specific screens and
    copy this release is supposed to affect; prefer that over inventing your
    own assertion about what "looks right."
+   When the change makes a page show live data (numbers or rows from a
+   backend), prefer a page the repo declares in `.horizon/smoke.json`: for
+   those pages the script also requires one live value to render, and fails
+   the deploy, naming the sections, when every live section shows its
+   unavailable or empty state. Static text alone does not prove live data.
 3. You may investigate with Bash (curl, `node e2e/smoke/check.mjs <url>
    "<text>"` from the repo root, etc.) to convince yourself before reporting
    — but the `url`/`expected_text` you report below are what actually decide
