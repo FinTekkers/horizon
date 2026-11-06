@@ -115,7 +115,7 @@ test('guardrail 7: the contract text is the same whichever item computes it', ()
   assert.ok(one.startsWith('HZ-209 and HZ-236 both change `server/src/app.js`, `server/src/store.js`.'))
 })
 
-// The five digest headings, read from the PM's own prompt rather than copied.
+// The digest headings, read from the PM's own prompt rather than copied.
 function digestHeadings() {
   const pmMd = readFileSync(fileURLToPath(new URL('../../farm/roles/pm.md', import.meta.url)), 'utf8')
   return pmMd.split('\n').filter((l) => /^## /.test(l))
@@ -157,7 +157,16 @@ const RESULTS = [
 
 test('metric 2: the Overlap section lists id, shared files, shared functions and one decision per item', () => {
   const headings = digestHeadings()
-  assert.deepEqual(headings, ['## Recommendation', '## Test contract', "## What's being built", '## Reviewer findings', '## Actions'])
+  // HZ-801: the six owner sections first, then the agent block ending in Actions.
+  assert.deepEqual(headings.slice(0, 6), [
+    '## Recommendation',
+    "## Why we're doing this",
+    '## The plan in short',
+    '## Flags',
+    '## Testing',
+    "## What you're approving",
+  ])
+  assert.equal(headings.at(-1), '## Actions')
   const md = replaceOverlapSection(modelDigest(headings), renderOverlapSection({ repo: 'FinTekkers/horizon', results: RESULTS }))
   const entries = parseOverlap(md)
   assert.deepEqual(entries.map((e) => [e.id, e.decision]), [

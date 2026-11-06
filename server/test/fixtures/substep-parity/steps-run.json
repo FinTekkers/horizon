@@ -1,5 +1,5 @@
 {
-  "commit": "fea70fc",
+  "commit": "a414239",
   "steps": {
     "0": [
       {
@@ -41,7 +41,8 @@
         "project_context": {
           "items": [],
           "feedback": []
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-0/artifacts/0"
       }
     ],
     "1": [
@@ -51,7 +52,8 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-1/artifacts/0"
           }
         ],
         "item": {
@@ -96,7 +98,8 @@
             }
           ],
           "feedback": []
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-1/artifacts/1"
       }
     ],
     "2": [
@@ -106,11 +109,13 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-2/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-2/artifacts/1"
           }
         ],
         "item": {
@@ -161,7 +166,8 @@
             }
           ],
           "feedback": []
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-2/artifacts/2"
       }
     ],
     "4": [
@@ -171,15 +177,18 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-4/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-4/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-4/artifacts/2"
           }
         ],
         "item": {
@@ -213,7 +222,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-4/artifacts/4"
       }
     ],
     "6": [
@@ -223,19 +233,23 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-6/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-6/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-6/artifacts/2"
           },
           {
             "label": "Plan options & trade-offs (pros / cons)",
-            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4",
+            "url": "http://localhost:5173/api/items/P-6/artifacts/4"
           }
         ],
         "item": {
@@ -269,7 +283,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-6/artifacts/6"
       }
     ],
     "7": [
@@ -279,23 +294,28 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-7/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-7/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-7/artifacts/2"
           },
           {
             "label": "Plan options & trade-offs (pros / cons)",
-            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4",
+            "url": "http://localhost:5173/api/items/P-7/artifacts/4"
           },
           {
             "label": "Draft implementation plan",
-            "content": "## Draft implementation plan\nartifact of step 6"
+            "content": "## Draft implementation plan\nartifact of step 6",
+            "url": "http://localhost:5173/api/items/P-7/artifacts/6"
           }
         ],
         "item": {
@@ -329,7 +349,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-7/artifacts/7"
       }
     ],
     "8": [
@@ -339,27 +360,33 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-8/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-8/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-8/artifacts/2"
           },
           {
             "label": "Plan options & trade-offs (pros / cons)",
-            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4",
+            "url": "http://localhost:5173/api/items/P-8/artifacts/4"
           },
           {
             "label": "Draft implementation plan",
-            "content": "## Draft implementation plan\nartifact of step 6"
+            "content": "## Draft implementation plan\nartifact of step 6",
+            "url": "http://localhost:5173/api/items/P-8/artifacts/6"
           },
           {
             "label": "Architecture review",
-            "content": "## Architecture review\nartifact of step 7"
+            "content": "## Architecture review\nartifact of step 7",
+            "url": "http://localhost:5173/api/items/P-8/artifacts/7"
           }
         ],
         "item": {
@@ -393,7 +420,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-8/artifacts/8"
       }
     ],
     "9": [
@@ -403,31 +431,38 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-9/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-9/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-9/artifacts/2"
           },
           {
             "label": "Plan options & trade-offs (pros / cons)",
-            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4",
+            "url": "http://localhost:5173/api/items/P-9/artifacts/4"
           },
           {
             "label": "Draft implementation plan",
-            "content": "## Draft implementation plan\nartifact of step 6"
+            "content": "## Draft implementation plan\nartifact of step 6",
+            "url": "http://localhost:5173/api/items/P-9/artifacts/6"
           },
           {
             "label": "Architecture review",
-            "content": "## Architecture review\nartifact of step 7"
+            "content": "## Architecture review\nartifact of step 7",
+            "url": "http://localhost:5173/api/items/P-9/artifacts/7"
           },
           {
             "label": "QA reviews the test plan",
-            "content": "## QA reviews the test plan\nartifact of step 8"
+            "content": "## QA reviews the test plan\nartifact of step 8",
+            "url": "http://localhost:5173/api/items/P-9/artifacts/8"
           },
           {
             "label": "Overlap check (deterministic)",
@@ -512,7 +547,8 @@
             }
           ],
           "feedback": []
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-9/artifacts/9"
       }
     ],
     "11": [
@@ -522,35 +558,43 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/2"
           },
           {
             "label": "Plan options & trade-offs (pros / cons)",
-            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/4"
           },
           {
             "label": "Draft implementation plan",
-            "content": "## Draft implementation plan\nartifact of step 6"
+            "content": "## Draft implementation plan\nartifact of step 6",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/6"
           },
           {
             "label": "Architecture review",
-            "content": "## Architecture review\nartifact of step 7"
+            "content": "## Architecture review\nartifact of step 7",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/7"
           },
           {
             "label": "QA reviews the test plan",
-            "content": "## QA reviews the test plan\nartifact of step 8"
+            "content": "## QA reviews the test plan\nartifact of step 8",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/8"
           },
           {
             "label": "Summarize reviews & recommend",
-            "content": "## Summarize reviews & recommend\nartifact of step 9"
+            "content": "## Summarize reviews & recommend\nartifact of step 9",
+            "url": "http://localhost:5173/api/items/P-11/artifacts/9"
           }
         ],
         "item": {
@@ -587,7 +631,8 @@
         "feedback": [],
         "scope": {
           "mode": "full"
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-11/artifacts/11"
       }
     ],
     "12": [
@@ -597,39 +642,48 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/2"
           },
           {
             "label": "Plan options & trade-offs (pros / cons)",
-            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/4"
           },
           {
             "label": "Draft implementation plan",
-            "content": "## Draft implementation plan\nartifact of step 6"
+            "content": "## Draft implementation plan\nartifact of step 6",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/6"
           },
           {
             "label": "Architecture review",
-            "content": "## Architecture review\nartifact of step 7"
+            "content": "## Architecture review\nartifact of step 7",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/7"
           },
           {
             "label": "QA reviews the test plan",
-            "content": "## QA reviews the test plan\nartifact of step 8"
+            "content": "## QA reviews the test plan\nartifact of step 8",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/8"
           },
           {
             "label": "Summarize reviews & recommend",
-            "content": "## Summarize reviews & recommend\nartifact of step 9"
+            "content": "## Summarize reviews & recommend\nartifact of step 9",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/9"
           },
           {
             "label": "Specialist agent implements",
-            "content": "## Specialist agent implements\nartifact of step 11"
+            "content": "## Specialist agent implements\nartifact of step 11",
+            "url": "http://localhost:5173/api/items/P-12/artifacts/11"
           },
           {
             "label": "Stored test results (step record)",
@@ -670,7 +724,8 @@
         "feedback": [],
         "scope": {
           "mode": "full"
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-12/artifacts/12"
       }
     ],
     "14": [
@@ -680,43 +735,53 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 0"
+            "content": "## Define the outcome\nartifact of step 0",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/0"
           },
           {
             "label": "Define how we measure success",
-            "content": "## Define how we measure success\nartifact of step 1"
+            "content": "## Define how we measure success\nartifact of step 1",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/1"
           },
           {
             "label": "Set guardrails",
-            "content": "## Set guardrails\nartifact of step 2"
+            "content": "## Set guardrails\nartifact of step 2",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/2"
           },
           {
             "label": "Plan options & trade-offs (pros / cons)",
-            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4"
+            "content": "## Plan options & trade-offs (pros / cons)\nartifact of step 4",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/4"
           },
           {
             "label": "Draft implementation plan",
-            "content": "## Draft implementation plan\nartifact of step 6"
+            "content": "## Draft implementation plan\nartifact of step 6",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/6"
           },
           {
             "label": "Architecture review",
-            "content": "## Architecture review\nartifact of step 7"
+            "content": "## Architecture review\nartifact of step 7",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/7"
           },
           {
             "label": "QA reviews the test plan",
-            "content": "## QA reviews the test plan\nartifact of step 8"
+            "content": "## QA reviews the test plan\nartifact of step 8",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/8"
           },
           {
             "label": "Summarize reviews & recommend",
-            "content": "## Summarize reviews & recommend\nartifact of step 9"
+            "content": "## Summarize reviews & recommend\nartifact of step 9",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/9"
           },
           {
             "label": "Specialist agent implements",
-            "content": "## Specialist agent implements\nartifact of step 11"
+            "content": "## Specialist agent implements\nartifact of step 11",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/11"
           },
           {
             "label": "Automated review (code + QA)",
-            "content": "## Automated review (code + QA)\nartifact of step 12"
+            "content": "## Automated review (code + QA)\nartifact of step 12",
+            "url": "http://localhost:5173/api/items/P-14/artifacts/12"
           }
         ],
         "item": {
@@ -750,7 +815,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-14/artifacts/14"
       }
     ],
     "16": [
@@ -854,7 +920,8 @@
             }
           ],
           "feedback": []
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-16/artifacts/16"
       }
     ],
     "17": [
@@ -864,7 +931,8 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 16"
+            "content": "## Define the outcome\nartifact of step 16",
+            "url": "http://localhost:5173/api/items/P-17/artifacts/16"
           }
         ],
         "item": {
@@ -963,7 +1031,8 @@
             }
           ],
           "feedback": []
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-17/artifacts/17"
       }
     ],
     "18": [
@@ -973,11 +1042,13 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 16"
+            "content": "## Define the outcome\nartifact of step 16",
+            "url": "http://localhost:5173/api/items/P-18/artifacts/16"
           },
           {
             "label": "How we'll verify",
-            "content": "## How we'll verify\nartifact of step 17"
+            "content": "## How we'll verify\nartifact of step 17",
+            "url": "http://localhost:5173/api/items/P-18/artifacts/17"
           }
         ],
         "item": {
@@ -1076,7 +1147,8 @@
             }
           ],
           "feedback": []
-        }
+        },
+        "artifact_url": "http://localhost:5173/api/items/P-18/artifacts/18"
       }
     ],
     "20": [
@@ -1086,15 +1158,18 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 16"
+            "content": "## Define the outcome\nartifact of step 16",
+            "url": "http://localhost:5173/api/items/P-20/artifacts/16"
           },
           {
             "label": "How we'll verify",
-            "content": "## How we'll verify\nartifact of step 17"
+            "content": "## How we'll verify\nartifact of step 17",
+            "url": "http://localhost:5173/api/items/P-20/artifacts/17"
           },
           {
             "label": "Guardrails",
-            "content": "## Guardrails\nartifact of step 18"
+            "content": "## Guardrails\nartifact of step 18",
+            "url": "http://localhost:5173/api/items/P-20/artifacts/18"
           }
         ],
         "item": {
@@ -1128,7 +1203,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-20/artifacts/20"
       }
     ],
     "21": [
@@ -1138,19 +1214,23 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 16"
+            "content": "## Define the outcome\nartifact of step 16",
+            "url": "http://localhost:5173/api/items/P-21/artifacts/16"
           },
           {
             "label": "How we'll verify",
-            "content": "## How we'll verify\nartifact of step 17"
+            "content": "## How we'll verify\nartifact of step 17",
+            "url": "http://localhost:5173/api/items/P-21/artifacts/17"
           },
           {
             "label": "Guardrails",
-            "content": "## Guardrails\nartifact of step 18"
+            "content": "## Guardrails\nartifact of step 18",
+            "url": "http://localhost:5173/api/items/P-21/artifacts/18"
           },
           {
             "label": "Assess",
-            "content": "## Assess\nartifact of step 20"
+            "content": "## Assess\nartifact of step 20",
+            "url": "http://localhost:5173/api/items/P-21/artifacts/20"
           }
         ],
         "item": {
@@ -1185,6 +1265,7 @@
           "runUser": null
         },
         "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-21/artifacts/21",
         "repo_dir": null,
         "venv_dir": null,
         "container_image": null,
@@ -1200,23 +1281,28 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 16"
+            "content": "## Define the outcome\nartifact of step 16",
+            "url": "http://localhost:5173/api/items/P-22/artifacts/16"
           },
           {
             "label": "How we'll verify",
-            "content": "## How we'll verify\nartifact of step 17"
+            "content": "## How we'll verify\nartifact of step 17",
+            "url": "http://localhost:5173/api/items/P-22/artifacts/17"
           },
           {
             "label": "Guardrails",
-            "content": "## Guardrails\nartifact of step 18"
+            "content": "## Guardrails\nartifact of step 18",
+            "url": "http://localhost:5173/api/items/P-22/artifacts/18"
           },
           {
             "label": "Assess",
-            "content": "## Assess\nartifact of step 20"
+            "content": "## Assess\nartifact of step 20",
+            "url": "http://localhost:5173/api/items/P-22/artifacts/20"
           },
           {
             "label": "Run plan",
-            "content": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```"
+            "content": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```",
+            "url": "http://localhost:5173/api/items/P-22/artifacts/21"
           }
         ],
         "item": {
@@ -1250,7 +1336,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-22/artifacts/22"
       }
     ],
     "24": [
@@ -1292,23 +1379,28 @@
         "artifacts": [
           {
             "label": "Define the outcome",
-            "content": "## Define the outcome\nartifact of step 16"
+            "content": "## Define the outcome\nartifact of step 16",
+            "url": "http://localhost:5173/api/items/P-25/artifacts/16"
           },
           {
             "label": "How we'll verify",
-            "content": "## How we'll verify\nartifact of step 17"
+            "content": "## How we'll verify\nartifact of step 17",
+            "url": "http://localhost:5173/api/items/P-25/artifacts/17"
           },
           {
             "label": "Guardrails",
-            "content": "## Guardrails\nartifact of step 18"
+            "content": "## Guardrails\nartifact of step 18",
+            "url": "http://localhost:5173/api/items/P-25/artifacts/18"
           },
           {
             "label": "Assess",
-            "content": "## Assess\nartifact of step 20"
+            "content": "## Assess\nartifact of step 20",
+            "url": "http://localhost:5173/api/items/P-25/artifacts/20"
           },
           {
             "label": "Impact review",
-            "content": "## Impact review\nartifact of step 22"
+            "content": "## Impact review\nartifact of step 22",
+            "url": "http://localhost:5173/api/items/P-25/artifacts/22"
           }
         ],
         "evidence": [
@@ -1354,7 +1446,8 @@
           "githubTokenRef": null,
           "runUser": null
         },
-        "feedback": []
+        "feedback": [],
+        "artifact_url": "http://localhost:5173/api/items/P-25/artifacts/25"
       }
     ]
   },

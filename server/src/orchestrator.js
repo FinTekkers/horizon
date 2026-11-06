@@ -485,6 +485,12 @@ function allocateBudget(rows, reserveChars) {
   })
 }
 
+// HZ-801: the full URL of a step's artifact page (app.js's ARTIFACT_ROUTE).
+// UI_URL never ends in a slash (config.js strips it).
+export function artifactUrl(itemId, stepIndex) {
+  return `${UI_URL}/api/items/${itemId}/artifacts/${stepIndex}`
+}
+
 // HZ-434: Verify & report is told when its evidence was cut — which section,
 // how many bytes, and where the whole text is — and to say so in its summary.
 export const TRUNCATION_NOTICE_LABEL = 'Truncation notice'
@@ -2086,7 +2092,15 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (refuseUnapprovedRun(runId, id, stepIndex)) return
   if (step.runsIn === 'job') return dispatchJob(id, stepIndex, runId, attempt)
 
-  const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  // HZ-801: each stored input carries the full URL of its artifact page, so
+  // the step-9 digest links real artifacts instead of guessing step numbers.
+  // Built from the entry's own step, never this one. Synthetic inputs (the
+  // truncation notice, overlap, golden cases, stored results) get none.
+  const artifacts = budgeted.map(({ label, content, stepIndex: inputStep }) => ({
+    label,
+    content,
+    url: artifactUrl(id, inputStep),
+  }))
   if (truncationNotice) artifacts.unshift(truncationNotice)
   if (overlapInput) artifacts.push(overlapInput)
   const goldenInput = goldenCasesInput(id, stepIndex)
@@ -2171,6 +2185,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // HZ-379: the deployed commit a step that waited for spawned code runs on.
     ...(checkoutSha ? { checkout_sha: checkoutSha } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
+    // HZ-801: where this step's own artifact will be served.
+    artifact_url: artifactUrl(id, stepIndex),
     ...checkCommandsField(item),
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),

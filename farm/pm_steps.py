@@ -45,6 +45,9 @@ MAX_PERSONA_SLOTS = 8
 
 # HZ-685: the one PM step whose reply may carry a same-repo `split`.
 SPLIT_STEP_LABEL = "Summarize reviews & recommend"
+# HZ-801: the same step, named for the owner digest it writes
+# (farm/owner_digest.py checks its shape).
+DIGEST_STEP_LABEL = SPLIT_STEP_LABEL
 
 # HZ-345: the line budgets for metric and guardrails, from domain/fields.json's
 # maxLines. Only the step that owns a field is held to its line budget — the
@@ -100,6 +103,10 @@ _assert_line_budgets_are_kind_safe(
 # below so the prompt cannot state a budget validate() no longer enforces.
 FIELD_LIMITS_PLACEHOLDER = "{{FIELD_LIMITS}}"
 LINE_LIMITS_PLACEHOLDER = "{{LINE_LIMITS}}"
+# HZ-801: what goes in each digest section lives in its own file, so pm.md
+# stays under the role editor's size cap (server/test/rules-credential-lint).
+DIGEST_RULES_PLACEHOLDER = "{{DIGEST_RULES}}"
+DIGEST_RULES = (Path(__file__).parent / "roles" / "pm_digest.md").read_text().rstrip("\n")
 
 
 def render_role_prompt(source: str, limits: dict) -> str:
@@ -120,7 +127,11 @@ def render_role_prompt(source: str, limits: dict) -> str:
     # HZ-345: the line budgets, from LINE_LIMITS. pm.md is checked for this
     # placeholder below, where ROLE_PROMPT is built.
     lines = ", ".join(f"{column} <={limit} lines" for column, limit in LINE_LIMITS.items())
-    return source.replace(FIELD_LIMITS_PLACEHOLDER, rendered).replace(LINE_LIMITS_PLACEHOLDER, lines)
+    return (
+        source.replace(FIELD_LIMITS_PLACEHOLDER, rendered)
+        .replace(LINE_LIMITS_PLACEHOLDER, lines)
+        .replace(DIGEST_RULES_PLACEHOLDER, DIGEST_RULES)
+    )
 
 
 _ROLE_SOURCE = (Path(__file__).parent / "roles" / "pm.md").read_text()
@@ -128,6 +139,11 @@ if LINE_LIMITS_PLACEHOLDER not in _ROLE_SOURCE:
     raise RuntimeError(
         f"farm/roles/pm.md no longer carries {LINE_LIMITS_PLACEHOLDER} — "
         "the PM agent would be given no line budgets at all"
+    )
+if DIGEST_RULES_PLACEHOLDER not in _ROLE_SOURCE or not DIGEST_RULES:
+    raise RuntimeError(
+        f"farm/roles/pm.md no longer carries {DIGEST_RULES_PLACEHOLDER}, or farm/roles/pm_digest.md "
+        "is empty — the digest step would be told nothing about its sections"
     )
 ROLE_PROMPT = render_role_prompt(_ROLE_SOURCE, PATCH_FIELDS)
 
@@ -320,7 +336,16 @@ def build_prompt(task: dict) -> str:
     for artifact in task.get("artifacts") or []:
         lines.append("")
         lines.append(f"Prior artifact — {artifact.get('label', 'earlier step')}:")
+        # HZ-801: the server sends the artifact page's URL for a stored input.
+        if artifact.get("url"):
+            lines.append(f"  url: {artifact['url']}")
         lines.append(artifact.get("content", "")[:MAX_PROMPT_ARTIFACT_CHARS])
+    artifact_url = task.get("artifact_url")
+    if artifact_url and step["label"] == DIGEST_STEP_LABEL:
+        lines.append("")
+        lines.append(f"This step's artifact URL: {artifact_url}")
+        base = artifact_url.split("/api/items/", 1)[0]
+        lines.append(f"Item link pattern: {base}/<item id in lower case>")
     feedback = task.get("feedback") or []
     if feedback:
         lines.append("")
