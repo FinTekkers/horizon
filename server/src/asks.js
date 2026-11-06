@@ -56,7 +56,8 @@ const supersedeStep = db.prepare(
 const selectOpen = db.prepare(
   `SELECT a.*, r.id AS review_id, r.status AS review_status, r.provider AS review_provider, r.verdict AS review_verdict,
           r.reasons_json AS review_reasons_json, r.amended_draft_json AS review_amended_draft_json,
-          r.refers_to_json AS review_refers_to_json, r.wait_reason AS review_wait_reason
+          r.refers_to_json AS review_refers_to_json, r.wait_reason AS review_wait_reason,
+          r.contradiction_json AS review_contradiction_json
      FROM ask a LEFT JOIN ask_review r ON r.ask_id = a.id
     WHERE a.item_id = ? AND a.status = 'open' ORDER BY a.id DESC`,
 )
@@ -207,6 +208,7 @@ function reviewOf(row) {
     amended_draft: row.review_amended_draft_json ? parseJson(row.review_amended_draft_json, null) : null,
     refers_to: Array.isArray(refersTo) ? refersTo : [],
     wait_reason: row.review_wait_reason,
+    contradiction: parseJson(row.review_contradiction_json, null),
   }
 }
 

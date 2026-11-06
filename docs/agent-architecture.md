@@ -251,7 +251,11 @@ It never falls back to the author's provider and never runs a chain.
 **What the reviewer sees.** Only the ask draft, the project rules (the same
 ones agents receive; the server sends the DB-served overrides) and the
 overlap matches, plus the ask's metadata: the step's name (never its index),
-its kind, its one-line why, and the titles of open items not yet planned.
+its kind and its one-line why. Since HZ-793 it also sees, from the ask's own
+project only, the other open items, the items abandoned in the last 14 days,
+the other open asks from the same step, and the parent item's description
+(redacted and clipped), and says in `contradiction` whether the ask
+contradicts that description. The owner sees that finding on the ask's card.
 The overlap matches come from the existing overlap check, run read-only: the
 draft's footprint against in-flight items in its repo and against each open
 Plan's drafted items. The body is checked with `redact` and `hasHostPath`

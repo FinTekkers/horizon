@@ -4,6 +4,8 @@
 // the project-wide /follow-ups list (reached from the TopBar, and after a
 // reload). Agent-written text renders as text on every surface, each card
 // names the step that asked by its label, and a superseded ask is not shown.
+// HZ-793: the reviewer's finding that an ask contradicts its parent item is
+// on that ask's card, and only on it.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertStepRun, insertAsk, insertAskReview, setGatePinDirect } from '../fixtures/seed.js'
@@ -23,6 +25,7 @@ const BLOCKING = { kind: 'blocking', title: 'Publish script must use the bot ide
 const SOFT = { kind: 'soft', title: SCRIPT_TITLE, why: "'escape <b>this</b> too'" }
 const SUPERSEDED = { kind: 'soft', status: 'superseded', title: 'An ask from an earlier run', why: "'old'" }
 const HEADLINE = `This item needs “${BLOCKING.title}” filed first`
+const CONTRADICTION = 'keeps the ledger row'
 
 test.beforeAll(() => {
   const db = openDb(DB_PATH)
@@ -44,8 +47,10 @@ test.beforeAll(() => {
       for (const ask of [SUPERSEDED, BLOCKING, SOFT]) {
         const askId = insertAsk(db, { itemId: ID, stepRunId, stepIndex: ARCH, ...ask })
         // Reviewed, so the server's review sweep (HZ-729) leaves both alone.
-        if (ask === BLOCKING) insertAskReview(db, { askId, verdict: 'accept', reasons: ['Fits the project rules.'] })
-        if (ask === SOFT) insertAskReview(db, { askId, verdict: 'escalate', reasons: ['Needs the owner’s call.'] })
+        if (ask === BLOCKING) insertAskReview(db, { askId, verdict: 'accept', reasons: ['Fits the project rules.'], contradiction: { contradicts: false, detail: '' } })
+        if (ask === SOFT) {
+          insertAskReview(db, { askId, verdict: 'escalate', reasons: ['Needs the owner’s call.'], contradiction: { contradicts: true, detail: CONTRADICTION } })
+        }
       }
     }
     if (!db.prepare('SELECT id FROM work_item WHERE id = ?').get(EMPTY_ID)) {
@@ -139,6 +144,19 @@ test('the soft ask is on /follow-ups, reached from the TopBar and after a reload
 
   await page.reload()
   await expectList()
+})
+
+test('the owner sees the reviewer’s contradiction on that ask’s card only, after a reload too', async ({ page }) => {
+  await page.goto(`/${ID.toLowerCase()}`)
+  const expectContradiction = async () => {
+    const { banner, followUps } = await expectItemPage(page)
+    const card = followUps.getByTestId('ask-card').filter({ hasText: SCRIPT_TITLE })
+    await expect(card.getByText(`Contradicts the parent: ${CONTRADICTION}`)).toBeVisible()
+    await expect(banner).not.toContainText('Contradicts the parent')
+  }
+  await expectContradiction()
+  await page.reload()
+  await expectContradiction()
 })
 
 test('an item with no open asks shows no banner and no follow-ups panel', async ({ page }) => {

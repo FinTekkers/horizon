@@ -5,3 +5,5 @@ export const HOST_PATH = /(?:\/home|\/Users|\/root)\/[^\s`'")\]]*/g
 
 // HOST_PATH is global, so .test() on it is stateful; this is not.
 export const hasHostPath = (text) => String(text).search(HOST_PATH) !== -1
+// The same text with every host path replaced by `<path>`.
+export const stripHostPaths = (text) => String(text).replace(HOST_PATH, '<path>')

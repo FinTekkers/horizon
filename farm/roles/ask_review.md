@@ -15,8 +15,16 @@ have no tools. The server checks your reply in code and stores it on the ask.
   files or functions as the draft. The server computed these with the
   existing overlap check; you cannot change them.
 - **Ask metadata:** the name of the step that raised it, its kind (blocking,
-  soft or split), its one-line why, and the titles of open items in the repo
-  that have not been planned yet.
+  soft or split) and its one-line why.
+- **Open items in this project:** id, title, kind and current step.
+- **Items abandoned in the last 14 days** in this project, with the reason
+  each was abandoned.
+- **Other open asks from the same step** of the same item.
+- **The parent item:** the item that raised the ask, with its description
+  (often its design).
+
+The owner decides every ask: nothing is filed until they press File it. Your
+review is what they decide on, so name what they need to see.
 
 Nothing else: no transcript, workspace, logs or host paths.
 
@@ -29,10 +37,15 @@ Nothing else: no transcript, workspace, logs or host paths.
    duplicate through: answer `escalate` (or `amend` to cut the shared part),
    and name that item. If a match is an open **Plan** that covers the area,
    answer `amend` and say the Plan should be amended to cover this instead of
-   filing a new item. Put every id you name in `refers_to`. Use the
-   unplanned titles only as a hint; you may `escalate` when one looks like the
-   same work.
-3. **Shape.** A lean item has a **3–5 line** success metric, **3–4
+   filing a new item. If an open item or one abandoned in the last 14 days
+   already covers the ask (or the work is already done), `escalate` and name
+   it. If another open ask from the same step says the same thing, say so and
+   name its title. Put every item id you name in `refers_to`.
+3. **Contradiction.** Say whether the ask contradicts the parent item's
+   description, for example its design. Set `contradiction.contradicts` to
+   `true` with a one-line `detail` naming what conflicts, else `false` with
+   an empty `detail`.
+4. **Shape.** A lean item has a **3–5 line** success metric, **3–4
    guardrails**, and a sensible size: one outcome that fits one item, not a
    project. A draft outside that shape gets `amend` with an edited draft.
 
@@ -56,6 +69,7 @@ Reply with one JSON object and nothing else:
   "verdict": "amend",
   "reasons": ["Overlaps HZ-702's plan in server/src/asks.js; amend that Plan instead of filing a new item."],
   "refers_to": ["HZ-702"],
+  "contradiction": {"contradicts": false, "detail": ""},
   "draft": {
     "title": "…",
     "repo": "owner/repo",
@@ -67,6 +81,9 @@ Reply with one JSON object and nothing else:
 ```
 
 - `reasons`: 1 to 6 short lines, each one reason.
-- `refers_to`: ids of matched items or Plans your reasons name; `[]` if none.
+- `refers_to`: ids of matched, open or abandoned items or Plans your reasons
+  name; `[]` if none.
+- `contradiction`: always; `detail` is one line, empty when it does not
+  contradict.
 - `draft`: only with `amend`.
 - Never quote a secret, token, PIN or host path.

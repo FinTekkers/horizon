@@ -869,6 +869,7 @@ button { font-family: var(--font-sans); }
 .ask-card__verdict--escalate { background: var(--warning-bg); color: var(--warning-ink); }
 .ask-card__amended { font-weight: 700; color: var(--primary-ink); }
 .ask-card__reasons { color: var(--muted-strong); overflow-wrap: anywhere; }
+.ask-card__contradiction { font-weight: 700; color: var(--danger-ink); overflow-wrap: anywhere; }
 .ask-card__draft { margin: 8px 0 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; }
 .ask-card__draft dt { font-weight: 700; color: var(--muted-strong); font-size: 12px; }
 .ask-card__draft dd { margin: 0; white-space: pre-line; overflow-wrap: anywhere; }
