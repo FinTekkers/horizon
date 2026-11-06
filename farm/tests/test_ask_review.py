@@ -143,3 +143,49 @@ def test_a_missing_key_is_a_400_and_no_agent_runs(authed, agent_reply, missing):
     assert res.status_code == 400
     assert missing in res.json()["error"]
     assert calls == []
+
+
+# HZ-793: what the owner decides on reaches the reviewer.
+OVERLAPS = {
+    "candidates": [{"id": "MDI-126", "title": "Publisher refuses stale quotes", "kind": "change", "step": "Draft implementation plan"}],
+    "abandoned": [{"id": "MDI-122", "title": "Deploy v2.4", "kind": "change", "reason": "Already deployed."}],
+    "siblings": [{"ask_id": 35, "title": "Stop publishing stale quotes", "outcome": "Subscribers never get a stale quote."}],
+    "parent": {"id": "MDI-131", "title": "Mark the EURUSD row superseded", "description": "Design: price rows are never deleted."},
+}
+NEW_SECTIONS = (
+    "## Open items in this project",
+    "## Items abandoned in the last 14 days",
+    "## Other open asks from the same step",
+    "## Parent item (id, title, description)",
+)
+
+
+def test_the_prompt_carries_open_and_abandoned_items_same_step_asks_and_the_parent(authed, agent_reply):
+    calls = agent_reply(json.dumps(VERDICT))
+    res = client.post("/ask/review", json={**REQUEST, **OVERLAPS})
+    assert res.status_code == 200
+    prompt = calls[0]["prompt"]
+    for heading in NEW_SECTIONS:
+        assert heading in prompt
+    for value in ("MDI-126", "Draft implementation plan", "MDI-122", "Already deployed.", "Stop publishing stale quotes", "MDI-131", "Design: price rows are never deleted."):
+        assert value in prompt
+    assert "not yet planned" not in prompt
+    assert "contradiction" in calls[0]["append_system"], "the role asks for the contradiction check"
+
+
+def test_the_new_sections_render_empty_when_the_server_sends_none(authed, agent_reply):
+    calls = agent_reply(json.dumps(VERDICT))
+    res = client.post("/ask/review", json={k: v for k, v in REQUEST.items() if k != "candidates"})
+    assert res.status_code == 200
+    prompt = calls[0]["prompt"]
+    for heading in NEW_SECTIONS[:3]:
+        assert f"{heading}\n[]\n" in prompt
+    assert f"{NEW_SECTIONS[3]}\n{{}}\n" in prompt
+
+
+def test_the_contradiction_passes_through_untouched(authed, agent_reply):
+    contradiction = {"contradicts": True, "detail": "MDI-131 keeps the row; this ask deletes it."}
+    agent_reply(json.dumps({**VERDICT, "contradiction": contradiction}))
+    res = client.post("/ask/review", json={**REQUEST, **OVERLAPS})
+    assert res.status_code == 200
+    assert res.json()["contradiction"] == contradiction

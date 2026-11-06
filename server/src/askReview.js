@@ -4,6 +4,12 @@
 // with the project rules, overlap with open work and shape. Its verdict is
 // accept, amend (with the edited draft) or escalate, with reasons.
 //
+// HZ-793: nothing files an ask but the owner, so the review is what the owner
+// decides on. It also sees the project's other open items, its items
+// abandoned in the last 14 days, the other open asks from the same step, and
+// the parent item's description, and says whether the ask contradicts it.
+// Every one of those comes from the ask's own project only.
+//
 // Same pattern as caretakerRuling.js: a server-side sweep, one bounded farmd
 // call (POST /ask/review → farm/ask_review.py, no tools, one turn), and the
 // reply checked here in code before it is stored.
@@ -21,11 +27,11 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { farmFetch } from './orchestrator.js'
 import { stepLabel, validateAsk } from './asks.js'
-import { footprintOf, inFlightPeers, planFootprintOf, PLAN_STEP_INDEX } from './overlapService.js'
+import { footprintOf, inFlightPeers, planFootprintOf } from './overlapService.js'
 import { decideOverlap, extractPlanFootprint, isEmptyFootprint, peerStateOf } from './overlap.js'
 import { servedRulesFor } from './rulesStore.js'
 import { redact } from './caretakerRules.js'
-import { hasHostPath } from './planText.js'
+import { hasHostPath, stripHostPaths } from './planText.js'
 import { formatResetTime, resetMs } from './usageLimits.js'
 import { DEFAULT_PROVIDER, PROVIDERS, defaultModel, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { resolveModel } from '../../domain/js/personas.js'
@@ -36,8 +42,9 @@ export const REVIEW_DEFAULT_PROVIDER = 'muse'
 // The reviewer's model is the PM's on Claude, as for a Caretaker ruling.
 const REVIEW_MODEL_AGENT = 'pm'
 // Every key the body sent to farmd may carry — the draft, the project rules,
-// the overlap matches, and the ask's own metadata. Nothing else is sent: no
-// transcript, artifact, host path, token or secret.
+// the overlap matches and candidates, the parent item, and the ask's own
+// metadata. Nothing else is sent: no transcript, artifact, host path, token
+// or secret.
 export const REVIEW_INPUT_KEYS = Object.freeze([
   'ask_id',
   'provider',
@@ -50,12 +57,18 @@ export const REVIEW_INPUT_KEYS = Object.freeze([
   'draft',
   'matches',
   'candidates',
+  'abandoned',
+  'siblings',
+  'parent',
   'rules_override',
 ])
 export const VERDICTS = ['accept', 'amend', 'escalate']
 const MAX_REASONS = 6
 const REASON_CHARS = 300
 const MAX_CANDIDATES = 20
+const MAX_SIBLINGS = 10
+const ABANDONED_DAYS = 14
+const PARENT_CHARS = 2000
 const RESWEEP_MS = 60 * 1000
 // One bounded model call on the farm; under farmFetch's header ceiling.
 const REVIEW_FARM_MS = 180_000
@@ -73,12 +86,26 @@ const selectRun = db.prepare('SELECT provider, runs_on FROM step_run WHERE id = 
 const selectProject = db.prepare('SELECT name, ask_review_provider FROM project WHERE id = ?')
 const selectRepos = db.prepare('SELECT repo FROM project_repo WHERE project_id = ?')
 const selectPlans = db.prepare(
-  'SELECT * FROM work_item WHERE kind = ? AND project_id IS ? AND id <> ? AND abandoned_at IS NULL ORDER BY id',
+  'SELECT * FROM work_item WHERE kind = ? AND project_id = ? AND id <> ? AND abandoned_at IS NULL ORDER BY id',
 )
+// Every item in the project not abandoned, newest first; closed ones are
+// dropped in code (isClosed), so no limit here can crowd out an open item.
 const selectCandidates = db.prepare(
-  `SELECT id, title, kind FROM work_item
-    WHERE repo = ? AND project_id IS ? AND id <> ? AND abandoned_at IS NULL AND cursor < ?
-    ORDER BY id LIMIT ${MAX_CANDIDATES}`,
+  `SELECT id, title, kind, cursor FROM work_item
+    WHERE project_id = ? AND id <> ? AND abandoned_at IS NULL
+    ORDER BY rowid DESC`,
+)
+const selectAbandoned = db.prepare(
+  `SELECT id, title, kind, abandoned_reason FROM work_item
+    WHERE project_id = ? AND id <> ? AND abandoned_at IS NOT NULL
+      AND abandoned_at >= datetime('now', '-${ABANDONED_DAYS} days')
+    ORDER BY abandoned_at DESC, rowid DESC LIMIT ${MAX_CANDIDATES}`,
+)
+// Same item, so always the same project.
+const selectSiblings = db.prepare(
+  `SELECT id, draft_json FROM ask
+    WHERE item_id = ? AND step_index = ? AND id <> ? AND status = 'open'
+    ORDER BY id LIMIT ${MAX_SIBLINGS}`,
 )
 const setWait = db.prepare(
   "UPDATE ask_review SET author_provider = ?, wait_reason = ?, updated_at = datetime('now') WHERE ask_id = ? AND status = 'awaiting'",
@@ -93,12 +120,15 @@ const release = db.prepare(
 )
 const finish = db.prepare(
   `UPDATE ask_review SET status = ?, verdict = ?, reasons_json = ?, amended_draft_json = ?, refers_to_json = ?,
-          updated_at = datetime('now')
+          contradiction_json = ?, updated_at = datetime('now')
     WHERE ask_id = ? AND status = 'running'`,
 )
 
 const oneLine = (text) => redact(text, { oneLine: false }).replace(/\s+/g, ' ').trim()
-const clip = (text) => (text.length > REASON_CHARS ? text.slice(0, REASON_CHARS - 1) + '…' : text)
+const clip = (text, max = REASON_CHARS) => (text.length > max ? text.slice(0, max - 1) + '…' : text)
+// Text from other items and asks goes in redacted, not refused: one path in
+// a sibling's draft must not stall this review for good.
+const safe = (text, max = REASON_CHARS) => clip(stripHostPaths(oneLine(text ?? '')), max)
 const labelOf = (name) => PROVIDERS.find((p) => p.name === name)?.label ?? name
 
 function parseJson(text, fallback) {
@@ -160,10 +190,12 @@ const matchOf = (row, kind, d) => ({
 })
 
 // Read-only. The draft's footprint (from its own text) against every
-// in-flight item in the draft's repo and every open Plan in the project, plus
-// the titles of open items that have not reached the plan step yet.
+// in-flight item in the draft's repo and every open Plan in the project; the
+// project's other open items, its items abandoned in the last 14 days, and
+// the other open asks from the same step. An item with no project gets none.
 export async function askOverlap(ask, draft, item) {
   const projectId = item?.project_id ?? null
+  if (projectId == null) return { matches: [], candidates: [], abandoned: [], siblings: [] }
   const own = extractPlanFootprint([draft.title, draft.outcome, draft.metric, draft.guardrails].join('\n'))
   const matches = []
   if (!isEmptyFootprint(own)) {
@@ -182,13 +214,31 @@ export async function askOverlap(ask, draft, item) {
       if (d.decision !== 'none') matches.push(matchOf(plan, PLAN_KIND, d))
     }
   }
-  const candidates = selectCandidates.all(draft.repo, projectId, ask.item_id, PLAN_STEP_INDEX).map((r) => ({ id: r.id, title: r.title, kind: r.kind }))
-  return { matches, candidates }
+  const candidates = selectCandidates
+    .all(projectId, ask.item_id)
+    .filter((r) => !isClosed(r))
+    .slice(0, MAX_CANDIDATES)
+    .map((r) => ({ id: r.id, title: safe(r.title), kind: r.kind, step: stepLabel(r.cursor) }))
+  const abandoned = selectAbandoned
+    .all(projectId, ask.item_id)
+    .map((r) => ({ id: r.id, title: safe(r.title), kind: r.kind, reason: safe(r.abandoned_reason) }))
+  const siblings = selectSiblings.all(ask.item_id, ask.step_index, ask.id).map((r) => {
+    const d = parseJson(r.draft_json, {})
+    return { ask_id: r.id, title: safe(d.title), outcome: safe(d.outcome) }
+  })
+  return { matches, candidates, abandoned, siblings }
+}
+
+// The item that raised the ask: its description redacted (line breaks kept)
+// and clipped to PARENT_CHARS.
+export function parentOf(item) {
+  const description = stripHostPaths(redact(item?.desc ?? '', { oneLine: false })).trim()
+  return { id: item?.id ?? '', title: safe(item?.title), description: clip(description, PARENT_CHARS) }
 }
 
 // The body sent to farmd, keyed by REVIEW_INPUT_KEYS only, or { refused }
 // when any of it — the rules included — holds a token, secret or host path.
-export function buildReviewInput(ask, draft, { provider, model, project, overlap, rules }) {
+export function buildReviewInput(ask, draft, { provider, model, project, overlap, parent, rules }) {
   const body = {
     ask_id: ask.id,
     provider,
@@ -201,6 +251,9 @@ export function buildReviewInput(ask, draft, { provider, model, project, overlap
     draft,
     matches: overlap.matches,
     candidates: overlap.candidates,
+    abandoned: overlap.abandoned ?? [],
+    siblings: overlap.siblings ?? [],
+    parent: parent ?? null,
     rules_override: rules,
   }
   const text = JSON.stringify(body)
@@ -209,20 +262,34 @@ export function buildReviewInput(ask, draft, { provider, model, project, overlap
   return { body }
 }
 
+// The reviewer's contradiction finding, or null when missing or malformed.
+// null never forces a verdict: it only means "not checked".
+function contradictionOf(reply) {
+  const c = Object.hasOwn(reply, 'contradiction') ? reply.contradiction : null
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return null
+  if (c.contradicts === false) return { contradicts: false, detail: '' }
+  if (c.contradicts !== true || typeof c.detail !== 'string') return null
+  const detail = safe(c.detail)
+  return detail ? { contradicts: true, detail } : null
+}
+
 // The farm's reply, never trusted. Always returns a verdict: anything this
-// cannot use becomes 'escalate' with a reason saying why.
-export function checkVerdict(reply, { provider, repos = [], matchIds = [], ask }) {
-  const escalate = (why) => ({ verdict: 'escalate', reasons: [why], amendedDraft: null, refersTo: [] })
+// cannot use becomes 'escalate' with a reason saying why. `knownIds` are the
+// matches', candidates' and abandoned items' ids: refers_to may name no other.
+export function checkVerdict(reply, { provider, repos = [], knownIds = [], ask }) {
+  let contradiction = null
+  const escalate = (why) => ({ verdict: 'escalate', reasons: [why], amendedDraft: null, refersTo: [], contradiction })
   if (!reply || typeof reply !== 'object' || Array.isArray(reply)) return escalate('the reviewer did not return a JSON object')
   if (reply.provider !== provider) {
     return escalate(`the review ran on ${oneLine(reply.provider ?? 'an unknown provider')}, not ${labelOf(provider)} as requested`)
   }
   const verdict = Object.hasOwn(reply, 'verdict') ? reply.verdict : undefined
   if (!VERDICTS.includes(verdict)) return escalate('the reviewer returned no accept, amend or escalate verdict')
+  contradiction = contradictionOf(reply)
   const raw = Object.hasOwn(reply, 'reasons') && Array.isArray(reply.reasons) ? reply.reasons : []
   const reasons = raw.filter((r) => typeof r === 'string' && r.trim()).slice(0, MAX_REASONS).map((r) => clip(oneLine(r)))
   if (reasons.length === 0) return escalate(`the reviewer said ${verdict} but gave no reasons`)
-  const known = new Set(matchIds)
+  const known = new Set(knownIds)
   const refersTo = Object.hasOwn(reply, 'refers_to') && Array.isArray(reply.refers_to) ? [...new Set(reply.refers_to.filter((id) => known.has(id)))] : []
   let amendedDraft = null
   if (verdict === 'amend') {
@@ -238,7 +305,7 @@ export function checkVerdict(reply, { provider, repos = [], matchIds = [], ask }
     const { title, repo, outcome, metric, guardrails } = checked.ask
     amendedDraft = { title, repo, outcome, metric, guardrails }
   }
-  return { verdict, reasons, amendedDraft, refersTo }
+  return { verdict, reasons, amendedDraft, refersTo, contradiction }
 }
 
 // POST /ask/review. Tests inject their own `review` instead.
@@ -281,7 +348,7 @@ export async function reviewOne(ask, { now = Date.now, review = requestReview } 
 
   const overlap = await askOverlap(ask, draft, item)
   const rules = servedRulesFor(project?.name ?? '', draft.repo)
-  const input = buildReviewInput(ask, draft, { provider, model, project: project?.name, overlap, rules })
+  const input = buildReviewInput(ask, draft, { provider, model, project: project?.name, overlap, parent: parentOf(item), rules })
   if (input.refused) return wait(input.refused)
   // Read before the claim clears it: a 503 with the same reason is 'waiting'.
   const previousReason = selectReview.get(ask.id)?.wait_reason ?? null
@@ -300,11 +367,12 @@ export async function reviewOne(ask, { now = Date.now, review = requestReview } 
     }
     // A run may have started, so it is not retried: an ask gets one review.
     const why = clip(`the review failed: ${oneLine(err?.message || err)}`)
-    finish.run('failed', 'escalate', JSON.stringify([why]), null, null, ask.id)
+    finish.run('failed', 'escalate', JSON.stringify([why]), null, null, null, ask.id)
     return 'failed'
   }
   const repos = item?.project_id != null ? selectRepos.all(item.project_id).map((r) => r.repo) : []
-  const checked = checkVerdict(reply, { provider, repos, matchIds: overlap.matches.map((m) => m.id), ask })
+  const knownIds = [...overlap.matches, ...overlap.candidates, ...overlap.abandoned].map((m) => m.id)
+  const checked = checkVerdict(reply, { provider, repos, knownIds, ask })
   // The farm's fail-closed reply, or a reply from the wrong provider: no real
   // verdict came back.
   const usable = reply && typeof reply === 'object' && reply.unusable !== true && reply.provider === provider
@@ -315,6 +383,7 @@ export async function reviewOne(ask, { now = Date.now, review = requestReview } 
     JSON.stringify(checked.reasons),
     checked.amendedDraft ? JSON.stringify(checked.amendedDraft) : null,
     JSON.stringify(checked.refersTo),
+    checked.contradiction ? JSON.stringify(checked.contradiction) : null,
     ask.id,
   )
   return status
@@ -360,7 +429,7 @@ export function failInterruptedReviews() {
   const rows = db.prepare("SELECT ask_id FROM ask_review WHERE status = 'running'").all()
   db.transaction(() => {
     for (const { ask_id } of rows) {
-      finish.run('interrupted', 'escalate', JSON.stringify(['the review was interrupted by a restart']), null, null, ask_id)
+      finish.run('interrupted', 'escalate', JSON.stringify(['the review was interrupted by a restart']), null, null, null, ask_id)
     }
   })()
   return rows.length

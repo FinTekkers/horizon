@@ -2,9 +2,11 @@
 
 One bounded agent call, no tools, one turn, on the provider the server chose —
 never the ask's author's. The input is the ask draft, the project rules and
-the overlap matches the server computed (plus the ask's step name, kind, why
-and title-only candidates). Nothing else goes into the prompt: no transcript,
-workspace, host path or session.
+the overlap matches the server computed, plus the ask's step name, kind and
+why; the project's other open items, its items abandoned in the last 14 days,
+the other open asks from the same step, and the parent item's description
+(HZ-793). Nothing else goes into the prompt: no transcript, workspace, host
+path or session.
 
 Nothing here writes anything. The Node server (server/src/askReview.js)
 checks the reply in code and stores it on its own ask_review table. A reply
@@ -51,7 +53,10 @@ def _prompt(body: dict) -> str:
     for field in DRAFT_FIELDS:
         lines.append(_section(f"Draft {field}", draft.get(field, "")))
     lines.append(_section("Overlap matches (computed by the server)", json.dumps(body.get("matches") or [], indent=2)))
-    lines.append(_section("Open items not yet planned (titles only)", json.dumps(body.get("candidates") or [], indent=2)))
+    lines.append(_section("Open items in this project", json.dumps(body.get("candidates") or [], indent=2)))
+    lines.append(_section("Items abandoned in the last 14 days", json.dumps(body.get("abandoned") or [], indent=2)))
+    lines.append(_section("Other open asks from the same step", json.dumps(body.get("siblings") or [], indent=2)))
+    lines.append(_section("Parent item (id, title, description)", json.dumps(body.get("parent") or {}, indent=2)))
     lines.append("Reply with the JSON object your instructions describe, and nothing else.")
     return "\n".join(lines)
 

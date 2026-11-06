@@ -29,7 +29,7 @@ const orchestrator = await import('../src/orchestrator.js')
 const askReview = await import('../src/askReview.js')
 const { stepLabel } = await import('../src/asks.js')
 const { composeIssueBody } = await import('../src/github.js')
-const { requiredStepIndex, PLAN_DRAFT_STEP_INDEX, STEPS } = await import('../../domain/js/lifecycle.js')
+const { requiredStepIndex, endIndex, PLAN_DRAFT_STEP_INDEX, STEPS } = await import('../../domain/js/lifecycle.js')
 const { defaultModel, PROVIDERS } = await import('../../domain/js/providers.js')
 
 store.purgeDemoItems()
@@ -318,7 +318,7 @@ test('accept, amend and escalate: each verdict and its reasons are stored and sh
 
   const view = (askId) => shown(itemId, askId).review
   assert.deepEqual(view(accept.askId), {
-    status: 'done', provider: 'muse', verdict: 'accept', reasons: ['Fits the rules.'], amended_draft: null, refers_to: [], wait_reason: null,
+    status: 'done', provider: 'muse', verdict: 'accept', reasons: ['Fits the rules.'], amended_draft: null, refers_to: [], wait_reason: null, contradiction: null,
   })
   assert.equal(view(amend.askId).status, 'done')
   assert.equal(view(amend.askId).verdict, 'amend')
@@ -495,4 +495,182 @@ test('the role prompt covers fit, overlap and shape; both docs describe the revi
   const section = workflow.slice(workflow.indexOf('## Which agent does what'))
   assert.match(section, /\*\*Ask reviewer\*\*/)
   assert.match(section, /never falls back to the author's provider/)
+})
+
+// ---- HZ-793: what the owner decides on — overlaps, siblings, the parent ----
+
+const REPLAY = JSON.parse(readFileSync(join(REPO_ROOT, 'server/test/fixtures/ask-review-replay.json'), 'utf8'))
+
+// One project with its repos, and items in it: { id, title, repo, step |
+// closed, desc, abandonedDaysAgo | abandonedAgo (an SQLite modifier list) }.
+function seedProject(name, repos, items = []) {
+  const id = store.createProject(name).id
+  for (const repo of repos) store.addRepoToProject(id, repo)
+  for (const it of items) seedProjectItem(id, it)
+  return id
+}
+function seedProjectItem(pid, { id, title, repo, step = 'Specialist agent implements', closed = false, desc = '', abandonedDaysAgo = null, abandonedAgo = null, abandonedReason = null }) {
+  const cursor = closed ? endIndex('change') : requiredStepIndex(step)
+  db.prepare("INSERT INTO work_item (id, title, priority, desc, repo, project_id, cursor) VALUES (?, ?, 'Medium', ?, ?, ?, ?)").run(id, title, desc, repo, pid, cursor)
+  const ago = abandonedAgo ?? (abandonedDaysAgo != null ? [`-${abandonedDaysAgo} days`] : null)
+  if (ago) {
+    db.prepare(`UPDATE work_item SET abandoned_at = datetime('now', ${ago.map(() => '?').join(', ')}), abandoned_reason = ? WHERE id = ?`).run(...ago, abandonedReason, id)
+  }
+}
+function seedProjectAsk(itemId, { step, kind = 'soft', status = 'open', why = 'Automated review: a follow-up.', draft }) {
+  const stepIndex = requiredStepIndex(step)
+  const runId = doneRun(itemId, stepIndex, { provider: 'claude' })
+  return Number(
+    db
+      .prepare('INSERT INTO ask (item_id, step_run_id, step_index, kind, status, draft_json, why) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(itemId, runId, stepIndex, kind, status, JSON.stringify(draft), why).lastInsertRowid,
+  )
+}
+
+test('replay of asks 34/35 (MDI-120) and 43 (MDI-131): the review gets open items, recent abandoned items, same-step asks and the parent; a contradiction is stored and shown', async () => {
+  seedProject(REPLAY.project, REPLAY.repos, REPLAY.items)
+  const askIds = {}
+  for (const a of REPLAY.asks) askIds[a.ref] = seedProjectAsk(a.item, a)
+  const reply = {
+    [askIds[34]]: { verdict: 'escalate', reasons: ['MDI-126 already covers this; ask 35 says the same.'], refers_to: ['MDI-126'], contradiction: { contradicts: false, detail: '' } },
+    [askIds[35]]: { verdict: 'escalate', reasons: ['Duplicates ask 34 and MDI-126.'], refers_to: ['MDI-126'], contradiction: { contradicts: false, detail: '' } },
+    [askIds[43]]: {
+      verdict: 'escalate',
+      reasons: ['Deleting the row breaks MDI-129’s design.'],
+      refers_to: ['MDI-129', 'MDI-122'],
+      contradiction: { contradicts: true, detail: 'MDI-131 keeps the row and marks it superseded; this ask deletes it.' },
+    },
+  }
+  const f = farm((body) => ({ ...(reply[body.ask_id] ?? { verdict: 'accept', reasons: ['fits'], refers_to: [] }), provider: body.provider }))
+  await askReview.reviewAsks({ review: f.review })
+
+  const bodyOf = (ref) => {
+    const calls = f.callsFor(askIds[ref])
+    assert.equal(calls.length, 1, `ask ${ref} was reviewed, not refused`)
+    return calls[0]
+  }
+  for (const ref of [34, 35]) {
+    const body = bodyOf(ref)
+    assert.deepEqual(Object.keys(body).sort(), [...askReview.REVIEW_INPUT_KEYS].sort())
+    // Open items in the project, newest first; the closed MDI-100 is not one.
+    assert.deepEqual(body.candidates.map((c) => c.id), ['MDI-131', 'MDI-129', 'MDI-126', 'MDI-115'])
+    assert.deepEqual(body.candidates.find((c) => c.id === 'MDI-126'), {
+      id: 'MDI-126', title: 'Publisher refuses quotes older than the pair\'s threshold', kind: 'change', step: 'Draft implementation plan',
+    })
+    assert.deepEqual(body.abandoned, [
+      { id: 'MDI-122', title: 'Deploy market-data-inputs v2.4 with the staleness alert', kind: 'change', reason: 'Already deployed three hours before this item was filed.' },
+    ])
+    assert.deepEqual(body.parent.id, 'MDI-120')
+    assert.match(body.parent.description, /Design: thresholds live in the feed config/)
+  }
+  // Each of the same-second pair is in the other's siblings; the dismissed
+  // ask 33, ask 30 from another step and the ask itself are not.
+  assert.deepEqual(bodyOf(34).siblings.map((s) => s.ask_id), [askIds[35]])
+  assert.deepEqual(bodyOf(35).siblings.map((s) => s.ask_id), [askIds[34]])
+  assert.deepEqual(bodyOf(34).siblings[0], {
+    ask_id: askIds[35], title: 'Stop publishing stale quotes per currency pair', outcome: 'Subscribers never receive a quote older than its pair\'s staleness threshold.',
+  })
+
+  const body43 = bodyOf(43)
+  assert.deepEqual(body43.siblings, [])
+  assert.deepEqual(body43.parent.id, 'MDI-131')
+  assert.match(body43.parent.description, /never delete it/)
+
+  const shownReview = (ref) => shown(REPLAY.asks.find((a) => a.ref === ref).item, askIds[ref]).review
+  assert.deepEqual(shownReview(34).refers_to, ['MDI-126'], 'a candidate may be named')
+  assert.deepEqual(shownReview(34).contradiction, { contradicts: false, detail: '' })
+  assert.deepEqual(shownReview(43).refers_to, ['MDI-129', 'MDI-122'], 'an abandoned item may be named')
+  assert.deepEqual(shownReview(43).contradiction, { contradicts: true, detail: 'MDI-131 keeps the row and marks it superseded; this ask deletes it.' })
+  assert.equal(shownReview(43).verdict, 'escalate')
+})
+
+test('candidates: one open item behind 61 newer closed ones is kept, newest first by row; abandoned items within 14 days only', async () => {
+  const pid = seedProject('Ordering', ['Acme/ordering'], [{ id: 'ORD-99', title: 'Old open item', repo: 'Acme/ordering' }])
+  for (let i = 0; i < 61; i++) seedProjectItem(pid, { id: `ORD-C${i}`, title: `closed ${i}`, repo: 'Acme/ordering', closed: true })
+  seedProjectItem(pid, { id: 'ORD-133', title: 'New open item', repo: 'Acme/ordering' })
+  seedProjectItem(pid, { id: 'ORD-A1', title: 'Abandoned 13d23h ago', repo: 'Acme/ordering', abandonedAgo: ['-13 days', '-23 hours'] })
+  seedProjectItem(pid, { id: 'ORD-A2', title: 'Abandoned 14d1h ago', repo: 'Acme/ordering', abandonedAgo: ['-14 days', '-1 hours'] })
+  seedProjectItem(pid, { id: 'ORD-A3', title: 'Abandoned 30d ago', repo: 'Acme/ordering', abandonedDaysAgo: 30 })
+  seedProjectItem(pid, { id: 'ORD-PARENT', title: 'Parent', repo: 'Acme/ordering', step: 'Architecture review' })
+  const askId = seedProjectAsk('ORD-PARENT', { step: 'Architecture review', draft: draftOf({ repo: 'Acme/ordering' }) })
+  const f = farm()
+  await askReview.reviewAsks({ review: f.review })
+  const [body] = f.callsFor(askId)
+  assert.deepEqual(body.candidates.map((c) => c.id), ['ORD-133', 'ORD-99'])
+  assert.deepEqual(body.abandoned.map((c) => c.id), ['ORD-A1'])
+})
+
+test('a parent description with a host path and a token is redacted, not refused, and clipped', async () => {
+  const pid = seedProject('Parent hygiene', ['Acme/parent'])
+  const token = `ghp_${'B'.repeat(36)}`
+  seedProjectItem(pid, { id: 'PH-1', title: 'Parent with a path', repo: 'Acme/parent', step: 'Architecture review', desc: `Logs are in /home/ubuntu/.horizon/logs and the token was ${token}.\nSecond line.` })
+  seedProjectItem(pid, { id: 'PH-2', title: 'Parent with a long description', repo: 'Acme/parent', step: 'Architecture review', desc: 'x'.repeat(5000) })
+  const pathAsk = seedProjectAsk('PH-1', { step: 'Architecture review', draft: draftOf({ repo: 'Acme/parent' }) })
+  const longAsk = seedProjectAsk('PH-2', { step: 'Architecture review', draft: draftOf({ repo: 'Acme/parent' }) })
+  const f = farm()
+  await askReview.reviewAsks({ review: f.review })
+  const [pathBody] = f.callsFor(pathAsk)
+  assert.ok(pathBody, 'the review ran')
+  assert.equal(pathBody.parent.description, 'Logs are in <path> and the token was [redacted].\nSecond line.')
+  assert.ok(!JSON.stringify(pathBody).includes(token))
+  assert.equal(reviewRow(pathAsk).status, 'done')
+  const [longBody] = f.callsFor(longAsk)
+  assert.equal(longBody.parent.description.length, 2000)
+})
+
+test('checkVerdict: a contradiction is kept only when well formed, never forces escalate, and its detail is redacted', () => {
+  const ask = { kind: 'soft', why: 'x' }
+  const check = (contradiction) => {
+    const reply = { verdict: 'accept', reasons: ['Fits.'], refers_to: [], provider: 'muse' }
+    if (contradiction !== undefined) reply.contradiction = contradiction
+    return askReview.checkVerdict(reply, { provider: 'muse', ask })
+  }
+  assert.deepEqual(check({ contradicts: true, detail: 'Deletes the row the design keeps.' }).contradiction, { contradicts: true, detail: 'Deletes the row the design keeps.' })
+  assert.deepEqual(check({ contradicts: false, detail: 'ignored' }).contradiction, { contradicts: false, detail: '' })
+  for (const bad of [undefined, null, 'yes', [], { contradicts: 'yes', detail: 'x' }, { contradicts: true, detail: '' }, { contradicts: true, detail: '   ' }, { contradicts: true }]) {
+    const checked = check(bad)
+    assert.equal(checked.contradiction, null, JSON.stringify(bad))
+    assert.equal(checked.verdict, 'accept', 'a malformed contradiction never forces escalate')
+  }
+  const secret = check({ contradicts: true, detail: `Uses ghp_${'C'.repeat(36)} from /home/ubuntu/x.` }).contradiction
+  assert.deepEqual(secret, { contradicts: true, detail: 'Uses [redacted] from <path>' })
+})
+
+test('guardrail: another project on the same repo never reaches the review — its items, abandoned items, asks and ids; a null-project ask gets empty lists', async () => {
+  const SHARED = 'Acme/shared'
+  seedProject('Scope A', [SHARED], [
+    { id: 'SA-1', title: 'A open item', repo: SHARED },
+    { id: 'SA-PARENT', title: 'A parent', repo: SHARED, step: 'Architecture review' },
+  ])
+  // project_repo is keyed by repo, so B is joined to the same repo by its items.
+  const b = store.createProject('Scope B').id
+  seedProjectItem(b, { id: 'SB-1', title: 'B secret roadmap item', repo: SHARED })
+  seedProjectItem(b, { id: 'SB-2', title: 'B abandoned item', repo: SHARED, abandonedDaysAgo: 2 })
+  seedProjectItem(b, { id: 'SB-PARENT', title: 'B parent', repo: SHARED, step: 'Architecture review' })
+  seedProjectAsk('SB-PARENT', { step: 'Architecture review', draft: draftOf({ repo: SHARED, title: 'B sibling ask title' }) })
+  const askId = seedProjectAsk('SA-PARENT', { step: 'Architecture review', draft: draftOf({ repo: SHARED }) })
+  const f = farm((body) =>
+    body.ask_id === askId
+      ? { verdict: 'escalate', reasons: ['Overlaps SA-1.'], refers_to: ['SA-1', 'SB-1', 'SB-2'], provider: body.provider }
+      : { verdict: 'accept', reasons: ['fits'], refers_to: [], provider: body.provider },
+  )
+  await askReview.reviewAsks({ review: f.review })
+  const [body] = f.callsFor(askId)
+  assert.deepEqual(body.candidates.map((c) => c.id), ['SA-1'])
+  assert.deepEqual(body.abandoned, [])
+  assert.deepEqual(body.siblings, [])
+  const text = JSON.stringify(body)
+  for (const leak of ['SB-1', 'SB-2', 'SB-PARENT', 'B secret roadmap item', 'B abandoned item', 'B sibling ask title']) assert.ok(!text.includes(leak), leak)
+  // refers_to naming B's items is dropped before it is stored or shown.
+  const row = reviewRow(askId)
+  assert.deepEqual(JSON.parse(row.refers_to_json), ['SA-1'])
+  assert.ok(!JSON.stringify(shown('SA-PARENT', askId).review).includes('SB-'))
+
+  // An item with no project: no candidates of any kind, and no throw.
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('NP-1', 'No project', 'Medium', ?)").run(ARCH)
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('NP-2', 'Another with no project', 'Medium', ?)").run(IMPLEMENT)
+  const npAsk = seedProjectAsk('NP-1', { step: 'Architecture review', draft: draftOf() })
+  seedProjectAsk('NP-1', { step: 'Architecture review', draft: draftOf({ title: 'NP sibling' }) })
+  const ask = db.prepare('SELECT * FROM ask WHERE id = ?').get(npAsk)
+  assert.deepEqual(await askReview.askOverlap(ask, draftOf(), store.getItem('NP-1')), { matches: [], candidates: [], abandoned: [], siblings: [] })
 })

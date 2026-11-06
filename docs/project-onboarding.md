@@ -330,10 +330,10 @@ show on their item and in Pending approvals.
 
 **What Autopilot does with asks.** With **`off`**, nothing: you file or
 dismiss each ask. With **`shadow`**, the item's activity log says what
-Autopilot would have done. With **`on`**, Autopilot files the asks the
-reviewer accepted, using the reviewer's amended draft when there is one. It
-sends you a message about every ask the reviewer escalated, and never
-dismisses one. Whatever the mode, an open blocking ask holds the item:
+Autopilot would have done. With **`on`**, Autopilot never files an ask and
+never dismisses one: every ask waits for your **File it** or **Dismiss**. Once
+an ask's review comes back, it sends you one message naming the ask and the
+reviewer's verdict, and whether the ask contradicts the item's description. Whatever the mode, an open blocking ask holds the item:
 Autopilot approves no gate, and Implement (Execute for a Task) does not
 start, until you dismiss the ask or its filed item merges or closes. With
 **`on`** you get a message when a gate is held this way.

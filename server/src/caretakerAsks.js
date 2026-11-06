@@ -1,50 +1,49 @@
-// Autopilot caretaker, asks (HZ-731).
+// Autopilot caretaker, asks (HZ-731, HZ-793).
 //
-// HZ-729 reviews each ask; HZ-730 lets the owner File it or Dismiss it. With
-// Autopilot 'on', this pass acts on the reviewed ones like a gate:
-//   - an ask the reviewer accepted is filed with its own draft, one it amended
-//     with the amended draft — both through asks.fileAsk, the same call the
-//     owner's File it makes (spawnItems and linkSpawned are handed in by
-//     server.js, so nothing here imports github or spawn.js);
-//   - an ask the reviewer escalated, or whose review failed or was cut short,
-//     is never filed: the owner is pinged once instead;
+// HZ-729 reviews each ask; HZ-730 lets the owner File it or Dismiss it. The
+// owner's ruling (HZ-793): every ask waits for the owner. With Autopilot
+// 'on', this pass never files an ask, whatever the reviewer's verdict:
+//   - an ask the reviewer accepted, amended or escalated, or whose review
+//     failed or was cut short, pings the owner once with the verdict (and any
+//     contradiction with the parent item the reviewer found) and stays open.
+//     Every one uses the 'ask_escalated' ping reason and dedupe key, so an
+//     ask escalated before HZ-793 is never pinged twice;
 //   - an item parked at a gate Autopilot would act on, with an open blocking
 //     ask, pings the owner once per arrival and ask. caretaker.js does not
 //     judge such an arrival and caretakerAccept.js waits on it, so nothing
-//     approves past the ask.
+//     approves past the ask until the owner files or dismisses it.
 // In 'shadow' each of these is one "caretaker would …" event and nothing
 // else. An 'off' project is never selected, and an item with Autopilot off
 // (its `autopilot-off` label) in an 'on' project is skipped outright: the
 // owner decides, and its asks stay open.
 //
-// NEVER DISMISSES: only the owner may, so asks.dismissAsk is not imported.
-// A split (kind 'split') is filed at its own gate and never selected here.
+// NEVER FILES OR DISMISSES: only the owner may, so neither of asks.js's
+// filing and dismissing calls is imported. A split (kind 'split') is filed
+// at its own gate and never selected here.
 //
 // One caretaker_ask_action row per (ask, action, mode, gate, arrival) — the
 // UNIQUE key is the claim, so a restart or a second tick adds nothing. A
-// filing that fails is recorded 'failed', pinged once and never retried; the
-// owner can still press File it. Filings count against CARETAKER_HOURLY_LIMIT
-// per project, in this table's own window.
+// ping is claimed as action 'escalate'. A 'file' row is from before HZ-793:
+// that ask was filed, or its failure pinged, so it is never selected again.
 
 import { db } from './db.js'
 import * as store from './store.js'
 import { STEPS, ACCEPT_GATE_INDEX, isClosed } from '../../domain/js/lifecycle.js'
-import { ACTOR, redact } from './caretakerRules.js'
-import { ACT_GATES, HOUR_MS } from './caretakerActor.js'
-import { fileAsk, openBlockingAsks, stepLabel } from './asks.js'
+import { redact } from './caretakerRules.js'
+import { ACT_GATES } from './caretakerActor.js'
+import { openBlockingAsks, stepLabel } from './asks.js'
 import { ownerJid } from './waApprovers.js'
-import { CARETAKER_HOURLY_LIMIT } from './config.js'
 
 const RESWEEP_MS = 60 * 1000
 // The gates Autopilot would otherwise act on; every other gate is a human's.
 export const HOLD_GATES = [...ACT_GATES, ACCEPT_GATE_INDEX]
 
 // Open blocking and soft asks with a review that has come back, in an enabled
-// shadow or 'on' project, not yet acted on in this mode. A 'done' review with
-// accept or amend is filed; 'escalate', or a review that failed or was cut
-// short (both carry 'escalate'), goes to the owner.
+// shadow or 'on' project, not yet acted on in this mode. Each goes to the
+// owner, whatever the verdict.
 const selectAskCandidates = db.prepare(`
   SELECT a.id AS ask_id, a.item_id, a.kind, a.step_index, a.draft_json, r.status AS review_status, r.verdict,
+         r.contradiction_json,
          w.title AS item_title, w.cursor, w.kind AS item_kind, w.project_id, w.autopilot_off, p.autopilot
     FROM ask a
     JOIN ask_review r ON r.ask_id = a.id
@@ -69,14 +68,9 @@ const selectHeldItems = db.prepare(`
    ORDER BY w.id`)
 const selectMode = db.prepare('SELECT autopilot FROM project WHERE id = ?')
 const selectItemOff = db.prepare('SELECT autopilot_off FROM work_item WHERE id = ?')
-const selectAskStatus = db.prepare('SELECT status FROM ask WHERE id = ?')
 const insertAction = db.prepare(`
   INSERT OR IGNORE INTO caretaker_ask_action (ask_id, item_id, project_id, action, mode, gate_index, arrival_run_id, outcome, error, acted_at_ms)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-const finishAction = db.prepare('UPDATE caretaker_ask_action SET outcome = ?, error = ? WHERE id = ?')
-const countFilings = db.prepare(
-  "SELECT COUNT(*) AS n FROM caretaker_ask_action WHERE project_id = ? AND action = 'file' AND mode = 'on' AND outcome <> 'skipped' AND acted_at_ms > ?",
-)
 const insertEvent = db.prepare("INSERT INTO event (item_id, who, text, color, initials) VALUES (?, 'Caretaker', ?, '#4A6B5D', 'CT')")
 const insertPing = db.prepare(`
   INSERT OR IGNORE INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms)
@@ -99,79 +93,48 @@ const itemOff = (row) => row.autopilot === 'on' && row.autopilot_off === 1
 // The mode and label re-read at claim time, as caretakerActor.js does.
 const stillOn = (row) => selectMode.get(row.project_id)?.autopilot === 'on' && selectItemOff.get(row.item_id)?.autopilot_off !== 1
 
-const WHY_ESCALATED = {
+const VERDICT_TEXT = {
+  accept: 'the reviewer accepted it',
+  amend: 'the reviewer amended it',
   escalate: 'the reviewer escalated it',
   failed: 'its review failed',
   interrupted: 'its review was cut short',
 }
+// A 'done' review by its verdict; a failed or interrupted one (both carry
+// 'escalate') by its status.
+const verdictText = (row) => VERDICT_TEXT[row.review_status === 'done' ? row.verdict : row.review_status]
 
-// One escalation: in 'on', one owner ping and one event; in shadow, the event.
-function escalate(row, nowMs, owner) {
-  const why = WHY_ESCALATED[row.review_status === 'done' ? 'escalate' : row.review_status]
+// The reviewer's finding that the ask contradicts the parent item, or ''.
+function contradictionOf(row) {
+  try {
+    const c = JSON.parse(row.contradiction_json || 'null')
+    return c?.contradicts === true && typeof c.detail === 'string' ? line(c.detail).replace(/[.\s]+$/, '') : ''
+  } catch {
+    return ''
+  }
+}
+
+// One ask to the owner: in 'on', one ping and one event; in shadow, the
+// event. The ask stays open either way.
+function notifyOwner(row, nowMs, owner) {
+  const verdict = verdictText(row)
   return db.transaction(() => {
     if (row.autopilot === 'on' && !stillOn(row)) return false
     const mode = row.autopilot
     if (insertAction.run(row.ask_id, row.item_id, row.project_id, 'escalate', mode, -1, 0, mode === 'on' ? 'ok' : 'skipped', null, nowMs).changes !== 1) return false
     if (mode === 'on') {
+      const contradiction = contradictionOf(row)
+      const contradicts = contradiction ? ` It may contradict ${row.item_id}'s description: ${contradiction}.` : ''
       const body = line(
-        `Autopilot needs you: ${row.item_id} "${row.item_title}" has an ask from "${stepLabel(row.step_index)}" that Autopilot will not file — ${why}: “${titleOf(row)}”. File it or dismiss it.`,
+        `Autopilot needs you: ${row.item_id} "${row.item_title}" has an ask from "${stepLabel(row.step_index)}": “${titleOf(row)}”. ${verdict[0].toUpperCase()}${verdict.slice(1)}.${contradicts} File it or dismiss it.`,
       )
       insertPing.run(row.project_id, row.item_id, 'ask_escalated', `ask_escalated:${row.ask_id}`, owner || '', body, nowMs)
-      insertEvent.run(row.item_id, `caretaker did not file the ask ${quote(titleOf(row))} (${why}) — pinged the owner`)
+      insertEvent.run(row.item_id, `caretaker pinged the owner about the ask ${quote(titleOf(row))} (${verdict})`)
     } else {
-      insertEvent.run(row.item_id, `caretaker would ping the owner about the ask ${quote(titleOf(row))} (${why})`)
+      insertEvent.run(row.item_id, `caretaker would ping the owner about the ask ${quote(titleOf(row))} (${verdict})`)
     }
     return true
   })()
-}
-
-// One filing. Shadow records the event only. In 'on' the claim is written
-// before fileAsk starts, so a second tick or a restart never files twice.
-async function file(row, nowMs, { owner, limit, spawnItems, linkSpawned, log }) {
-  const amended = row.verdict === 'amend' ? ' with the reviewer’s amended draft' : ''
-  if (row.autopilot !== 'on') {
-    if (insertAction.run(row.ask_id, row.item_id, row.project_id, 'file', 'shadow', -1, 0, 'skipped', null, nowMs).changes !== 1) return false
-    insertEvent.run(row.item_id, `caretaker would file the ask ${quote(titleOf(row))}${amended}`)
-    return true
-  }
-  if (countFilings.get(row.project_id, nowMs - HOUR_MS).n >= limit) {
-    log?.warn?.(`caretaker: hourly limit (${limit}) of ask filings hit on project ${row.project_id}`)
-    return false
-  }
-  const claim = db.transaction(() => {
-    if (!stillOn(row) || selectAskStatus.get(row.ask_id)?.status !== 'open') return null
-    const inserted = insertAction.run(row.ask_id, row.item_id, row.project_id, 'file', 'on', -1, 0, 'pending', null, nowMs)
-    return inserted.changes === 1 ? inserted.lastInsertRowid : null
-  })()
-  if (claim === null) return false
-  let result
-  try {
-    const item = store.getItem(row.item_id)
-    const repos = store
-      .listRepos()
-      .filter((r) => r.project_id === row.project_id)
-      .map((r) => r.repo)
-    result = item ? await fileAsk(item, row.ask_id, { repos, actor: ACTOR, spawnItems, linkSpawned }) : { error: 'not_found' }
-  } catch (err) {
-    result = { error: err?.message || String(err) }
-  }
-  if (result?.ok) {
-    finishAction.run('ok', null, claim)
-    insertEvent.run(row.item_id, `Autopilot filed the ask ${quote(titleOf(row))}${amended} as ${result.itemId}`)
-    log?.info?.(`caretaker: filed ask ${row.ask_id} on ${row.item_id} as ${result.itemId}`)
-    return true
-  }
-  const error = redact(result?.message || result?.error || 'no result')
-  db.transaction(() => {
-    finishAction.run('failed', error, claim)
-    insertEvent.run(row.item_id, `caretaker could not file the ask ${quote(titleOf(row))} (${error}) — pinged the owner`)
-    const body = line(
-      `Autopilot could not file an ask on ${row.item_id} "${row.item_title}": “${titleOf(row)}” — ${error}. File it or dismiss it yourself.`,
-    )
-    insertPing.run(row.project_id, row.item_id, 'ask_escalated', `ask_file_failed:${row.ask_id}`, owner || '', body, nowMs)
-  })()
-  log?.warn?.(`caretaker: could not file ask ${row.ask_id} on ${row.item_id}: ${error}`)
-  return true
 }
 
 // One hold per (open blocking ask, gate, arrival): in 'on', one owner ping
@@ -199,9 +162,9 @@ function holdGate(row, ask, nowMs, owner) {
 let sweeping = false
 
 // Exported for the tests; init() below is the only production caller. Never
-// throws. `spawnItems` and `linkSpawned` are spawn.js's, handed in.
-export async function sweepAsks({ log, now = Date.now, owner = ownerJid, limit = CARETAKER_HOURLY_LIMIT, spawnItems, linkSpawned } = {}) {
-  const counts = { filed: 0, escalated: 0, held: 0 }
+// throws.
+export async function sweepAsks({ log, now = Date.now, owner = ownerJid } = {}) {
+  const counts = { notified: 0, held: 0 }
   if (sweeping) return { ...counts, skipped: true }
   sweeping = true
   let changed = false
@@ -209,14 +172,8 @@ export async function sweepAsks({ log, now = Date.now, owner = ownerJid, limit =
     for (const row of selectAskCandidates.all()) {
       try {
         if (itemOff(row) || isClosed({ cursor: row.cursor, kind: row.item_kind })) continue
-        const fileable = row.review_status === 'done' && (row.verdict === 'accept' || row.verdict === 'amend')
-        if (fileable) {
-          if (await file(row, now(), { owner: owner(), limit, spawnItems, linkSpawned, log })) {
-            counts.filed++
-            changed = true
-          }
-        } else if (escalate(row, now(), owner())) {
-          counts.escalated++
+        if (notifyOwner(row, now(), owner())) {
+          counts.notified++
           changed = true
         }
       } catch (err) {
@@ -254,10 +211,11 @@ export async function sweepAsks({ log, now = Date.now, owner = ownerJid, limit =
 // Registered beside caretakerActor.init in server.js; its pings are sent by
 // caretakerActor's drain on the change signal this pass raises. Change
 // signals are coalesced onto the next turn of the event loop. Returns stop()
-// for the tests; `opts` (now, owner, limit) are for the tests too.
+// for the tests; `opts` (now, owner) are for the tests too.
 export function init(log, { spawnItems, linkSpawned, ...opts } = {}) {
+  // Unused since HZ-793 (nothing here files); kept so server.js is unchanged.
   if (!spawnItems || !linkSpawned) throw new Error('caretakerAsks.init needs spawnItems and linkSpawned')
-  const run = () => sweepAsks({ log, spawnItems, linkSpawned, ...opts })
+  const run = () => sweepAsks({ log, ...opts })
   let scheduled = false
   const unsubscribe = store.onChange(() => {
     if (scheduled) return

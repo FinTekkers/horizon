@@ -1,9 +1,11 @@
-// HZ-731: Autopilot treats asks like gates.
+// HZ-731: Autopilot treats asks like gates. HZ-793: it never files one —
+// every ask waits for the owner's File it or Dismiss.
 //
 // caretaker.init, caretakerActor.init and caretakerAsks.init are wired as
-// server.js wires them, to the real app's gateActions and spawn.js's filing
-// calls. Items have no repo, so File it files a local item (spawn.js's demo
-// path) and no case reaches GitHub; fetch fails every call to prove it.
+// server.js wires them, to the real app's gateActions and spies around
+// spawn.js's filing calls, which caretakerAsks must never call. Items have no
+// repo, so the owner's File it files a local item (spawn.js's demo path) and
+// no case reaches GitHub; fetch fails every call to prove it.
 // Asks and their reviews are seeded as HZ-728 and HZ-729 write them.
 //
 // Fake clock: `now` is a variable the tests move, and the 60s intervals run
@@ -11,7 +13,7 @@
 
 import { test, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
@@ -49,7 +51,9 @@ let clock = T0
 mock.timers.enable({ apis: ['setInterval'] })
 caretaker.init(silent)
 actor.init(silent, { gateActions: app.gateActions, now: () => clock, send: async () => {} })
-caretakerAsks.init(silent, { spawnItems, linkSpawned, now: () => clock })
+const spawnSpy = mock.fn(spawnItems)
+const linkSpy = mock.fn(linkSpawned)
+caretakerAsks.init(silent, { spawnItems: spawnSpy, linkSpawned: linkSpy, now: () => clock })
 
 const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve))
@@ -123,46 +127,96 @@ const eventsOf = (itemId) => db.prepare("SELECT text FROM event WHERE item_id = 
 const spawnedBy = (itemId) => db.prepare("SELECT child_id FROM item_spawn WHERE parent_id = ? AND status = 'filed' ORDER BY id").all(itemId).map((r) => r.child_id)
 const decisionsOf = (itemId) => db.prepare('SELECT * FROM gate_decision WHERE item_id = ?').all(itemId)
 const cursorOf = (itemId) => store.getItem(itemId).cursor
+const itemCount = () => db.prepare('SELECT COUNT(*) AS n FROM work_item').get().n
 const STEP_NUMBER = /\bstep \d+\b/i
+const ticks = async (n) => {
+  for (let i = 0; i < n; i++) {
+    store.notifyChange()
+    await advance(60 * 1000)
+  }
+}
+const fileIt = (itemId, askId) =>
+  app.inject({ method: 'POST', url: `/api/items/${itemId}/asks/${askId}/file`, headers: { cookie: owner.cookie, 'x-human-key': owner.pin }, payload: {} })
+const VERDICT_TEXT = {
+  accept: 'The reviewer accepted it.',
+  amend: 'The reviewer amended it.',
+  escalate: 'The reviewer escalated it.',
+  failed: 'Its review failed.',
+  interrupted: 'Its review was cut short.',
+}
 
-test('metric 1: Autopilot on files an accepted ask with its draft and an amended one with the amended draft; an escalated one is not filed and the owner is pinged', async () => {
+test('metric 1: Autopilot on files no ask, whatever the verdict: each stays open and the owner is pinged once with its verdict', async () => {
   const p = project('on')
   const id = newItem('CA-ON', p, ARCH)
-  const accepted = seedAsk(id, p, { verdict: 'accept', d: draft(p, { title: 'Accepted follow-up' }) })
-  const amended = draft(p, { title: 'Amended follow-up, reviewer wording', outcome: 'The reviewer’s outcome.' })
-  const amendedAsk = seedAsk(id, p, { kind: 'soft', verdict: 'amend', d: draft(p, { title: 'Original wording' }), amended })
-  const escalated = seedAsk(id, p, { verdict: 'escalate', d: draft(p, { title: 'Escalated follow-up' }) })
-  store.notifyChange()
-  await settle()
+  const itemsBefore = itemCount()
+  const asks = {
+    accept: seedAsk(id, p, { verdict: 'accept', d: draft(p, { title: 'Accepted follow-up' }) }),
+    amend: seedAsk(id, p, { kind: 'soft', verdict: 'amend', d: draft(p, { title: 'Amended follow-up' }), amended: draft(p, { title: 'Reviewer wording' }) }),
+    escalate: seedAsk(id, p, { verdict: 'escalate', d: draft(p, { title: 'Escalated follow-up' }) }),
+    failed: seedAsk(id, p, { verdict: 'escalate', status: 'failed', d: draft(p, { title: 'Failed-review follow-up' }) }),
+    interrupted: seedAsk(id, p, { verdict: 'escalate', status: 'interrupted', d: draft(p, { title: 'Interrupted-review follow-up' }) }),
+  }
+  const titles = {
+    accept: 'Accepted follow-up',
+    amend: 'Amended follow-up',
+    escalate: 'Escalated follow-up',
+    failed: 'Failed-review follow-up',
+    interrupted: 'Interrupted-review follow-up',
+  }
+  await ticks(3)
 
-  const acceptedRow = askRow(accepted)
-  assert.equal(acceptedRow.status, 'filed')
-  assert.equal(acceptedRow.resolved_by, 'Caretaker')
-  assert.equal(store.getItem(acceptedRow.filed_item_id).title, 'Accepted follow-up')
-  const amendedRow = askRow(amendedAsk)
-  assert.equal(amendedRow.status, 'filed')
-  const amendedChild = store.getItem(amendedRow.filed_item_id)
-  assert.equal(amendedChild.title, amended.title, 'filed with the reviewer’s amended draft')
-  assert.equal(amendedChild.desc, amended.outcome)
-  assert.deepEqual(spawnedBy(id), [acceptedRow.filed_item_id, amendedRow.filed_item_id], 'exactly two items filed')
-  // A blocking ask's item became a dependency; the soft one's did not.
-  assert.deepEqual(store.blockersOf(id).map((b) => b.id), [acceptedRow.filed_item_id])
+  for (const askId of Object.values(asks)) {
+    assert.equal(askRow(askId).status, 'open')
+    assert.equal(askRow(askId).filed_item_id, null)
+  }
+  assert.equal(itemCount(), itemsBefore, 'no item was created')
+  assert.deepEqual(spawnedBy(id), [])
+  assert.equal(spawnSpy.mock.callCount(), 0)
+  assert.equal(linkSpy.mock.callCount(), 0)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM caretaker_ask_action WHERE action = 'file'").get().n, 0)
 
-  assert.equal(askRow(escalated).status, 'open', 'an escalated ask is not filed')
-  assert.equal(askRow(escalated).filed_item_id, null)
   const pings = pingsOf(id)
-  assert.deepEqual(pings.map((g) => [g.reason, g.dedupe_key]), [['ask_escalated', `ask_escalated:${escalated}`]])
-  assert.equal(pings[0].recipient, '15550001111@s.whatsapp.net')
-  assert.match(pings[0].body, /Escalated follow-up/)
-  assert.ok(pings[0].body.includes(`"${STEPS[ARCH].label}"`), 'the ping names the step by its label')
-  assert.doesNotMatch(pings[0].body, STEP_NUMBER)
+  assert.deepEqual(
+    pings.map((g) => [g.reason, g.dedupe_key]),
+    Object.values(asks).map((askId) => ['ask_escalated', `ask_escalated:${askId}`]),
+    'exactly one ping per ask',
+  )
+  for (const [verdict, askId] of Object.entries(asks)) {
+    const ping = pings.find((g) => g.dedupe_key === `ask_escalated:${askId}`)
+    assert.equal(ping.recipient, '15550001111@s.whatsapp.net')
+    assert.ok(ping.body.includes(`“${titles[verdict]}”`), ping.body)
+    assert.ok(ping.body.includes(VERDICT_TEXT[verdict]), ping.body)
+    assert.ok(ping.body.includes(`"${STEPS[ARCH].label}"`), 'the ping names the step by its label')
+    assert.doesNotMatch(ping.body, STEP_NUMBER)
+    assert.match(ping.body, /File it or dismiss it\.$/)
+  }
+  assert.doesNotMatch(pings.find((g) => g.dedupe_key === `ask_escalated:${asks.accept}`).body, /escalated/)
+  assert.ok(eventsOf(id).includes('caretaker pinged the owner about the ask “Accepted follow-up” (the reviewer accepted it)'))
+  assert.ok(!eventsOf(id).some((t) => /filed|would file|did not file/.test(t)))
+})
 
-  // A second tick and a re-sweep add nothing.
-  store.notifyChange()
-  await advance(60 * 1000)
-  assert.equal(spawnedBy(id).length, 2)
-  assert.equal(pingsOf(id).length, 1)
-  assert.equal(askRow(escalated).status, 'open')
+test('metric 1: an ask already pinged as escalated is not pinged again; a contradiction the reviewer found is in the ping', async () => {
+  const p = project('on')
+  const id = newItem('CA-PINGED', p, ARCH)
+  const askId = seedAsk(id, p, { d: draft(p, { title: 'Pinged before' }) })
+  db.prepare("INSERT INTO caretaker_ping (project_id, item_id, reason, dedupe_key, recipient, body, created_at_ms) VALUES (?, ?, 'ask_escalated', ?, '', 'earlier ping', ?)").run(
+    p.id,
+    id,
+    `ask_escalated:${askId}`,
+    clock,
+  )
+  review(askId, 'accept')
+  const contradicting = seedAsk(id, p, { d: draft(p, { title: 'Delete the ledger row' }) })
+  review(contradicting, 'accept')
+  db.prepare('UPDATE ask_review SET contradiction_json = ? WHERE ask_id = ?').run(JSON.stringify({ contradicts: true, detail: 'the design keeps the ledger row.' }), contradicting)
+  await ticks(3)
+  assert.deepEqual(pingsOf(id).map((g) => [g.dedupe_key, g.body === 'earlier ping']), [
+    [`ask_escalated:${askId}`, true],
+    [`ask_escalated:${contradicting}`, false],
+  ])
+  assert.ok(pingsOf(id)[1].body.includes("It may contradict CA-PINGED's description: the design keeps the ledger row. File it or dismiss it."), pingsOf(id)[1].body)
+  assert.equal(askRow(askId).status, 'open')
+  assert.equal(askRow(contradicting).status, 'open')
 })
 
 test('metric 2: Autopilot off files nothing and records nothing; the accepted ask stays open for the owner', async () => {
@@ -191,10 +245,9 @@ test('metric 2: an item with the autopilot-off label in an on project files noth
   assert.deepEqual(pingsOf(id), [])
 })
 
-test('metric 3: at Review before execution an open blocking ask holds the gate and pings once; Autopilot filing it releases the gate', async () => {
+test('metric 3: an accepted blocking ask holds the gate under on across ticks; the owner’s File it releases it', async () => {
   const p = project('on')
   const id = newItem('CA-GATE-FILE', p, REVIEW_BEFORE - 1)
-  // No review yet, so nothing files it: it stays open.
   const askId = seedAsk(id, p, { d: draft(p, { title: 'Prerequisite fix' }) })
   arrive(id, REVIEW_BEFORE, PROCEED)
   await settle()
@@ -210,23 +263,27 @@ test('metric 3: at Review before execution an open blocking ask holds the gate a
   assert.doesNotMatch(pings[0].body, STEP_NUMBER)
   assert.ok(eventsOf(id).some((t) => t.includes('did not approve “Review before execution”')))
 
-  // Re-sweeps and change signals ping no second time.
-  store.notifyChange()
-  await advance(60 * 1000)
-  await advance(60 * 1000)
-  assert.equal(pingsOf(id).length, 1)
-  assert.equal(cursorOf(id), REVIEW_BEFORE)
-
-  // The reviewer accepts it; Autopilot files it, and the gate is approved.
+  // The reviewer accepts it: Autopilot pings once about the verdict and files
+  // nothing, so the gate stays held however many ticks pass.
   review(askId, 'accept')
-  store.notifyChange()
-  await settle()
+  await ticks(3)
+  assert.equal(askRow(askId).status, 'open')
+  assert.equal(cursorOf(id), REVIEW_BEFORE)
+  assert.deepEqual(decisionsOf(id), [])
+  assert.deepEqual(pingsOf(id).map((g) => g.reason), ['blocking_ask', 'ask_escalated'])
+  assert.deepEqual(spawnedBy(id), [])
+
+  // The owner files it; the next tick approves the gate.
+  const res = await fileIt(id, askId)
+  assert.equal(res.statusCode, 200, res.body)
+  await ticks(1)
   await settle()
   assert.equal(askRow(askId).status, 'filed')
+  assert.ok(askRow(askId).resolved_by.includes('Owner Example'))
   assert.equal(decisionsOf(id).length, 1)
   assert.equal(decisionsOf(id)[0].decided_by, 'Caretaker')
   assert.equal(cursorOf(id), IMPLEMENT_STEP_INDEX, 'the gate advanced')
-  assert.equal(pingsOf(id).length, 1)
+  assert.equal(pingsOf(id).length, 2)
 })
 
 test('metric 3: the gate is approved once the owner dismisses the blocking ask', async () => {
@@ -292,33 +349,64 @@ test('guardrail 3: an open split ask is never filed and never holds the gate', a
   assert.equal(cursorOf(id), IMPLEMENT_STEP_INDEX)
 })
 
-test('shadow records what Autopilot would do — file, hold — and files, pings and approves nothing', async () => {
+test('shadow records one "would ping" per ask and never "would file"; switched to on, the owner gets exactly one real ping', async () => {
   const p = project('shadow')
   const id = newItem('CA-SHADOW', p, REVIEW_BEFORE - 1)
   const askId = seedAsk(id, p, { verdict: 'accept', d: draft(p, { title: 'Shadow follow-up' }) })
+  const soft = seedAsk(id, p, { kind: 'soft', verdict: 'amend', d: draft(p, { title: 'Shadow soft follow-up' }), amended: draft(p) })
   arrive(id, REVIEW_BEFORE, PROCEED)
   await settle()
+  await ticks(3)
   assert.equal(askRow(askId).status, 'open')
+  assert.equal(askRow(soft).status, 'open')
   assert.deepEqual(spawnedBy(id), [])
   assert.deepEqual(pingsOf(id), [])
   const events = eventsOf(id)
-  assert.ok(events.includes('caretaker would file the ask “Shadow follow-up”'), events.join('\n'))
+  assert.ok(!events.some((t) => t.includes('would file')), events.join('\n'))
+  assert.deepEqual(
+    events.filter((t) => t.startsWith('caretaker would ping the owner about the ask')),
+    [
+      'caretaker would ping the owner about the ask “Shadow follow-up” (the reviewer accepted it)',
+      'caretaker would ping the owner about the ask “Shadow soft follow-up” (the reviewer amended it)',
+    ],
+  )
   assert.ok(events.includes('caretaker would hold “Review before execution” for the blocking ask “Shadow follow-up” and ping the owner'), events.join('\n'))
-  await advance(60 * 1000)
-  assert.equal(eventsOf(id).length, events.length, 'once each')
+
+  // The project goes 'on': each ask's one real ping follows, once.
+  db.prepare("UPDATE project SET autopilot = 'on' WHERE id = ?").run(p.id)
+  await ticks(2)
+  const verdictPings = pingsOf(id).filter((g) => g.reason === 'ask_escalated')
+  assert.deepEqual(verdictPings.map((g) => g.dedupe_key), [`ask_escalated:${askId}`, `ask_escalated:${soft}`])
+  assert.equal(askRow(askId).status, 'open')
+  assert.equal(askRow(soft).status, 'open')
 })
 
-test('a filing that fails is recorded once, pings once and is never retried', async () => {
-  const p = project('on')
-  const id = newItem('CA-FAIL', p, ARCH)
-  const askId = seedAsk(id, p, { verdict: 'amend', amended: draft(p, { repo: 'Nobody/unknown' }) })
-  store.notifyChange()
-  await settle()
-  await advance(60 * 1000)
-  assert.equal(askRow(askId).status, 'open')
-  assert.deepEqual(actionsOf(id).map((a) => [a.action, a.outcome]), [['file', 'failed']])
-  assert.deepEqual(pingsOf(id).map((g) => g.dedupe_key), [`ask_file_failed:${askId}`])
-  assert.deepEqual(spawnedBy(id), [])
+test('metric 2: nothing in caretakerAsks.js calls fileAsk; the owner’s File it route is its only caller', () => {
+  const caretakerSource = readFileSync(join(REPO_ROOT, 'server/src/caretakerAsks.js'), 'utf8')
+  assert.doesNotMatch(caretakerSource, /\bfileAsk\b/)
+  assert.doesNotMatch(caretakerSource, /\/file\b/)
+  const srcDir = join(REPO_ROOT, 'server/src')
+  const hits = []
+  for (const name of readdirSync(srcDir, { recursive: true })) {
+    if (!/\.(m?js)$/.test(name)) continue
+    const lines = readFileSync(join(srcDir, name), 'utf8').split('\n')
+    lines.forEach((text, i) => {
+      if (/\bfileAsk\b/.test(text) && !text.trim().startsWith('//')) hits.push({ file: name, line: i, text: text.trim() })
+    })
+  }
+  assert.deepEqual(
+    hits.map((h) => h.file).sort(),
+    ['app.js', 'app.js', 'asks.js'],
+    hits.map((h) => `${h.file}: ${h.text}`).join('\n'),
+  )
+  assert.match(hits.find((h) => h.file === 'asks.js').text, /^export async function fileAsk\(/)
+  const appHits = hits.filter((h) => h.file === 'app.js')
+  assert.match(appHits[0].text, /^import \{[^}]*\bfileAsk\b[^}]*\} from '\.\/asks\.js'$/)
+  // The call sits inside the /asks/:askId/file handler.
+  const appLines = readFileSync(join(srcDir, 'app.js'), 'utf8').split('\n')
+  const route = appLines.slice(0, appHits[1].line).findLast((text) => /^\s*'\/api\//.test(text))
+  assert.equal(route.trim(), "'/api/items/:id/asks/:askId/file',")
+  assert.match(appHits[1].text, /await fileAsk\(/)
 })
 
 test('guardrail 1: Autopilot never dismisses — no ask was dismissed except by the owner, and the module cannot', () => {
@@ -327,7 +415,7 @@ test('guardrail 1: Autopilot never dismisses — no ask was dismissed except by 
   const dismissed = db.prepare("SELECT resolved_by FROM ask WHERE status = 'dismissed' AND resolved_by IS NOT NULL").all()
   assert.equal(dismissed.length, 1, 'only the owner’s one Dismiss above')
   assert.ok(dismissed[0].resolved_by.includes('Owner Example'))
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ask WHERE resolved_by = 'Caretaker' AND status <> 'filed'").get().n, 0)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ask WHERE resolved_by = 'Caretaker'").get().n, 0)
   const source = readFileSync(join(REPO_ROOT, 'server/src/caretakerAsks.js'), 'utf8')
   assert.doesNotMatch(source, /import\s*\{[^}]*\bdismissAsk\b/)
   assert.doesNotMatch(source, /'dismissed'|\/dismiss\b/)

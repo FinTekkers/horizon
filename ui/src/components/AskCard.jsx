@@ -2,7 +2,8 @@
 // amended one when the verdict is amend), why, the step that asked by name,
 // and the HZ-729 reviewer's verdict. File it files the draft as an item;
 // Dismiss needs a reason, which goes to the item's next agent step. Both ask
-// for the gate PIN. Agent-written text renders as plain React text.
+// for the gate PIN. Agent-written text renders as plain React text. HZ-793:
+// the reviewer's finding that the ask contradicts its parent item shows too.
 
 import { useState } from 'react'
 import { fileAsk, dismissAsk } from '../api'
@@ -27,7 +28,8 @@ export function reviewState(ask) {
     return { reviewed: false, label: 'Not reviewed yet', reasons: review?.wait_reason ? [review.wait_reason] : [] }
   }
   const label = review.status === 'done' ? VERDICT_LABELS[review.verdict] || `Reviewer: ${review.verdict}` : 'Review failed: escalated to you'
-  return { reviewed: true, label, verdict: review.verdict, reasons: review.reasons || [] }
+  const contradiction = review.contradiction?.contradicts === true ? review.contradiction.detail : null
+  return { reviewed: true, label, verdict: review.verdict, reasons: review.reasons || [], contradiction }
 }
 
 // The draft File it would file.
@@ -82,6 +84,7 @@ export default function AskCard({ item, ask, compact = false }) {
         <span className={`ask-card__verdict ask-card__verdict--${review.verdict ?? 'none'}`}>{review.label}</span>
         {draft.amended && <span className="ask-card__amended">Reviewer’s amended draft</span>}
         {review.reasons.length > 0 && <span className="ask-card__reasons">{review.reasons.join(' · ')}</span>}
+        {review.contradiction && <span className="ask-card__contradiction">Contradicts the parent: {review.contradiction}</span>}
       </div>
       {compact ? (
         <details className="ask-card__more">
