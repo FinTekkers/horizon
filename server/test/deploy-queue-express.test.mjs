@@ -112,7 +112,7 @@ for (const [label, setup] of [
   })
 }
 
-test('a dependency added mid-window releases the batch on the very next tick', async () => {
+test('a dependency added mid-window with a merge coming holds the batch to the cap, then releases it once (HZ-783)', async () => {
   const { batchId } = openBatchWithMember()
   addItem('EX-5', 4)
   addComingItem(db, REPO) // HZ-591: another merge is coming
@@ -123,6 +123,11 @@ test('a dependency added mid-window releases the batch on the very next tick', a
 
   db.prepare("INSERT INTO work_item_dependency (item_id, depends_on_id) VALUES ('EX-5', 'EX-1')").run()
   await deployQueue.tick(now)
-  assert.notEqual(batch(batchId).status, 'open', 'released on the next tick, with no time passing')
+  assert.equal(batch(batchId).status, 'open', 'held for the coming merge')
+  assert.equal(batch(batchId).window_closes_at, sqlTime(now + 600_000))
+  assert.equal(stub.posts.length, 0)
+
+  await deployQueue.tick(now + 600_000)
+  assert.notEqual(batch(batchId).status, 'open', 'released at the cap')
   assert.equal(stub.posts.length, 1)
 })

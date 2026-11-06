@@ -1158,6 +1158,13 @@ target's queue (`server/src/deployQueue.js`, rows in `deploy_batch` and
   queue tick and the batch publishes then. The batch's `window_closes_at` is
   set to that moment, and the queued item's history records the time it
   replaced. A running job in the repo still holds the batch, as before.
+  If another item in the repo is at Accept the code or in its premerge check
+  (HZ-783), the window stays open for that merge instead, but closes at most
+  `HORIZON_DEPLOY_WAITED_ON_CAP_S` (default `600`) after the dependent is
+  first seen; it closes as soon as nothing is coming. The cap is never
+  extended by later merges, and the member's history records the hold and its
+  latest close time. A failed coming-to-deploy check closes the window at
+  once. `0` restores the close-at-once behaviour.
 - **Tag.** `deploy-<target>-<yyyymmdd>-b<batch id>`, e.g.
   `deploy-horizon-20261007-b7`. It is saved before the GitHub call and looked
   up first on every retry or restart, so a batch never publishes a second

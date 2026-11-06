@@ -20,10 +20,12 @@
 //
 // A window closes early when an open item waits on a member (HZ-469), or when
 // no other item in the repo is at Accept the code or in its premerge check
-// (HZ-591): no other merge is coming to share the batch.
+// (HZ-591): no other merge is coming to share the batch. A waited-on window
+// still takes in merges already coming, for at most DEPLOY_WAITED_ON_CAP_S
+// from when the dependent is first seen (HZ-783).
 
 import { db } from './db.js'
-import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, FARM_STEP_TIMEOUT_MS } from './config.js'
+import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, DEPLOY_WAITED_ON_CAP_S, FARM_STEP_TIMEOUT_MS } from './config.js'
 import { resolveTarget, deployOutcomeFor, startDeploy } from './deploy.js'
 import { jobBlocksDeploy, heldMsFor, oldestHolds, lastReleasedHold, releaseHold } from './deployHold.js'
 import { getBranchSha, isAncestor, getPrMergeSha, findReleaseByTag, createBatchRelease, defaultBranchStale } from './github.js'
@@ -191,12 +193,47 @@ async function tickTarget(target, now) {
 // batch to go live, so the window closes now instead of at its set time. The
 // close time is rewritten (the board and a restarted server read it from the
 // row), and the member's history keeps the time it replaced.
+//
+// HZ-783: if another item in the repo is at Accept the code or in its premerge
+// check (dependents excluded — they wait on this batch), the window stays open
+// for that merge, but closes at most DEPLOY_WAITED_ON_CAP_S after the dependent
+// is first seen. The close time only ever moves earlier, so later merges never
+// extend the cap. A failing check closes now, never holds.
 function closeWindowIfWaitedOn(open, now) {
   const queued = selectQueuedIn.all(open.id)
-  const waiting = openDependentsOfAny(queued.map((e) => e.item_id))[0]
+  const waiters = openDependentsOfAny(queued.map((e) => e.item_id))
+  const waiting = waiters[0]
   if (!waiting) return open
-  const closed = sqlTime(now)
-  const changed = db.prepare("UPDATE deploy_batch SET window_closes_at = ? WHERE id = ? AND status = 'open'").run(closed, open.id).changes
+  if (DEPLOY_WAITED_ON_CAP_S === 0) return closeNowForWaiter(open, now, waiting)
+  let coming
+  try {
+    coming = comingToDeploy(open.repo, [...queued.map((e) => e.item_id), ...waiters.map((w) => w.id)])
+  } catch (err) {
+    console.warn(`deploy queue: ${open.target}: coming-to-deploy check failed: ${err.message}`)
+    return closeNowForWaiter(open, now, waiting)
+  }
+  if (coming.length === 0) return closeNowForWaiter(open, now, waiting)
+  const capMs = now + DEPLOY_WAITED_ON_CAP_S * 1000
+  if (msOf(open.window_closes_at) <= capMs) return open
+  const capAt = sqlTime(capMs)
+  const changed = db
+    .prepare("UPDATE deploy_batch SET window_closes_at = ? WHERE id = ? AND status = 'open' AND window_closes_at = ?")
+    .run(capAt, open.id, open.window_closes_at).changes
+  if (changed !== 1) return open
+  addEvent(waiting.dependsOn, {
+    who: 'Horizon',
+    text: `deploy window held for ${coming[0].id}'s merge — ${waiting.id} is waiting on it; closes by ${capAt} UTC at the latest (${capLabel(DEPLOY_WAITED_ON_CAP_S)} cap)`,
+    color: '#DFA200',
+    initials: 'HZ',
+  })
+  notifyChange()
+  return selectBatch.get(open.id)
+}
+
+const capLabel = (s) => (s % 60 === 0 ? `${s / 60}-minute` : `${s}-second`)
+
+function closeNowForWaiter(open, now, waiting) {
+  const changed = db.prepare("UPDATE deploy_batch SET window_closes_at = ? WHERE id = ? AND status = 'open'").run(sqlTime(now), open.id).changes
   if (changed !== 1) return open
   addEvent(waiting.dependsOn, {
     who: 'Horizon',
