@@ -1409,7 +1409,8 @@ function dispatchableStep(item) {
 }
 
 // HZ-802: why kick() would hold an item that nothing in dispatchHold holds,
-// as { kind, message }, or null — the page's "not dispatched" reason.
+// as { kind, message } — the page's "not dispatched" reason. Never empty for
+// an item that exists: with no wait of its own, it waits for an agent slot.
 export function waitReason(id) {
   const item = getItem(id)
   if (!item) return null
@@ -1423,7 +1424,7 @@ export function waitReason(id) {
   }
   const spawnHold = spawnHolds.get(id)
   if (spawnHold) return { kind: 'spawned_code', message: `Waits for the code it asked for: ${spawnHold}` }
-  return null
+  return { kind: 'waiting_for_slot', message: 'Waiting for a free agent slot' }
 }
 
 export function kick(id, opts = {}) {

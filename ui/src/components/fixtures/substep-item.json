@@ -72,10 +72,6 @@
   "spawnedBy": null,
   "spawned": [],
   "asks": [],
-  "notDispatched": {
-    "kind": "waiting_for_slot",
-    "message": "Waiting for a free agent slot"
-  },
   "ruleBlock": null,
   "usageWait": null,
   "isolationRefusal": null,

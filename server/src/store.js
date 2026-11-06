@@ -1716,17 +1716,14 @@ export function dispatchHold(row, { inFlight = false } = {}) {
 }
 
 // HZ-802: why an item at an agent step with no active run is not running, or
-// null (a run is active, or the step is not one the dispatcher starts). Never
-// empty: with no hold, the orchestrator's own wait (a stopped farm, a usage
-// limit, …) names it, else the item waits for a free agent slot.
+// null (a run is active, or the step is not one the dispatcher starts). With
+// no hold, the orchestrator's own wait names it (a stopped farm, a usage
+// limit, …, else a free agent slot); a runner that names none adds nothing.
 function notDispatchedOf(row, activeRun) {
   if (activeRun || isClosed(row) || isAbandoned(row)) return null
   const step = STEPS[row.cursor]
   if (step?.kind !== 'agent' || step.runsIn === 'none') return null
-  return (
-    dispatchHold(row) ??
-    agentRunner.waitReason(row.id) ?? { kind: 'waiting_for_slot', message: 'Waiting for a free agent slot' }
-  )
+  return dispatchHold(row) ?? agentRunner.waitReason(row.id)
 }
 
 function notDispatchedFields(row, activeRun) {
