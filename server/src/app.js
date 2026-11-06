@@ -452,6 +452,13 @@ function waCallerOk(request, reply, senderJid) {
   return true
 }
 
+// HZ-790: who a WhatsApp action is recorded as — the sender's display name,
+// or the last 4 digits of the (already proven) jid when none rides along.
+function waActorOf(body) {
+  const label = (body.sender || '').trim() || `...${normalizeJid(body.senderJid).slice(-4)}`
+  return `${label} via WhatsApp`
+}
+
 // The raw value of an `Authorization: Bearer <token>` header, or null.
 function bearerToken(request) {
   const match = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.authorization || '')
@@ -493,6 +500,10 @@ export const SESSION_EXEMPT = [
   // HZ-786: a WhatsApp note on a running agent step. Same credential and the
   // same allowlist as approve-via-whatsapp.
   /^\/api\/items\/[^/]+\/retry-via-whatsapp$/,
+  // HZ-790: a WhatsApp note on an item parked at a gate (it never decides the
+  // gate), and a WhatsApp priority change. Same credential, same allowlist.
+  /^\/api\/items\/[^/]+\/gates\/(?:\d+|[a-z]+\.[a-z0-9-]+)\/note-via-whatsapp$/,
+  /^\/api\/items\/[^/]+\/priority-via-whatsapp$/,
   /^\/api\/health$/,
   // HZ-178: the generated API reference. Reachable like /api/health is, and for
   // the same reason — a published reference nobody can fetch is not published.
@@ -2382,6 +2393,16 @@ export function buildApp({
     },
   )
 
+  // Mirrors a saved note onto the item's issue thread (the footer marks it
+  // ours so ingestion skips it). Best-effort: a GitHub failure never fails the
+  // note. Shared by /feedback and HZ-790's note-via-whatsapp.
+  function mirrorFeedback(id, item, message, who) {
+    if (!item?.repo || item.issue == null) return
+    github
+      .postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_${who} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
+      .catch(() => {})
+  }
+
   // Standalone feedback — the UI leg of "agents respond to feedback". If the
   // item is mid-agent-step the attempt is superseded and re-run with the
   // feedback ({rerun:true}); parked at a gate it queues for the next dispatch
@@ -2408,12 +2429,55 @@ export function buildApp({
       const { message, target = '' } = request.body
       const item = store.getItem(id)
       const result = store.addFeedback(id, { message, target, source: 'ui' })
-      // Mirror onto the issue thread (footer marks it ours so ingestion skips it).
-      if (!result.error && item?.repo && item.issue != null) {
-        github
-          .postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_Human · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
-          .catch(() => {})
+      if (!result.error) mirrorFeedback(id, item, message, 'Human')
+      return send(reply, result)
+    },
+  )
+
+  // HZ-790: the WhatsApp leg of a note on an item parked at a gate. The
+  // concierge has no session, so /feedback answers it 401; it proves itself
+  // with the waCallerOk ladder instead, before any lookup. `:step` is the gate
+  // the concierge's snapshot showed: an item that has left it is refused with
+  // 409 not_at_gate and nothing is written, so a late note never lands on a
+  // later gate. The note only queues for the next dispatch — this route never
+  // calls gateActions, so it never approves, rejects or moves the gate.
+  // Notes on a running agent step go to retry-via-whatsapp instead.
+  fastify.post(
+    '/api/items/:id/gates/:step/note-via-whatsapp',
+    {
+      config: { scope: 'wa' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'step'],
+          properties: { id: { type: 'string' }, step: STEP_REF_PARAM },
+        },
+        body: {
+          type: 'object',
+          required: ['senderJid', 'message'],
+          propertyNames: { enum: ['senderJid', 'sender', 'message'] },
+          properties: {
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
+            message: { type: 'string', minLength: 1, maxLength: 2000 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!waCallerOk(request, reply, request.body.senderJid)) return
+      const stepIndex = gateStepOf(request, reply, 'note-via-whatsapp')
+      if (stepIndex === null) return
+      const { id } = request.params
+      const item = store.getItem(id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (item.cursor !== stepIndex || STEPS[stepIndex]?.kind !== 'gate') {
+        return reply.code(409).send({ error: 'not_at_gate' })
       }
+      const { message } = request.body
+      const actor = waActorOf(request.body)
+      const result = store.addFeedback(id, { message, source: 'whatsapp', actor })
+      if (!result.error) mirrorFeedback(id, item, message, actor)
       return send(reply, result)
     },
   )
@@ -2626,8 +2690,8 @@ export function buildApp({
     },
   )
 
-  // Reprioritize (UI or the WhatsApp concierge). Bad enum values 400 at the
-  // schema layer; the GitHub label mirror is best-effort and never blocks.
+  // Reprioritize from the UI (the concierge uses priority-via-whatsapp below).
+  // Bad enum values 400 at the schema layer.
   fastify.post(
     '/api/items/:id/priority',
     {
@@ -2642,16 +2706,46 @@ export function buildApp({
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
+    (request, reply) => send(reply, applyPriority(request.params.id, request.body.priority)),
+  )
+
+  // HZ-790: the WhatsApp concierge's reprioritize. /priority needs a login
+  // session the concierge does not have; this proves the caller with the
+  // waCallerOk ladder, before any lookup, then runs the same write.
+  fastify.post(
+    '/api/items/:id/priority-via-whatsapp',
+    {
+      config: { scope: 'wa' },
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['senderJid', 'priority'],
+          propertyNames: { enum: ['senderJid', 'sender', 'priority'] },
+          properties: {
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
+            priority: { type: 'string', enum: PRIORITIES },
+          },
+        },
+      },
+    },
     (request, reply) => {
-      const { id } = request.params
-      const item = store.getItem(id)
-      const result = store.setPriority(id, request.body.priority)
-      if (!result.error && !result.unchanged && item?.repo && item.issue != null) {
-        github.setPriorityLabel(item, request.body.priority).catch(() => {})
-      }
-      return send(reply, result)
+      if (!waCallerOk(request, reply, request.body.senderJid)) return
+      return send(reply, applyPriority(request.params.id, request.body.priority))
     },
   )
+
+  // The priority write both routes above share: the store, then the GitHub
+  // label mirror (best-effort, never blocks).
+  function applyPriority(id, priority) {
+    const item = store.getItem(id)
+    const result = store.setPriority(id, priority)
+    if (!result.error && !result.unchanged && item?.repo && item.issue != null) {
+      github.setPriorityLabel(item, priority).catch(() => {})
+    }
+    return result
+  }
 
   // HZ-544: turn Autopilot off (or back on) for one item in an Autopilot
   // project, by adding or removing the `autopilot-off` label on its issue —

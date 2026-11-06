@@ -81,11 +81,11 @@ test('/api/health is 200 with no session cookie (deploy.sh liveness probe)', asy
 
 // HZ-633: only the two exact billing paths skip the login gate. Neighbouring
 // paths and methods still need a session, and the exempt list grew by exactly
-// those two entries. HZ-634's Stripe webhook and HZ-786's WhatsApp retry are
-// the later entries.
+// those two entries. HZ-634's Stripe webhook, HZ-786's WhatsApp retry and
+// HZ-790's WhatsApp gate note and priority change are the later entries.
 test('only the two exact /api/billing paths skip the login gate', async () => {
   const { SESSION_EXEMPT } = await import('../src/app.js')
-  assert.equal(SESSION_EXEMPT.length, 13)
+  assert.equal(SESSION_EXEMPT.length, 15)
   for (const [method, url] of [
     ['GET', '/api/billing/checkout-session/x'],
     ['POST', '/api/billing/checkout-session/x'],

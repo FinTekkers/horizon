@@ -75,6 +75,15 @@ class StubHorizon:
       callable(payload) -> (status, body).
     retry_result: HZ-786's retry-via-whatsapp. None -> auto (404 for unknown
       ids, else 200 with a retry move); or a fixed (status, body) tuple.
+    note_result: HZ-790's gate note-via-whatsapp. None -> auto (404 for
+      unknown ids, else 200 {"ok": true, "queued": true}); or a fixed
+      (status, body) tuple, answered after the credential and body checks.
+
+    HZ-790: like the server, /feedback and /priority answer 401
+    login_required to a caller with no session (no cookie, no bearer token);
+    the WhatsApp credential does not count. The two -via-whatsapp routes
+    answer 401 without x-wa-approval-secret (present, never compared) and 400
+    on a body key the server's schema would refuse.
     """
 
     def __init__(
@@ -85,6 +94,7 @@ class StubHorizon:
         approve_result=None,
         autopilot_off_result=None,
         retry_result=None,
+        note_result=None,
     ):
         self.items = items or []
         self.feedback_rerun = feedback_rerun
@@ -102,6 +112,12 @@ class StubHorizon:
         self.autopilot_offs: list[dict] = []  # payloads POSTed to the kill switch
         self.autopilot_off_result = autopilot_off_result
         self.retry_result = retry_result
+        self.note_result = note_result
+        # (item_id, step, payload) via note-via-whatsapp, and (item_id,
+        # payload) via priority-via-whatsapp — only calls that passed the
+        # credential and body checks.
+        self.gate_notes: list[tuple[str, str, dict]] = []
+        self.priorities: list[tuple[str, dict]] = []
         self._create_seq = 0
         stub = self
 
@@ -148,6 +164,11 @@ class StubHorizon:
                 # /api/items/<id>/priority | /api/items/<id>/feedback
                 if len(parts) == 4 and parts[:2] == ["api", "items"]:
                     item_id, action = parts[2], parts[3]
+                    if action in ("priority", "feedback") and not stub._has_session(self.headers):
+                        return self._reply(401, {"error": "login_required"})
+                    if action == "priority-via-whatsapp":
+                        status, body = stub._handle_wa_priority(item_id, payload, self.headers)
+                        return self._reply(status, body)
                     if item_id not in stub.known_ids:
                         return self._reply(404, {"error": "not_found"})
                     if action == "priority":
@@ -158,6 +179,10 @@ class StubHorizon:
                     if action == "retry-via-whatsapp":
                         status, body = stub._handle_retry(item_id, payload)
                         return self._reply(status, body)
+                # /api/items/<id>/gates/<step>/note-via-whatsapp
+                if len(parts) == 6 and parts[:2] == ["api", "items"] and parts[3] == "gates" and parts[5] == "note-via-whatsapp":
+                    status, body = stub._handle_gate_note(parts[2], parts[4], payload, self.headers)
+                    return self._reply(status, body)
                 # /api/items/<id>/gates/<step>/approve-via-whatsapp
                 if len(parts) == 6 and parts[:2] == ["api", "items"] and parts[3] == "gates" and parts[5] == "approve-via-whatsapp":
                     item_id, step_index = parts[2], int(parts[4]) if parts[4].isdigit() else parts[4]
@@ -213,6 +238,40 @@ class StubHorizon:
         if self.autopilot_off_result is not None:
             return self.autopilot_off_result
         return 200, {"ok": True, "project": payload.get("project"), "old": "on", "new": "off"}
+
+    @staticmethod
+    def _has_session(headers) -> bool:
+        return headers.get("cookie") is not None or headers.get("authorization") is not None
+
+    @staticmethod
+    def _wa_refusal(headers, payload, allowed_keys, required_keys):
+        """The server's order: the credential first (presence only), then the
+        body schema. None when the call passes both."""
+        if headers.get("x-wa-approval-secret") is None:
+            return 401, {"error": "bad_approval_secret"}
+        if not set(payload) <= allowed_keys or any(not payload.get(k) for k in required_keys):
+            return 400, {"error": "bad_request"}
+        return None
+
+    def _handle_gate_note(self, item_id, step, payload, headers):
+        refusal = self._wa_refusal(headers, payload, {"message", "senderJid", "sender"}, ("message", "senderJid"))
+        if refusal:
+            return refusal
+        self.gate_notes.append((item_id, step, payload))
+        if self.note_result is not None:
+            return self.note_result
+        if item_id not in self.known_ids:
+            return 404, {"error": "not_found"}
+        return 200, {"ok": True, "queued": True}
+
+    def _handle_wa_priority(self, item_id, payload, headers):
+        refusal = self._wa_refusal(headers, payload, {"priority", "senderJid", "sender"}, ("priority", "senderJid"))
+        if refusal:
+            return refusal
+        self.priorities.append((item_id, payload))
+        if item_id not in self.known_ids:
+            return 404, {"error": "not_found"}
+        return 200, {"ok": True}
 
     def _handle_retry(self, item_id, payload):
         if self.retry_result is not None:
