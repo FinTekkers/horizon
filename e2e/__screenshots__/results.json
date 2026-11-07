@@ -1,0 +1,463 @@
+{
+  "version": 1,
+  "baseline": "0158fef327395efa4a0c8c6d4bbacbbf7bec959d",
+  "threshold": 0.1,
+  "ratioTolerance": 0.01,
+  "shots": [
+    {
+      "name": "admin-sections--desktop--light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "admin-sections--phone--light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "asks-approvals--desktop--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-approvals--desktop--dark.png",
+      "error": null
+    },
+    {
+      "name": "asks-approvals--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-approvals--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "asks-approvals--phone--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-approvals--phone--dark.png",
+      "error": null
+    },
+    {
+      "name": "asks-approvals--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-approvals--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "asks-follow-ups--desktop--dark",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "asks-follow-ups--desktop--light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "asks-follow-ups--phone--dark",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "asks-follow-ups--phone--light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "asks-item-banner--desktop--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-item-banner--desktop--dark.png",
+      "error": null
+    },
+    {
+      "name": "asks-item-banner--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-item-banner--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "asks-item-banner--phone--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-item-banner--phone--dark.png",
+      "error": null
+    },
+    {
+      "name": "asks-item-banner--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/asks-item-banner--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "autopilot-off-approvals--desktop--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/autopilot-off-approvals--desktop--dark.png",
+      "error": null
+    },
+    {
+      "name": "autopilot-off-approvals--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/autopilot-off-approvals--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "autopilot-off-card--desktop--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/autopilot-off-card--desktop--dark.png",
+      "error": null
+    },
+    {
+      "name": "autopilot-off-card--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/autopilot-off-card--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "autopilot-off-item--desktop--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/autopilot-off-item--desktop--dark.png",
+      "error": null
+    },
+    {
+      "name": "autopilot-off-item--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/autopilot-off-item--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-abandon--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-abandon--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-admin-projects--desktop--light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-artifact-history--desktop--light",
+      "status": "changed",
+      "diffRatio": 0.01311492919921875,
+      "diff": "e2e/__screenshots__/diff/journey-artifact-history--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-definitions--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-definitions--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-dependencies--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-dependencies--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-farm-health--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-farm-health--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-farm-health--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-farm-health--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-full-lifecycle--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-full-lifecycle--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-gate-blocked--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-gate-blocked--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-gate-key--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-gate-key--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-gate-running--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-gate-running--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-gates--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-gates--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-live-feed--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-live-feed--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-login-error--desktop--light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "journey-markdown--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-markdown--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-merge-conflict--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-merge-conflict--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-merge-resolved--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-merge-resolved--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-mock-agents--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-mock-agents--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-pause-reason--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-pause-reason--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-persona-picker--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-persona-picker--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-plan-board--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-plan-board--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-plan-board--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-plan-board--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-plan-filed--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-plan-filed--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-plan-items--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-plan-items--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-plan-items--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-plan-items--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-plan-pill--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-plan-pill--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-plan-pill--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-plan-pill--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-premerge-red--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-premerge-red--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-queued-work--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-queued-work--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-ran-ahead--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-ran-ahead--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-ran-ahead--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-ran-ahead--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-step-provider--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-step-provider--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-task-first--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-task-first--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-task-planning--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-task-planning--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-task-spawned--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-task-spawned--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-trivial-lane--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-trivial-lane--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-usage-limit--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/journey-usage-limit--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "journey-verify-fail--desktop--light",
+      "status": "changed",
+      "diffRatio": 0.028216450963271744,
+      "diff": "e2e/__screenshots__/diff/journey-verify-fail--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "layout-admin-tokens--phone--light",
+      "status": "same",
+      "diffRatio": 0,
+      "diff": null,
+      "error": null
+    },
+    {
+      "name": "layout-board--desktop--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/layout-board--desktop--dark.png",
+      "error": null
+    },
+    {
+      "name": "layout-board--desktop--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/layout-board--desktop--light.png",
+      "error": null
+    },
+    {
+      "name": "layout-board--phone--dark",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/layout-board--phone--dark.png",
+      "error": null
+    },
+    {
+      "name": "layout-board--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/layout-board--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "layout-item-activity--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/layout-item-activity--phone--light.png",
+      "error": null
+    },
+    {
+      "name": "layout-item-badge--phone--light",
+      "status": "changed",
+      "diffRatio": 1,
+      "diff": "e2e/__screenshots__/diff/layout-item-badge--phone--light.png",
+      "error": null
+    }
+  ]
+}
