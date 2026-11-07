@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { menuActions } from '../domain/stepActions'
+import { approveTarget, menuActions } from '../domain/stepActions'
 
 // HZ-711: the same actions on the item page, a board card and the Approvals
 // drawer — Approve, and under ⋯ Return to…, Retry and Abandon — each only
@@ -65,7 +65,7 @@ export default function StepActionMenu({ item, onApprove, onMove, onAbandon, app
           className="btn-approve"
           disabled={approveDisabled}
           aria-busy={approveDisabled || undefined}
-          onClick={() => onApprove(item.id, item.moves.approve.label)}
+          onClick={() => onApprove(item.id, approveTarget(item).label)}
         >
           {approve.label}
         </button>

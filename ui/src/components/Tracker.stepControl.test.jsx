@@ -5,7 +5,7 @@
 
 import { afterEach, expect, test, vi } from 'vitest'
 import { cleanup, fireEvent, screen } from '@testing-library/react'
-import { GATE_ITEM, mountApp, stubServer } from './fixtures/stepControl'
+import { GATE_MOVES, mountApp, stubServer } from './fixtures/stepControl'
 
 afterEach(() => {
   cleanup()
@@ -56,7 +56,7 @@ test('clicking every step opens no send-back or restart pop-up — only the Move
   }
   expect([...opened].sort()).toEqual(['Approve this gate?', 'Return to an earlier step'])
   // Only the snapshot's targets and the gate open anything.
-  const offered = new Set([...GATE_ITEM.moves.targets.map((t) => t.label), GATE_ITEM.moves.approve.label])
+  const offered = new Set([...GATE_MOVES.targets.map((t) => t.label), GATE_MOVES.approve.label])
   const hinted = steps.filter((s) => s.querySelector('.step-card__hint')).map((s) => s.firstChild.textContent)
   expect(new Set(hinted)).toEqual(offered)
 })

@@ -28,7 +28,7 @@ import { fieldByName } from '../../domain/js/fields.js'
 
 // What an agent may send. 'split' is written by recordSplitAsk only. The
 // status column has no CHECK, so later items can add their own; this module
-// writes 'open', 'superseded', 'filed' and 'dismissed'.
+// writes 'open', 'superseded', 'filed', 'dismissed' and 'released' (HZ-802).
 export const ASK_KINDS = ['blocking', 'soft']
 export const MAX_ASKS = 8
 export const METRIC_MIN_LINES = 3
@@ -56,7 +56,8 @@ const supersedeStep = db.prepare(
 const selectOpen = db.prepare(
   `SELECT a.*, r.id AS review_id, r.status AS review_status, r.provider AS review_provider, r.verdict AS review_verdict,
           r.reasons_json AS review_reasons_json, r.amended_draft_json AS review_amended_draft_json,
-          r.refers_to_json AS review_refers_to_json, r.wait_reason AS review_wait_reason
+          r.refers_to_json AS review_refers_to_json, r.wait_reason AS review_wait_reason,
+          r.contradiction_json AS review_contradiction_json
      FROM ask a LEFT JOIN ask_review r ON r.ask_id = a.id
     WHERE a.item_id = ? AND a.status = 'open' ORDER BY a.id DESC`,
 )
@@ -70,6 +71,11 @@ const markFiled = db.prepare(
 )
 const markDismissed = db.prepare(
   "UPDATE ask SET status = 'dismissed', dismiss_reason = ?, resolved_by = ?, resolved_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND status = 'open'",
+)
+// HZ-802: the owner's override for a filed blocking ask that still holds the
+// start step. Only a filed ask; an open one is dismissed instead.
+const markReleased = db.prepare(
+  "UPDATE ask SET status = 'released', dismiss_reason = ?, resolved_by = ?, resolved_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND status = 'filed'",
 )
 export const DISMISS_REASON_MAX = 500
 
@@ -207,6 +213,7 @@ function reviewOf(row) {
     amended_draft: row.review_amended_draft_json ? parseJson(row.review_amended_draft_json, null) : null,
     refers_to: Array.isArray(refersTo) ? refersTo : [],
     wait_reason: row.review_wait_reason,
+    contradiction: parseJson(row.review_contradiction_json, null),
   }
 }
 
@@ -347,4 +354,21 @@ export function dismissAsk(item, askId, { reason, actor = 'Horizon', queueFeedba
     if (queued.error) throw new Error(`could not queue the reason: ${queued.error}`)
     return { ok: true, title, reason: text }
   })()
+}
+
+// HZ-802: releases one filed blocking ask, so it no longer holds the asking
+// item's start step (startCheckAsks lists only open and filed asks). The
+// filed item and its dependency edge are left alone. { ok, title,
+// filedItemId, reason, alreadyReleased? } or { error, status, message? }.
+export function releaseAsk(item, askId, { reason, actor = 'Horizon' }) {
+  const text = redact(String(reason ?? ''), { oneLine: true }).trim()
+  if (!text) return { error: 'reason_required', status: 400, message: 'Say why the hold is released.' }
+  if (text.length > DISMISS_REASON_MAX) return { error: 'reason_too_long', status: 400, message: `At most ${DISMISS_REASON_MAX} characters.` }
+  const row = getAsk(item.id, askId)
+  if (!row) return { error: 'not_found', status: 404 }
+  const title = parseDraft(row.draft_json).title ?? ''
+  if (row.status === 'released') return { ok: true, alreadyReleased: true, title, filedItemId: row.filed_item_id }
+  if (row.status !== 'filed') return { error: 'ask_not_filed', status: 409, message: 'Only a filed ask can be released; dismiss an open ask.' }
+  if (markReleased.run(text, actor, row.id).changes === 0) return { error: 'ask_not_filed', status: 409, message: 'This ask is no longer filed.' }
+  return { ok: true, title, filedItemId: row.filed_item_id, reason: text }
 }

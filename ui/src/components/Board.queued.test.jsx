@@ -16,6 +16,7 @@ import Board from './Board'
 import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
 import { clockTime } from '../domain/status'
 import * as boardFilters from '../boardFilters'
+import { servedMoves } from './fixtures/servedMoves'
 
 const LATEST_END = '2026-10-08T19:37:52.000Z'
 const BLOCK = { blocked: true, startedAt: '2026-10-08T19:12:52.000Z', latestEnd: LATEST_END }
@@ -32,7 +33,7 @@ afterEach(() => {
 const noop = () => {}
 
 // What the snapshot offers at Accept the code.
-const ACCEPT_MOVES = {
+const ACCEPT_MOVES = servedMoves({
   approve: { key: 'change.accept-code', label: 'Accept the code' },
   targets: [
     {
@@ -47,7 +48,7 @@ const ACCEPT_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 
 function item(id, extra = {}) {
   return {

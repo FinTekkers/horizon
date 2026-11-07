@@ -36,6 +36,8 @@ vi.mock('./api', () => ({
   moveItem: vi.fn(),
   getRestartSent: () => null,
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   abandonItem: vi.fn(),
@@ -52,6 +54,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 function setItems(next) {
   items = next
@@ -494,7 +497,7 @@ test('a browser with only the old saved project value sees today\'s view, every 
 // The first step's label is read off STEPS, so this file holds no copy of it
 // (domain-one-declaration.test.mjs).
 const FIRST_LABEL = STEPS[0].label
-const IMPLEMENT_MOVES = {
+const IMPLEMENT_MOVES = servedMoves({
   approve: null,
   targets: [
     {
@@ -527,7 +530,7 @@ const IMPLEMENT_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 
 function atImplement(id, extra = {}) {
   return { ...itemAtClosingGate(id), cursor: IMPLEMENT_STEP_INDEX, currentStepKey: 'change.implement', moves: IMPLEMENT_MOVES, ...extra }
@@ -562,7 +565,7 @@ function ruleBlockedItem(id) {
   return atImplement(id, {
     ruleBlock: { rule: 'guardrail 6', needs: 'A ledger-models release.', runId: 9, blockedAt: '2026-10-08 14:02:11' },
     // HZ-711: where Amend the rule moves the item is the server's to say.
-    moves: { ...IMPLEMENT_MOVES, amend: { action: 'retry', key: 'change.implement' } },
+    moves: { ...IMPLEMENT_MOVES, amendKey: 'change.implement' },
   })
 }
 
@@ -610,8 +613,7 @@ test("Amend the rule sends the owner's ruling as the move the snapshot names, th
   fireEvent.change(document.querySelector('.composer__input'), { target: { value: 'a local shim is allowed' } })
   fireEvent.click(document.querySelector('.composer__submit'))
   expect(api.moveItem).toHaveBeenCalledWith('RB-3', {
-    action: 'retry',
-    to: 'change.implement',
+    stepKey: 'change.implement',
     note: "Owner's ruling on the blocking rule: a local shim is allowed",
   })
 })
@@ -627,8 +629,11 @@ const moveDialog = (getByRole) => getByRole('dialog', { name: /^Retry this step 
 const noteBox = (getByRole) => within(moveDialog(getByRole)).getByRole('textbox', { name: 'Note for the step (optional)' })
 const confirmRetry = (getByRole) => within(moveDialog(getByRole)).getByRole('button', { name: 'Retry' })
 
+// The step card's Retry — a failed run's hold banner (HZ-713) has its own,
+// which resumes the item.
 async function sendNote(findByRole, getByRole, text = 'try X') {
-  fireEvent.click(await findByRole('button', { name: 'Retry' }))
+  await findByRole('button', { name: /^Specialist agent implements/ })
+  fireEvent.click(within(document.querySelector('.step-card__actions')).getByRole('button', { name: 'Retry' }))
   fireEvent.change(noteBox(getByRole), { target: { value: text } })
   fireEvent.click(confirmRetry(getByRole))
 }
@@ -641,7 +646,7 @@ test('a note that goes through closes the Move dialog once the answer is in', as
 
   const { findByRole, getByRole, queryByRole } = render(<App />)
   await sendNote(findByRole, getByRole)
-  expect(api.moveItem).toHaveBeenCalledWith('SB-1', { action: 'retry', to: 'change.implement', note: 'try X' })
+  expect(api.moveItem).toHaveBeenCalledWith('SB-1', { stepKey: 'change.implement', note: 'try X' })
   // Still open, and its confirm disabled, while the request is out.
   expect(confirmRetry(getByRole).disabled).toBe(true)
   await act(async () => answer({ ok: true }))
@@ -718,9 +723,9 @@ const KILL_RESTART = [
         'Review before execution',
       ])
     },
-    calledWith: (id, text) => [id, { action: 'return', to: 'change.define-outcome', note: text }],
+    calledWith: (id, text) => [id, { stepKey: 'change.define-outcome', note: text }],
     locksCancel: false,
-    sent: (id, text) => ({ url: `/api/items/${id}/move`, body: { action: 'return', from: 'change.implement', to: 'change.define-outcome', note: text } }),
+    sent: (id, text) => ({ url: `/api/items/${id}/move`, body: { stepKey: 'change.define-outcome', from: 'change.implement', note: text } }),
   },
 ]
 
@@ -830,3 +835,20 @@ for (const dialog of KILL_RESTART) {
     })
   }
 }
+
+// HZ-802: a restart that cannot dispatch answers 409 with why; the Move
+// dialog (HZ-711: Restart phase is a Retry now) shows the server's words, not
+// the generic retry line.
+test('a Retry refused with a reason shows that reason in the Move dialog', async () => {
+  api.moveItem.mockRejectedValue(
+    Object.assign(new Error('blocked_by'), { status: 409, serverMessage: 'Blocked by MDI-129 (Add rates)' }),
+  )
+  setItems([atImplement('KR-802')])
+  window.history.pushState({}, '', '/kr-802')
+
+  const { findByRole, getByRole } = render(<App />)
+  await sendNote(findByRole, getByRole, '')
+  const alert = await findByRole('alert')
+  expect(alert.textContent).toBe('Blocked by MDI-129 (Add rates)')
+  expect(moveDialog(getByRole).contains(alert)).toBe(true)
+})

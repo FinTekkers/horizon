@@ -37,14 +37,16 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "requires": {
-      "$comment": "HZ-502: every tool and file the commands need, checked on the runner before Impact review (farm/run_plan_requires.py). Each item has exactly one key. A `tool` name matches ^[A-Za-z0-9][A-Za-z0-9._+-]*$ (so it never reads as an option). A `path` is relative to the checkout root, never absolute, never with a `..` part, and holds no control character. Asserted by both bindings.",
+      "$comment": "HZ-502: every tool and file the commands need, checked on the runner before Impact review (farm/run_plan_requires.py). Each item has exactly one key. A `tool` name matches ^[A-Za-z0-9][A-Za-z0-9._+-]*$ (so it never reads as an option). A `path` is relative to the checkout root, never absolute, never with a `..` part, and holds no control character. HZ-769: an `env` name matches ^[A-Za-z_][A-Za-z0-9_]*$ (a variable name, no `$`) and is checked as set and non-empty in the environment Execute will use; a `file` is an absolute host path with no control character, checked readable by the job user only when its realpath is under /etc/horizon or /etc/fintekkers (farm/run_plan_requires.py). Asserted by both bindings.",
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "tool": { "type": "string", "minLength": 1 },
-          "path": { "type": "string", "minLength": 1 }
+          "path": { "type": "string", "minLength": 1 },
+          "env": { "type": "string", "minLength": 1 },
+          "file": { "type": "string", "minLength": 1 }
         }
       }
     },

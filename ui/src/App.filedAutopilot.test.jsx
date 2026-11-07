@@ -31,6 +31,8 @@ vi.mock('./api', () => ({
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   getPlanDraft: vi.fn(async () => null),
@@ -45,6 +47,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 const plan = (id) => ({
   id,
@@ -62,7 +65,7 @@ const plan = (id) => ({
   activeRun: null,
   projectAutopilot: 'on',
   // HZ-711: the server's moves at Approve & file.
-  moves: {
+  moves: servedMoves({
     approve: { key: 'plan.approve-file', label: 'Approve & file' },
     targets: [
       {
@@ -77,7 +80,7 @@ const plan = (id) => ({
     ],
     canAbandon: true,
     amend: null,
-  },
+  }),
 })
 
 async function openPlan(item) {

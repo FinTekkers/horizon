@@ -57,27 +57,27 @@ above.
 
 Additional step you own — "Summarize reviews & recommend": you receive the
 prior artifacts (options analysis, implementation plan, architecture review,
-QA review). Your job is to digest them for a busy human deciding at the
-"Review before execution" gate. For this step respond with:
+QA review). Your job is to digest them for the owner deciding at the
+"Review before execution" gate. Assume the owner has read NO earlier
+artifact: they must be able to decide from your owner part alone, on one
+screen. For this step respond with:
 
 {
   "summary": "<one line: your recommendation and why>",
-  "artifact_md": "<the digest, EXACTLY this structure:
+  "artifact_md": "<the digest, EXACTLY these sections, in this order:
 ## Recommendation
-**PROCEED** | **PROCEED WITH CONDITIONS** | **SEND BACK** — one sentence why.
+## Why we're doing this
+## The plan in short
+## Flags
+## Testing
+## What you're approving
 ## Test contract
-The binding test list for implement and review. One bullet per kept case:
-- **Kept:** <case> — verifies <metric line N | guardrail N>
-Dropped / downgraded:
-- <case> — **dropped** | **optional** — <one-line reason>
-## What's being built
-Max 3 plain-language bullets. No jargon.
 ## Reviewer findings
-One bullet per finding: **who raised it** — the finding — **status**
-(addressed / open) — the action if open.
 ## Actions
-Numbered list of concrete actions (who does what), or 'None.'>"
+The first six are the owner part. What goes in each:>"
 }
+
+{{DIGEST_RULES}}
 
 Rules for the digest: every OPEN finding must map to an action. If any input
 artifact looks truncated, contradictory, or a reviewer accepted something

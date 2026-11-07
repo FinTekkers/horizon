@@ -324,43 +324,167 @@ def validate_reply(parsed: dict) -> tuple[str, list[dict], list[str], list[dict]
     return reply[:1500], actions, notes, gate_options
 
 
-def execute_actions(actions: list[dict], base_url: str = HORIZON_URL) -> list[str]:
+def _running_agent_step(item: dict | None) -> str | None:
+    """The step key when the snapshot shows this item's agent step running —
+    not paused, not abandoned — else None. Only then does a note go to
+    retry-via-whatsapp; every other state keeps the /feedback call."""
+    if not item or not item.get("activeRun") or item.get("paused") or item.get("abandoned_at"):
+        return None
+    step = item.get("currentStep") or {}
+    if step.get("kind") != "agent" or not step.get("key"):
+        return None
+    return step["key"]
+
+
+def _retry_via_whatsapp(base_url: str, item_id: str, step_key: str, note: str, sender: str, sender_jid: str) -> str:
+    """HZ-786: re-runs a running agent step with the note, through the server's
+    moveByHuman Retry — the path the UI's /move Retry takes. The concierge has
+    no session or gate PIN for /move, so it proves itself the way
+    wizard._approve_gate does. Returns one reply line; every failure is a ✗
+    naming the item, so no note is dropped without the sender knowing."""
+    if not config.WA_APPROVAL_SECRET:
+        return f"✗ note for {item_id} not sent (the approval credential isn't configured on this host)"
+    try:
+        res = httpx.post(
+            f"{base_url}/api/items/{item_id}/retry-via-whatsapp",
+            json={"senderJid": sender_jid, "sender": sender[:120], "from": step_key, "note": note},
+            headers={"x-wa-approval-secret": config.WA_APPROVAL_SECRET},
+            timeout=15,
+        )
+    except httpx.HTTPError as exc:
+        log(f"retry-via-whatsapp for {item_id} errored: {exc}")
+        return f"✗ note for {item_id} failed (Horizon unreachable)"
+    if res.status_code == 200:
+        return f"✓ re-running {item_id}'s step with your note"
+    error = _error_of(res)
+    if res.status_code == 409 and error in ("stale_step", "not_running_step"):
+        return f"✗ {item_id} moved on before your note landed — nothing was saved; send it again"
+    if res.status_code == 403:
+        return f"✗ {item_id}: this WhatsApp number isn't on Horizon's approver list"
+    return f"✗ note for {item_id} failed ({error})"
+
+
+def _gate_ref(item: dict | None) -> str | None:
+    """The gate the snapshot shows this item parked at — its step key, or the
+    index from a server without keys — else None. Only then does a note go to
+    note-via-whatsapp. An abandoned item keeps its cursor, so one abandoned at
+    a gate is not parked there."""
+    if not item or item.get("abandoned_at"):
+        return None
+    step = item.get("currentStep") or {}
+    if not step.get("gate"):
+        return None
+    if step.get("key"):
+        return step["key"]
+    index = step.get("index")
+    return str(index) if isinstance(index, int) and not isinstance(index, bool) else None
+
+
+def _post_as_approver(url: str, body: dict) -> httpx.Response:
+    """HZ-790: a POST that proves itself the way wizard._approve_gate does —
+    WA_APPROVAL_SECRET plus the sender's jid, which the server checks against
+    its approver list. Callers check the secret is set first."""
+    return httpx.post(url, json=body, headers={"x-wa-approval-secret": config.WA_APPROVAL_SECRET}, timeout=15)
+
+
+def _note_via_whatsapp(base_url: str, item_id: str, gate: str, note: str, sender: str, sender_jid: str) -> str:
+    """HZ-790: saves a note on an item parked at a gate. It only queues for the
+    next dispatch; it never approves or moves the gate. `gate` is the step the
+    snapshot showed, so a note on an item that has moved on is refused, not
+    saved on a later gate. Returns one reply line."""
+    if not config.WA_APPROVAL_SECRET:
+        return f"✗ note for {item_id} not sent (the approval credential isn't configured on this host)"
+    try:
+        res = _post_as_approver(
+            f"{base_url}/api/items/{item_id}/gates/{gate}/note-via-whatsapp",
+            {"message": note, "senderJid": sender_jid, "sender": sender[:120]},
+        )
+    except httpx.HTTPError as exc:
+        log(f"note-via-whatsapp for {item_id} errored: {exc}")
+        return f"✗ note for {item_id} failed (Horizon unreachable)"
+    if res.status_code == 200:
+        return f"✓ note saved on {item_id} at its gate (it does not approve the gate)"
+    error = _error_of(res)
+    if res.status_code == 409 and error == "not_at_gate":
+        return f"✗ {item_id} has moved on from that gate — nothing was saved; send it again"
+    if res.status_code == 404:
+        return f"✗ couldn't find {item_id}"
+    if res.status_code == 403:
+        return f"✗ {item_id}: this WhatsApp number isn't on Horizon's approver list"
+    return f"✗ note for {item_id} failed ({error})"
+
+
+def _priority_via_whatsapp(base_url: str, item_id: str, priority: str, sender: str, sender_jid: str) -> str:
+    """HZ-790: /priority needs a login session the concierge does not have, so
+    a priority change goes to priority-via-whatsapp. Returns one reply line."""
+    if not config.WA_APPROVAL_SECRET:
+        return f"✗ priority change for {item_id} failed (WhatsApp actions are not configured on this host)"
+    try:
+        res = _post_as_approver(
+            f"{base_url}/api/items/{item_id}/priority-via-whatsapp",
+            {"priority": priority, "senderJid": sender_jid, "sender": sender[:120]},
+        )
+    except httpx.HTTPError as exc:
+        log(f"priority-via-whatsapp for {item_id} errored: {exc}")
+        return f"✗ set_priority for {item_id} failed (Horizon unreachable)"
+    if res.status_code == 200:
+        return f"✓ {item_id} priority set to {priority}"
+    if res.status_code == 404:
+        return f"✗ couldn't find {item_id}"
+    if res.status_code == 403:
+        return f"✗ {item_id}: this WhatsApp number isn't on Horizon's approver list"
+    return f"✗ priority change for {item_id} failed ({_error_of(res)})"
+
+
+def execute_actions(
+    actions: list[dict],
+    base_url: str = HORIZON_URL,
+    *,
+    items: list[dict] | None = None,
+    sender: str = "",
+    sender_jid: str = "",
+) -> list[str]:
     """Runs validated actions against the Node server; returns human-readable
-    notes for the WhatsApp reply. Never raises — every outcome becomes a note."""
+    notes for the WhatsApp reply. Never raises — every outcome becomes a note.
+
+    items is the snapshot the message was answered from: a feedback action on
+    an item whose agent step is running there goes to retry-via-whatsapp
+    (HZ-786), and one on an item parked at a gate to note-via-whatsapp
+    (HZ-790), instead of /feedback. A priority change always goes to
+    priority-via-whatsapp (HZ-790)."""
+    by_id = {it.get("id"): it for it in items or [] if isinstance(it, dict)}
     notes: list[str] = []
     for action in actions:
         item_id = action["item_id"]
+        if action["type"] == "set_priority":
+            notes.append(_priority_via_whatsapp(base_url, item_id, action["priority"], sender, sender_jid))
+            continue
+        step_key = _running_agent_step(by_id.get(item_id))
+        if step_key:
+            notes.append(_retry_via_whatsapp(base_url, item_id, step_key, action["message"], sender, sender_jid))
+            continue
+        gate = _gate_ref(by_id.get(item_id))
+        if gate:
+            notes.append(_note_via_whatsapp(base_url, item_id, gate, action["message"], sender, sender_jid))
+            continue
         try:
-            if action["type"] == "set_priority":
-                res = httpx.post(
-                    f"{base_url}/api/items/{item_id}/priority",
-                    json={"priority": action["priority"]},
-                    timeout=15,
-                )
-                if res.status_code == 200:
-                    notes.append(f"✓ {item_id} priority set to {action['priority']}")
-                elif res.status_code == 404:
-                    notes.append(f"✗ couldn't find {item_id}")
+            res = httpx.post(
+                f"{base_url}/api/items/{item_id}/feedback",
+                json={"message": action["message"]},
+                timeout=15,
+            )
+            if res.status_code == 200:
+                body = res.json()
+                if body.get("rerun"):
+                    # The hidden side effect the architecture review
+                    # flagged: feedback superseded an in-flight step.
+                    notes.append(f"✓ feedback sent to {item_id} — it superseded the step that was running, which now re-runs with your note")
                 else:
-                    notes.append(f"✗ priority change for {item_id} failed ({_error_of(res)})")
+                    notes.append(f"✓ feedback queued for {item_id} (and mirrored to its GitHub issue)")
+            elif res.status_code == 404:
+                notes.append(f"✗ couldn't find {item_id}")
             else:
-                res = httpx.post(
-                    f"{base_url}/api/items/{item_id}/feedback",
-                    json={"message": action["message"]},
-                    timeout=15,
-                )
-                if res.status_code == 200:
-                    body = res.json()
-                    if body.get("rerun"):
-                        # The hidden side effect the architecture review
-                        # flagged: feedback superseded an in-flight step.
-                        notes.append(f"✓ feedback sent to {item_id} — it superseded the step that was running, which now re-runs with your note")
-                    else:
-                        notes.append(f"✓ feedback queued for {item_id} (and mirrored to its GitHub issue)")
-                elif res.status_code == 404:
-                    notes.append(f"✗ couldn't find {item_id}")
-                else:
-                    notes.append(f"✗ feedback for {item_id} failed ({_error_of(res)})")
+                notes.append(f"✗ feedback for {item_id} failed ({_error_of(res)})")
         except httpx.HTTPError as exc:
             log(f"action {action['type']} for {item_id} errored: {exc}")
             notes.append(f"✗ {action['type']} for {item_id} failed (Horizon unreachable)")
@@ -458,7 +582,14 @@ def process_message(
         what = "reply was repaired to parse" if note in REPAIR_NOTES else "parser note"
         log(f"message {msg.msg_id}: {what} — {note}")
     # Appended last, after the action results, and a no-op when empty.
-    notes = execute_actions(actions, base_url) + notes + parse_notes
+    results = execute_actions(
+        actions,
+        base_url,
+        items=route.snapshot.get("items"),
+        sender=wizard.sender_label(msg.sender_jid),
+        sender_jid=msg.sender_jid,
+    )
+    notes = results + notes + parse_notes
     # Remembers this sender's numbered choices (or clears stale ones) so a
     # later bare-number reply from them resolves deterministically.
     wizard.offer_gate_choices(msg.chat_jid, msg.sender_jid, gate_options, state.choice_store)

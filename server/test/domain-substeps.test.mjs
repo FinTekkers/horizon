@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
-import { currentSubstep, decodeTarget, encodeTarget, stepLabel, substepReworkTargets, substepsAt, substepsOf } from '../../domain/js/substeps.js'
+import { currentSubstep, decodeMoveKey, decodeTarget, encodeMoveKey, encodeTarget, stepLabel, substepReworkTargets, substepsAt, substepsOf } from '../../domain/js/substeps.js'
 
 const OPENING = { id: 'golden-cases', label: 'Golden test cases', anchor: 1 }
 const AUDIT = { id: 'impl-audit', label: 'Audit the change', anchor: IMPLEMENT_STEP_INDEX }
@@ -46,4 +46,13 @@ test('a picker value round-trips', () => {
   assert.deepEqual(decodeTarget('11'), { index: 11, substepId: null })
   assert.deepEqual(decodeTarget('11:impl-audit'), { index: 11, substepId: 'impl-audit' })
   for (const value of ['', null, 'x', 'x:y']) assert.equal(decodeTarget(value), null)
+})
+
+// HZ-799: a move target's stepKey — a step key, never a position.
+test('a move key round-trips', () => {
+  assert.equal(encodeMoveKey('change.implement'), 'change.implement')
+  assert.equal(encodeMoveKey('change.implement', 'impl-audit'), 'change.implement#impl-audit')
+  assert.deepEqual(decodeMoveKey('change.implement'), { stepKey: 'change.implement', substepId: null })
+  assert.deepEqual(decodeMoveKey('change.implement#impl-audit'), { stepKey: 'change.implement', substepId: 'impl-audit' })
+  for (const value of ['', null, 11]) assert.equal(decodeMoveKey(value), null)
 })

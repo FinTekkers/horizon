@@ -19,7 +19,6 @@ import {
   STEPS,
   isClosed,
   isAbandoned,
-  holdingBlockers,
   IMPLEMENT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
@@ -64,8 +63,7 @@ import {
   getConflictRun as conflictRunOf,
   sweepGateActions,
   recoverLegacyRejected,
-  blockersOf,
-  startHoldOf,
+  dispatchHold,
   requestChanges,
   reviewRejected,
   isProjectEnabled,
@@ -95,6 +93,7 @@ import {
   PAUSE_SET,
   markModelLimited,
   activeModelLimits,
+  clearModelLimits,
   setUsageWait,
   listUsageWaits,
   projectOverlayFor,
@@ -484,6 +483,12 @@ function allocateBudget(rows, reserveChars) {
       keptBytes: Buffer.byteLength(kept, 'utf8'),
     }
   })
+}
+
+// HZ-801: the full URL of a step's artifact page (app.js's ARTIFACT_ROUTE).
+// UI_URL never ends in a slash (config.js strips it).
+export function artifactUrl(itemId, stepIndex) {
+  return `${UI_URL}/api/items/${itemId}/artifacts/${stepIndex}`
 }
 
 // HZ-434: Verify & report is told when its evidence was cut — which section,
@@ -1379,34 +1384,53 @@ export const MOCK_STEP_BEHAVIOR = {
 }
 
 // Whether an item may start a new step: its project must be enabled (HZ-207).
-// HZ-731: Implement (a Task's Execute) also waits until every blocking ask is
-// dismissed, or filed with its item merged or closed (store.startHoldOf). Only
-// a new dispatch waits: a run already in flight is never discarded for it.
+// HZ-802: and nothing in store.dispatchHold holds it — the one derivation the
+// page and Restart read too. That covers HZ-731's blocking asks (Implement, a
+// Task's Execute) and a run plan changed since approval, which hold only a new
+// dispatch: a run already in flight is never discarded for them.
 function runnable(item) {
-  return inFlightRunnable(item) && isProjectEnabled(item.project_id) && !startHoldOf(item)
+  return dispatchableStep(item) && isProjectEnabled(item.project_id) && !dispatchHold(item)
 }
 
 // The check a step already in flight is held to. It sets the project's
 // enabled flag aside, so disabling a project never discards a running step's
 // result — the step finishes normally and only the next dispatch is held.
+// dispatchHold's in-flight holds: a pause, a rule block (HZ-346) and, HZ-467,
+// a blocker that has not merged or closed (domain/js/lifecycle.js).
 function inFlightRunnable(item) {
+  return dispatchableStep(item) && !dispatchHold(item, { inFlight: true })
+}
+
+function dispatchableStep(item) {
   return (
     farm.status === 'running' &&
-    item &&
+    !!item &&
     !isClosed(item) &&
     !isAbandoned(item) &&
-    !item.paused &&
-    // HZ-346: a run stopped on a rule holds the item until a dependency it
-    // gained merges or closes, or a human resumes or sends it back (store.js).
-    !item.rule_block_json &&
     STEPS[item.cursor].kind === 'agent' &&
     // HZ-377: a step with no runner waits where it is — it is never
     // dispatched, to the farm or to the mock path, so no run is ever recorded.
-    STEPS[item.cursor].runsIn !== 'none' &&
-    // HZ-467: a change item plans past open dependencies; implement and later
-    // wait until each blocker has merged or closed (domain/js/lifecycle.js).
-    holdingBlockers(item, blockersOf(item.id)).length === 0
+    STEPS[item.cursor].runsIn !== 'none'
   )
+}
+
+// HZ-802: why kick() would hold an item that nothing in dispatchHold holds,
+// as { kind, message } — the page's "not dispatched" reason. Never empty for
+// an item that exists: with no wait of its own, it waits for an agent slot.
+export function waitReason(id) {
+  const item = getItem(id)
+  if (!item) return null
+  if (farm.status !== 'running') return { kind: 'farm_stopped', message: 'The farm is stopped. Start it to dispatch.' }
+  if (!isProjectEnabled(item.project_id)) return { kind: 'project_disabled', message: 'Its project is disabled.' }
+  if (isDeployBlocked()) return { kind: 'deploy_drain', message: 'Waiting for a self-deploy to finish.' }
+  const isolation = projectIsolationRefusal(item.project_id)
+  if (isolation) return { kind: 'isolation', message: `Held: ${isolation}` }
+  if (item.usage_wait_until && Date.parse(item.usage_wait_until) > Date.now()) {
+    return { kind: 'usage_wait', message: `Every model it may run on is usage-limited until ${item.usage_wait_until}` }
+  }
+  const spawnHold = spawnHolds.get(id)
+  if (spawnHold) return { kind: 'spawned_code', message: `Waits for the code it asked for: ${spawnHold}` }
+  return { kind: 'waiting_for_slot', message: 'Waiting for a free agent slot' }
 }
 
 export function kick(id, opts = {}) {
@@ -1544,15 +1568,21 @@ function holdForIsolation(id, item) {
   return true
 }
 
+// HZ-422: the models one step may run on, in order — its "Runs on" choice
+// first, then domain/providers.json's fallbackChain. Throws if the chain
+// cannot be built. Shared by pickRunsOn and releaseUsageWait (HZ-713).
+function stepChain(item, stepIndex) {
+  const step = STEPS[stepIndex]
+  return effectiveChain(chainHead(stepChoicesFor(item)[stepIndex], step), step)
+}
+
 // HZ-422: pickModel() over this step's chain — its "Runs on" choice first,
 // then domain/providers.json's fallbackChain — against the limits active now.
 // null (today's routing, no fallback) if the chain cannot be built, so a bad
 // model table never strands the item mid-dispatch.
 function pickRunsOn(item, stepIndex) {
-  const step = STEPS[stepIndex]
   try {
-    const chain = effectiveChain(chainHead(stepChoicesFor(item)[stepIndex], step), step)
-    return pickModel(chain, activeModelLimits(Date.now()), Date.now())
+    return pickModel(stepChain(item, stepIndex), activeModelLimits(Date.now()), Date.now())
   } catch (err) {
     console.warn(`usage limits: no fallback chain for ${item.id} step ${stepIndex}: ${err.message}`)
     return null
@@ -1584,6 +1614,50 @@ function armUsageWait(id, untilMs) {
       kick(id)
     }, ms).unref(),
   )
+}
+
+// HZ-713: the owner's "Release now" on a usage wait. Drops the limits on every
+// model the held step may run on — the ledger is shared, so every item's next
+// dispatch sees them free — clears the wait and its timer, and kicks the item
+// once. The cursor never moves and no gate is touched: the same step runs
+// again at the same attempt. A paused or isolation-held item is refused and
+// keeps its wait, since kick() would dispatch nothing for it.
+export function releaseUsageWait(id, actor = 'You') {
+  const item = getItem(id)
+  if (!item) return { error: 'not_found' }
+  if (!isProjectEnabled(item.project_id)) return { error: 'project_not_active' }
+  if (isClosed(item)) return { error: 'closed' }
+  if (isAbandoned(item)) return { error: 'abandoned' }
+  if (!item.usage_wait_until || !(Date.parse(item.usage_wait_until) > Date.now())) return { error: 'not_waiting' }
+  if (STEPS[item.cursor]?.kind === 'gate') return { error: 'gate_step' }
+  if (item.paused) return { error: 'paused' }
+  if (projectIsolationRefusal(item.project_id)) return { error: 'isolation_held' }
+
+  const step = STEPS[item.cursor]
+  let models = []
+  try {
+    models = stepChain(item, item.cursor).map((entry) => entry.model)
+  } catch (err) {
+    console.warn(`usage limits: no fallback chain for ${id} step ${item.cursor}: ${err.message}`)
+  }
+  clearModelLimits(models)
+  setUsageWait(id, null)
+  clearTimeout(usageWaitTimers.get(id))
+  usageWaitTimers.delete(id)
+  addEvent(id, {
+    who: actor,
+    text: `released the usage wait — “${step.label}” runs again with fresh model limits (cleared for every item)`,
+    color: '#5E4380',
+    initials: 'YOU',
+  })
+  notifyChange()
+  kick(id)
+  return { ok: true, released: true, cursor: item.cursor, clearedModels: models }
+}
+
+// Whether a usage-wait timer is armed for the item. Exported for tests.
+export function usageWaitArmed(id) {
+  return usageWaitTimers.has(id)
 }
 
 // Boot: every item still waiting on a usage limit gets its timer back. A wait
@@ -2018,7 +2092,15 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (refuseUnapprovedRun(runId, id, stepIndex)) return
   if (step.runsIn === 'job') return dispatchJob(id, stepIndex, runId, attempt)
 
-  const artifacts = budgeted.map(({ label, content }) => ({ label, content }))
+  // HZ-801: each stored input carries the full URL of its artifact page, so
+  // the step-9 digest links real artifacts instead of guessing step numbers.
+  // Built from the entry's own step, never this one. Synthetic inputs (the
+  // truncation notice, overlap, golden cases, stored results) get none.
+  const artifacts = budgeted.map(({ label, content, stepIndex: inputStep }) => ({
+    label,
+    content,
+    url: artifactUrl(id, inputStep),
+  }))
   if (truncationNotice) artifacts.unshift(truncationNotice)
   if (overlapInput) artifacts.push(overlapInput)
   const goldenInput = goldenCasesInput(id, stepIndex)
@@ -2103,6 +2185,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // HZ-379: the deployed commit a step that waited for spawned code runs on.
     ...(checkoutSha ? { checkout_sha: checkoutSha } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
+    // HZ-801: where this step's own artifact will be served.
+    artifact_url: artifactUrl(id, stepIndex),
     ...checkCommandsField(item),
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
@@ -4197,7 +4281,7 @@ registerProjectOverlayLoader(projectPersonaOverlay)
 registerSubstepsSnapshotter(snapshotSubsteps)
 
 export async function init(log) {
-  registerAgentRunner({ kick, cancel, pause })
+  registerAgentRunner({ kick, cancel, pause, waitReason })
   onDrainEnd(releaseDeployHeld)
   // store.js reads this to attach {state, reason} onto activeRun in
   // listItems() — a plain object lookup, never a network call, so

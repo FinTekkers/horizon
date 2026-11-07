@@ -23,8 +23,9 @@ import {
 import { AGENTS, stepAgentToken } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
 import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
-import { itemStatus, isDependencyBlocked, isRuleBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
+import { itemStatus, isDependencyBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
+import { holdFor } from '../domain/hold'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { STEP_HINTS, retryTarget, returnTargets, stepActionFor } from '../domain/stepActions'
@@ -33,6 +34,7 @@ import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeS
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
 import { metricLines } from '../../../domain/js/goldenCases.js'
+import { parseStoredUtc, runTimeText } from '../../../domain/js/runTime.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import AsksPanel from './AsksPanel'
@@ -70,17 +72,35 @@ const VERIFY_FAILED_LABEL = 'Verify & report failed'
 // (item-level, so only for the review step), any other step by its stored
 // verdict. null when the step never ran, is running again, or its newest
 // attempt recorded no artifact — then it reads "Queued" as before, on purpose.
+// HZ-802: nor while something other than its own stop holds the item (a
+// dependency, an ask, a stale plan, a wait) — an old failed verdict would read
+// as if it had just failed again; the cursor step says why instead. Paused or
+// stopped on a rule, the last outcome is still why, so it stays.
+const KEEPS_RAN_AHEAD = new Set(['paused', 'rule_block'])
 function ranAheadOf(item, index, status, output) {
+  if (item.notDispatched && !KEEPS_RAN_AHEAD.has(item.notDispatched.kind)) return null
   if (status !== 'pending' || !output?.artifact || item.activeRun?.step_index === index) return null
   const failed = (index === REVIEW_STEP_INDEX && item.reviewRejected === true) || output.verdict === 'fail'
   return { attempt: output.attempt, failed }
 }
 
 function elapsedMinutes(startedAt) {
-  if (!startedAt) return null
-  const t = Date.parse(startedAt.includes('T') ? startedAt : startedAt.replace(' ', 'T') + 'Z')
-  if (Number.isNaN(t)) return null
+  const t = parseStoredUtc(startedAt)
+  if (t === null) return null
   return Math.max(0, Math.floor((Date.now() - t) / 60_000))
+}
+
+// HZ-803: when the result a card shows finished ("5 Nov 20:06 · 20 h ago"), in
+// the viewer's timezone. `previous` marks an old result shown after the step
+// was sent back or restarted. `timeZone` is for tests; omitted, the browser's.
+function RunTimeNote({ stored, previous = false, timeZone }) {
+  const text = runTimeText(stored, Date.now(), timeZone)
+  if (!text) return null
+  return (
+    <div className="step-card__run-time" data-testid="run-time">
+      {previous ? `previous attempt · ${text}` : text}
+    </div>
+  )
 }
 
 const STEP_META = {
@@ -126,6 +146,14 @@ const PAUSE_ERRORS = {
   closed: 'This item is closed.',
   abandoned: 'This item was abandoned.',
   project_not_active: "This item's project is not active.",
+  // HZ-713: a resume that would clear a rule block, and the usage release.
+  human_gate_key_required: 'Releasing a rule block needs your gate PIN.',
+  pin_needed: 'Releasing a rule block needs your gate PIN.',
+  cross_site_refused: 'That request came from another site and was refused.',
+  not_waiting: 'This item is no longer waiting on a usage limit.',
+  gate_step: 'This item is at a gate — approve or send it back there.',
+  paused: 'This item is paused — resume it first.',
+  isolation_held: "This item's project refuses dispatch — fix its settings first.",
 }
 
 // HZ-185: on an item the latest automated review just rejected, sends it to
@@ -315,7 +343,7 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -348,7 +376,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // holds the merge) only selects it.
   const offered = stepActionFor(item, st.key)
   const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
-  const retryHere = retryTarget(item)?.key === st.key
+  const retryHere = retryTarget(item)?.step === st.key
   const canReturn = returnTargets(item).length > 0
 
   return (
@@ -434,6 +462,14 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               <span> · no output recorded (step predates this item's run or was skipped)</span>
             )}
           </div>
+          {status === 'done' && !isGate && output && <RunTimeNote stored={output.endedAt} timeZone={runTimeZone} />}
+          {ranAhead && <RunTimeNote stored={output.endedAt} previous timeZone={runTimeZone} />}
+          {/* HZ-802: an agent step with nothing running says why (server/src/store.js notDispatchedOf). */}
+          {index === item.cursor && item.notDispatched && (
+            <div className="step-card__not-dispatched" data-testid="not-dispatched" style={{ color: 'var(--warning-ink)' }}>
+              Not dispatched: {item.notDispatched.message}
+            </div>
+          )}
           {verdict === 'fail' && output?.verdictSummary && (
             <div className="step-card__verdict" data-testid="verify-verdict-summary">
               {output.verdictSummary}
@@ -753,9 +789,9 @@ function SubstepRow({ item, sub }) {
 // HZ-94: explains a paused item beyond the generic "Paused" flag — reads the
 // classified failure reason back out of the pause event the orchestrator
 // already writes (server/src/orchestrator.js's failFarmRun), never inventing
-// one of its own. A manual human pause has nothing to explain and renders
-// nothing here — the existing Resume control already covers it.
-function PauseBanner({ item }) {
+// one of its own. HZ-713: the runFailed hold's body; a manual pause gets the
+// plain paused hold instead.
+function RunFailedDetail({ item }) {
   const [showFullError, setShowFullError] = useState(false)
   const reason = pauseReason(item)
   if (!reason || reason.category === 'manual') return null
@@ -766,8 +802,7 @@ function PauseBanner({ item }) {
       : 'Not auto-retried'
 
   return (
-    <div className="pause-banner">
-      <div className="pause-banner__title">{reason.label || 'Paused'}</div>
+    <>
       <div className="pause-banner__detail">
         {reason.detail && <span>{reason.detail} </span>}
         {reason.cause ? (
@@ -788,6 +823,41 @@ function PauseBanner({ item }) {
         </>
       )}
       <div className="pause-banner__meta">{attemptsText} · Resume to retry</div>
+    </>
+  )
+}
+
+// HZ-713: the one continue action of a hold, marked data-hold-action.
+function HoldAction({ hold, onClick, busy, extra = {} }) {
+  return (
+    <button
+      type="button"
+      className="btn-resume"
+      data-hold-action={hold.action.key}
+      disabled={busy}
+      aria-busy={busy || undefined}
+      onClick={onClick}
+      {...extra}
+    >
+      {hold.action.label}
+    </button>
+  )
+}
+
+// HZ-713: one banner per held item — why it stopped (domain/hold.js) and the
+// one action that continues it. A rule block keeps its own banner below.
+function HoldBanner({ item, hold, onContinue, busy }) {
+  return (
+    <div className="pause-banner" role="status" data-hold-banner={hold.reason} {...(hold.reason === 'isolation' ? { 'data-testid': 'isolation-hold' } : {})}>
+      <div className="pause-banner__title">{hold.title}</div>
+      {hold.reason === 'runFailed' ? (
+        <RunFailedDetail item={item} />
+      ) : (
+        hold.detail && <div className="pause-banner__detail">{hold.detail}</div>
+      )}
+      <div className="pause-banner__actions">
+        <HoldAction hold={hold} onClick={onContinue} busy={busy} />
+      </div>
     </div>
   )
 }
@@ -802,7 +872,10 @@ function PauseBanner({ item }) {
 // `waitingOn`), that leads and the agent's needs move behind the toggle. Each
 // action named in RULE_BLOCK_ACTIONS has its button here, marked
 // data-rule-block-action, so the block's text never offers one that is missing.
-function RuleBlockBanner({ item, onAddDependency, onAmendRule, onAbandon, onResume, resumeBusy }) {
+//
+// HZ-713: the ruleBlocked hold. Its continue action releases the block with
+// the gate PIN; Add dependency, Amend the rule and Abandon stay beside it.
+function RuleBlockBanner({ item, hold, onAddDependency, onAmendRule, onAbandon, onResume, resumeBusy }) {
   const ref = useRef(null)
   const [expanded, setExpanded] = useState(false)
   const { rule, needs } = item.ruleBlock
@@ -815,7 +888,7 @@ function RuleBlockBanner({ item, onAddDependency, onAmendRule, onAbandon, onResu
   }, [])
 
   return (
-    <div className="pause-banner" id="rule-block" ref={ref}>
+    <div className="pause-banner" id="rule-block" ref={ref} data-hold-banner={hold.reason}>
       <div className="pause-banner__title">Blocked by a rule · {STEPS[item.cursor]?.label}</div>
       {needsHidden && (
         <div className="pause-banner__detail pause-banner__text" data-testid="rule-block-waiting-on">
@@ -841,19 +914,10 @@ function RuleBlockBanner({ item, onAddDependency, onAmendRule, onAbandon, onResu
       )}
       <div className="pause-banner__meta">Not a failed attempt · nothing runs until this is cleared</div>
       <div className="pause-banner__actions">
-        <button type="button" className="btn-resume" data-rule-block-action="addDependency" onClick={() => onAddDependency(item.id)}>
+        <button type="button" className="btn-outline" data-rule-block-action="addDependency" onClick={() => onAddDependency(item.id)}>
           Add dependency
         </button>
-        <button
-          type="button"
-          className="btn-outline"
-          data-rule-block-action="resume"
-          disabled={resumeBusy}
-          aria-busy={resumeBusy || undefined}
-          onClick={onResume}
-        >
-          Resume
-        </button>
+        <HoldAction hold={hold} onClick={onResume} busy={resumeBusy} extra={{ 'data-rule-block-action': 'resume' }} />
         <button type="button" className="btn-outline" onClick={() => onAmendRule(item.id)}>
           Amend the rule
         </button>
@@ -1071,7 +1135,7 @@ function FarmUnreachableBanner({ onOpenFarmHealth }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, farmUnreachable = false, onOpenFarmHealth = null }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1089,16 +1153,17 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
   const pauseInFlight = useRef(false)
   const [pausePending, setPausePending] = useState(null)
   const [pauseError, setPauseError] = useState(null)
-  const sendPause = (paused) => {
+  // HZ-713: every hold's continue action shares the same one-at-a-time guard.
+  const sendAction = (run) => {
     if (pauseInFlight.current) return
     pauseInFlight.current = true
     const id = item.id
     setPausePending(id)
     setPauseError(null)
-    new Promise((resolve) => resolve(onTogglePause(id, paused)))
+    new Promise((resolve) => resolve(run(id)))
       .then(
         () => null,
-        (err) => PAUSE_ERRORS[err?.message] || 'That did not go through — try again.',
+        (err) => (err?.message && Object.hasOwn(PAUSE_ERRORS, err.message) ? PAUSE_ERRORS[err.message] : 'That did not go through — try again.'),
       )
       .then((message) => {
         pauseInFlight.current = false
@@ -1106,7 +1171,17 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         if (message) setPauseError({ id, message })
       })
   }
+  const sendPause = (paused) => sendAction((id) => onTogglePause(id, paused))
   const pauseBusy = pausePending === item.id
+  const hold = abandoned ? null : holdFor(item)
+  const continueHold = () => {
+    const key = hold.action.key
+    if (key === 'resume' || key === 'retry') sendPause(false)
+    else if (key === 'releaseRuleBlock') sendAction((id) => onReleaseRuleBlock(id))
+    else if (key === 'releaseUsageWait') sendAction((id) => onReleaseUsageWait(id))
+    else if (key === 'openProjectSettings') onOpenProjectSettings?.(item.project_id)
+    else if (key === 'openBlocker') onOpenItem?.(hold.action.target)
+  }
   // HZ-711: the step selected in the step list, by key, kept with the item id
   // so opening another item drops it. A click selects the step and opens what
   // the snapshot offers there; a phase heading selects its first step.
@@ -1183,8 +1258,9 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         {!abandoned && (
           <div className="tracker__actions">
             {/* HZ-335: no Pause work while a dependency blocks the item;
-                a paused item always keeps Resume work. */}
-            {(item.paused || !isDependencyBlocked(item)) && (
+                a paused item keeps Resume work — HZ-713: unless a rule block
+                is set, which only the banner's Release with PIN clears. */}
+            {(item.paused ? !item.ruleBlock : !isDependencyBlocked(item)) && (
               <button
                 className="btn-outline"
                 disabled={pauseBusy}
@@ -1207,33 +1283,23 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         )}
         {/* HZ-717: fixed text only — never the farm's error, URL or host. */}
         {!abandoned && !closed && farmUnreachable && <FarmUnreachableBanner onOpenFarmHealth={onOpenFarmHealth} />}
-        {!abandoned && item.paused && <PauseBanner key={`pause-banner-${item.id}`} item={item} />}
-        {/* HZ-422: the server builds the text, so every client shows the same time. */}
-        {!abandoned && !item.paused && item.usageWait && (
-          <div className="pause-banner" role="status">
-            <div className="pause-banner__title">{item.usageWait.text}</div>
-          </div>
-        )}
-        {/* HZ-662: the farm holds a tenant project's items until the owner sets
-            its credential reference and run user. The server builds the text. */}
-        {!abandoned && !item.paused && item.isolationRefusal && (
-          <div className="pause-banner" role="status" data-testid="isolation-hold">
-            <div className="pause-banner__title">{item.isolationRefusal}</div>
-          </div>
-        )}
-        {/* HZ-365: isRuleBlocked is false while paused, so never both banners.
-            The key differs from DependencyBadge's below: duplicate sibling
-            keys make React leave a stale second banner behind. */}
-        {!abandoned && isRuleBlocked(item) && (
+        {/* HZ-713: one banner per held item, for the first hold domain/hold.js
+            finds. The keys differ from DependencyBadge's below: duplicate
+            sibling keys make React leave a stale second banner behind. */}
+        {hold?.reason === 'ruleBlocked' && (
           <RuleBlockBanner
             key={`rule-block-${item.id}`}
             item={item}
+            hold={hold}
             onAddDependency={onAddDependency}
             onAmendRule={onAmendRule}
             onAbandon={onAbandon}
-            onResume={() => sendPause(false)}
+            onResume={continueHold}
             resumeBusy={pauseBusy}
           />
+        )}
+        {hold && hold.reason !== 'ruleBlocked' && (
+          <HoldBanner key={`hold-${hold.reason}-${item.id}`} item={item} hold={hold} onContinue={continueHold} busy={pauseBusy} />
         )}
         {/* HZ-730: work a step said must be filed before this item goes on. */}
         {!abandoned && !closed && <BlockingAsksBanner key={`ask-banner-${item.id}`} item={item} />}
@@ -1320,6 +1386,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                       onSetStepProvider={onSetStepProvider}
                       filedAutopilot={filedAutopilot}
                       onSetFiledAutopilot={onSetFiledAutopilot}
+                      runTimeZone={runTimeZone}
                     />
                     {substepsAt(item, i).map((sub) => (
                       <SubstepRow key={sub.id} item={item} sub={sub} />

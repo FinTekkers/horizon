@@ -1,0 +1,132 @@
+{
+  "about": "HZ-793: asks 34/35 (raised in the same second by MDI-120's Automated review) and ask 43 (raised by MDI-131's), with the project around them on 5 Nov 2026. Modelled on the real asks' drafts; ids, titles and text are rewritten, with no host path, token or secret.",
+  "project": "Market data",
+  "repos": ["FinTekkers/market-data-inputs", "FinTekkers/ledger-models"],
+  "items": [
+    {
+      "id": "MDI-115",
+      "title": "FX feed: alert when quotes go stale",
+      "repo": "FinTekkers/market-data-inputs",
+      "step": "Specialist agent implements",
+      "desc": "Raise an alert when the FX feed has not published a quote for 5 minutes, and stop the publisher from serving stale quotes."
+    },
+    {
+      "id": "MDI-120",
+      "title": "FX feed: staleness threshold per currency pair",
+      "repo": "FinTekkers/market-data-inputs",
+      "step": "Automated review (code + QA)",
+      "desc": "Make MDI-115's 5-minute staleness threshold configurable per currency pair. Design: thresholds live in the feed config; the publisher reads them at start."
+    },
+    {
+      "id": "MDI-122",
+      "title": "Deploy market-data-inputs v2.4 with the staleness alert",
+      "repo": "FinTekkers/market-data-inputs",
+      "abandonedDaysAgo": 1,
+      "abandonedReason": "Already deployed three hours before this item was filed."
+    },
+    {
+      "id": "MDI-126",
+      "title": "Publisher refuses quotes older than the pair's threshold",
+      "repo": "FinTekkers/market-data-inputs",
+      "step": "Draft implementation plan",
+      "desc": "The publisher drops any quote older than its currency pair's staleness threshold instead of serving it."
+    },
+    {
+      "id": "MDI-129",
+      "title": "Ledger: keep superseded price rows for audit",
+      "repo": "FinTekkers/ledger-models",
+      "step": "Specialist agent implements",
+      "desc": "Design: price rows in the ledger are never deleted. A corrected price supersedes the old row, which stays for audit with superseded_by set."
+    },
+    {
+      "id": "MDI-131",
+      "title": "Ledger: mark the stale EURUSD price row as superseded",
+      "repo": "FinTekkers/ledger-models",
+      "step": "Automated review (code + QA)",
+      "desc": "One EURUSD price row from 4 Nov is wrong. Following MDI-129's design, mark it superseded by the corrected row; never delete it, so the audit trail stays whole."
+    },
+    {
+      "id": "MDI-100",
+      "title": "FX feed: first release",
+      "repo": "FinTekkers/market-data-inputs",
+      "closed": true
+    }
+  ],
+  "asks": [
+    {
+      "ref": 33,
+      "item": "MDI-120",
+      "step": "Automated review (code + QA)",
+      "kind": "soft",
+      "status": "dismissed",
+      "why": "Automated review: an earlier copy the owner dismissed.",
+      "draft": {
+        "title": "Document the staleness thresholds",
+        "repo": "FinTekkers/market-data-inputs",
+        "outcome": "The README lists every pair's staleness threshold.",
+        "metric": "1. The README has a thresholds table.\n2. Each configured pair is listed.\n3. The table names the default.",
+        "guardrails": "- No code change.\n- No new dependency.\n- No config change."
+      }
+    },
+    {
+      "ref": 30,
+      "item": "MDI-120",
+      "step": "Draft implementation plan",
+      "kind": "soft",
+      "status": "open",
+      "why": "Draft implementation plan: a follow-up from another step.",
+      "draft": {
+        "title": "Add a metric for quotes dropped as stale",
+        "repo": "FinTekkers/market-data-inputs",
+        "outcome": "A counter shows how many quotes were dropped as stale.",
+        "metric": "1. The counter exists.\n2. It counts each dropped quote.\n3. It is on the feed dashboard.",
+        "guardrails": "- No new dependency.\n- No change to the publish path.\n- No new setting."
+      }
+    },
+    {
+      "ref": 34,
+      "item": "MDI-120",
+      "step": "Automated review (code + QA)",
+      "kind": "soft",
+      "status": "open",
+      "why": "Automated review: the publisher still serves quotes past their pair's threshold.",
+      "draft": {
+        "title": "Publisher drops quotes past the pair's staleness threshold",
+        "repo": "FinTekkers/market-data-inputs",
+        "outcome": "The publisher never serves a quote older than its pair's threshold.",
+        "metric": "1. A stale quote is not published.\n2. A fresh quote is.\n3. The drop is logged with the pair.",
+        "guardrails": "- No change to the threshold config format.\n- No new dependency.\n- No new setting."
+      }
+    },
+    {
+      "ref": 35,
+      "item": "MDI-120",
+      "step": "Automated review (code + QA)",
+      "kind": "soft",
+      "status": "open",
+      "why": "Automated review: stale quotes can still reach subscribers.",
+      "draft": {
+        "title": "Stop publishing stale quotes per currency pair",
+        "repo": "FinTekkers/market-data-inputs",
+        "outcome": "Subscribers never receive a quote older than its pair's staleness threshold.",
+        "metric": "1. A stale quote is held back.\n2. A fresh quote is published.\n3. A test covers each pair's threshold.",
+        "guardrails": "- No change to the threshold config format.\n- No new dependency.\n- No new setting."
+      }
+    },
+    {
+      "ref": 43,
+      "item": "MDI-131",
+      "step": "Automated review (code + QA)",
+      "kind": "soft",
+      "status": "open",
+      "why": "Automated review: the wrong EURUSD row is still in the ledger.",
+      "draft": {
+        "title": "Delete the stale EURUSD price row from the ledger",
+        "repo": "FinTekkers/ledger-models",
+        "outcome": "The wrong 4 Nov EURUSD price row is deleted from the ledger.",
+        "metric": "1. The row is gone.\n2. Valuations use the corrected price.\n3. A migration log names the deleted row.",
+        "guardrails": "- Delete only that row.\n- No schema change.\n- No new dependency."
+      }
+    }
+  ]
+}

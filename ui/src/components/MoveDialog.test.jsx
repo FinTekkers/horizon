@@ -51,8 +51,9 @@ test('clicking an earlier step opens one dialog with the server’s summary; con
   const sent = server.moves().at(-1)
   expect(sent.url).toMatch(/\/api\/items\/HZ-902\/move$/)
   expect(sent.headers['x-human-key']).toBe(PIN)
-  // Guardrail 3: the body names steps by key — exactly these keys, no position.
-  expect(sent.body).toEqual({ action: 'return', from: 'change.implement', to: 'change.review-before-exec', note: 'the plan skips the migration' })
+  // Guardrail 3: the body names steps by key — the target, the step the item
+  // was at (the server's stale check) and the note; no position.
+  expect(sent.body).toEqual({ stepKey: 'change.review-before-exec', from: 'change.implement', note: 'the plan skips the migration' })
   expect(Object.values(sent.body).some((v) => typeof v === 'number')).toBe(false)
   expect(server.prompt).not.toHaveBeenCalled()
 })
@@ -69,7 +70,7 @@ test('the current step offers Retry in the same dialog, with nothing to approve 
   fireEvent.click(dialog.getByRole('button', { name: 'Retry' }))
   await enterPin()
   await waitFor(() => expect(server.moves().at(-1)?.headers['x-human-key']).toBe(PIN))
-  expect(server.moves().at(-1).body).toEqual({ action: 'retry', from: 'change.implement', to: 'change.implement', note: '' })
+  expect(server.moves().at(-1).body).toEqual({ stepKey: 'change.implement', from: 'change.implement', note: '' })
 })
 
 test('guardrail 4: a cancelled PIN moves nothing, and the dialog keeps the note', async () => {
@@ -100,7 +101,7 @@ test('guardrail 4: a cancelled PIN moves nothing, and the dialog keeps the note'
 
 for (const [status, error, message] of [
   [409, 'stale_step', 'This item has moved since — check the steps it offers now and try again.'],
-  [400, 'bad_target_key', 'That step is not offered from here any more.'],
+  [400, 'invalid_target', 'That step is not offered from here any more.'],
 ]) {
   test(`guardrail 1: a ${status} ${error} keeps the dialog and its note, and then lists only the refreshed targets`, async () => {
     const server = stubServer({ moveReply: () => server.json(status, { error }) })

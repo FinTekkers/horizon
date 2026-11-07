@@ -1,0 +1,77 @@
+{
+  "cwd": ".",
+  "commands": [
+    "set -eu; RD=\"$HOME/recordings/solution/.recorder\"; mkdir -p \"$RD\"; rm -rf \"$RD/recorder\"; cp scripts/record-item.mjs \"$RD/record-item.mjs\"; cp -r scripts/recorder \"$RD/recorder\"; export npm_config_cache=\"$RD/npm-cache\" PLAYWRIGHT_BROWSERS_PATH=\"$RD/browsers\"; npm --prefix \"$RD/recorder\" ci --no-audit --no-fund; node \"$RD/recorder/node_modules/playwright/cli.js\" install chromium; echo \"recorder installed: $RD\"",
+    "set -eu; RD=\"$HOME/recordings/solution/.recorder\"; export PLAYWRIGHT_BROWSERS_PATH=\"$RD/browsers\"; : \"${PLAN_ITEM:?set PLAN_ITEM to the Plan target id}\"; : \"${TASK_ITEM:?set TASK_ITEM to the Task target id}\"; command -v ffmpeg ffprobe; test -r /etc/horizon/recorder.env && echo \"token file readable\"; node -e 'require(\"fs\").accessSync(require(process.argv[1]).chromium.executablePath()); console.log(\"chromium ok\")' \"$RD/recorder/node_modules/playwright\"; for d in 4-plan 4-task; do dir=\"$HOME/recordings/solution/raw/$d\"; if [ -e \"$dir\" ] && [ -n \"$(ls -A \"$dir\")\" ]; then echo \"FAIL not empty: $dir\"; exit 1; fi; echo \"empty: $dir\"; done; HORIZON_RECORDER_ENV=/etc/horizon/recorder.env node --input-type=module -e 'import { readToken } from \"./scripts/recorder/token.mjs\"; import { pollItem } from \"./scripts/recorder/watch.mjs\"; const token = await readToken(); for (const [id, first] of [[process.env.PLAN_ITEM, \"Define the question\"], [process.env.TASK_ITEM, \"Define the outcome\"]]) { const s = await pollItem({ apiBase: \"https://shoreward.ai/horizon/api\", itemId: id, token }); if (!s) { console.log(\"FAIL not on board: \" + id); process.exit(3) } console.log(\"target \" + id + \": cursor=\" + s.cursor + \" step=\" + s.label); if (s.done || s.label !== first) { console.log(\"FAIL \" + id + \" is past its first step\"); process.exit(1) } } console.log(\"preflight ok\")'",
+    "set -u; R=\"$HOME/recordings/solution\"; RD=\"$R/.recorder\"; export PLAYWRIGHT_BROWSERS_PATH=\"$RD/browsers\"; mkdir -p \"$R/raw/4-plan\" \"$R/raw/4-task\" \"$R/logs\"; export HORIZON_RECORDER_ENV=/etc/horizon/recorder.env; timeout -k 60 1420m node \"$RD/record-item.mjs\" \"$PLAN_ITEM\" --out \"$R/raw/4-plan\" > \"$R/logs/4-plan.log\" 2>&1 & P=$!; timeout -k 60 1420m node \"$RD/record-item.mjs\" \"$TASK_ITEM\" --out \"$R/raw/4-task\" > \"$R/logs/4-task.log\" 2>&1 & T=$!; echo \"started 4-plan pid=$P item=$PLAN_ITEM; 4-task pid=$T item=$TASK_ITEM\"; wait \"$P\"; PE=$?; wait \"$T\"; TE=$?; for d in 4-plan 4-task; do echo \"--- $R/logs/$d.log\"; cat \"$R/logs/$d.log\"; done; echo \"run 4-plan item=$PLAN_ITEM exit=$PE log=$R/logs/4-plan.log\"; echo \"run 4-task item=$TASK_ITEM exit=$TE log=$R/logs/4-task.log\"; F=0; [ \"$PE\" -eq 0 ] || F=$((F+1)); [ \"$TE\" -eq 0 ] || F=$((F+1)); echo \"failed runs: $F\"; [ \"$F\" -eq 0 ]",
+    "set -u; R=\"$HOME/recordings/solution\"; bad=0; check() { d=\"$1\"; id=\"$2\"; first=\"$3\"; dir=\"$R/raw/$d\"; echo \"== $d ($id)\"; got=$(ls -A \"$dir\" | sort | tr '\\n' ' '); want=$(printf '%s\\n' \"$id.mp4\" frames timeline.json | sort | tr '\\n' ' '); echo \"contents: $got\"; [ \"$got\" = \"$want\" ] || { echo \"FAIL contents: $d\"; bad=1; }; n=$(ls \"$dir/frames\" | grep -cE '^[0-9]+[.]png$'); echo \"numbered frames: $n\"; [ \"$n\" -gt 0 ] || { echo \"FAIL no frames: $d\"; bad=1; }; dur=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 \"$dir/$id.mp4\"); echo \"ffprobe duration: ${dur:-none} s\"; awk -v x=\"${dur:-0}\" 'BEGIN{exit !(x>0)}' || { echo \"FAIL duration: $d\"; bad=1; }; node -e 'const t = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")); const f = t[0], l = t[t.length - 1]; console.log(\"timeline: \" + t.length + \" entries; first=\" + f.step + \" @ \" + f.realStart + \"; last=\" + l.step + \" @ \" + l.realEnd); if (f.step !== process.argv[2]) { console.log(\"FAIL first step: want \" + process.argv[2]); process.exit(1) } if (l.step !== \"Review & close\") { console.log(\"FAIL last step: want Review & close\"); process.exit(1) }' \"$dir/timeline.json\" \"$first\" || bad=1; grep -qx \"closed: $id\" \"$R/logs/$d.log\" && echo \"ended: closed: $id\" || { echo \"FAIL not closed: $d\"; bad=1; }; ls \"$dir/frames\" | grep -E '^[0-9]+[.]png$' | sort | awk -v p=\"$dir/frames/\" '{a[NR]=$0} END{if(NR) print \"spot check: \" p a[1] \" \" p a[int((NR+1)/2)] \" \" p a[NR]}'; }; check 4-plan \"$PLAN_ITEM\" \"Define the question\"; check 4-task \"$TASK_ITEM\" \"Define the outcome\"; if [ \"$bad\" -eq 0 ]; then echo \"verify: PASS\"; else echo \"verify: FAIL\"; fi; exit \"$bad\""
+  ],
+  "budget_minutes": 1440,
+  "env": {
+    "PLAN_ITEM": "$PLAN_ITEM",
+    "TASK_ITEM": "$TASK_ITEM"
+  },
+  "requires": [
+    {
+      "tool": "node"
+    },
+    {
+      "tool": "npm"
+    },
+    {
+      "tool": "cp"
+    },
+    {
+      "tool": "ffmpeg"
+    },
+    {
+      "tool": "ffprobe"
+    },
+    {
+      "tool": "timeout"
+    },
+    {
+      "tool": "awk"
+    },
+    {
+      "tool": "grep"
+    },
+    {
+      "path": "scripts/record-item.mjs"
+    },
+    {
+      "path": "scripts/recorder"
+    },
+    {
+      "path": "scripts/recorder/package-lock.json"
+    },
+    {
+      "path": "scripts/recorder/token.mjs"
+    },
+    {
+      "path": "scripts/recorder/watch.mjs"
+    }
+  ],
+  "proof": [
+    {
+      "line": 1,
+      "command": 4
+    },
+    {
+      "line": 2,
+      "command": 4
+    },
+    {
+      "line": 3,
+      "command": 4
+    },
+    {
+      "line": 4,
+      "command": 4
+    },
+    {
+      "line": 5,
+      "command": 3
+    }
+  ]
+}

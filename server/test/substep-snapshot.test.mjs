@@ -41,7 +41,8 @@ const store = await import('../src/store.js')
 // Imported for its load-time registration of the intake snapshotter; never
 // init()ed, so nothing is dispatched.
 await import('../src/orchestrator.js')
-const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, stepKeyAt, stepsFor } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, stepsFor } = await import('../../domain/js/lifecycle.js')
+const { moveTargets, movesView } = await import('../src/moveItem.js')
 
 store.purgeDemoItems()
 const project = store.createProject('Acme Capital')
@@ -110,14 +111,16 @@ test('the UI fixture is this served item', () => {
   // HZ-709: the served `steps` list is the item kind's step table with keys.
   // It is checked here against domain/ and left out of the UI fixture, so the
   // fixture never holds a copy of the table (domain-one-declaration.test.mjs).
-  // HZ-711: so are the served `moves`, whose labels and redo lines name steps;
-  // here the sub-step item at implement offers implement's retry.
+  // HZ-799: so do `moves`, whose lines name steps by label — moveItem.js's.
   const { steps, moves, ...served } = stable(store.itemViewById('AC-1'))
   assert.deepEqual(
     steps,
     stepsFor('change').map((step) => ({ index: step.index, key: step.key, label: step.label, kind: step.kind })),
   )
-  assert.equal(moves.targets.find((target) => target.action === 'retry')?.key, stepKeyAt(IMPLEMENT_STEP_INDEX))
+  assert.deepEqual(moves, movesView(store.getItem('AC-1'), moveTargets(store.getItem('AC-1'))))
+  assert.equal(moves.targets[0].stepKey, 'change.implement#impl-audit')
+  // HZ-711: the sub-step item at implement offers that sub-step's retry.
+  assert.equal(moves.actions['change.implement#impl-audit'], 'retry')
   if (process.env.UPDATE_SUBSTEP_FIXTURE === '1') writeFileSync(FIXTURE, `${JSON.stringify(served, null, 2)}\n`)
   assert.deepEqual(JSON.parse(readFileSync(FIXTURE, 'utf8')), served)
 })

@@ -2,10 +2,9 @@
 // through the real server and UI. Its card stays in its phase column, the
 // board keeps its columns, and the tracker draws the snapshot's sub-steps as
 // indented rows under their anchors. HZ-711: a return from Accept the code
-// (Return to…, the Move dialog) offers the steps, not their sub-steps — the
-// /move route has no sub-step target — so a return to the audit sub-step's
-// anchor, Specialist agent implements, lands the item on that step at no
-// sub-step, and a reload shows it.
+// (Return to…, the Move dialog) lists the snapshot's targets, the sub-steps
+// HZ-799 offers among them, so a return to the audit sub-step lands the item
+// on Specialist agent implements at that sub-step, and a reload shows it.
 //
 // The snapshot is written straight into work_item.substeps_json, as HZ-538's
 // intake leaves it; its labels appear in no project file. An open dependency
@@ -52,7 +51,7 @@ test.beforeAll(() => {
 const card = (page) => page.locator('.card').filter({ has: page.locator('.card__id', { hasText: new RegExp(`^${ID}$`) }) })
 const column = (page, name) => page.locator('.col').filter({ has: page.locator('.col__name', { hasText: new RegExp(`^${name}$`) }) })
 
-test('the board and tracker show the snapshot’s sub-steps, and a return to the audit sub-step’s anchor survives a reload', async ({ page }) => {
+test('the board and tracker show the snapshot’s sub-steps, and a return to the audit sub-step survives a reload', async ({ page }) => {
   // The labels are the snapshot's alone: no project file names them.
   const fileText = existsSync(STEPS_FILE) ? readFileSync(STEPS_FILE, 'utf8') : ''
   for (const sub of SUBSTEPS) expect(fileText).not.toContain(sub.label)
@@ -74,35 +73,39 @@ test('the board and tracker show the snapshot’s sub-steps, and a return to the
     await expect(anchor.locator('xpath=following-sibling::div[1]')).toHaveAttribute('data-substep', sub.id)
   }
 
-  // Return to the audit sub-step's anchor step, picked by its label: the
-  // dialog lists steps only, never a sub-step.
+  // Return to the audit sub-step, picked by its label among the snapshot's
+  // targets — named by the served key, `<step>#<sub-step>`.
   const implement = STEPS[IMPLEMENT_STEP_INDEX]
+  const audit = SUBSTEPS[1]
+  const auditKey = `${implement.key}#${audit.id}`
+  const served = (await (await page.request.get('/api/items')).json()).items.find((it) => it.id === ID).moves
+  expect(served.actions[auditKey]).toBe('return')
   await page.locator('.step-card--awaiting').getByRole('button', { name: 'Return to…' }).click()
   const dialog = page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` })
   await expect(dialog).toBeVisible()
-  for (const sub of SUBSTEPS) await expect(dialog.getByRole('radio', { name: new RegExp(`^${sub.label}`) })).toHaveCount(0)
-  await dialog.getByRole('radio', { name: new RegExp(`^${implement.label}`) }).check()
-  await expect(dialog.getByTestId('move-summary')).toContainText(`from “${implement.label}” to “${STEPS[ACCEPT_GATE_INDEX].label}”`)
+  const radio = dialog.getByRole('radio', { name: new RegExp(`^${audit.label}`) })
+  await expect(radio).toHaveAttribute('value', auditKey)
+  await radio.check()
+  await expect(dialog.getByTestId('move-summary')).toContainText(served.targets.find((t) => t.stepKey === auditKey).redo)
   await dialog.getByLabel('Note for the step (optional)').fill('Tighten the audit.')
   const moved = page.waitForResponse((res) => res.url().endsWith(`/api/items/${ID}/move`) && res.status() !== 401)
   await dialog.getByRole('button', { name: 'Return here' }).click()
   await answerPinDialog(page, GATE_PIN)
   const res = await moved
   expect(res.status()).toBe(200)
-  expect(res.request().postDataJSON()).toEqual({ action: 'return', from: STEPS[ACCEPT_GATE_INDEX].key, to: implement.key, note: 'Tighten the audit.' })
+  expect(res.request().postDataJSON()).toEqual({ stepKey: auditKey, from: STEPS[ACCEPT_GATE_INDEX].key, note: 'Tighten the audit.' })
   await expect(dialog).toHaveCount(0, { timeout: 15_000 })
 
-  // The anchor step is current, at no sub-step — after a reload too. The
-  // open dependency holds it there.
+  // The anchor step is current, at the audit sub-step — after a reload too.
+  // The open dependency holds it there.
   const expectAtAnchor = async () => {
     await expect
       .poll(async () => {
         const item = (await (await page.request.get('/api/items')).json()).items.find((it) => it.id === ID)
         return [item.currentStepKey, item.substep_cursor]
       })
-      .toEqual([implement.key, null])
+      .toEqual([implement.key, audit.id])
     await expect(page.locator('.step-card--awaiting')).toHaveCount(0)
-    await expect(page.locator('[data-substep] [aria-current="step"]')).toHaveCount(0)
     await expect(page.getByTestId('substep-row')).toHaveCount(SUBSTEPS.length)
   }
   await page.reload()
@@ -112,6 +115,7 @@ test('the board and tracker show the snapshot’s sub-steps, and a return to the
   await page.goto('/')
   const col = column(page, phase)
   await expect(col.locator('.card__id', { hasText: new RegExp(`^${ID}$`) })).toBeVisible({ timeout: 15_000 })
-  await expect(card(page).getByTestId('card-substep')).toHaveCount(0)
+  // The card names the sub-step the item is at.
+  await expect(card(page).getByTestId('card-substep')).toContainText(audit.label)
   await expect(page.locator('.col')).toHaveCount(PHASES.length)
 })

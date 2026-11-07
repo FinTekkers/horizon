@@ -39,6 +39,8 @@ vi.mock('./api', () => ({
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   logout: vi.fn(),
@@ -51,6 +53,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 function item(id, extra = {}) {
   return {
@@ -73,7 +76,7 @@ function item(id, extra = {}) {
     gateAction: null,
     // HZ-711: the server's moves at Accept the code — the board, drawer and
     // page offer only these.
-    moves: {
+    moves: servedMoves({
       approve: { key: 'change.accept-code', label: 'Accept the code' },
       targets: [
         {
@@ -88,13 +91,13 @@ function item(id, extra = {}) {
       ],
       canAbandon: true,
       amend: null,
-    },
+    }),
     ...extra,
   }
 }
 
 // HZ-711: the server's moves at Approve the high-level design.
-const DESIGN_MOVES = {
+const DESIGN_MOVES = servedMoves({
   approve: { key: 'change.approve-design', label: 'Approve the high-level design' },
   targets: [
     {
@@ -109,7 +112,7 @@ const DESIGN_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 
 const now = () => new Date().toISOString()
 const action = (kind, state, extra = {}) => ({
@@ -358,7 +361,7 @@ test('a merge whose gate advanced does not bring the item back', async () => {
     baseline({
       cursor: ACCEPT_INDEX + 1,
       gateAction: action('premerge', 'merged', { reason: null }),
-      moves: { approve: null, targets: [], canAbandon: true, amend: null },
+      moves: servedMoves({ approve: null, targets: [], canAbandon: true, amend: null }),
     }),
   )
   expectPending(view, ['PA-B', 'PA-C'])

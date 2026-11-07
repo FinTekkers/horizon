@@ -57,6 +57,7 @@ from . import (
     check_record,
     handoff,
     login_env,
+    owner_digest,
     pause,
     plan_bundle,
     read_only_guard,
@@ -64,6 +65,7 @@ from . import (
     run_plan_requires,
     screenshot_runner,
     screenshots_config,
+    smoke_config,
     targeted_checks,
     task_clone,
     task_job,
@@ -77,7 +79,7 @@ from .persona_tools import apply as apply_persona_tools
 from .personas import compose_role, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
-from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, ensure_tenant_hub, hub_lock, item_lock
+from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, ensure_tenant_hub, hub_lock, item_lock, tenant_task_clone_path
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
 ROLES = Path(__file__).parent / "roles"
@@ -545,10 +547,26 @@ def _persona_line(task: dict) -> str:
     return f"  persona: {persona_agent}/{resolved}"
 
 
+def _tenant_interpreter_line(task: dict) -> str:
+    """HZ-787: a tenant Execute ignores repo_dir and runs in the run user's
+    own task clone (tenant_job.prepare). The path is a string join only:
+    nothing under the run user's home is read, statted or listed."""
+    repo = (task.get("item") or {}).get("repo")
+    if not isinstance(repo, str) or not repo:
+        return "  interpreter: refused — the task names no item repo. Execute will refuse until the item has a repo"
+    venv = tenant_task_clone_path(repo) / ".venv"
+    return (
+        f"  interpreter: {venv}/bin/python if that venv exists at Execute, else system python3 "
+        f"(env: the run user's task clone {venv.parent}; the clone and venv are checked at Execute)"
+    )
+
+
 def _interpreter_line(task: dict) -> str:
     """HZ-431: the interpreter Execute will run the plan's commands with —
     the same resolve_venv() check task_job.py makes at start. Shows only the
     venv path or `system`, never PATH or another env value."""
+    if is_tenant_project(task.get("project")):
+        return _tenant_interpreter_line(task)
     try:
         run_plan.resolve_cwd(task.get("repo_dir"), ".", forbid=str(REPO_ROOT))
         venv = run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(REPO_ROOT))
@@ -2084,6 +2102,10 @@ def _requires_recheck(kind: str, label: str, task: dict):
                 container_image=task.get("container_image"),
                 forbid=str(task_job.HORIZON_ROOT),  # Execute's own refusal root
                 deadline=deadline,
+                # HZ-769: Execute's env and user — farmd stamps the last two.
+                test_env_file=task.get("test_env_file"),
+                job_env_names=task.get("job_env_names"),
+                job_uid=task.get("job_uid"),
             )
         except run_plan_requires.Unavailable as exc:
             log(f"{label}: {exc}")
@@ -2362,10 +2384,14 @@ def _run_and_parse(
 # deploy gate trusts.
 
 
-def run_smoke_check(url: str, expected_text: str, test_env_file: str | None = None) -> tuple[str, str]:
+def run_smoke_check(
+    url: str, expected_text: str, test_env_file: str | None = None, live: str | None = None
+) -> tuple[str, str]:
     """HZ-494: test_env_file is the repo's test-login env file. Its values
     reach check.mjs's environment only, and are redacted from the line this
-    returns; a file that cannot be loaded fails the check, naming the path."""
+    returns; a file that cannot be loaded fails the check, naming the path.
+    HZ-789: live is smoke_live_arg()'s JSON for a page the repo declares in
+    .horizon/smoke.json; check.mjs then also needs one live value."""
     values: dict[str, str] = {}
     if test_env_file:
         try:
@@ -2375,7 +2401,7 @@ def run_smoke_check(url: str, expected_text: str, test_env_file: str | None = No
     secrets = {f"login_env:{k}": v for k, v in values.items()}
     try:
         result = subprocess.run(
-            ["node", str(SMOKE_CHECK_SCRIPT), url, expected_text],
+            ["node", str(SMOKE_CHECK_SCRIPT), url, expected_text, *([f"--live={live}"] if live else [])],
             capture_output=True,
             text=True,
             timeout=SMOKE_CHECK_TIMEOUT_S,
@@ -2396,6 +2422,22 @@ def run_smoke_check(url: str, expected_text: str, test_env_file: str | None = No
         return "fail", line
     stderr = redact(result.stderr.strip(), secrets)[:200]
     return "fail", f"SMOKE_RESULT=fail: check.mjs exited {result.returncode} with no result line ({stderr})"
+
+
+def smoke_live_arg(ws: Path | None, url: str) -> tuple[str | None, str | None]:
+    """HZ-789: (check.mjs's --live JSON, None) when the workspace's
+    .horizon/smoke.json declares the page `url` loads; (None, None) when there
+    is no workspace, no file or no matching page, so the static-text check
+    runs as before; (None, fail line) when the file is bad, so the deploy fails
+    closed and check.mjs never runs."""
+    if ws is None:
+        return None, None
+    try:
+        pages = smoke_config.load(ws)
+    except smoke_config.ConfigError as exc:
+        return None, f"SMOKE_RESULT=fail: {smoke_config.headline(exc)}"
+    page = smoke_config.page_for(pages, url) if pages else None
+    return (smoke_config.to_arg(page) if page else None), None
 
 
 # A grpc-health deploy target serves gRPC only, so the browser check above
@@ -2699,6 +2741,16 @@ def execute(task: dict) -> dict:
         return _execute(task, guard)
 
 
+def _owner_digest_notes(task: dict, artifact: str) -> list[str]:
+    """One `owner digest:` note per shape problem; a checker that raises is
+    one note too, never a failed step."""
+    try:
+        problems = owner_digest.check_task_digest(task, artifact)
+    except Exception as exc:  # noqa: BLE001 — advisory check, never fatal
+        return [f"owner digest: check failed ({type(exc).__name__})"]
+    return [f"owner digest: {p}" for p in problems]
+
+
 def _execute_pm(task: dict) -> dict:
     """HZ-371: one PM step (0, 1, 2 or 9), on the shared runner — PM steps
     used to have a runner of their own. The prompt, role prompt, validation
@@ -2772,6 +2824,11 @@ def _execute_pm(task: dict) -> dict:
         return result
 
     (summary, patch, artifact), notes = parse_agent_reply(reply["result"], retry_once, validate=validate)
+    # HZ-801: the owner digest's shape problems become parser notes. Advisory:
+    # the artifact is stored either way and nothing is retried. Only a task
+    # the server gave links to (artifact_url): the link rules need them.
+    if label == pm_steps.DIGEST_STEP_LABEL and artifact and task.get("artifact_url"):
+        notes = [*notes, *_owner_digest_notes(task, artifact)]
     outcome = pm_steps.finish(
         task, summary, patch, artifact, notes, split=accepted.get("split"), asks=accepted.get("asks")
     )
@@ -3664,7 +3721,14 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 raise AgentError("devops reply missing 'url'/'expected_text' needed for deep verification")
             # HZ-494: the repo's test-login env file, only when one is set.
             login = {"test_env_file": task["test_env_file"]} if task.get("test_env_file") else {}
-            verdict, smoke_line = run_smoke_check(url.strip(), expected_text.strip(), **login)
+            # HZ-789: a page the repo declares live is also held to one live value.
+            live, bad_file = smoke_live_arg(ws, url.strip())
+            if bad_file:
+                verdict, smoke_line = "fail", bad_file
+            else:
+                verdict, smoke_line = run_smoke_check(
+                    url.strip(), expected_text.strip(), **login, **({"live": live} if live else {})
+                )
         artifact_md = f"{artifact_md}\n\n## Machine-checked result\n`{smoke_line}`".strip()
         return {
             "summary": stamp_notes(f"{summary} · {smoke_line}"[:SUMMARY_MAX_CHARS], notes, SUMMARY_MAX_CHARS),

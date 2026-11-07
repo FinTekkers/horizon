@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from domain.py import reasons, steps
-from farm import checks, pm_steps, step_agent
+from farm import checks, pm_steps, smoke_config, step_agent
 from farm.agent_runner import AgentError, AgentExhaustedError, AgentMessageTooLargeError
 from farm.personas import DEFAULT_PERSONAS, PERSONA_DIR, PERSONAS
 from farm.step_agent import (
@@ -1800,6 +1800,172 @@ def test_run_smoke_check_fails_when_the_subprocess_itself_times_out(monkeypatch)
         stop_server()
     assert verdict == "fail"
     assert "timed out" in line
+
+
+# ---- HZ-789: live-data markers from the repo's .horizon/smoke.json ----
+# US-250, US-298 and US-307 passed smoke on static text while every live
+# section showed "unavailable". A page the item's repo declares live is held
+# to one rendered live value; every other page keeps today's two-argument
+# static-text check.
+
+TIPS_SECTIONS = ("security", "price", "CPI-U", "valuation")
+
+
+def write_smoke_json(ws, path="/free/tips", empty_text="unavailable"):
+    doc = {
+        "version": 1,
+        "pages": [
+            {
+                "path": path,
+                "liveValue": "[data-live-value]",
+                "sections": [
+                    {"name": name, "selector": f'[data-live-section="{name}"]', "emptyText": [empty_text]}
+                    for name in TIPS_SECTIONS
+                ],
+            }
+        ],
+    }
+    (ws / ".horizon").mkdir()
+    (ws / ".horizon" / "smoke.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+def tips_html(section_body="<p>unavailable</p>"):
+    sections = "".join(f'<section data-live-section="{n}"><h2>{n}</h2>{section_body}</section>' for n in TIPS_SECTIONS)
+    return f"<html><body><p>Real clean price (FedInvest) for every TIPS</p>{sections}</body></html>".encode()
+
+
+def deploy_to(monkeypatch, ws, url):
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setattr(
+        step_agent,
+        "run_agent",
+        devops_run_agent(
+            {
+                "summary": "verified the deploy",
+                "url": url,
+                "expected_text": "Real clean price (FedInvest",
+                "artifact_md": "## Deploy target\nui-service",
+            }
+        ),
+    )
+
+
+@requires_e2e_workspace
+@pytest.mark.usefixtures("smoke_check_tmpdir")
+def test_deploy_of_a_declared_live_page_with_every_section_unavailable_fails_naming_them(tmp_path, monkeypatch):
+    """US-298: the static text renders, every live section says unavailable.
+    Real file, real check.mjs, real report — only the agent reply is stubbed."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    write_smoke_json(ws)
+    calls = []
+    real_run = subprocess.run
+    monkeypatch.setattr(step_agent.subprocess, "run", lambda argv, **kw: calls.append(argv) or real_run(argv, **kw))
+    stop_server, url = serve_html(tips_html())
+    try:
+        deploy_to(monkeypatch, ws, url + "free/tips")
+        result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    finally:
+        stop_server()
+
+    # Guardrail: a failed check reports and flags the deploy, nothing more.
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+    assert_valid_deploy_verdict(result["artifacts"]["verdict"])
+    assert [argv[:2] for argv in calls if "node" in argv[:1]] == [["node", str(step_agent.SMOKE_CHECK_SCRIPT)]]
+    assert not [argv for argv in calls if any("deploy-" in str(a) or "rollback" in str(a) for a in argv)]
+    machine = result["artifacts"]["artifact_md"].split("## Machine-checked result", 1)[1]
+    for surface in (machine, result["summary"]):
+        assert "SMOKE_RESULT=fail: live data unavailable" in surface
+        assert "security, price, CPI-U, valuation" in surface
+
+
+def test_deploy_with_no_smoke_file_runs_todays_two_argument_check(tmp_path, monkeypatch):
+    deploy_to(monkeypatch, tmp_path, "https://www.fintekkers.org/free/tips")
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda url, text: ("pass", f'SMOKE_RESULT=pass — "{text}" rendered at {url}'))
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert result["artifacts"]["verdict"] == {"verdict": "pass"}
+    assert "`SMOKE_RESULT=pass — \"Real clean price (FedInvest\" rendered at https://www.fintekkers.org/free/tips`" in (
+        result["artifacts"]["artifact_md"]
+    )
+
+
+@pytest.mark.parametrize(
+    "url, declared",
+    [
+        ("https://www.fintekkers.org/about", False),
+        ("https://www.fintekkers.org/free/tips/", True),
+        ("https://www.fintekkers.org/free/tips?x=1", True),
+    ],
+)
+def test_deploy_passes_live_markers_only_for_a_page_the_repo_declares(tmp_path, monkeypatch, url, declared):
+    write_smoke_json(tmp_path)
+    deploy_to(monkeypatch, tmp_path, url)
+    seen = []
+
+    def fake_check(url, text, **kwargs):
+        seen.append(kwargs)
+        return "pass", f'SMOKE_RESULT=pass — "{text}" rendered at {url}'
+
+    monkeypatch.setattr(step_agent, "run_smoke_check", fake_check)
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    if declared:
+        assert [s["name"] for s in json.loads(seen[0]["live"])["sections"]] == list(TIPS_SECTIONS)
+    else:
+        assert seen == [{}]  # exactly (url, text), as today
+        assert f'`SMOKE_RESULT=pass — "Real clean price (FedInvest" rendered at {url}`' in result["artifacts"]["artifact_md"]
+
+
+def test_deploy_fails_closed_on_a_bad_smoke_file_naming_the_field(tmp_path, monkeypatch):
+    (tmp_path / ".horizon").mkdir()
+    (tmp_path / ".horizon" / "smoke.json").write_text(
+        json.dumps({"version": 1, "pages": [{"path": "/free/tips", "liveValue": "js=alert(1)", "sections": []}]})
+    )
+    deploy_to(monkeypatch, tmp_path, "https://www.fintekkers.org/free/tips")
+    monkeypatch.setattr(step_agent, "run_smoke_check", lambda *a, **k: pytest.fail("check.mjs must not run"))
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+    assert "SMOKE_RESULT=fail: smoke: .horizon/smoke.json pages[0].liveValue:" in result["summary"]
+    assert "alert(1)" not in result["summary"]
+
+
+def test_a_live_fail_returns_only_the_fail_verdict(tmp_path, monkeypatch):
+    """Guardrail: no rollback. The step's result is the report and the verdict."""
+    write_smoke_json(tmp_path)
+    deploy_to(monkeypatch, tmp_path, "https://www.fintekkers.org/free/tips")
+    monkeypatch.setattr(
+        step_agent, "run_smoke_check", lambda url, text, live: ("fail", "SMOKE_RESULT=fail: live data unavailable")
+    )
+    monkeypatch.setattr(step_agent.subprocess, "run", lambda *a, **k: pytest.fail("no script may run"))
+    result = execute(make_task(14, "Deploy the changes", repo="acme/demo"))
+    assert set(result["artifacts"]) == {"artifact_md", "verdict"}
+    assert result["artifacts"]["verdict"] == {"verdict": "fail"}
+
+
+@pytest.mark.usefixtures("smoke_check_tmpdir")
+def test_run_smoke_check_never_hands_a_marker_to_a_shell(tmp_path):
+    sentinel = tmp_path / "pwned"
+    empty_text = f"$(touch {sentinel})"
+    stop_server, url = serve_html(tips_html(f"<p>{empty_text}</p>"))
+    pages = smoke_config.parse(
+        {
+            "version": 1,
+            "pages": [
+                {
+                    "path": "/free/tips",
+                    "liveValue": "[data-live-value]",
+                    "sections": [{"name": "price", "selector": '[data-live-section="price"]', "emptyText": [empty_text]}],
+                }
+            ],
+        }
+    )
+    try:
+        verdict, line = step_agent.run_smoke_check(
+            url + "free/tips", "Real clean price (FedInvest", live=smoke_config.to_arg(pages[0])
+        )
+    finally:
+        stop_server()
+    assert verdict == "fail"
+    assert not sentinel.exists()
 
 
 def test_review_step_composes_each_pass_with_its_own_agents_persona(tmp_path, monkeypatch):

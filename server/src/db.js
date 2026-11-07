@@ -1582,6 +1582,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_ask_review_status ON ask_review(status);
 `)
 
+// HZ-793: the reviewer's finding on whether the ask contradicts its parent
+// item's description, {contradicts, detail}. NULL = not checked (a review from
+// before HZ-793, or a reply whose field was missing or malformed).
+if (!db.prepare('PRAGMA table_info(ask_review)').all().some((column) => column.name === 'contradiction_json')) {
+  db.exec('ALTER TABLE ask_review ADD COLUMN contradiction_json TEXT')
+}
+
 // HZ-729: the provider a project's asks are reviewed on. NULL = Muse. Set at
 // DB level until an Admin control exists.
 if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'ask_review_provider')) {
@@ -1599,9 +1606,9 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
 }
 
 // HZ-731: what the Autopilot caretaker did with an ask (caretakerAsks.js):
-// filed it, escalated it to the owner, or held a gate for it. The UNIQUE key
-// is the claim, so a restart or a second tick adds nothing; a 'file' row is
-// never retried, whatever its outcome. gate_index and arrival_run_id key a
+// pinged the owner about it ('escalate'), or held a gate for it. 'file' rows
+// are historical only: since HZ-793 the caretaker never files an ask. The
+// UNIQUE key is the claim, so a restart or a second tick adds nothing. gate_index and arrival_run_id key a
 // 'gate_hold' to one arrival at one gate; the other actions leave them at
 // their defaults. mode 'shadow' rows only record what Autopilot would do.
 // project_id is the item's, for the hourly window only: the row belongs to

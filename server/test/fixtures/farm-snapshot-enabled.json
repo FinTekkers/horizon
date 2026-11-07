@@ -211,22 +211,6 @@
           "kind": "<step-kind:gate>"
         }
       ],
-      "moves": {
-        "approve": null,
-        "targets": [
-          {
-            "key": "change.define-outcome",
-            "label": "<step-label:0>",
-            "action": "retry",
-            "isDefault": false,
-            "redo": "Runs “<step-label:0>” again.",
-            "reapprovals": [],
-            "stopsRunning": false
-          }
-        ],
-        "canAbandon": true,
-        "amend": null
-      },
       "paused": false,
       "last_activity_at": "2026-01-02 03:04:05",
       "abandoned_at": null,
@@ -266,6 +250,26 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -401,43 +405,6 @@
           "kind": "<step-kind:gate>"
         }
       ],
-      "moves": {
-        "approve": {
-          "key": "change.approve-prioritize",
-          "label": "<step-label:3>"
-        },
-        "targets": [
-          {
-            "key": "change.define-outcome",
-            "label": "<step-label:0>",
-            "action": "return",
-            "isDefault": true,
-            "redo": "Redoes 4 steps, from “<step-label:0>” to “<step-label:3>”.",
-            "reapprovals": [],
-            "stopsRunning": false
-          },
-          {
-            "key": "change.define-success",
-            "label": "<step-label:1>",
-            "action": "return",
-            "isDefault": false,
-            "redo": "Redoes 3 steps, from “<step-label:1>” to “<step-label:3>”.",
-            "reapprovals": [],
-            "stopsRunning": false
-          },
-          {
-            "key": "change.set-guardrails",
-            "label": "<step-label:2>",
-            "action": "return",
-            "isDefault": false,
-            "redo": "Redoes 2 steps, from “<step-label:2>” to “<step-label:3>”.",
-            "reapprovals": [],
-            "stopsRunning": false
-          }
-        ],
-        "canAbandon": true,
-        "amend": null
-      },
       "paused": false,
       "last_activity_at": "2026-01-02 03:04:05",
       "abandoned_at": null,
@@ -456,7 +423,9 @@
           "model": null,
           "verdict": null,
           "verdictSummary": null,
-          "fallbackNote": null
+          "fallbackNote": null,
+          "startedAt": "2026-01-02 03:04:05",
+          "endedAt": "2026-01-02 03:04:05"
         }
       },
       "activeRun": null,
@@ -481,6 +450,53 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": "2026-01-02T03:04:05Z",
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.plan-options",
+            "isDefault": false,
+            "redo": "Approves “<step-label:3>” and moves on to “<step-label:4>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          },
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>” and 3 later steps",
+            "reapprovals": [],
+            "stopsRunning": false
+          },
+          {
+            "stepKey": "change.define-success",
+            "isDefault": false,
+            "redo": "Redoes “<step-label:1>” and 2 later steps",
+            "reapprovals": [],
+            "stopsRunning": false
+          },
+          {
+            "stepKey": "change.set-guardrails",
+            "isDefault": false,
+            "redo": "Redoes “<step-label:2>” and 1 later step",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ],
+        "actions": {
+          "change.plan-options": "approve",
+          "change.define-outcome": "return",
+          "change.define-success": "return",
+          "change.set-guardrails": "return"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>",
+          "change.define-success": "<step-label:1>",
+          "change.set-guardrails": "<step-label:2>",
+          "change.approve-prioritize": "<step-label:3>"
+        },
+        "approveKey": "change.approve-prioritize",
+        "canAbandon": true,
+        "amendKey": null
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -592,22 +608,6 @@
           "kind": "<step-kind:gate>"
         }
       ],
-      "moves": {
-        "approve": null,
-        "targets": [
-          {
-            "key": "change.define-outcome",
-            "label": "<step-label:0>",
-            "action": "retry",
-            "isDefault": false,
-            "redo": "Runs “<step-label:0>” again.",
-            "reapprovals": [],
-            "stopsRunning": false
-          }
-        ],
-        "canAbandon": true,
-        "amend": null
-      },
       "paused": false,
       "last_activity_at": "2026-01-02 03:04:05",
       "abandoned_at": null,
@@ -641,6 +641,26 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -776,22 +796,6 @@
           "kind": "<step-kind:gate>"
         }
       ],
-      "moves": {
-        "approve": null,
-        "targets": [
-          {
-            "key": "change.define-outcome",
-            "label": "<step-label:0>",
-            "action": "retry",
-            "isDefault": false,
-            "redo": "Runs “<step-label:0>” again.",
-            "reapprovals": [],
-            "stopsRunning": false
-          }
-        ],
-        "canAbandon": true,
-        "amend": null
-      },
       "paused": false,
       "last_activity_at": "2026-01-02 03:04:05",
       "abandoned_at": null,
@@ -818,6 +822,26 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -929,22 +953,6 @@
           "kind": "<step-kind:gate>"
         }
       ],
-      "moves": {
-        "approve": null,
-        "targets": [
-          {
-            "key": "change.define-outcome",
-            "label": "<step-label:0>",
-            "action": "retry",
-            "isDefault": false,
-            "redo": "Runs “<step-label:0>” again.",
-            "reapprovals": [],
-            "stopsRunning": false
-          }
-        ],
-        "canAbandon": true,
-        "amend": null
-      },
       "paused": false,
       "last_activity_at": "2026-01-02 03:04:05",
       "abandoned_at": null,
@@ -978,6 +986,26 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -1113,22 +1141,6 @@
           "kind": "<step-kind:gate>"
         }
       ],
-      "moves": {
-        "approve": null,
-        "targets": [
-          {
-            "key": "change.define-outcome",
-            "label": "<step-label:0>",
-            "action": "retry",
-            "isDefault": false,
-            "redo": "Runs “<step-label:0>” again.",
-            "reapprovals": [],
-            "stopsRunning": false
-          }
-        ],
-        "canAbandon": true,
-        "amend": null
-      },
       "paused": false,
       "last_activity_at": "2026-01-02 03:04:05",
       "abandoned_at": null,
@@ -1155,6 +1167,26 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
+      },
       "acceptWaiting": "<pinned>"
     },
     {
@@ -1290,22 +1322,6 @@
           "kind": "<step-kind:gate>"
         }
       ],
-      "moves": {
-        "approve": null,
-        "targets": [
-          {
-            "key": "change.define-outcome",
-            "label": "<step-label:0>",
-            "action": "retry",
-            "isDefault": false,
-            "redo": "Runs “<step-label:0>” again.",
-            "reapprovals": [],
-            "stopsRunning": false
-          }
-        ],
-        "canAbandon": true,
-        "amend": null
-      },
       "paused": false,
       "last_activity_at": "2026-01-02 03:04:05",
       "abandoned_at": null,
@@ -1332,6 +1348,26 @@
       "isolationRefusal": null,
       "paused_at": null,
       "waiting_since": null,
+      "moves": {
+        "targets": [
+          {
+            "stepKey": "change.define-outcome",
+            "isDefault": true,
+            "redo": "Redoes “<step-label:0>”",
+            "reapprovals": [],
+            "stopsRunning": false
+          }
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
+      },
       "acceptWaiting": "<pinned>"
     }
   ]

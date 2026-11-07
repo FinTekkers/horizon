@@ -36,7 +36,7 @@
     {"name": "journey-admin-projects", "path": "/admin/projects/613/automation", "viewports": ["desktop"], "themes": ["light"], "waitFor": "[aria-label=\"Journey screens project Autopilot history\"]:has-text(\"off → shadow\")"},
     {"name": "journey-definitions", "path": "/definitions", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".defs__item:has-text(\"journey-screens-project\")"},
     {"name": "journey-verify-fail", "path": "/js-verify", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".step:has-text(\"Command 1 crashed on import.\") .step__icon"},
-    {"name": "journey-ran-ahead", "path": "/js-ran-ahead", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": ".step-card__meta:has-text(\"Failed, sent back · attempt 1\")"},
+    {"name": "journey-ran-ahead", "path": "/js-ran-ahead", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": "[data-testid=run-time]:has-text(\"previous attempt\")"},
     {"name": "journey-dependencies", "path": "/ls-blocked", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".dep-detail__id:has-text(\"LS-BLOCKER\")"},
     {"name": "journey-trivial-lane", "path": "/js-trivial", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".step-card:has-text(\"Skipped — trivial lane\")"},
     {"name": "journey-pause-reason", "path": "/js-paused", "viewports": ["desktop"], "themes": ["light"], "waitFor": ".pause-banner:has-text(\"Auto-retried 2 times\")"},

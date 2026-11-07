@@ -8,8 +8,9 @@
 //
 //   GET  /items                                → getItems()
 //   POST /items/:id/move (approve)             → approveGate(id)
-//   POST /items/:id/move (return, retry)       → moveItem(id, { action, to, note })
-//   POST /items/:id/pause                      → setPaused(id, paused)
+//   POST /items/:id/move (return, retry)       → moveItem(id, { stepKey, note })
+//   POST /items/:id/pause                      → setPaused(id, paused), releaseRuleBlock(id)
+//   POST /items/:id/usage-wait/release         → releaseUsageWait(id)
 //   POST /items/:id/feedback                   → sendFeedback(id, target, message)
 
 import { STEPS, isClosed, firstStepIndex, stepIndexOf } from '../../../domain/js/lifecycle.js'
@@ -18,61 +19,60 @@ import { PERSONAS, isPersona } from '../domain/personas'
 import PRODUCTIVITY_FIXTURE from '../../../domain/fixtures/productivity.json'
 
 // HZ-711: each seed item's `moves` as the server would send it at its seed
-// step (server/src/moveOptions.js) — written out, never worked out here. A
-// mock item that has moved since offers none: the mock has no move rules.
-const ret = (key, label, redo, reapprovals = [], isDefault = false, stopsRunning = false) => ({
-  key,
-  label,
-  action: 'return',
-  isDefault,
-  redo,
-  reapprovals,
-  stopsRunning,
-})
-const retry = (key, label, stopsRunning = true) => ({ key, label, action: 'retry', isDefault: false, redo: `Runs “${label}” again.`, reapprovals: [], stopsRunning })
+// step (server/src/moveItem.js movesView) — written out, never worked out
+// here. A mock item that has moved since offers none: the mock has no move
+// rules. Each target is listed with its action and label; `served` lays them
+// out as the snapshot does.
+const target = (action, stepKey, label, redo, { reapprovals = [], isDefault = false, stopsRunning = false } = {}) => ({ action, stepKey, label, redo, reapprovals, isDefault, stopsRunning })
+function served({ gate = null, targets }) {
+  return {
+    targets: targets.map(({ stepKey, isDefault, redo, reapprovals, stopsRunning }) => ({ stepKey, isDefault, redo, reapprovals, stopsRunning })),
+    actions: Object.fromEntries(targets.map((t) => [t.stepKey, t.action])),
+    labels: Object.fromEntries([...targets.map((t) => [t.stepKey, t.label]), ...(gate ? [[gate.key, gate.label]] : [])]),
+    approveKey: gate?.key ?? null,
+    canAbandon: true,
+    amendKey: null,
+  }
+}
 // The first step's label by its key, so this file holds no copy of a step
 // label (domain-one-declaration.test.mjs) — a display name, not a move rule.
 const OUTCOME = STEPS[stepIndexOf('change.define-outcome')].label
 const SEED_MOVES = {
-  'BF-145': { approve: null, targets: [ret('change.define-outcome', OUTCOME, `Redoes 2 steps, from “${OUTCOME}” to “Define how we measure success”.`, [], true, true), retry('change.define-success', 'Define how we measure success')], canAbandon: true, amend: null },
-  'BF-128': {
-    approve: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
+  'BF-145': served({
     targets: [
-      ret('change.define-outcome', OUTCOME, `Redoes 4 steps, from “${OUTCOME}” to “Approve & prioritize this work”.`, [], true),
-      ret('change.define-success', 'Define how we measure success', 'Redoes 3 steps, from “Define how we measure success” to “Approve & prioritize this work”.'),
-      ret('change.set-guardrails', 'Set guardrails', 'Redoes 2 steps, from “Set guardrails” to “Approve & prioritize this work”.'),
+      target('retry', 'change.define-success', 'Define how we measure success', 'Redoes “Define how we measure success”', { isDefault: true, stopsRunning: true }),
+      target('return', 'change.define-outcome', OUTCOME, `Redoes “${OUTCOME}” and 1 later step`, { stopsRunning: true }),
     ],
-    canAbandon: true,
-    amend: null,
-  },
-  'BF-119': {
-    approve: null,
+  }),
+  'BF-128': served({
+    gate: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
     targets: [
-      ret('change.approve-design', 'Approve the high-level design', 'Redoes 3 steps, from “Approve the high-level design” to “Architecture review”.', ['Approve the high-level design'], false, true),
-      ret('change.draft-plan', 'Draft implementation plan', 'Redoes 2 steps, from “Draft implementation plan” to “Architecture review”.', [], true, true),
-      retry('change.arch-review', 'Architecture review'),
+      target('return', 'change.define-outcome', OUTCOME, `Redoes “${OUTCOME}” and 3 later steps`, { isDefault: true }),
+      target('return', 'change.define-success', 'Define how we measure success', 'Redoes “Define how we measure success” and 2 later steps'),
+      target('return', 'change.set-guardrails', 'Set guardrails', 'Redoes “Set guardrails” and 1 later step'),
     ],
-    canAbandon: true,
-    amend: null,
-  },
-  'BF-140': {
-    approve: { key: 'change.review-before-exec', label: 'Review before execution' },
+  }),
+  'BF-119': served({
     targets: [
-      ret('change.draft-plan', 'Draft implementation plan', 'Redoes 5 steps, from “Draft implementation plan” to “Review before execution”.', [], true),
-      ret('change.summarize-reviews', 'Summarize reviews & recommend', 'Redoes 2 steps, from “Summarize reviews & recommend” to “Review before execution”.'),
+      target('retry', 'change.arch-review', 'Architecture review', 'Redoes “Architecture review”', { isDefault: true, stopsRunning: true }),
+      target('return', 'change.approve-design', 'Approve the high-level design', 'Redoes “Approve the high-level design” and 2 later steps', { reapprovals: ['change.approve-design'], stopsRunning: true }),
+      target('return', 'change.draft-plan', 'Draft implementation plan', 'Redoes “Draft implementation plan” and 1 later step', { stopsRunning: true }),
     ],
-    canAbandon: true,
-    amend: null,
-  },
-  'BF-097': {
-    approve: { key: 'change.accept-code', label: 'Accept the code' },
+  }),
+  'BF-140': served({
+    gate: { key: 'change.review-before-exec', label: 'Review before execution' },
     targets: [
-      ret('change.review-before-exec', 'Review before execution', 'Redoes 4 steps, from “Review before execution” to “Accept the code”.', ['Review before execution']),
-      ret('change.implement', 'Specialist agent implements', 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.', [], true),
+      target('return', 'change.draft-plan', 'Draft implementation plan', 'Redoes “Draft implementation plan” and 4 later steps', { isDefault: true }),
+      target('return', 'change.summarize-reviews', 'Summarize reviews & recommend', 'Redoes “Summarize reviews & recommend” and 1 later step'),
     ],
-    canAbandon: true,
-    amend: null,
-  },
+  }),
+  'BF-097': served({
+    gate: { key: 'change.accept-code', label: 'Accept the code' },
+    targets: [
+      target('return', 'change.review-before-exec', 'Review before execution', 'Redoes “Review before execution” and 3 later steps', { reapprovals: ['change.review-before-exec'] }),
+      target('return', 'change.implement', 'Specialist agent implements', 'Redoes “Specialist agent implements” and 2 later steps', { isDefault: true }),
+    ],
+  }),
 }
 
 const SEED_ITEMS = [
@@ -123,6 +123,7 @@ let items = SEED_ITEMS.map((it) => ({
   blockedBy: [],
   dependents: [],
   ...it,
+  currentStepKey: STEPS[it.cursor].key,
   moves: SEED_MOVES[it.id] ?? null,
   paused: false,
   events: [],
@@ -137,11 +138,13 @@ function emit() {
 
 // Every mutation re-stamps last_activity_at — the mock mirror of the
 // server's `touch` const in store.js, which every UPDATE statement includes.
-// HZ-711: an item whose step changed drops its seed `moves`.
+// HZ-711: an item whose step changed drops its seed `moves`, and names the
+// step it is at by key, as the server's snapshot does.
 function update(id, fn) {
   const next = (it) => {
     const changed = fn(it)
-    return { ...changed, ...(changed.cursor !== it.cursor ? { moves: null } : {}), last_activity_at: new Date().toISOString() }
+    const moved = changed.cursor !== it.cursor ? { moves: null, currentStepKey: STEPS[changed.cursor]?.key ?? null } : {}
+    return { ...changed, ...moved, last_activity_at: new Date().toISOString() }
   }
   items = items.map((it) => (it.id === id ? next(it) : it))
   emit()
@@ -427,15 +430,18 @@ export async function approveGate(id, notes, _options = {}) {
 const mockAttempts = new Map() // `${id}:${stepKey}` -> the last attempt started
 const restartsSent = new Map()
 
-export async function moveItem(id, { action, to, note = '' }) {
+export async function moveItem(id, { stepKey, note = '' }) {
   const it = items.find((x) => x.id === id)
   if (!it) throw new Error('not_found')
   if (isClosed(it)) throw new Error('closed')
-  const target = (it.moves?.targets ?? []).find((t) => t.action === action && t.key === to)
-  if (!target) throw Object.assign(new Error('bad_target_key'), { status: 409 })
+  const listed = (it.moves?.targets ?? []).some((t) => t.stepKey === stepKey)
+  const action = listed && Object.hasOwn(it.moves.actions, stepKey) ? it.moves.actions[stepKey] : null
+  if (!listed || (action !== 'return' && action !== 'retry')) throw Object.assign(new Error('invalid_target'), { status: 400 })
+  const label = it.moves.labels[stepKey]
+  const to = stepKey.split('#')[0]
   clearTimeout(timers[id])
   update(id, (x) => ({ ...x, cursor: stepIndexOf(to), paused: false, moves: null }))
-  const text = action === 'retry' ? `retried “${target.label}”` : `moved this item back to “${target.label}”`
+  const text = action === 'retry' ? `retried “${label}”` : `moved this item back to “${label}”`
   pushEvent(id, { who: 'You', text: `${text}${note ? ': ' + note : ''}`, color: '#DFA200', initials: 'YOU' })
   runAgents(id)
   const item = items.find((x) => x.id === id)
@@ -495,6 +501,24 @@ export async function setPaused(id, paused) {
   if (paused) clearTimeout(timers[id])
   else runAgents(id)
   return { ok: true, paused, item: items.find((x) => x.id === id) }
+}
+
+// HZ-713: mirrors serverApi.releaseRuleBlock. The mock has no gate PIN, so
+// releasing is the resume that clears the block.
+export async function releaseRuleBlock(id) {
+  return setPaused(id, false)
+}
+
+// HZ-713: mirrors serverApi.releaseUsageWait. The mock never limits a model;
+// it clears the wait and runs the step again.
+export async function releaseUsageWait(id) {
+  const it = items.find((x) => x.id === id)
+  if (!it) throw new Error('not_found')
+  if (!it.usageWait) throw new Error('not_waiting')
+  update(id, (x) => ({ ...x, usageWait: null }))
+  pushEvent(id, { who: 'You', text: 'released the usage wait', color: '#5E4380', initials: 'YOU' })
+  runAgents(id)
+  return { ok: true, released: true, cursor: it.cursor, clearedModels: [], item: items.find((x) => x.id === id) }
 }
 
 // HZ-407: mock items run no Execute job, so there is never one to stop or
@@ -848,6 +872,21 @@ export async function fileAsk(itemId, askId) {
 export async function dismissAsk(itemId, askId, reason) {
   if (!String(reason ?? '').trim()) throw Object.assign(new Error('reason_required'), { status: 400 })
   closeAsk(itemId, askId)
+  return { ok: true }
+}
+
+// HZ-802: the demo's hold lifts with the release.
+export async function releaseAsk(itemId, askId, reason) {
+  if (!String(reason ?? '').trim()) throw Object.assign(new Error('reason_required'), { status: 400 })
+  if (!items.some((x) => x.id === itemId)) throw new Error('not_found')
+  update(itemId, (x) => {
+    const next = { ...x }
+    if (next.startHold?.askId === askId) {
+      delete next.startHold
+      delete next.notDispatched
+    }
+    return next
+  })
   return { ok: true }
 }
 

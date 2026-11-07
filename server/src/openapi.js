@@ -38,6 +38,12 @@ export const INTERNAL_PREFIXES = [
   /^\/api\/items\/[^/]+\/gates\/[^/]+\/approve-via-whatsapp$/,
   // HZ-274's WhatsApp kill switch: the same credential and no browser caller.
   /^\/api\/projects\/autopilot-off-via-whatsapp$/,
+  // HZ-786's WhatsApp retry: the same credential and no browser caller.
+  /^\/api\/items\/[^/]+\/retry-via-whatsapp$/,
+  // HZ-790's WhatsApp gate note and priority change: the same credential and
+  // no browser caller.
+  /^\/api\/items\/[^/]+\/gates\/[^/]+\/note-via-whatsapp$/,
+  /^\/api\/items\/[^/]+\/priority-via-whatsapp$/,
   // HZ-634: Stripe's webhook. Its own HMAC credential, and no browser caller.
   /^\/api\/billing\/stripe-webhook$/,
 ]

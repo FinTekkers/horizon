@@ -35,6 +35,8 @@ vi.mock('./api', () => ({
   getRestartSent: () => null,
   resolveConflicts: vi.fn(),
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   logout: vi.fn(),
@@ -47,6 +49,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 function conflictedItem(id, extra = {}) {
   return {
@@ -67,7 +70,7 @@ function conflictedItem(id, extra = {}) {
     activeRun: null,
     conflictRun: null,
     // HZ-711: the server's moves at Accept the code — the page offers only these.
-    moves: {
+    moves: servedMoves({
       approve: { key: 'change.accept-code', label: 'Accept the code' },
       targets: [
         {
@@ -82,7 +85,7 @@ function conflictedItem(id, extra = {}) {
       ],
       canAbandon: true,
       amend: null,
-    },
+    }),
     ...extra,
   }
 }

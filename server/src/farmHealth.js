@@ -261,6 +261,8 @@ export const defaultDeps = {
   liveDeploysSince: (sinceSql) => store.listLiveDeploysSince(sinceSql),
   serverBootedAt: () => store.BOOTED_AT,
   deployTargets: () => listTargets(),
+  // HZ-802: open items at an agent step with nothing running, and why.
+  notDispatchedItems: () => store.notDispatchedItems(),
 }
 
 const settle = (promise) => Promise.resolve().then(() => promise).then((v) => v, () => null)
@@ -396,6 +398,13 @@ export async function collectOnce(deps = defaultDeps) {
   const booted = deps.serverBootedAt()
   if (booted && Date.parse(booted) >= sinceMs) recent.push({ kind: 'server_restart', target: null, tag: null, at: booted })
   recent.sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0))
+  // A held item is a normal state, so deriveHealth never reads this list.
+  let notDispatched = []
+  try {
+    notDispatched = typeof deps.notDispatchedItems === 'function' ? deps.notDispatchedItems() || [] : []
+  } catch {
+    // A failed read leaves the rest of the snapshot intact.
+  }
 
   const health = deriveHealth({
     farm,
@@ -418,6 +427,7 @@ export async function collectOnce(deps = defaultDeps) {
     box,
     services,
     recent,
+    notDispatched,
   }
 }
 
@@ -491,6 +501,13 @@ export function toPublic(snapshot) {
       up: v?.up === true,
     })),
     recent: (s.recent || []).map((e) => ({ kind: str(e?.kind, 20), target: str(e?.target, 60), tag: str(e?.tag, 80), at: str(e?.at, 40) })),
+    notDispatched: (s.notDispatched || []).map((n) => ({
+      itemId: str(n?.itemId, 40),
+      title: str(n?.title),
+      step: str(n?.step),
+      kind: str(n?.kind, 40),
+      message: str(n?.message, 300),
+    })),
   }
 }
 

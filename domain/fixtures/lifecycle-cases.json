@@ -741,6 +741,9 @@
       { "case": "a change item at implement is held by a filed ask until its item merges", "item": { "cursor": 11 }, "asks": [{ "id": 2, "status": "filed", "title": "B", "filed": { "id": "HZ-2", "title": "B", "cursor": 12, "kind": "change" } }], "expect": { "askId": 2, "title": "B", "filedItemId": "HZ-2" } },
       { "case": "a filed ask whose item merged holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 3, "status": "filed", "title": "C", "filed": { "id": "HZ-3", "title": "C", "cursor": 14, "kind": "change", "merged_at": "2026-11-05 00:00:00" } }], "expect": null },
       { "case": "a filed ask whose item no longer exists holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 4, "status": "filed", "title": "D", "filed": null }], "expect": null },
+      { "case": "a filed ask whose item was abandoned holds nothing", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 6, "status": "filed", "title": "F", "filed": { "id": "HZ-6", "title": "F", "cursor": 3, "kind": "change", "abandoned_at": "2026-11-05 23:52:21" } }], "expect": null },
+      { "case": "a filed ask whose item merged and was then abandoned holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 7, "status": "filed", "title": "G", "filed": { "id": "HZ-7", "title": "G", "cursor": 14, "kind": "change", "merged_at": "2026-11-05 00:00:00", "abandoned_at": "2026-11-05 01:00:00" } }], "expect": null },
+      { "case": "a task at execute is held by a filed ask while its item is open", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 8, "status": "filed", "title": "H", "filed": { "id": "HZ-8", "title": "H", "cursor": 3, "kind": "change" } }], "expect": { "askId": 8, "title": "H", "filedItemId": "HZ-8" } },
       { "case": "a task at execute is held by an open blocking ask", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 5, "status": "open", "title": "E", "filed": null }], "expect": { "askId": 5, "title": "E", "filedItemId": null } }
     ],
 

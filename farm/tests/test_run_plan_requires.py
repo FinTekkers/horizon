@@ -5,6 +5,7 @@ run_agent is stubbed (test_task_steps.stub_agent); the check itself runs for
 real — bash on the host, conftest's fake_podman for a container.
 """
 
+import json
 import os
 import subprocess
 
@@ -217,3 +218,406 @@ def test_the_check_runs_no_plan_command_and_writes_nothing(monkeypatch, repo, tm
     assert not (repo / "hz502-marker").exists()
     assert _snapshot(repo) == before_repo
     assert sorted(os.listdir(tmp_path)) == before_tmp
+
+
+# ==== HZ-769: env vars, host files and undeclared `$NAME`s ====
+
+FIXTURES = REPO_ROOT / "farm" / "tests" / "fixtures" / "run_plans"
+SENTINEL = "hz769-sentinel-value-5b1e"
+
+
+def stamped(task, names=(), uid=None):
+    """What farmd's _claim_and_launch adds to a Run plan task: the names its
+    own env sets and its uid — Execute's env and user."""
+    task.update(job_env_names=sorted(names), job_uid=os.geteuid() if uid is None else uid)
+    return task
+
+
+def fixture_plan(name):
+    return json.loads((FIXTURES / f"{name}.json").read_text())
+
+
+def fixture_task(repo, names=(), **kwargs):
+    """A stamped Run plan task whose metric has the five lines the stored
+    plans prove."""
+    task = stamped(run_plan_task(repo, **kwargs), names=names)
+    task["item"]["metric"] = "\n".join(f"{n}. line {n}" for n in range(1, 6))
+    return task
+
+
+def fixture_reply(name, **changes):
+    return reply_for(step_agent.RUN_PLAN_LABEL, run_plan={**fixture_plan(name), **changes})
+
+
+def env_plan(*requires, env=None, **plan):
+    return plan_reply(*requires, env=env or {}, **plan)
+
+
+def gap_reason(monkeypatch, task, *replies):
+    """Runs the Run plan step to its failure; returns (agent calls, reason)."""
+    calls = stub_agent(monkeypatch, list(replies))
+    with pytest.raises(AgentError) as err:
+        step_agent.execute(task)
+    reason = str(err.value)
+    assert reason.startswith(step_agent.REQUIRES_GAP_PREFIX)
+    return calls, reason
+
+
+@pytest.fixture
+def config_root(monkeypatch, tmp_path):
+    """A stand-in for /etc/horizon: the only allowed root outside the checkout."""
+    root = tmp_path / "etc-horizon"
+    root.mkdir()
+    monkeypatch.setattr(run_plan_requires, "ALLOWED_FILE_ROOTS", (str(root),))
+    return root
+
+
+# ---- metric 1: an unset or empty requires.env name goes back to the agent ----
+
+
+@pytest.mark.parametrize("dotenv", [None, 'HZ769_UNSET=""\n'], ids=["no-source", "empty-in-dotenv"])
+def test_an_unset_or_empty_env_var_is_sent_back_twice_then_fails_naming_it(monkeypatch, repo, dotenv):
+    if dotenv:
+        (repo / "sub" / ".env").write_text(dotenv)
+    monkeypatch.delenv("HZ769_UNSET", raising=False)
+    reply = env_plan({"tool": "bash"}, {"env": "HZ769_UNSET"}, env={"HZ769_UNSET": "$HZ769_UNSET"})
+    calls, reason = gap_reason(monkeypatch, stamped(run_plan_task(repo)), reply)
+    assert len(calls) == 1 + step_agent.REQUIRES_REPROMPTS
+    for reprompt in calls[1:]:
+        assert "env var `HZ769_UNSET` is not set in the job's environment" in reprompt["prompt"]
+        assert '{"env": "NAME"}' in reprompt["prompt"]
+    assert reason == step_agent.REQUIRES_GAP_PREFIX + "env var `HZ769_UNSET` is not set in the job's environment"
+
+
+def test_an_env_gap_fixed_on_the_reprompt_completes_with_the_corrected_plan(monkeypatch, repo):
+    first = env_plan({"env": "HZ769_UNSET"}, env={"HZ769_UNSET": "$HZ769_UNSET"})
+    fixed = env_plan({"env": "HZ769_SET"}, env={"HZ769_SET": "$HZ769_SET"}, commands=['test -n "$HZ769_SET"'])
+    calls = stub_agent(monkeypatch, [first, fixed])
+    result = step_agent.execute(stamped(run_plan_task(repo), names=["HZ769_SET"]))
+    assert len(calls) == 2
+    assert "`HZ769_UNSET`" in calls[1]["prompt"]
+    assert run_plan.extract(result["artifacts"]["artifact_md"]) == fixed["run_plan"]
+
+
+# ---- metric 2 and guardrail 2: files ----
+
+
+def test_an_unreadable_file_under_an_allowed_root_is_a_gap_naming_it(monkeypatch, repo, config_root):
+    if os.geteuid() == 0:
+        pytest.fail("runs as root, where test -r passes on a chmod 000 file: run the suite as a normal user")
+    secret = config_root / "stripe.env"
+    secret.write_text("x\n")
+    secret.chmod(0o000)
+    _, reason = gap_reason(monkeypatch, stamped(run_plan_task(repo)), env_plan({"file": str(secret)}))
+    assert reason == step_agent.REQUIRES_GAP_PREFIX + f"file `{secret}` is not readable by the job user"
+
+
+def test_a_file_outside_the_checkout_and_the_allowed_roots_is_a_gap_and_never_probed(monkeypatch, repo, probes):
+    _, reason = gap_reason(monkeypatch, stamped(run_plan_task(repo)), env_plan({"file": "/etc/passwd"}, {"tool": "bash"}))
+    assert reason == step_agent.REQUIRES_GAP_PREFIX + (
+        "file `/etc/passwd` resolves outside the checkout and outside /etc/horizon and /etc/fintekkers (not checked)"
+    )
+    assert probes and not any("/etc/passwd" in arg for probe in probes for arg in probe["argv"])
+
+
+def test_dotdot_and_a_symlink_out_of_an_allowed_root_are_gaps_and_never_probed(monkeypatch, repo, probes, config_root):
+    (config_root / "root-link").symlink_to("/root")
+    linked = str(config_root / "root-link" / ".bashrc")
+    reply = env_plan({"file": "/etc/horizon/../shadow"}, {"file": linked})
+    _, reason = gap_reason(monkeypatch, stamped(run_plan_task(repo)), reply)
+    gaps = reason[len(step_agent.REQUIRES_GAP_PREFIX) :].split("; ")
+    assert [gap.split("`")[1] for gap in gaps] == ["/etc/horizon/../shadow", linked]
+    assert all("resolves outside the checkout" in gap for gap in gaps)
+    assert probes == []
+
+
+def test_a_file_is_never_probed_as_a_user_other_than_the_job_user(repo, probes, config_root):
+    readable = config_root / "ok.env"
+    readable.write_text("x\n")
+    block = {**VALID_PLAN, "cwd": ".", "env": {}, "requires": [{"file": str(readable)}]}
+    for uid in (None, os.geteuid() + 1):
+        gaps = run_plan_requires.check(
+            block, repo_dir=str(repo), venv_dir=None, runner="host", container_image=None, forbid=str(REPO_ROOT),
+            job_env_names=[], job_uid=uid,
+        )  # fmt: skip
+        assert gaps == [f"file `{readable}` cannot be checked as the job user (not checked)"]
+    assert probes == []
+
+
+# ---- metric 3: an undeclared `$NAME` ----
+
+
+def test_hz514_shape_no_requires_and_an_undeclared_name_fails_naming_it(monkeypatch, repo):
+    reply = reply_for(
+        step_agent.RUN_PLAN_LABEL,
+        run_plan={"cwd": ".", "budget_minutes": 5, "commands": ['curl -H "Authorization: Bearer $HORIZON_API_TOKEN" x']},
+    )
+    _, reason = gap_reason(monkeypatch, run_plan_task(repo), reply)
+    assert reason == step_agent.REQUIRES_GAP_PREFIX + (
+        "command uses `$HORIZON_API_TOKEN`, which is not declared in requires.env or set by the plan"
+    )
+
+
+def test_hz533_plan_item_fails_as_stored_and_passes_once_declared(monkeypatch, repo):
+    names = ["PLAN_ITEM", "TASK_ITEM"]
+    _, reason = gap_reason(monkeypatch, fixture_task(repo, names), fixture_reply("hz533"))
+    assert "command uses `$PLAN_ITEM`, which is not declared in requires.env or set by the plan" in reason
+
+    # PLAN_ITEM declared (and set in farmd's env): no longer named.
+    declared = fixture_plan("hz533")["requires"] + [{"env": "PLAN_ITEM"}]
+    _, reason = gap_reason(
+        monkeypatch, fixture_task(repo, names), fixture_reply("hz533", requires=declared)
+    )
+    assert "PLAN_ITEM" not in reason
+    assert "`$TASK_ITEM`" in reason
+
+    # With TASK_ITEM declared too, and the plan's tools, paths and config
+    # file present, the stored plan passes as is.
+    for path in [e["path"] for e in fixture_plan("hz533")["requires"] if "path" in e]:
+        (repo / path).mkdir(parents=True, exist_ok=True)  # test -e: a folder will do
+    fake_bin = make_venv(repo, *[e["tool"] for e in fixture_plan("hz533")["requires"] if "tool" in e])
+    monkeypatch.setattr(run_plan_requires, "_implied_files", lambda block: [])
+    full = declared + [{"env": "TASK_ITEM"}]
+    calls = stub_agent(monkeypatch, [fixture_reply("hz533", requires=full)])
+    result = step_agent.execute(fixture_task(repo, names, venv_dir=str(fake_bin)))
+    assert len(calls) == 1
+    assert run_plan.extract(result["artifacts"]["artifact_md"])["requires"] == full
+
+
+def test_assigned_loop_quoted_and_standard_names_are_not_reported():
+    block = {
+        "commands": [
+            'for f in a b; do echo "$f"; done; X=1; export Y=2; read -r Z; echo $X $Y $Z $HOME ${PATH} $1 $? $$ \\$NOPE',
+            "echo '$NOT_SCANNED' $'$ALSO_NOT' \"$(printf '%s' \"$WANTED\")\" $((N + 1))",
+            "cat <<'EOF'\n$QUOTED_HEREDOC\nEOF\ncat <<EOF\n$OPEN_HEREDOC\nEOF",
+        ]
+    }
+    assert run_plan_requires.undeclared_names(block) == ["WANTED", "OPEN_HEREDOC"]
+    assert run_plan_requires.undeclared_names({**block, "requires": [{"env": "WANTED"}]}) == ["OPEN_HEREDOC"]
+
+
+# ---- metric 4: Execute's environment, in both modes ----
+
+
+@pytest.mark.parametrize("runner", ["host", "container"])
+def test_env_comes_from_farmds_names_never_the_step_process(monkeypatch, repo, runner):
+    """A name farmd's env sets passes though this process lacks it; a name
+    only this process sets is a gap."""
+    monkeypatch.delenv("HZ769_FARMD_ONLY", raising=False)
+    monkeypatch.setenv("HZ769_STEP_ONLY", SENTINEL)
+    reply = env_plan(
+        {"env": "HZ769_FARMD_ONLY"},
+        {"env": "HZ769_STEP_ONLY"},
+        env={"HZ769_FARMD_ONLY": "$HZ769_FARMD_ONLY", "HZ769_STEP_ONLY": "$HZ769_STEP_ONLY"},
+    )
+    task = stamped(run_plan_task(repo, runner=runner, image=FAKE_IMAGE), names=["HZ769_FARMD_ONLY"])
+    _, reason = gap_reason(monkeypatch, task, reply)
+    assert reason == step_agent.REQUIRES_GAP_PREFIX + "env var `HZ769_STEP_ONLY` is not set in the job's environment"
+
+
+def test_an_image_only_variable_passes_in_a_container_and_is_a_gap_on_the_host(monkeypatch, repo):
+    monkeypatch.setenv("FARM_FAKE_PODMAN_IMAGE_ENV", json.dumps({"HZ769_IMAGE_ONLY": "from-the-image"}))
+    monkeypatch.setattr(container_runner, "CLIENT_ENV_KEYS", (*container_runner.CLIENT_ENV_KEYS, "FARM_FAKE_PODMAN_IMAGE_ENV"))
+    reply = env_plan({"env": "HZ769_IMAGE_ONLY"})
+    calls = stub_agent(monkeypatch, [reply])
+    result = step_agent.execute(stamped(run_plan_task(repo, runner="container", image=FAKE_IMAGE)))
+    assert len(calls) == 1
+    assert run_plan.extract(result["artifacts"]["artifact_md"]) == reply["run_plan"]
+    _, reason = gap_reason(monkeypatch, stamped(run_plan_task(repo, runner="host")), reply)
+    assert reason == step_agent.REQUIRES_GAP_PREFIX + "env var `HZ769_IMAGE_ONLY` is not set in the job's environment"
+
+
+@pytest.mark.parametrize("runner", ["host", "container"])
+def test_no_value_or_file_content_reaches_the_gaps_the_feedback_the_log_or_the_probe(
+    monkeypatch, repo, config_root, tmp_path, capfd, runner
+):
+    (repo / "sub" / ".env").write_text(f"HZ769_DOTENV={SENTINEL}\n")
+    login = tmp_path / "login.env"
+    login.write_text(f"HZ769_LOGIN={SENTINEL}\n")
+    secret_file = config_root / "readable.env"
+    secret_file.write_text(f"KEY={SENTINEL}\n")
+    monkeypatch.setenv("HZ769_FARMD", SENTINEL)
+    results, real = [], subprocess.run
+
+    def spy(argv, **kwargs):
+        done = real(argv, **kwargs)
+        results.append((list(argv), kwargs.get("env") or {}, done.stdout, done.stderr))
+        return done
+
+    monkeypatch.setattr(run_plan_requires.subprocess, "run", spy)
+    refs = {n: f"${n}" for n in ("HZ769_DOTENV", "HZ769_LOGIN", "HZ769_FARMD", "HZ769_MISSING")}
+    reply = env_plan(*({"env": n} for n in refs), {"file": str(secret_file)}, {"tool": "bash"}, env=refs)
+    task = stamped(run_plan_task(repo, runner=runner, image=FAKE_IMAGE), names=["HZ769_FARMD"])
+    task["test_env_file"] = str(login)
+    calls, reason = gap_reason(monkeypatch, task, reply)
+    assert "env var `HZ769_MISSING` is not set" in reason
+    # The dotenv, login and farmd names resolved without a probe; the file
+    # is probed on the host and refused in a container.
+    for name in ("HZ769_DOTENV", "HZ769_LOGIN", "HZ769_FARMD"):
+        assert name not in reason
+    assert (f"file `{secret_file}` is not available to a container run" in reason) is (runner == "container")
+    gaps = reason[len(step_agent.REQUIRES_GAP_PREFIX) :].split("; ")
+    out, err = capfd.readouterr()
+    assert results
+    for text in (reason, run_plan_requires.feedback(gaps), out, err, *(c["prompt"] for c in calls[1:])):
+        assert SENTINEL not in text
+    for argv, env, stdout, stderr in results:
+        assert SENTINEL not in " ".join(argv) and SENTINEL not in stdout and SENTINEL not in stderr
+        assert SENTINEL not in json.dumps(env)
+    probe_outputs = [stdout for argv, _, stdout, _ in results if run_plan_requires.PROBE_ENV_FILES in argv]
+    assert probe_outputs and all(out.split() and all(line.isdigit() for line in out.split()) for out in probe_outputs)
+
+
+# ---- metric 5: the stored plans that failed in preflight ----
+
+
+@pytest.mark.parametrize("name", ["hz514", "hz532", "hz533", "hz700-a5"])
+def test_each_committed_plan_fixture_holds_no_literal_secret(name):
+    text = (FIXTURES / f"{name}.json").read_text()
+    assert run_plan.literal_secrets(text) == []
+    run_plan.validate(json.loads(text))
+
+
+def test_the_stored_hz514_plan_stops_at_run_plan_naming_its_token(monkeypatch, repo):
+    _, reason = gap_reason(monkeypatch, fixture_task(repo, ["GITHUB_TOKEN"]), fixture_reply("hz514"))
+    assert "env var `HORIZON_API_TOKEN` is not set in the job's environment" in reason
+    assert "`GITHUB_TOKEN`" not in reason
+
+
+def test_the_stored_hz532_plan_stops_at_run_plan_naming_both_inputs(monkeypatch, repo):
+    _, reason = gap_reason(monkeypatch, fixture_task(repo), fixture_reply("hz532"))
+    for name in ("RECORD_SITE_URL", "RECORD_ITEM"):
+        assert f"command uses `${name}`, which is not declared in requires.env or set by the plan" in reason
+        assert f"env var `{name}` is not set in the job's environment" in reason
+
+
+def test_the_stored_hz700_attempt5_plan_stops_at_run_plan_naming_the_stripe_file(monkeypatch, repo):
+    stripe = "/etc/horizon/stripe.env"
+    if os.access(stripe, os.R_OK):
+        pytest.fail(f"{stripe} is readable by this user, so this test cannot show the gap: run as a non-root user")
+    _, reason = gap_reason(monkeypatch, fixture_task(repo, ["HOME"]), fixture_reply("hz700-a5"))
+    assert f"file `{stripe}` is not readable by the job user" in reason
+    # Read through `sudo -n cat`, the recorder file is not the job user's to open.
+    assert "recorder.env" not in reason
+
+
+# ---- guardrails 1, 3 and 4 ----
+
+
+def test_env_and_file_checks_run_no_plan_command_and_write_nothing(monkeypatch, repo, tmp_path, config_root):
+    readable = config_root / "ok.env"
+    readable.write_text("x\n")
+    before_repo, before_root = _snapshot(repo), _snapshot(config_root)
+    before_tmp = sorted(os.listdir(tmp_path))
+    reply = env_plan(
+        {"env": "HZ769_SET"},
+        {"file": str(readable)},
+        env={"HZ769_SET": "$HZ769_SET"},
+        cwd=".",
+        commands=['touch hz769-marker "$HZ769_SET"', f"cat {readable} > hz769-copy"],
+    )
+    stub_agent(monkeypatch, [reply])
+    result = step_agent.execute(stamped(run_plan_task(repo), names=["HZ769_SET"]))
+    assert result["summary"]
+    assert not (repo / "hz769-marker").exists() and not (repo / "hz769-copy").exists()
+    assert _snapshot(repo) == before_repo and _snapshot(config_root) == before_root
+    assert sorted(os.listdir(tmp_path)) == before_tmp
+
+
+def test_standard_vars_is_one_frozen_literal_list_defined_only_here():
+    assert isinstance(run_plan_requires.STANDARD_VARS, frozenset)
+    assert run_plan_requires.STANDARD_VARS == {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ", "TMPDIR",
+        "VIRTUAL_ENV",
+        "PWD", "OLDPWD", "IFS", "PPID", "RANDOM", "LINENO", "SECONDS", "UID", "EUID", "HOSTNAME",
+        "REPLY", "OPTARG", "OPTIND",
+    }  # fmt: skip
+    # No second list: OPTIND and OLDPWD together mark one anywhere else.
+    others = [
+        str(path.relative_to(REPO_ROOT))
+        for top in ("farm", "domain", "server/src")
+        for path in (REPO_ROOT / top).rglob("*")
+        if path.suffix in (".py", ".js", ".mjs", ".json")
+        and "tests" not in path.parts
+        and path.name != "run_plan_requires.py"
+        and "OPTIND" in (text := path.read_text(errors="ignore"))
+        and "OLDPWD" in text
+    ]
+    assert others == []
+
+
+def test_a_tool_and_path_plan_gets_todays_probe_argv_and_feedback_text(monkeypatch, repo, probes):
+    stub_agent(monkeypatch, [plan_reply({"tool": "bash"}, {"path": "requirements.txt"})])
+    step_agent.execute(stamped(run_plan_task(repo), names=["GITHUB_TOKEN"]))
+    (probe,) = probes
+    assert probe["argv"] == [
+        "bash",
+        "-c",
+        'i=0; mode=tool; for a in "$@"; do '
+        'if [ "$mode" = tool ] && [ "$a" = --paths ]; then mode=path; continue; fi; '
+        "i=$((i+1)); "
+        'if [ "$mode" = tool ]; then command -v -- "$a" >/dev/null 2>&1 || echo "$i"; '
+        'else test -e "$a" || echo "$i"; fi; '
+        "done",
+        "_",
+        "bash",
+        "--paths",
+        os.path.realpath(repo / "requirements.txt"),
+    ]
+    assert run_plan_requires.feedback(["tool `gh` is not on the runner's PATH"]) == (
+        "Your run plan's `requires` was checked on the runner the plan will use, and the runner lacks:\n"
+        "- tool `gh` is not on the runner's PATH\n\n"
+        "Change the plan so every tool and file it needs is there before the run starts: use a tool the "
+        "runner has, fix the path, or set `runner` to one that has them. Keep `requires` listing every tool "
+        "and file the commands need. Respond with ONLY the full JSON object described in your role instructions."
+    )
+
+
+def test_farmd_stamps_a_run_plan_task_with_its_env_names_and_uid_only(tmp_path, monkeypatch):
+    from farm import farmd
+
+    monkeypatch.setenv("HZ769_FARMD_NAME", SENTINEL)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd.tmux_mgr, "new_session", lambda *a, **k: None)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    assert run_plan_requires.RUN_PLAN_LABEL == step_agent.RUN_PLAN_LABEL
+    for label, run_id in ((step_agent.RUN_PLAN_LABEL, 76901), ("Assess", 76902)):
+        task = {**make_task(label), "run_id": run_id}
+        (runs_dir / f"{run_id}.json").write_text(json.dumps(task))
+        farmd._claim_and_launch(runs_dir / f"{run_id}.json", runs_dir, tmp_path)
+        farmd.RUN_SESSIONS.pop(str(run_id), None)
+        claimed = (runs_dir / "active" / f"{run_id}.json").read_text()
+        assert SENTINEL not in claimed
+        written = json.loads(claimed)
+        if label == step_agent.RUN_PLAN_LABEL:
+            assert "HZ769_FARMD_NAME" in written["job_env_names"] and written["job_uid"] == os.geteuid()
+        else:
+            assert "job_env_names" not in written and "job_uid" not in written
+
+
+def test_farmd_stamps_a_tenant_run_plan_task_with_its_session_env_names_and_run_user_uid(tmp_path, monkeypatch):
+    """A tenant Execute resolves from the tenant session env (built from
+    empty) and runs as the run user: a name only farmd's env sets is not
+    stamped, and the uid is the run user's."""
+    from farm import farmd
+
+    monkeypatch.setenv("HZ769_FARMD_NAME", SENTINEL)
+    monkeypatch.setenv("HZ769_TENANT_TOKEN", SENTINEL)
+    monkeypatch.setattr(farmd, "_notify_started", lambda run_id: True)
+    monkeypatch.setattr(farmd, "_launch_tenant_session", lambda *a, **k: None)
+    monkeypatch.setattr(farmd, "_run_user_home", lambda run_user: f"/home/{run_user}")
+    monkeypatch.setattr(farmd, "_run_user_uid", lambda run_user: 76999)
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir()
+    project = {"id": 7, "isolation": "tenant", "githubTokenRef": "$HZ769_TENANT_TOKEN", "runUser": "acme_run"}
+    task = {**make_task(step_agent.RUN_PLAN_LABEL), "run_id": 76903, "project": project}
+    (runs_dir / "76903.json").write_text(json.dumps(task))
+    farmd._claim_and_launch(runs_dir / "76903.json", runs_dir, tmp_path)
+    farmd.RUN_SESSIONS.pop("76903", None)
+    claimed = (runs_dir / "active" / "76903.json").read_text()
+    assert SENTINEL not in claimed
+    written = json.loads(claimed)
+    assert "HZ769_FARMD_NAME" not in written["job_env_names"]
+    assert {"GITHUB_TOKEN", "HOME"} <= set(written["job_env_names"])
+    assert written["job_uid"] == 76999

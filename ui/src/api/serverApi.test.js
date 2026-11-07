@@ -250,23 +250,23 @@ test('approving posts an approve move from <currentStepKey>, with no numeric ste
   expect(Object.values(body).some((value) => typeof value === 'number')).toBe(false)
 })
 
-// HZ-711: a Return to or Retry is one move, named by step keys only: `from`
-// is the step the tab shows the item at, `to` the step it picked. No numeric
-// step segment and no step index is sent.
-test('moveItem posts { action, from, to, note } by step key, with no numeric step segment or index', async () => {
+// HZ-711: a Return to or Retry is one move, named by step keys only: `stepKey`
+// the target the tab picked from the item's moves (HZ-799), `from` the step
+// the tab shows the item at. No numeric step segment and no step index is sent.
+test('moveItem posts { stepKey, from, note } by step key, with no numeric step segment or index', async () => {
   const serverApi = await import('./serverApi')
   serverApi.subscribe(() => {})
   seedItem({ id: 'KEY-2', cursor: 13, currentStepKey: 'change.accept-code', pr_url: null })
   const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }))
   vi.stubGlobal('fetch', fetchMock)
 
-  await expect(serverApi.moveItem('KEY-2', { action: 'return', to: 'change.draft-plan', note: 'redo' })).resolves.toEqual({ ok: true })
+  await expect(serverApi.moveItem('KEY-2', { stepKey: 'change.draft-plan', note: 'redo' })).resolves.toEqual({ ok: true })
   const [url, init] = fetchMock.mock.calls[0]
   const path = url.replace(serverApi.API_BASE, '')
   expect(path).toBe('/items/KEY-2/move')
   expect(path.split('/').some((segment) => /^\d+$/.test(segment))).toBe(false)
   const body = JSON.parse(init.body)
-  expect(body).toEqual({ action: 'return', from: 'change.accept-code', to: 'change.draft-plan', note: 'redo' })
+  expect(body).toEqual({ stepKey: 'change.draft-plan', from: 'change.accept-code', note: 'redo' })
   expect(Object.values(body).some((value) => typeof value === 'number')).toBe(false)
 })
 
@@ -278,8 +278,8 @@ test('moveItem names `from` by the key at the cursor when the snapshot has no cu
   const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) }))
   vi.stubGlobal('fetch', fetchMock)
 
-  await serverApi.moveItem('KEY-3', { action: 'retry', to: 'change.arch-review' })
-  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ action: 'retry', from: 'change.arch-review', to: 'change.arch-review', note: '' })
+  await serverApi.moveItem('KEY-3', { stepKey: 'change.arch-review' })
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ stepKey: 'change.arch-review', from: 'change.arch-review', note: '' })
 })
 
 test('moveItem and abandonItem reject with not_found for an item this tab has not seen, sending nothing', async () => {
@@ -288,7 +288,7 @@ test('moveItem and abandonItem reject with not_found for an item this tab has no
   const fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)
 
-  await expect(serverApi.moveItem('NOPE-1', { action: 'retry', to: 'change.arch-review' })).rejects.toThrow('not_found')
+  await expect(serverApi.moveItem('NOPE-1', { stepKey: 'change.arch-review' })).rejects.toThrow('not_found')
   await expect(serverApi.abandonItem('NOPE-1', 'why')).rejects.toThrow('not_found')
   expect(fetchMock).not.toHaveBeenCalled()
 })
@@ -305,7 +305,7 @@ test("moveItem applies the answer's item and records its restart for getRestartS
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, item: answered, restart }) })))
   changed.mockClear()
 
-  await serverApi.moveItem('MV-1', { action: 'return', to: 'change.implement', note: 'fix it' })
+  await serverApi.moveItem('MV-1', { stepKey: 'change.implement', note: 'fix it' })
   expect(serverApi.getItems().find((it) => it.id === 'MV-1')).toEqual(answered)
   expect(serverApi.getRestartSent('MV-1')).toEqual(restart)
   expect(changed).toHaveBeenCalled()
@@ -322,7 +322,7 @@ test("moveItem keeps a newer cached item over a stale answer's, and still record
   const restart = { stepIndex: 11, stepKey: 'change.implement', attempt: 2 }
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, item: answered, restart }) })))
 
-  await serverApi.moveItem('MV-2', { action: 'retry', to: 'change.auto-review' })
+  await serverApi.moveItem('MV-2', { stepKey: 'change.auto-review' })
   expect(serverApi.getItems().find((it) => it.id === 'MV-2')).toEqual(cached)
   expect(serverApi.getRestartSent('MV-2')).toEqual(restart)
 })
@@ -911,21 +911,52 @@ const GATE_ACTIONS = [
   [
     'abandonItem',
     (api) => api.abandonItem('K-1', 'why', { removeDependentLinks: true }),
+    '/items/K-1/move',
     { action: 'abandon', from: 'change.accept-code', note: 'why', removeDependentLinks: true },
   ],
   [
     'moveItem',
-    (api) => api.moveItem('K-1', { action: 'return', to: 'change.implement', note: 'why' }),
-    { action: 'return', from: 'change.accept-code', to: 'change.implement', note: 'why' },
+    (api) => api.moveItem('K-1', { stepKey: 'change.implement', note: 'why' }),
+    '/items/K-1/move',
+    { stepKey: 'change.implement', from: 'change.accept-code', note: 'why' },
   ],
+  // HZ-802: Release on a filed ask's hold.
+  ['releaseAsk', (api) => api.releaseAsk('K-1', 7, 'why'), '/items/K-1/asks/7/release', { reason: 'why' }],
 ]
 const gateItem = (api) => api.getItems().find((it) => it.id === 'K-1')
+
+// HZ-802: a move that cannot dispatch says why; the rejection carries the
+// server's words, so the dialog can show them.
+test("a move's 409 carries the server's message as serverMessage", async () => {
+  const serverApi = await import('./serverApi')
+  answerPins(serverApi, GATE_PIN)
+  const fetchSpy = vi.fn(gateAnswer(409, { error: 'blocked_by', message: 'Blocked by MDI-129 (Add rates)', itemId: 'MDI-129' }))
+  vi.stubGlobal('fetch', fetchSpy)
+  serverApi.subscribe(() => {})
+  seedItem(GATE_ITEM)
+
+  const err = await serverApi.moveItem('K-1', { stepKey: 'change.implement' }).catch((e) => e)
+  expect(err.message).toBe('blocked_by')
+  expect(err.status).toBe(409)
+  expect(err.serverMessage).toBe('Blocked by MDI-129 (Add rates)')
+  expect(fetchSpy).toHaveBeenCalledTimes(1)
+})
+
+test('a 409 with no message leaves serverMessage unset', async () => {
+  const serverApi = await import('./serverApi')
+  answerPins(serverApi, GATE_PIN)
+  vi.stubGlobal('fetch', vi.fn(gateAnswer(409, { error: 'closed' })))
+  serverApi.subscribe(() => {})
+  seedItem(GATE_ITEM)
+  const err = await serverApi.moveItem('K-1', { stepKey: 'change.implement' }).catch((e) => e)
+  expect(err.serverMessage).toBeUndefined()
+})
 
 function gateAnswer(status, body) {
   return () => Promise.resolve({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) })
 }
 
-for (const [name, act, body] of GATE_ACTIONS) {
+for (const [name, act, path, body] of GATE_ACTIONS) {
   const call = (api) => {
     api.subscribe(() => {})
     seedItem(GATE_ITEM)
@@ -943,7 +974,7 @@ for (const [name, act, body] of GATE_ACTIONS) {
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expectPinless(fetchSpy.mock.calls[0][1])
     const [url, opts] = fetchSpy.mock.calls[1]
-    expect(url).toBe(`${serverApi.API_BASE}/items/K-1/move`)
+    expect(url).toBe(`${serverApi.API_BASE}${path}`)
     expect(JSON.parse(opts.body)).toEqual(body)
     expect(opts.headers['x-human-key']).toBe(GATE_PIN)
     expect(opts.headers['x-horizon-csrf']).toBe('1')

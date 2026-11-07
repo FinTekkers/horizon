@@ -35,6 +35,8 @@ vi.mock('./api', () => ({
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   logout: vi.fn(),
@@ -47,6 +49,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 function acceptItem(id, extra = {}) {
   return {
@@ -68,7 +71,7 @@ function acceptItem(id, extra = {}) {
     conflictRun: null,
     gateAction: null,
     // HZ-711: the server's moves at Accept the code — the page offers only these.
-    moves: {
+    moves: servedMoves({
       approve: { key: 'change.accept-code', label: 'Accept the code' },
       targets: [
         {
@@ -83,7 +86,7 @@ function acceptItem(id, extra = {}) {
       ],
       canAbandon: true,
       amend: null,
-    },
+    }),
     ...extra,
   }
 }
@@ -179,7 +182,7 @@ test('a merged result shows the merge and leaves no gate buttons once the gate a
     acceptItem('GA-4', {
       cursor: ACCEPT_INDEX + 1,
       gateAction: finished({ state: 'merged' }),
-      moves: { approve: null, targets: [], canAbandon: true, amend: null },
+      moves: servedMoves({ approve: null, targets: [], canAbandon: true, amend: null }),
     }),
   ])
   expect(status().textContent).toBe('Merged PR #7')

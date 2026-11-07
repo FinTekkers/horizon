@@ -30,6 +30,8 @@ vi.mock('./api', () => ({
   getFarmHealth: vi.fn(async () => reading),
   logout: vi.fn(),
   setPaused: vi.fn(),
+  releaseRuleBlock: vi.fn(),
+  releaseUsageWait: vi.fn(),
   issueUrl: () => 'https://example.test/issue',
   issueLabel: (item) => `#${item.issue}`,
 }))

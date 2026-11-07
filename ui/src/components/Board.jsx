@@ -79,7 +79,9 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
     new Promise((resolve) => resolve(onTogglePause(item.id, wantPaused)))
       .then(
         () => false,
-        () => true,
+        // HZ-713: a resume that would clear a rule block needs the gate PIN,
+        // given on the item page's Release with PIN.
+        (err) => (err?.message === 'human_gate_key_required' ? 'Releasing a rule block needs your gate PIN.' : 'That did not go through — try again.'),
       )
       .then((failed) => {
         pauseInFlight.current = false
@@ -256,7 +258,7 @@ function BoardCard({ item, projects, durationEstimates, deployBlock, viewerName,
         </button>
       )}
 
-      {pauseFailed && <span role="alert">That did not go through — try again.</span>}
+      {pauseFailed && <span role="alert">{pauseFailed}</span>}
     </div>
   )
 }

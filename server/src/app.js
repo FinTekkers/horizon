@@ -8,7 +8,7 @@ import fastifyCookie from '@fastify/cookie'
 import { fastifySwagger } from '@fastify/swagger'
 import crypto from 'node:crypto'
 import * as store from './store.js'
-import { dismissAsk, fileAsk } from './asks.js'
+import { dismissAsk, fileAsk, releaseAsk } from './asks.js'
 import { linkSpawned, spawnItems } from './spawn.js'
 import * as github from './github.js'
 import * as deploy from './deploy.js'
@@ -55,9 +55,18 @@ import { memberProject, viewSnapshot } from './boardView.js'
 import { googleAuth } from './googleAuth.js'
 import { approvalSecretConfigured, approvalSecretOk, isAllowedApprover, isOwner, normalizeJid } from './waApprovers.js'
 import * as waPollVotes from './waPollVotes.js'
-import { STEPS, endIndex, isItemKind, itemKindOf, resolveStepRef, stepKeyAt } from '../../domain/js/lifecycle.js'
+import {
+  STEPS,
+  endIndex,
+  isAbandoned,
+  isClosed,
+  isItemKind,
+  itemKindOf,
+  resolveStepRef,
+  stepKeyAt,
+} from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
-import { SUBSTEP_ID_PATTERN, stepLabel, substepsOf } from '../../domain/js/substeps.js'
+import { SUBSTEP_ID_PATTERN, decodeMoveKey, stepLabel, substepsOf } from '../../domain/js/substeps.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
@@ -67,6 +76,7 @@ import * as projectDefinitions from './projectDefinitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as knowledgeDocs from './knowledgeDocs.js'
 import * as runLogView from './runLogView.js'
+import * as runTimeView from './runTimeView.js'
 import * as split from './split.js'
 import { narrowingStatus } from './narrowing.js'
 import * as planDraft from './planDraft.js'
@@ -202,6 +212,12 @@ function cssHrefFor(routePath) {
   return `${'../'.repeat(depth)}agent-pages.css`
 }
 
+// HZ-803: " · started … · finished …" for a page's meta line, '' with neither.
+function runTimesSuffix(run) {
+  const times = runTimeView.runTimesHtml(run)
+  return times ? ` · ${times}` : ''
+}
+
 // Full-page artifact viewer shell shared by the latest-attempt route and the
 // specific-attempt route below (HZ-46) — same markup either way, only the
 // route (for the stylesheet's relative "../" depth) and which `run` row is
@@ -237,10 +253,12 @@ function renderArtifactPage(id, stepIndex, run, routePath, substep = null) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <link rel="stylesheet" href="${cssHrefFor(routePath)}"></head><body><div class="page">
-<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · ${esc(run.ended_at)} UTC</div>
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title}${runTimesSuffix(run)}</div>
 ${nav}
 <article>${renderLinkedMarkdown(run.artifact, pageLinkContext(id, run))}</article>
-</div></body></html>`
+</div>
+<script>${runTimeView.clientScript()}</script>
+</body></html>`
 }
 
 // ---- SSE ----
@@ -422,6 +440,36 @@ function actorOf(request) {
   return request.user.name
 }
 
+// HZ-786: the WhatsApp caller ladder — 503 with no WA_APPROVAL_SECRET on this
+// host, 401 for a wrong credential, 403 for a sender off WA_APPROVER_JIDS — in
+// that order and before any lookup, so a refused caller gets no oracle and
+// writes nothing. Answers and returns false on a refusal. HZ-791: the one copy
+// of the ladder — every WhatsApp route calls it. `allowed` and `refusal` set
+// the 403 step, for routes that admit a narrower sender (the owner) or answer
+// with a route-specific code; the defaults are the approver allowlist.
+function waCallerOk(request, reply, senderJid, { allowed = isAllowedApprover, refusal = 'sender_not_allowed' } = {}) {
+  if (!approvalSecretConfigured()) {
+    reply.code(503).send({ error: 'wa_approval_not_configured' })
+    return false
+  }
+  if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
+    reply.code(401).send({ error: 'bad_approval_secret' })
+    return false
+  }
+  if (!allowed(senderJid)) {
+    reply.code(403).send({ error: refusal })
+    return false
+  }
+  return true
+}
+
+// HZ-790: who a WhatsApp action is recorded as — the sender's display name,
+// or the last 4 digits of the (already proven) jid when none rides along.
+function waActorOf(body) {
+  const label = (body.sender || '').trim() || `...${normalizeJid(body.senderJid).slice(-4)}`
+  return `${label} via WhatsApp`
+}
+
 // The raw value of an `Authorization: Bearer <token>` header, or null.
 function bearerToken(request) {
   const match = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.authorization || '')
@@ -460,6 +508,13 @@ export const SESSION_EXEMPT = [
   // HZ-274's WhatsApp kill switch: the concierge has no session either. Same
   // credential, and only the owner's jid is accepted.
   /^\/api\/projects\/autopilot-off-via-whatsapp$/,
+  // HZ-786: a WhatsApp note on a running agent step. Same credential and the
+  // same allowlist as approve-via-whatsapp.
+  /^\/api\/items\/[^/]+\/retry-via-whatsapp$/,
+  // HZ-790: a WhatsApp note on an item parked at a gate (it never decides the
+  // gate), and a WhatsApp priority change. Same credential, same allowlist.
+  /^\/api\/items\/[^/]+\/gates\/(?:\d+|[a-z]+\.[a-z0-9-]+)\/note-via-whatsapp$/,
+  /^\/api\/items\/[^/]+\/priority-via-whatsapp$/,
   /^\/api\/health$/,
   // HZ-178: the generated API reference. Reachable like /api/health is, and for
   // the same reason — a published reference nobody can fetch is not published.
@@ -1061,7 +1116,7 @@ export function buildApp({
         ? (store.substepDoneRuns(id, stepIndex, substep.id).filter((r) => r.artifact != null).at(-1) ?? null)
         : db
             .prepare(
-              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
+              "SELECT artifact, attempt, started_at, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND artifact IS NOT NULL ORDER BY id DESC LIMIT 1",
             )
             .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no artifact for that step' })
@@ -1107,7 +1162,7 @@ export function buildApp({
         ? (store.substepDoneRuns(id, stepIndex, substep.id).find((r) => r.attempt === attempt && r.artifact != null) ?? null)
         : db
             .prepare(
-              "SELECT artifact, attempt, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
+              "SELECT artifact, attempt, started_at, ended_at, source_shas FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND attempt = ? AND status = 'done' AND artifact IS NOT NULL",
             )
             .get(id, stepIndex, attempt)
       if (!run) return reply.code(404).send({ error: 'no artifact for that attempt' })
@@ -1167,7 +1222,7 @@ export function buildApp({
       const { id, stepIndex } = request.params
       const run = db
         .prepare(
-          "SELECT output, attempt, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
+          "SELECT output, attempt, started_at, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' AND output IS NOT NULL ORDER BY id DESC LIMIT 1",
         )
         .get(id, stepIndex)
       if (!run) return reply.code(404).send({ error: 'no output for that step' })
@@ -1177,11 +1232,13 @@ export function buildApp({
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <link rel="stylesheet" href="${cssHrefFor(OUTPUT_ROUTE)}"></head><body><div class="page">
-<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt} · ${esc(run.ended_at)} UTC</div>
+<div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title} · attempt ${run.attempt}${runTimesSuffix(run)}</div>
 <pre>${splitItemIds(run.output, pageLinkContext(id, run))
         .map((piece) => (piece.id ? `<a href="${escAttr(piece.href)}">${esc(piece.id)}</a>` : esc(piece.text)))
         .join('')}</pre>
-</div></body></html>`
+</div>
+<script>${runTimeView.clientScript()}</script>
+</body></html>`
       return reply.type('text/html').send(html)
     },
   )
@@ -2106,15 +2163,11 @@ export function buildApp({
       },
     },
     async (request, reply) => {
-      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
-      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
-        return reply.code(401).send({ error: 'bad_approval_secret' })
-      }
       const senderJid = request.body.senderJid
       // Checked before the item is even looked up, so a rejected sender gets
       // no oracle for which item ids exist.
-      if (!isAllowedApprover(senderJid)) return reply.code(403).send({ error: 'sender_not_allowed' })
-      // HZ-709: resolved only after the 503/401/403 ladder, so a refused
+      if (!waCallerOk(request, reply, senderJid, { allowed: isAllowedApprover, refusal: 'sender_not_allowed' })) return
+      // HZ-709: resolved only after the waCallerOk ladder above, so a refused
       // caller learns nothing about which step keys exist.
       const stepIndex = gateStepOf(request, reply, 'approve-via-whatsapp')
       if (stepIndex === null) return
@@ -2127,6 +2180,60 @@ export function buildApp({
       const result = await gateActions.approve(id, stepIndex, notes, actor)
       if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       return send(reply, result)
+    },
+  )
+
+  // HZ-786: a WhatsApp note on an item whose agent step is running re-runs
+  // that step with the note — the same store.moveByHuman Retry the UI's /move
+  // Retry runs. The concierge has no session and no gate PIN, so it cannot
+  // call /move; it proves itself with the waCallerOk ladder instead. Retry
+  // needs no human proof (planMove), so none is passed.
+  //
+  // `from` is the step key the concierge's snapshot showed. A note on an item
+  // that has moved on, or that is not at a running agent step, is refused with
+  // 409 and nothing is written — the concierge texts back ✗ naming the item.
+  // Notes on gated items keep going to /feedback, not here.
+  fastify.post(
+    '/api/items/:id/retry-via-whatsapp',
+    {
+      config: { scope: 'wa' },
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['senderJid', 'from', 'note'],
+          propertyNames: { enum: ['senderJid', 'sender', 'from', 'note'] },
+          properties: {
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
+            from: { type: 'string', minLength: 1, maxLength: 80 },
+            note: { type: 'string', minLength: 1, maxLength: 2000 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      const { senderJid, from } = request.body
+      if (!waCallerOk(request, reply, senderJid)) return
+      // A blank note would re-run the step with nothing to act on.
+      const note = request.body.note.trim()
+      if (!note) return reply.code(400).send({ error: 'note_required' })
+      const { id } = request.params
+      // The view, not the raw row: it carries activeRun.
+      const item = store.itemViewById(id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
+      const running =
+        !isAbandoned(item) &&
+        !isClosed(item) &&
+        STEPS[item.cursor]?.kind === 'agent' &&
+        !item.paused &&
+        item.activeRun?.step_index === item.cursor
+      if (!running) return reply.code(409).send({ error: 'not_running_step' })
+      const label = (request.body.sender || '').trim() || `...${normalizeJid(senderJid).slice(-4)}`
+      const result = store.moveByHuman(id, { action: 'retry', note, who: `${label} via WhatsApp` })
+      if (result.error) return send(reply, result)
+      return reply.send({ ok: true, move: store.lastMove(id) })
     },
   )
 
@@ -2145,8 +2252,8 @@ export function buildApp({
   // the two actions below are handed to it rather than imported by it, so
   // this file importing the orchestrator does not widen its reach.
   //
-  // The 503/401/403 ladder is the same three helpers, in the same order, as
-  // approve-via-whatsapp: all three run before any lookup or any write, so a
+  // The 503/401/403 ladder is the shared waCallerOk, as on
+  // approve-via-whatsapp: it runs before any lookup or any write, so a
   // rejected caller gets no oracle and an unauthorised flood writes no rows.
   //
   // EVERY 4xx IS FINAL. The bridge retries 5xx and network failures only — a
@@ -2169,12 +2276,8 @@ export function buildApp({
       },
     },
     async (request, reply) => {
-      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
-      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
-        return reply.code(401).send({ error: 'bad_approval_secret' })
-      }
       const { voteId, pollMessageId, voterJid, selectedOption } = request.body
-      if (!isAllowedApprover(voterJid)) return reply.code(403).send({ error: 'voter_not_allowed' })
+      if (!waCallerOk(request, reply, voterJid, { allowed: isAllowedApprover, refusal: 'voter_not_allowed' })) return
 
       const result = await waPollVotes.applyVote(
         { voteId, pollMsgId: pollMessageId, voterJid, selectedOption },
@@ -2295,6 +2398,16 @@ export function buildApp({
     },
   )
 
+  // Mirrors a saved note onto the item's issue thread (the footer marks it
+  // ours so ingestion skips it). Best-effort: a GitHub failure never fails the
+  // note. Shared by /feedback and HZ-790's note-via-whatsapp.
+  function mirrorFeedback(id, item, message, who) {
+    if (!item?.repo || item.issue == null) return
+    github
+      .postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_${who} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
+      .catch(() => {})
+  }
+
   // Standalone feedback — the UI leg of "agents respond to feedback". If the
   // item is mid-agent-step the attempt is superseded and re-run with the
   // feedback ({rerun:true}); parked at a gate it queues for the next dispatch
@@ -2321,12 +2434,55 @@ export function buildApp({
       const { message, target = '' } = request.body
       const item = store.getItem(id)
       const result = store.addFeedback(id, { message, target, source: 'ui' })
-      // Mirror onto the issue thread (footer marks it ours so ingestion skips it).
-      if (!result.error && item?.repo && item.issue != null) {
-        github
-          .postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_Human · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
-          .catch(() => {})
+      if (!result.error) mirrorFeedback(id, item, message, 'Human')
+      return send(reply, result)
+    },
+  )
+
+  // HZ-790: the WhatsApp leg of a note on an item parked at a gate. The
+  // concierge has no session, so /feedback answers it 401; it proves itself
+  // with the waCallerOk ladder instead, before any lookup. `:step` is the gate
+  // the concierge's snapshot showed: an item that has left it is refused with
+  // 409 not_at_gate and nothing is written, so a late note never lands on a
+  // later gate. The note only queues for the next dispatch — this route never
+  // calls gateActions, so it never approves, rejects or moves the gate.
+  // Notes on a running agent step go to retry-via-whatsapp instead.
+  fastify.post(
+    '/api/items/:id/gates/:step/note-via-whatsapp',
+    {
+      config: { scope: 'wa' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'step'],
+          properties: { id: { type: 'string' }, step: STEP_REF_PARAM },
+        },
+        body: {
+          type: 'object',
+          required: ['senderJid', 'message'],
+          propertyNames: { enum: ['senderJid', 'sender', 'message'] },
+          properties: {
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
+            message: { type: 'string', minLength: 1, maxLength: 2000 },
+          },
+        },
+      },
+    },
+    (request, reply) => {
+      if (!waCallerOk(request, reply, request.body.senderJid)) return
+      const stepIndex = gateStepOf(request, reply, 'note-via-whatsapp')
+      if (stepIndex === null) return
+      const { id } = request.params
+      const item = store.getItem(id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (item.cursor !== stepIndex || STEPS[stepIndex]?.kind !== 'gate') {
+        return reply.code(409).send({ error: 'not_at_gate' })
       }
+      const { message } = request.body
+      const actor = waActorOf(request.body)
+      const result = store.addFeedback(id, { message, source: 'whatsapp', actor })
+      if (!result.error) mirrorFeedback(id, item, message, actor)
       return send(reply, result)
     },
   )
@@ -2342,11 +2498,32 @@ export function buildApp({
           required: ['paused'],
           properties: { paused: { type: 'boolean' } },
         },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      // HZ-713: a resume clears a rule block (store.setPaused), so on a
+      // blocked item it needs a browser session and the gate PIN. Pause, and
+      // resuming an item with no block, need only the login, as before.
+      if (request.body.paused === false && store.hasRuleBlock(request.params.id) && !humanAuthorized(request, reply)) return
+      const result = store.setPaused(request.params.id, request.body.paused)
+      return send(reply, result.error ? result : { ...result, ...actionState(request.params.id) })
+    },
+  )
+
+  // HZ-713: "Release now" on a usage wait — the held step runs again with its
+  // models' limits cleared (orchestrator.releaseUsageWait). Login only.
+  fastify.post(
+    '/api/items/:id/usage-wait/release',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: idParam,
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
     (request, reply) => {
-      const result = store.setPaused(request.params.id, request.body.paused)
+      const result = orchestrator.releaseUsageWait(request.params.id, actorOf(request))
       return send(reply, result.error ? result : { ...result, ...actionState(request.params.id) })
     },
   )
@@ -2458,6 +2635,45 @@ export function buildApp({
     },
   )
 
+  // HZ-802: the owner's override for a filed blocking ask that still holds
+  // Implement or Execute (its item stuck open, say). PIN and a reason, like
+  // Dismiss; the ask stops holding, its item and dependency edge stay.
+  fastify.post(
+    '/api/items/:id/asks/:askId/release',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: askParams,
+        body: {
+          type: 'object',
+          required: ['reason'],
+          properties: { reason: { type: 'string', maxLength: 500 } },
+        },
+        response: DISMISS_ASK_RESPONSES,
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      const result = releaseAsk(item, request.params.askId, { reason: request.body.reason, actor: actorOf(request) })
+      if (result.ok && !result.alreadyReleased) {
+        store.addEvent(item.id, {
+          who: actorOf(request),
+          text: `released the ask “${result.title}” (${result.filedItemId}): ${result.reason}`,
+          color: '#9C333E',
+          initials: 'HZ',
+        })
+        store.notifyChange()
+        // The released ask may have been all that held the start step;
+        // kick() re-checks and no-ops otherwise.
+        orchestrator.kick(item.id)
+      }
+      return sendAsk(reply, result)
+    },
+  )
+
   // Confirm/override one agent's specialist persona (the PM proposes the Eng
   // one at intake). Personas are agent-scoped (HZ-125), so both halves are
   // required: an unknown agent 400s at the schema layer, and an id that isn't
@@ -2518,8 +2734,8 @@ export function buildApp({
     },
   )
 
-  // Reprioritize (UI or the WhatsApp concierge). Bad enum values 400 at the
-  // schema layer; the GitHub label mirror is best-effort and never blocks.
+  // Reprioritize from the UI (the concierge uses priority-via-whatsapp below).
+  // Bad enum values 400 at the schema layer.
   fastify.post(
     '/api/items/:id/priority',
     {
@@ -2534,16 +2750,46 @@ export function buildApp({
         response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
     },
+    (request, reply) => send(reply, applyPriority(request.params.id, request.body.priority)),
+  )
+
+  // HZ-790: the WhatsApp concierge's reprioritize. /priority needs a login
+  // session the concierge does not have; this proves the caller with the
+  // waCallerOk ladder, before any lookup, then runs the same write.
+  fastify.post(
+    '/api/items/:id/priority-via-whatsapp',
+    {
+      config: { scope: 'wa' },
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['senderJid', 'priority'],
+          propertyNames: { enum: ['senderJid', 'sender', 'priority'] },
+          properties: {
+            senderJid: { type: 'string', minLength: 1, maxLength: 120 },
+            sender: { type: 'string', maxLength: 120 },
+            priority: { type: 'string', enum: PRIORITIES },
+          },
+        },
+      },
+    },
     (request, reply) => {
-      const { id } = request.params
-      const item = store.getItem(id)
-      const result = store.setPriority(id, request.body.priority)
-      if (!result.error && !result.unchanged && item?.repo && item.issue != null) {
-        github.setPriorityLabel(item, request.body.priority).catch(() => {})
-      }
-      return send(reply, result)
+      if (!waCallerOk(request, reply, request.body.senderJid)) return
+      return send(reply, applyPriority(request.params.id, request.body.priority))
     },
   )
+
+  // The priority write both routes above share: the store, then the GitHub
+  // label mirror (best-effort, never blocks).
+  function applyPriority(id, priority) {
+    const item = store.getItem(id)
+    const result = store.setPriority(id, priority)
+    if (!result.error && !result.unchanged && item?.repo && item.issue != null) {
+      github.setPriorityLabel(item, priority).catch(() => {})
+    }
+    return result
+  }
 
   // HZ-544: turn Autopilot off (or back on) for one item in an Autopilot
   // project, by adding or removing the `autopilot-off` label on its issue —
@@ -2693,6 +2939,13 @@ export function buildApp({
   // written. Approve and abandon run the paths their own routes run, so a
   // merge, a filing and the golden-case checks still happen; return, retry
   // and reopen are store.moveByHuman. Answers { ok, move } — the item_move row.
+  //
+  // HZ-799: or `stepKey` instead of `action` — one of the item's
+  // moves.targets, which the server works out (moveItem.js moveTargets). Any
+  // other key is invalid_target. The target names the path it runs, the same
+  // ones as above; a sub-step target (`<step>#<sub-step>`) is the gate's
+  // send-back. Answers { ok, move, item } — the item as the v2 stream would
+  // upsert it. The `action` form stays until "Retire the old move routes".
   fastify.post(
     '/api/items/:id/move',
     {
@@ -2701,9 +2954,10 @@ export function buildApp({
         params: idParam,
         body: {
           type: 'object',
-          required: ['action', 'from'],
+          required: ['from'],
           properties: {
             action: { type: 'string', enum: ROUTE_MOVE_ACTIONS },
+            stepKey: { type: 'string', minLength: 1, maxLength: 160 },
             from: { type: 'string', minLength: 1, maxLength: 80 },
             to: { type: 'string', minLength: 1, maxLength: 80 },
             note: { type: 'string', maxLength: 2000 },
@@ -2718,7 +2972,7 @@ export function buildApp({
           },
         },
         response: {
-          200: OK_OBJECT,
+          200: { ...OK_OBJECT, description: '`{ ok, move, item }`, with `restart` (the attempt starting) after a return or retry.' },
           400: ERROR_OBJECT,
           401: ERROR_OBJECT,
           403: ERROR_OBJECT,
@@ -2733,15 +2987,27 @@ export function buildApp({
       const proof = humanAuthorized(request, reply)
       if (!proof) return
       const { id } = request.params
-      const { action, from, to = null } = request.body
+      const { action = null, stepKey = null, from, to = null } = request.body
       const note = (request.body.note || '').trim()
       const item = store.getItem(id)
       if (!item) return reply.code(404).send({ error: 'not_found' })
+      // Exactly one of the two forms.
+      if ((action == null) === (stepKey == null)) return reply.code(400).send({ error: 'bad_action' })
       if (action === 'return' && to == null) return reply.code(400).send({ error: 'bad_target_key' })
       if (action === 'abandon' && !note) return reply.code(400).send({ error: 'note_required' })
       if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
       const actor = actorOf(request)
       const body = request.body
+      if (stepKey != null) {
+        const target = store.moveTargetsOf(id).find((t) => t.stepKey === stepKey)
+        if (!target) return reply.code(400).send({ error: 'invalid_target' })
+        const result = await moveToTarget(item, target, { note, actor, proof })
+        if (result.status) return reply.code(result.status).send(gateFailureBody(result))
+        if (result.error) return send(reply, result)
+        // HZ-711: the item, and for a return or retry the attempt starting, for the step card.
+        const restart = target.action === 'return' || target.action === 'retry'
+        return reply.send({ ...actionState(id, { restart }), ok: true, move: store.lastMove(id) })
+      }
       let result
       if (action === 'approve') {
         const planned = planMove(item, { action, toKey: to })
@@ -2770,6 +3036,27 @@ export function buildApp({
       return reply.send({ ...result, ...actionState(id, { restart }), ok: true, move: store.lastMove(id) })
     },
   )
+
+  // HZ-799: one of the item's moves.targets, through the path its action
+  // names — the same ones the `action` form runs. A sub-step return is the
+  // gate's send-back (store.requestChanges), which alone lands on a sub-step.
+  async function moveToTarget(item, target, { note, actor, proof }) {
+    const { id } = item
+    if (target.action === 'approve') {
+      return STEPS[item.cursor].kind === 'gate'
+        ? gateActions.approve(id, item.cursor, note, actor, { proof })
+        : orchestrator.forwardRejectedReview(id, actor)
+    }
+    const { stepKey, substepId } = decodeMoveKey(target.stepKey)
+    if (target.action === 'return' && substepId) {
+      return gateActions.sendBack(
+        id,
+        { target: stepLabel(item), feedback: note, targetStepIndex: target.toIndex, targetSubstepId: substepId, proof },
+        actor,
+      )
+    }
+    return store.moveByHuman(id, { action: target.action, toKey: stepKey, note, who: actor, proof })
+  }
 
   // ---- auth (HZ-21: hardcoded credential OR Google SSO, per-account gate PIN) ----
 
@@ -4320,8 +4607,8 @@ export function buildApp({
   // Admin + PIN only. There is no mode field — this route can only write
   // 'off' — and a body naming any other key is a 400.
   //
-  // The 503/401/403 ladder runs before the project lookup, the same helpers
-  // in the same order as approve-via-whatsapp, so a non-owner gets one
+  // The shared waCallerOk ladder runs before the project lookup, with isOwner
+  // as its 403 step, so a non-owner gets one
   // identical refusal whether or not the project exists and learns nothing
   // about its setting. 404 is reachable by the owner only.
   fastify.post(
@@ -4344,11 +4631,7 @@ export function buildApp({
       },
     },
     (request, reply) => {
-      if (!approvalSecretConfigured()) return reply.code(503).send({ error: 'wa_approval_not_configured' })
-      if (!approvalSecretOk(request.headers['x-wa-approval-secret'])) {
-        return reply.code(401).send({ error: 'bad_approval_secret' })
-      }
-      if (!isOwner(request.body.senderJid)) return reply.code(403).send({ error: 'refused' })
+      if (!waCallerOk(request, reply, request.body.senderJid, { allowed: isOwner, refusal: 'refused' })) return
       const project = store.findProjectByName(request.body.project)
       if (!project) return reply.code(404).send({ error: 'project_not_found' })
       // The audit row records the source; no jid is stored.

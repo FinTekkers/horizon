@@ -191,6 +191,8 @@ test("the item stream opens with the item's outputs, sends them again when they 
       verdict: null, // HZ-429: only Verify & report records one
       verdictSummary: null,
       fallbackNote: null, // HZ-422: only a run on a fallback model has one
+      startedAt: '2026-01-01 00:00:00', // HZ-803: as stored, UTC
+      endedAt: '2026-01-01 00:00:00',
     })
     await waitForItemClients('SO-OPEN', 1)
 

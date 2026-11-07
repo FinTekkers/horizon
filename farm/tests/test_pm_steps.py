@@ -17,6 +17,7 @@ import pytest
 from domain.py import steps as domain_steps
 from domain.py import providers as domain_providers
 from farm import agent_runner, pm_steps
+from farm.owner_digest import OWNER_HEADINGS
 from farm.config import PM_MALFORMED_GRACE_S
 from farm.pm_steps import (
     MAX_PROMPT_ARTIFACT_CHARS,
@@ -124,6 +125,29 @@ def test_build_prompt_does_not_re_truncate_a_large_prior_artifact_at_12k():
     prompt = build_prompt(task)
     assert big in prompt
     assert "a" * 12001 in prompt  # beyond the old flat 12,000-char slice
+
+
+def test_build_prompt_shows_the_server_supplied_artifact_urls_on_the_digest_step():
+    """HZ-801: the digest links artifacts by the URLs the server sent; with
+    none, the prompt is unchanged."""
+    base = "https://shoreward.ai/horizon"
+    task = make_task()
+    task["step"] = {"index": 9, "label": pm_steps.DIGEST_STEP_LABEL}
+    task["artifacts"] = [
+        {"label": "Architecture review", "content": "ok", "url": f"{base}/api/items/HZ-9/artifacts/7"},
+        {"label": "Overlap check (deterministic)", "content": "none"},
+    ]
+    plain = build_prompt({**task, "artifacts": [{k: v for k, v in a.items() if k != "url"} for a in task["artifacts"]]})
+    task["artifact_url"] = f"{base}/api/items/HZ-9/artifacts/9"
+    prompt = build_prompt(task)
+    assert f"Prior artifact — Architecture review:\n  url: {base}/api/items/HZ-9/artifacts/7\nok" in prompt
+    assert prompt.count("  url: ") == 1
+    assert f"This step's artifact URL: {base}/api/items/HZ-9/artifacts/9" in prompt
+    assert f"Item link pattern: {base}/<item id in lower case>" in prompt
+    assert "url" not in plain
+    # Another PM step never gets this step's artifact URL lines.
+    task["step"] = {"index": 1, "label": "Define how we measure success"}
+    assert "This step's artifact URL" not in build_prompt(task)
 
 
 def test_validate_keeps_a_large_artifact_in_full():
@@ -353,11 +377,12 @@ def _pm_role_text():
 
 def test_pm_role_requires_a_test_contract_section():
     text = _pm_role_text()
-    # Inside the EXACTLY structure, second, so digestToFit keeps it whole.
-    recommendation = text.index("## Recommendation")
-    contract = text.index("## Test contract")
-    built = text.index("## What's being built")
-    assert recommendation < contract < built
+    # HZ-801: the six owner sections come first, in order, then the agent
+    # block later steps read by heading.
+    owner = [text.index(heading) for heading in OWNER_HEADINGS]
+    assert owner == sorted(owner)
+    assert owner[-1] < text.index("## Test contract") < text.index("## Reviewer findings") < text.index("## Actions")
+    assert "## What's being built" not in text
     assert "Each kept case names the metric line or guardrail it verifies." in text
     assert "<case> — verifies <metric line N | guardrail N>" in text
     assert "List every dropped or downgraded case with a one-line reason." in text

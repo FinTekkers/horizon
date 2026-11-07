@@ -7,6 +7,7 @@
 // step before it (change.arch-review).
 import { vi } from 'vitest'
 import { act, render } from '@testing-library/react'
+import { servedMoves } from './servedMoves'
 
 export const PIN = '418273'
 
@@ -27,6 +28,41 @@ const base = {
 }
 
 // Waiting at Review before execution.
+export const GATE_MOVES = {
+  approve: { key: 'change.review-before-exec', label: 'Review before execution' },
+  targets: [
+    {
+      key: 'change.approve-design',
+      label: 'Approve the high-level design',
+      action: 'return',
+      isDefault: false,
+      redo: 'Redoes 6 steps, from “Approve the high-level design” to “Review before execution”.',
+      reapprovals: ['Approve the high-level design'],
+      stopsRunning: false,
+    },
+    {
+      key: 'change.draft-plan',
+      label: 'Draft implementation plan',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 5 steps, from “Draft implementation plan” to “Review before execution”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+    {
+      key: 'change.summarize-reviews',
+      label: 'Summarize reviews & recommend',
+      action: 'return',
+      isDefault: false,
+      redo: 'Redoes 2 steps, from “Summarize reviews & recommend” to “Review before execution”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+}
+
 export const GATE_ITEM = {
   ...base,
   id: 'HZ-901',
@@ -34,43 +70,36 @@ export const GATE_ITEM = {
   cursor: 10,
   currentStepKey: 'change.review-before-exec',
   activeRun: null,
-  moves: {
-    approve: { key: 'change.review-before-exec', label: 'Review before execution' },
-    targets: [
-      {
-        key: 'change.approve-design',
-        label: 'Approve the high-level design',
-        action: 'return',
-        isDefault: false,
-        redo: 'Redoes 6 steps, from “Approve the high-level design” to “Review before execution”.',
-        reapprovals: ['Approve the high-level design'],
-        stopsRunning: false,
-      },
-      {
-        key: 'change.draft-plan',
-        label: 'Draft implementation plan',
-        action: 'return',
-        isDefault: true,
-        redo: 'Redoes 5 steps, from “Draft implementation plan” to “Review before execution”.',
-        reapprovals: [],
-        stopsRunning: false,
-      },
-      {
-        key: 'change.summarize-reviews',
-        label: 'Summarize reviews & recommend',
-        action: 'return',
-        isDefault: false,
-        redo: 'Redoes 2 steps, from “Summarize reviews & recommend” to “Review before execution”.',
-        reapprovals: [],
-        stopsRunning: false,
-      },
-    ],
-    canAbandon: true,
-    amend: null,
-  },
+  moves: servedMoves(GATE_MOVES),
 }
 
 // Running Specialist agent implements.
+export const RUNNING_MOVES = {
+  approve: null,
+  targets: [
+    {
+      key: 'change.review-before-exec',
+      label: 'Review before execution',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 2 steps, from “Review before execution” to “Specialist agent implements”.',
+      reapprovals: ['Review before execution'],
+      stopsRunning: true,
+    },
+    {
+      key: 'change.implement',
+      label: 'Specialist agent implements',
+      action: 'retry',
+      isDefault: false,
+      redo: 'Runs “Specialist agent implements” again.',
+      reapprovals: [],
+      stopsRunning: true,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+}
+
 export const RUNNING_ITEM = {
   ...base,
   id: 'HZ-902',
@@ -78,31 +107,7 @@ export const RUNNING_ITEM = {
   cursor: 11,
   currentStepKey: 'change.implement',
   activeRun: { id: 77, step_index: 11, state: 'running', attempt: 1, started_at: '2026-11-05T12:00:00Z' },
-  moves: {
-    approve: null,
-    targets: [
-      {
-        key: 'change.review-before-exec',
-        label: 'Review before execution',
-        action: 'return',
-        isDefault: true,
-        redo: 'Redoes 2 steps, from “Review before execution” to “Specialist agent implements”.',
-        reapprovals: ['Review before execution'],
-        stopsRunning: true,
-      },
-      {
-        key: 'change.implement',
-        label: 'Specialist agent implements',
-        action: 'retry',
-        isDefault: false,
-        redo: 'Runs “Specialist agent implements” again.',
-        reapprovals: [],
-        stopsRunning: true,
-      },
-    ],
-    canAbandon: true,
-    amend: null,
-  },
+  moves: servedMoves(RUNNING_MOVES),
 }
 
 class MockEventSource {

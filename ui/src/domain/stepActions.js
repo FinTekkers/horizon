@@ -1,8 +1,9 @@
 // HZ-711: the one place the UI reads an item's `moves` — the server's list of
-// what a person may do from where the item is (server/src/moveOptions.js).
-// The item page, board cards and the Approvals drawer all ask here, so they
-// offer the same actions. Nothing here works out a move rule or a step order:
-// a step the snapshot does not list is not offered.
+// what a person may do from where the item is (server/src/moveItem.js:
+// moveTargets, movesView). The item page, board cards and the Approvals drawer
+// all ask here, so they offer the same actions. Nothing here works out a move
+// rule or a step order: a step the snapshot does not list is not offered, and
+// each target's action and label are the snapshot's own.
 
 export const ACTION_LABELS = Object.freeze({
   approve: 'Approve',
@@ -20,14 +21,36 @@ export const STEP_HINTS = Object.freeze({
 
 const NO_MOVES = Object.freeze({ approve: null, targets: [], canAbandon: false, amend: null })
 
+const own = (map, key) => (map && typeof map === 'object' && Object.hasOwn(map, key) ? map[key] : undefined)
+
+// The served moves as the surfaces read them. A target is
+// { key, step, label, action, isDefault, redo, reapprovals, stopsRunning }:
+// `key` is what POST /move takes (a sub-step's is `<step>#<sub-step>`),
+// `step` the step-list row it sits on, `reapprovals` the gates' labels.
+// Approve targets are left out — `approve` names the gate the item waits at.
 function movesOf(item) {
   const moves = item?.moves
   if (!moves || typeof moves !== 'object') return NO_MOVES
+  const labelOf = (key) => own(moves.labels, key) ?? key
+  const targets = (Array.isArray(moves.targets) ? moves.targets : [])
+    .map((t) => ({ ...t, action: own(moves.actions, t.stepKey) }))
+    .filter((t) => t.action === 'return' || t.action === 'retry')
+    .map((t) => ({
+      key: t.stepKey,
+      step: t.stepKey.split('#')[0],
+      label: labelOf(t.stepKey),
+      action: t.action,
+      isDefault: t.isDefault === true,
+      redo: t.redo,
+      reapprovals: (t.reapprovals ?? []).map(labelOf),
+      stopsRunning: t.stopsRunning === true,
+    }))
+  const amendKey = typeof moves.amendKey === 'string' ? moves.amendKey : null
   return {
-    approve: moves.approve ?? null,
-    targets: Array.isArray(moves.targets) ? moves.targets : [],
+    approve: typeof moves.approveKey === 'string' ? { key: moves.approveKey, label: labelOf(moves.approveKey) } : null,
+    targets,
     canAbandon: moves.canAbandon === true,
-    amend: moves.amend ?? null,
+    amend: amendKey && own(moves.actions, amendKey) ? { action: own(moves.actions, amendKey), key: amendKey } : null,
   }
 }
 
@@ -42,9 +65,11 @@ export function retryTarget(item) {
 }
 
 // The target a move of `action` to `key` goes to, or null when the snapshot
-// does not offer it.
+// does not offer it. A retry is found by its step-list row too, so a click on
+// a step whose sub-step runs again finds it.
 export function targetFor(item, action, key) {
-  return movesOf(item).targets.find((t) => t.action === action && t.key === key) ?? null
+  const targets = movesOf(item).targets.filter((t) => t.action === action)
+  return targets.find((t) => t.key === key) ?? (action === 'retry' ? targets.find((t) => t.step === key) : null) ?? null
 }
 
 // The gate the item waits at ({ key, label }), or null.
@@ -64,8 +89,8 @@ export function menuActions(item) {
   const moves = movesOf(item)
   const actions = []
   if (moves.approve) actions.push({ id: 'approve', label: ACTION_LABELS.approve })
-  if (returnTargets(item).length) actions.push({ id: 'return', label: ACTION_LABELS.return })
-  const retry = retryTarget(item)
+  if (moves.targets.some((t) => t.action === 'return')) actions.push({ id: 'return', label: ACTION_LABELS.return })
+  const retry = moves.targets.find((t) => t.action === 'retry')
   if (retry) actions.push({ id: 'retry', label: ACTION_LABELS.retry, key: retry.key })
   if (moves.canAbandon) actions.push({ id: 'abandon', label: ACTION_LABELS.abandon })
   return actions
@@ -76,6 +101,6 @@ export function menuActions(item) {
 export function stepActionFor(item, key) {
   const moves = movesOf(item)
   if (moves.approve?.key === key) return 'approve'
-  const target = moves.targets.find((t) => t.key === key)
+  const target = moves.targets.find((t) => t.key === key) ?? moves.targets.find((t) => t.action === 'retry' && t.step === key)
   return target ? target.action : null
 }

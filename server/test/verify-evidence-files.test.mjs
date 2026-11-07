@@ -151,6 +151,24 @@ test('splitVerifyEvidence takes only the Run plan and Execute rows, in order, an
   )
 })
 
+// HZ-801 adds each stored input's artifact page `url` and the step's own
+// `artifact_url` to every agent dispatch (a job dispatch has neither). Both
+// are pinned here, then taken out so the rest of the body is still compared
+// with main's byte for byte.
+function withoutArtifactUrls(body, index) {
+  const page = (step) => new RegExp(`^https?://\\S+/api/items/${body.item.id}/artifacts/${step}$`)
+  if (body.artifact_url !== undefined) assert.match(body.artifact_url, page(index))
+  const artifacts = (body.artifacts || []).map(({ url, ...input }) => {
+    if (url !== undefined) assert.match(url, page('\\d+'))
+    return input
+  })
+  return Object.fromEntries(
+    Object.entries(body)
+      .filter(([key]) => key !== 'artifact_url')
+      .map(([key, value]) => [key, key === 'artifacts' ? artifacts : value]),
+  )
+}
+
 test("metric 3 and guardrail 4: every other step's /steps/run body is main's, budget and digest included", () => {
   const golden = JSON.parse(readFileSync(new URL('./fixtures/hz-771-prompts-before.json', import.meta.url), 'utf8'))
   const steps = runChild()
@@ -162,7 +180,11 @@ test("metric 3 and guardrail 4: every other step's /steps/run body is main's, bu
 
   assert.deepEqual(Object.keys(steps), Object.keys(golden.steps))
   for (const [index, bodies] of Object.entries(steps)) {
-    assert.deepStrictEqual(bodies.map(digestBody), golden.steps[index], `step ${index} (${STEPS[index].label})`)
+    assert.deepStrictEqual(
+      bodies.map((body) => digestBody(withoutArtifactUrls(body, Number(index)))),
+      golden.steps[index],
+      `step ${index} (${STEPS[index].label})`,
+    )
     for (const body of bodies) assert.ok(!('evidence' in body), `step ${index} carries no evidence`)
   }
 

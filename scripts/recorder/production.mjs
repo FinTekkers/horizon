@@ -16,7 +16,10 @@ import { ENV_ALLOWLIST, firstLine, loadScenario, recordScene } from './walkthrou
 // throwaway board's login header is never sent. RECORDER_SCENE_DIR points
 // the loader somewhere else (the tests use it for their stub scenes).
 export const SCENE_DIR = fileURLToPath(new URL('./walkthroughs/shoreward/', import.meta.url))
-export const SCENES = ['A', 'B', 'C'].flatMap((ch) => [1, 2, 3, 4, 5, 6, 7].map((n) => `${ch}${n}`))
+// Chapter C has 13 scenes: its Task's Assess files a tool Change (PS-6 on
+// 5 Nov), filmed as C3–C8, before the Task runs (C9–C13).
+const SCENE_COUNTS = { A: 7, B: 7, C: 13 }
+export const SCENES = Object.entries(SCENE_COUNTS).flatMap(([ch, n]) => Array.from({ length: n }, (_, i) => `${ch}${i + 1}`))
 export const PRODUCTION_URL = 'https://shoreward.ai'
 const SCENE_RE = /^[A-Z][0-9]+$/
 const CHAPTER_RE = /^[A-Z]$/

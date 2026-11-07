@@ -17,6 +17,7 @@ vi.mock('../api', () => ({
 import Board from './Board'
 import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, STEPS } from '../../../domain/js/lifecycle.js'
 import { gateActionView } from '../domain/gateAction'
+import { servedMoves } from './fixtures/servedMoves'
 
 afterEach(() => {
   cleanup()
@@ -45,7 +46,7 @@ function action(kind, state, extra = {}) {
 
 // What the snapshot offers at Accept the code: approve it, return to the
 // implement or review step, abandon.
-const ACCEPT_MOVES = {
+const ACCEPT_MOVES = servedMoves({
   approve: { key: 'change.accept-code', label: 'Accept the code' },
   targets: [
     {
@@ -69,10 +70,10 @@ const ACCEPT_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 
 // The same at the first gate, Approve & prioritize this work.
-const PRIORITIZE_MOVES = {
+const PRIORITIZE_MOVES = servedMoves({
   approve: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
   targets: [
     {
@@ -87,7 +88,7 @@ const PRIORITIZE_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 
 function acceptItem(extra = {}) {
   return {
@@ -276,7 +277,7 @@ test('an Accept card with no action renders the same with gateAction null or abs
 
 test('a Deploy card with the real merged action renders exactly as with no action', () => {
   const merged = action('premerge', 'merged')
-  const base = { cursor: DEPLOY_STEP_INDEX, title: 'Past the Accept gate', moves: { approve: null, targets: [], canAbandon: true, amend: null } }
+  const base = { cursor: DEPLOY_STEP_INDEX, title: 'Past the Accept gate', moves: servedMoves({ approve: null, targets: [], canAbandon: true, amend: null }) }
   const withMerged = renderBoard(acceptItem({ ...base, gateAction: merged }))
   const mergedHtml = card(withMerged.container).innerHTML
   expect(withMerged.container.querySelector('.gate-action-status')).toBeNull()

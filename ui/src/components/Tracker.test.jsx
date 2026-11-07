@@ -33,6 +33,7 @@ import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP
 import { REASON, REASON_IDS } from '../../../domain/js/reasons.js'
 import { DEFAULT_PERSONAS, PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT } from '../domain/personas'
 import { AGENTS } from '../domain/agentTokens'
+import { servedMoves } from './fixtures/servedMoves'
 
 afterEach(() => {
   cleanup()
@@ -57,7 +58,7 @@ const noop = () => {}
 
 // HZ-711: what the snapshot offers, written out as the server sends it. At the
 // first gate (baseItem's): approve it, return to an earlier step, abandon.
-const PRIORITIZE_MOVES = {
+const PRIORITIZE_MOVES = servedMoves({
   approve: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
   targets: [
     {
@@ -72,9 +73,9 @@ const PRIORITIZE_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 // At implement: return to the gate before it, retry implement, abandon.
-const IMPLEMENT_MOVES = {
+const IMPLEMENT_MOVES = servedMoves({
   approve: null,
   targets: [
     {
@@ -98,9 +99,9 @@ const IMPLEMENT_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 // At Accept the code: approve it, return to implement, abandon.
-const ACCEPT_MOVES = {
+const ACCEPT_MOVES = servedMoves({
   approve: { key: 'change.accept-code', label: 'Accept the code' },
   targets: [
     {
@@ -115,9 +116,9 @@ const ACCEPT_MOVES = {
   ],
   canAbandon: true,
   amend: null,
-}
+})
 // A closed or abandoned item: nothing.
-const NO_MOVES = { approve: null, targets: [], canAbandon: false, amend: null }
+const NO_MOVES = servedMoves({ approve: null, targets: [], canAbandon: false, amend: null })
 
 function renderTracker(item, onSetPersona = noop, onAbandon = noop, onResolveConflicts = noop) {
   return render(
@@ -541,14 +542,17 @@ test('the banner never reads as just "Paused" with nothing else — a title alon
   expect(banner.querySelector('.pause-banner__detail').textContent.length).toBeGreaterThan(0)
 })
 
-test('a human-initiated manual pause (not a failure) shows no pause banner', () => {
+// HZ-713: a manual pause shows the plain paused hold — no failure details.
+test('a human-initiated manual pause (not a failure) shows the paused banner, not a failure one', () => {
   const item = {
     ...baseItem,
     paused: true,
     events: [{ created_at: '2026-01-01 00:00:00', text: 'paused agent work on this item' }],
   }
   const { container } = renderTracker(item)
-  expect(container.querySelector('.pause-banner')).toBeNull()
+  expect(container.querySelectorAll('.pause-banner').length).toBe(1)
+  expect(container.querySelector('.pause-banner').getAttribute('data-hold-banner')).toBe('paused')
+  expect(container.querySelector('.pause-banner__meta')).toBeNull()
 })
 
 test('the pause banner coexists with the Resume control and the activity feed, replacing neither', () => {
@@ -634,14 +638,15 @@ test('the "No failure details" fallback shows only when no pause event exists si
   expect(present.queryByText(/No failure details were recorded/)).toBeNull()
 })
 
-test('a manual pause under newer events still shows no pause banner', () => {
+test('a manual pause under newer events still shows the paused banner, not a failure one', () => {
   const item = {
     ...baseItem,
     paused: true,
     events: [FORWARD_REFUSED_EVENT, FORWARD_REFUSED_EVENT, { created_at: '2026-10-07 10:00:00', text: 'paused agent work on this item' }],
   }
   const { container } = renderTracker(item)
-  expect(container.querySelector('.pause-banner')).toBeNull()
+  expect(container.querySelector('.pause-banner').getAttribute('data-hold-banner')).toBe('paused')
+  expect(container.querySelector('.pause-banner__meta')).toBeNull()
 })
 
 test('a cause containing markup renders as literal text, never as HTML', () => {

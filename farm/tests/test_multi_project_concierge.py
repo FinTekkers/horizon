@@ -207,7 +207,7 @@ def test_with_one_enabled_project_a_disabled_key_alongside_an_enabled_one_is_dro
 
     assert len(model.calls) == 1
     assert LS_12_TITLE not in model.calls[0]["prompt"]
-    assert [p for p, _ in stub.posts()] == ["/api/items/HZ-12/priority"]
+    assert [p for p, _ in stub.posts()] == ["/api/items/HZ-12/priority-via-whatsapp"]
     assert "Ledger is disabled" in t.sent[-1][1]
 
 
@@ -240,7 +240,7 @@ def test_actions_and_gate_options_outside_the_resolved_project_are_dropped(monke
 
     run(t, state, stub, "set HZ-12 to High and show what's pending on Horizon")
 
-    assert [p for p, _ in stub.posts()] == ["/api/items/HZ-12/priority"]
+    assert [p for p, _ in stub.posts()] == ["/api/items/HZ-12/priority-via-whatsapp"]
     assert [[o["item_id"] for o in opts] for opts in offered] == [["HZ-12"]]
     assert [o["item_id"] for o in state.choice_store.get(KEY)["options"]] == ["HZ-12"]
     reply = t.sent[-1][1]

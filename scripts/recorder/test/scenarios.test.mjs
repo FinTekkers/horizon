@@ -120,10 +120,10 @@ function shorewardFindings({ setup = [], actions }) {
   })
 }
 
-test('HZ-698 metric 3: walkthroughs/shoreward/ holds exactly A1-A7, B1-B7 and C1-C7, and each passes the recorder schema', async () => {
+test('HZ-698 metric 3: walkthroughs/shoreward/ holds exactly A1-A7, B1-B7 and C1-C13, and each passes the recorder schema', async () => {
   const files = readdirSync(SCENE_DIR).sort()
   assert.deepEqual(files, [...SCENES].sort().map((id) => `${id}.json`))
-  assert.equal(SCENES.length, 21)
+  assert.equal(SCENES.length, 27)
   for (const id of SCENES) {
     const scene = await loadScenario(id, SCENE_DIR)
     assert.equal(scene.name, id)

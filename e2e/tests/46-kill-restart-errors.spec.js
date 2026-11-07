@@ -54,7 +54,7 @@ const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const DIALOGS = [
   {
     name: 'Abandon',
-    action: 'abandon',
+    sent: (body) => body.action === 'abandon',
     // HZ-711: Abandon is in the header's ⋯ menu.
     open: async (page) => {
       await page.getByRole('button', { name: `More actions for ${ID}` }).click()
@@ -66,7 +66,8 @@ const DIALOGS = [
   },
   {
     name: 'Return to an earlier step',
-    action: 'return',
+    // HZ-799's stepKey form: the step clicked, by key.
+    sent: (body) => body.stepKey === FIRST_STEP.key && body.action === undefined,
     // HZ-711: an earlier step in the step list opens the Move dialog for it.
     open: (page) => page.getByRole('button', { name: new RegExp(`^${escape(FIRST_STEP.label)}\\s*Return here$`) }).click(),
     dialog: (page) => page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` }),
@@ -78,10 +79,10 @@ const DIALOGS = [
 for (const spec of DIALOGS) {
   test(`${spec.name}: a 500 keeps the dialog open with the error and leaves the item as it was`, async ({ page }) => {
     let hits = 0
-    const actions = []
+    const bodies = []
     await page.route(`**/api/items/${ID}/move`, (route) => {
       hits += 1
-      actions.push(route.request().postDataJSON()?.action)
+      bodies.push(route.request().postDataJSON())
       return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'internal' }) })
     })
 
@@ -100,7 +101,8 @@ for (const spec of DIALOGS) {
     await expect(alert).toHaveText('That did not go through — try again.')
     await expect(alert).not.toContainText(GATE_PIN)
     expect(hits).toBe(1)
-    expect(actions).toEqual([spec.action])
+    expect(bodies).toHaveLength(1)
+    expect(spec.sent(bodies[0]), JSON.stringify(bodies[0])).toBe(true)
     await expect(dialog).toBeVisible()
     await expect(spec.note(dialog)).toHaveValue('E2E: the server will refuse this')
     await expect(dialog.getByRole('button', { name: spec.submit, exact: true })).toBeEnabled()

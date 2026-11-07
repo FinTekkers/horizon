@@ -191,10 +191,10 @@ cannot file or dismiss):
 A PM split (an ask of kind `split`) stays read-only: it is filed at its own
 gate, as before.
 
-With Autopilot `on` (HZ-731), the Caretaker files the asks the reviewer
-accepted, and the amended draft of the ones it amended. It pings the owner
-about the rest, and never dismisses one. With Autopilot off, the owner
-decides. See `farm/roles/caretaker.md`.
+With Autopilot `on`, the Caretaker never files or dismisses an ask (HZ-793):
+every ask waits for the owner's File it or Dismiss. Once an ask's review
+comes back, it pings the owner once with the verdict. With Autopilot off,
+the owner decides. See `farm/roles/caretaker.md`.
 
 ## Three things that can interrupt "ever-forward"
 

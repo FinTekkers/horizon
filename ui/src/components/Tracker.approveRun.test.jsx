@@ -24,6 +24,7 @@ vi.mock('../api', () => ({
 import Tracker from './Tracker'
 import ConfirmGateDialog from './ConfirmGateDialog'
 import { APPROVE_FILE_GATE_INDEX, APPROVE_RUN_GATE_INDEX, kindStepIndex, requiredStepIndex } from '../../../domain/js/lifecycle.js'
+import { servedMoves } from './fixtures/servedMoves'
 
 afterEach(() => {
   cleanup()
@@ -50,12 +51,12 @@ const taskItem = {
   activeRun: null,
   runPlan: { commands: 3, budgetMinutes: 20, hash: 'abc123', runner: 'container', imagePinned: true, runnerWarning: null },
   approvedPlanHash: null,
-  moves: {
+  moves: servedMoves({
     approve: { key: 'task.approve-run', label: 'Approve the run' },
     targets: [returnTo('task.run-plan', 'Run plan', 'Redoes 3 steps, from “Run plan” to “Approve the run”.')],
     canAbandon: true,
     amend: null,
-  },
+  }),
 }
 
 // App's own wiring, in miniature: Approve opens ConfirmGateDialog.
@@ -162,7 +163,7 @@ test("a change item's gate card is unchanged: no human-only line, the usual butt
     id: 'CH-1',
     kind: 'change',
     cursor: requiredStepIndex('Approve the high-level design'),
-    moves: {
+    moves: servedMoves({
       approve: { key: 'change.approve-design', label: 'Approve the high-level design' },
       targets: [
         returnTo(
@@ -173,7 +174,7 @@ test("a change item's gate card is unchanged: no human-only line, the usual butt
       ],
       canAbandon: true,
       amend: null,
-    },
+    }),
   }
   delete changeItem.runPlan
   const { container } = render(<Harness item={changeItem} />)
@@ -194,12 +195,12 @@ test("a Plan's Approve & file card shows the human-only line, no run plan, and b
     title: 'Retire the FIX gateway',
     kind: 'plan',
     cursor: APPROVE_FILE_GATE_INDEX,
-    moves: {
+    moves: servedMoves({
       approve: { key: 'plan.approve-file', label: 'Approve & file' },
       targets: [returnTo('plan.draft-items', 'Draft items', 'Redoes 4 steps, from “Draft items” to “Approve & file”.')],
       canAbandon: true,
       amend: null,
-    },
+    }),
   }
   delete planItem.runPlan
   delete planItem.approvedPlanHash

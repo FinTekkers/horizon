@@ -446,7 +446,8 @@ function networkOrPin(err) {
 
 // HZ-470: an awaited gate action (Kill, a move). Rejects with
 // Error('pin_needed') when the PIN dialog is cancelled; Error('network') when
-// no answer came; else Error(<error code>) with `status` on a non-2xx.
+// no answer came; else Error(<error code>) with `status` on a non-2xx. HZ-802:
+// and `serverMessage`, the server's own words, when it sent a `message`.
 async function gateAction(path, body, method = 'POST') {
   const res = await pinSend(path, method, body).catch(networkOrPin)
   if (!res) throw new Error('network')
@@ -454,6 +455,7 @@ async function gateAction(path, body, method = 'POST') {
   if (!res.ok) {
     const err = new Error(data.error || `HTTP ${res.status}`)
     err.status = res.status
+    if (typeof data.message === 'string' && data.message) err.serverMessage = data.message
     throw err
   }
   return data
@@ -874,17 +876,17 @@ export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}
   return data
 }
 
-// HZ-711: the one move — Return to (`action` 'return', `to` an earlier step's
-// key) or Retry ('retry', `to` the current step's key) — from the step the
-// item is at as this tab shows it. The body names steps by key only. Rejects
+// HZ-711: the one move — Return to or Retry — to `stepKey`, one of the item's
+// moves.targets (HZ-799), from the step the item is at as this tab shows it.
+// The body names steps by key only. Rejects
 // with Error('pin_needed') when the PIN dialog is cancelled, Error('network')
 // when no answer came, else Error(<error code>) with `status` (409 stale_step:
 // the item moved since). A 2xx answer's item is applied at once, and its
 // `restart` recorded for the step card.
-export async function moveItem(id, { action, to, note = '' }) {
+export async function moveItem(id, { stepKey, note = '' }) {
   const item = items.find((it) => it.id === id)
   if (!item) throw new Error('not_found')
-  const data = await gateAction(`/items/${encodeURIComponent(id)}/move`, { action, from: item.currentStepKey ?? stepKeyAt(item.cursor), to, note: note || '' })
+  const data = await gateAction(`/items/${encodeURIComponent(id)}/move`, { stepKey, from: item.currentStepKey ?? stepKeyAt(item.cursor), note: note || '' })
   if (data.item) applyActionItem(data.item, data.restart)
   return data
 }
@@ -918,6 +920,24 @@ export async function setPaused(id, paused) {
     items = items.map((it) => (it.id === id ? { ...it, paused: data.paused } : it))
     emit()
   }
+  return data
+}
+
+// HZ-713: Release with PIN on a rule-blocked item — the resume that clears
+// the block, which the server takes only from a browser session with the gate
+// PIN. The PIN is prompted for like any gate action and travels only in the
+// x-human-key header. Rejects with the server's error code (or pin_needed).
+export async function releaseRuleBlock(id) {
+  const data = await gateAction(`/items/${encodeURIComponent(id)}/pause`, { paused: false })
+  if (data.item) applyActionItem(data.item)
+  return data
+}
+
+// HZ-713: Release now on a usage wait — the held step runs again with fresh
+// model limits. Login only; rejects with the server's error code.
+export async function releaseUsageWait(id) {
+  const data = await postJson(`/items/${encodeURIComponent(id)}/usage-wait/release`, {})
+  if (data.item) applyActionItem(data.item)
   return data
 }
 
@@ -985,6 +1005,11 @@ export async function fileAsk(itemId, askId) {
 
 export async function dismissAsk(itemId, askId, reason) {
   return gateAction(`/items/${encodeURIComponent(itemId)}/asks/${askId}/dismiss`, { reason })
+}
+
+// HZ-802: releases a filed blocking ask that still holds Implement or Execute.
+export async function releaseAsk(itemId, askId, reason) {
+  return gateAction(`/items/${encodeURIComponent(itemId)}/asks/${askId}/release`, { reason })
 }
 
 // Personas are agent-scoped (HZ-125): one slot per composing agent, so the

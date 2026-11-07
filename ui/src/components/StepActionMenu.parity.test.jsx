@@ -9,6 +9,7 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { GATE_ITEM, RUNNING_ITEM, mountApp, stubServer } from './fixtures/stepControl'
+import { servedMoves } from './fixtures/servedMoves'
 
 afterEach(() => {
   cleanup()
@@ -53,8 +54,9 @@ async function offered(surface, item) {
   return { actions, choices }
 }
 
+// Read off the served snapshot itself: its return targets, in its order.
 const expectedChoices = (item) =>
-  item.moves.targets.filter((t) => t.action === 'return').map((t) => ({ key: t.key, checked: t.isDefault }))
+  item.moves.targets.filter((t) => item.moves.actions[t.stepKey] === 'return').map((t) => ({ key: t.stepKey, checked: t.isDefault }))
 
 for (const [name, surface] of Object.entries(SURFACES)) {
   test(`waiting gate on the ${name}: Approve, Return to… and Abandon — the snapshot's targets only`, async () => {
@@ -99,7 +101,7 @@ for (const [name, surface] of Object.entries(SURFACES)) {
 
 test('an item whose snapshot offers nothing shows no menu on the item page', async () => {
   const server = stubServer()
-  const none = { ...GATE_ITEM, moves: { approve: null, targets: [], canAbandon: false, amend: null } }
+  const none = { ...GATE_ITEM, moves: servedMoves({ approve: null, targets: [], canAbandon: false, amend: null }) }
   await mountApp(server, '/hz-901', [none, RUNNING_ITEM])
   await screen.findByText(none.title)
   expect(within(document.querySelector('.tracker__actions')).queryByRole('button', { name: /More actions|^Approve$/ })).toBeNull()

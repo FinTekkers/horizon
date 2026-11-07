@@ -31,17 +31,17 @@ const findItem = (id) => getItems().find((it) => it.id === id)
 async function expectRefused(call) {
   const err = await call.catch((e) => e)
   expect(err).toBeInstanceOf(Error)
-  expect(err.message).toBe('bad_target_key')
-  expect(err.status).toBe(409)
+  expect(err.message).toBe('invalid_target')
+  expect(err.status).toBe(400)
 }
 
 test('Return to: an offered earlier step moves the item there and answers its restart by key, attempt 2', async () => {
   vi.useFakeTimers()
   const before = findItem('BF-140')
   expect(STEPS[before.cursor].key).toBe('change.review-before-exec')
-  expect(before.moves.targets.map((t) => t.key)).toContain('change.draft-plan')
+  expect(before.moves.targets.map((t) => t.stepKey)).toContain('change.draft-plan')
 
-  const result = await moveItem('BF-140', { action: 'return', to: 'change.draft-plan', note: 'the plan skips a step' })
+  const result = await moveItem('BF-140', { stepKey: 'change.draft-plan', note: 'the plan skips a step' })
 
   const after = findItem('BF-140')
   expect(after.cursor).toBe(stepIndexOf('change.draft-plan'))
@@ -50,7 +50,7 @@ test('Return to: an offered earlier step moves the item there and answers its re
   // The item moved, so the seed's moves no longer hold: the mock offers none,
   // and a second move is the server's refusal.
   expect(after.moves).toBeNull()
-  await expectRefused(moveItem('BF-140', { action: 'return', to: 'change.draft-plan' }))
+  await expectRefused(moveItem('BF-140', { stepKey: 'change.draft-plan' }))
   expect(findItem('BF-140').cursor).toBe(stepIndexOf('change.draft-plan'))
   vi.clearAllTimers()
 })
@@ -62,25 +62,25 @@ test('Retry: the offered current agent step restarts in place with attempt 2, an
   expect(STEPS[before.cursor].kind).toBe('agent')
 
   // Not in BF-119's moves: refused, nothing changes.
-  await expectRefused(moveItem('BF-119', { action: 'return', to: 'change.define-outcome' }))
+  await expectRefused(moveItem('BF-119', { stepKey: 'change.define-outcome' }))
   expect(findItem('BF-119').cursor).toBe(before.cursor)
   expect(getRestartSent('BF-119')).toBeNull()
 
-  const result = await moveItem('BF-119', { action: 'retry', to: 'change.arch-review' })
+  const result = await moveItem('BF-119', { stepKey: 'change.arch-review' })
   expect(findItem('BF-119').cursor).toBe(before.cursor)
   expect(result.restart).toEqual({ stepKey: 'change.arch-review', attempt: 2 })
   expect(getRestartSent('BF-119')).toEqual({ stepKey: 'change.arch-review', attempt: 2 })
   vi.clearAllTimers()
 })
 
-test('an earlier step the moves do not offer is refused with 409 bad_target_key and leaves the item where it was', async () => {
+test('an earlier step the moves do not offer is refused with 400 invalid_target and leaves the item where it was', async () => {
   const before = findItem('BF-097')
   expect(STEPS[before.cursor].key).toBe('change.accept-code')
-  expect(before.moves.targets.map((t) => t.key)).not.toContain('change.draft-plan')
+  expect(before.moves.targets.map((t) => t.stepKey)).not.toContain('change.draft-plan')
 
-  await expectRefused(moveItem('BF-097', { action: 'return', to: 'change.draft-plan' }))
-  // An offered key under the wrong action is not offered either.
-  await expectRefused(moveItem('BF-097', { action: 'retry', to: 'change.implement' }))
+  await expectRefused(moveItem('BF-097', { stepKey: 'change.draft-plan' }))
+  // Nor is a retry of the gate itself.
+  await expectRefused(moveItem('BF-097', { stepKey: 'change.accept-code' }))
   expect(findItem('BF-097').cursor).toBe(before.cursor)
   expect(findItem('BF-097').moves).toEqual(before.moves)
 })
@@ -89,8 +89,8 @@ test('a step at or after the current gate is refused (no forward moves, no same-
   const before = findItem('BF-128')
   expect(STEPS[before.cursor].key).toBe('change.approve-prioritize')
 
-  await expectRefused(moveItem('BF-128', { action: 'return', to: 'change.approve-prioritize' }))
-  await expectRefused(moveItem('BF-128', { action: 'return', to: 'change.plan-options' }))
+  await expectRefused(moveItem('BF-128', { stepKey: 'change.approve-prioritize' }))
+  await expectRefused(moveItem('BF-128', { stepKey: 'change.plan-options' }))
   expect(findItem('BF-128').cursor).toBe(before.cursor)
 })
 
@@ -98,8 +98,8 @@ test('an item whose seed carries no moves offers none, so every move is refused'
   const before = findItem('BF-102')
   expect(before.moves).toBeNull()
 
-  await expectRefused(moveItem('BF-102', { action: 'retry', to: STEPS[before.cursor].key }))
-  await expectRefused(moveItem('BF-102', { action: 'return', to: 'change.implement' }))
+  await expectRefused(moveItem('BF-102', { stepKey: STEPS[before.cursor].key }))
+  await expectRefused(moveItem('BF-102', { stepKey: 'change.implement' }))
   expect(findItem('BF-102').cursor).toBe(before.cursor)
 })
 

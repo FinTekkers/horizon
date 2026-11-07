@@ -567,7 +567,7 @@ test('listItems resolves currentStep so non-UI clients can see gate state', () =
 
 test('stepOutputs carry the step label for non-UI clients', () => {
   db.prepare(
-    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact) VALUES ('T-GATE', 8, 1, 'QA', 'done', 'verdict: pass', '# QA review')",
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at) VALUES ('T-GATE', 8, 1, 'QA', 'done', 'verdict: pass', '# QA review', '2026-11-05 19:52:10', '2026-11-05 20:06:41')",
   ).run()
   const gate = store.listItems().find((it) => it.id === 'T-GATE')
   assert.deepEqual(gate.stepOutputs['8'], {
@@ -578,7 +578,24 @@ test('stepOutputs carry the step label for non-UI clients', () => {
     verdict: null, // HZ-429: only Verify & report records one
     verdictSummary: null,
     fallbackNote: null, // HZ-422: only a run on a fallback model has one
+    startedAt: '2026-11-05 19:52:10', // HZ-803: the stored UTC text, unconverted
+    endedAt: '2026-11-05 20:06:41',
   })
+})
+
+// HZ-803: the times are the shown attempt's — the newest done one — not a later
+// cancelled attempt's.
+test("stepOutputs carry the shown attempt's started and ended times, not a later failed attempt's", () => {
+  const insert = db.prepare(
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at) VALUES ('T-GATE', 7, ?, 'Eng', ?, ?, ?, ?, ?)",
+  )
+  insert.run(1, 'done', 'one', '# one', '2026-11-05 10:00:00', '2026-11-05 10:05:00')
+  insert.run(2, 'done', 'two', '# two', '2026-11-05 11:00:00', '2026-11-05 11:05:00')
+  insert.run(3, 'cancelled', 'FAILED: agent crashed', null, '2026-11-05 12:00:00', '2026-11-05 12:05:00')
+  const shown = store.listItems().find((it) => it.id === 'T-GATE').stepOutputs['7']
+  assert.equal(shown.attempt, 2)
+  assert.equal(shown.startedAt, '2026-11-05 11:00:00')
+  assert.equal(shown.endedAt, '2026-11-05 11:05:00')
 })
 
 // ---- abandon (HZ-59): soft delete with a reason and an audit trail ----

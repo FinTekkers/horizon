@@ -109,6 +109,11 @@ test('R3: an over-budget Verify dispatch puts the notice first, names the cut, a
   // The notice comes first and is within the budget with everything else.
   assert.equal(artifacts[0].label, orchestrator.TRUNCATION_NOTICE_LABEL)
   assert.equal(artifacts[0].label, 'Truncation notice')
+  // HZ-801: only a stored input links its artifact page; the notice and the
+  // HZ-771 evidence rows are synthetic and carry no url.
+  assert.ok(!Object.hasOwn(artifacts[0], 'url'), 'the truncation notice has no url')
+  for (const e of evidence) assert.ok(!Object.hasOwn(e, 'url'), `evidence row ${e.label} has no url`)
+  assert.ok(artifacts.find((a) => a.label === 'Assess').url.endsWith(`/api/items/T-TRUNC/artifacts/${ASSESS_STEP_INDEX}`))
   assert.ok(totalChars(artifacts) <= BUDGET, `inputs total ${totalChars(artifacts)} chars, over ${BUDGET}`)
   assert.ok(artifacts[0].content.length <= orchestrator.TRUNCATION_NOTICE_MAX_CHARS)
 

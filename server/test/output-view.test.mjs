@@ -65,7 +65,15 @@ db.prepare(
   "INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact, started_at, ended_at) VALUES ('T-VER2', 11, 1, 'Eng', 'done', 'Item two attempt one content', '2026-01-01 10:00:00', '2026-01-01 10:05:00')",
 ).run()
 
-// ---- /api/items/:id/artifacts/:stepIndex ----
+// HZ-803: a run with no recorded finish time (started_at is NOT NULL in the
+// schema, so only ended_at can be missing on a real row).
+db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-NOEND', 'No finish time', 'Medium', 12)").run()
+db.prepare(
+  "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at) VALUES ('T-NOEND', 11, 1, 'Eng', 'done', 'no end output', '# no end', '2026-01-01 09:00:00', NULL)",
+).run()
+
+const metaOf = (body) => body.match(/<div class="meta">([\s\S]*?)<\/div>/)[1]
+
 
 test('a completed step with an artifact renders a 200 HTML page for a logged-in session', async () => {
   const res = await inject({ method: 'GET', url: '/api/items/T-OUT/artifacts/10' })
@@ -152,6 +160,40 @@ test('the artifact page prints exactly one "attempt N" mention for its own attem
   const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/1' })
   const matches = res.body.match(/attempt 1\b/g) || []
   assert.equal(matches.length, 1, `expected exactly one "attempt 1" mention, saw ${matches.length}`)
+})
+
+// ---- HZ-803: when the run started and finished, at the top of each page ----
+
+test("an earlier attempt's artifact page shows that attempt's started and finished times, not a later one's", async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/1' })
+  assert.equal(res.statusCode, 200)
+  const meta = metaOf(res.body)
+  assert.match(meta, /started <time datetime="2026-01-01T10:00:00Z">2026-01-01 10:00 UTC<\/time>/)
+  assert.match(meta, /finished <time datetime="2026-01-01T10:05:00Z">2026-01-01 10:05 UTC<\/time>/)
+  assert.ok(!meta.includes('10:07') && !meta.includes('10:10'), "must not show attempt 2's times")
+  // The attempt sits right under the meta line, at the top of the page.
+  assert.match(res.body, /<div class="attempts">attempt 1 of 2/)
+  assert.match(res.body, /<script>[\s\S]*function runTimeText[\s\S]*clientMain\(\)<\/script>/)
+})
+
+test('the output page shows the attempt, started and finished times in its meta line', async () => {
+  const res = await inject({ method: 'GET', url: '/api/items/T-OUT/steps/11/output' })
+  assert.equal(res.statusCode, 200)
+  const meta = metaOf(res.body)
+  assert.match(meta, /attempt 1 · started <time datetime="[0-9T:-]+Z">/)
+  assert.match(meta, /finished <time datetime="2026-01-01T12:00:00Z">2026-01-01 12:00 UTC<\/time>/)
+  assert.match(res.body, /<script>[\s\S]*clientMain\(\)<\/script>/)
+})
+
+test('a run with no ended_at renders both pages with no finish time', async () => {
+  for (const url of ['/api/items/T-NOEND/steps/11/output', '/api/items/T-NOEND/artifacts/11', '/api/items/T-NOEND/artifacts/11/1']) {
+    const res = await inject({ method: 'GET', url })
+    assert.equal(res.statusCode, 200, url)
+    const meta = metaOf(res.body)
+    assert.match(meta, /started <time datetime="2026-01-01T09:00:00Z">/, url)
+    assert.ok(!meta.includes('finished'), url)
+    assert.ok(!res.body.includes('nullZ') && !res.body.includes('null UTC'), url)
+  }
 })
 
 // ---- /api/items/:id/steps/:stepIndex/output ----

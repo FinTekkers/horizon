@@ -139,9 +139,8 @@ test('line 1: a note on a paused, failed step shows Pause work and the step runn
   const res = await answer
   expect(res.status()).toBe(200)
   expect(res.request().postDataJSON()).toEqual({
-    action: 'retry',
+    stepKey: STEPS[IMPLEMENT_STEP_INDEX].key,
     from: STEPS[IMPLEMENT_STEP_INDEX].key,
-    to: STEPS[IMPLEMENT_STEP_INDEX].key,
     note: 'try the other fixture',
   })
   const body = await res.json()

@@ -112,6 +112,12 @@ export const DEPLOY_WAIT_MS = deployWaitEnvMs > 0 ? deployWaitEnvMs : 20 * 60 * 
 // window; anything not a number >= 0 means the default.
 const deployBatchEnvS = process.env.HORIZON_DEPLOY_BATCH_S?.trim() ? Number(process.env.HORIZON_DEPLOY_BATCH_S) : NaN
 export const DEPLOY_BATCH_S = deployBatchEnvS >= 0 ? deployBatchEnvS : 900
+// HZ-783: how long a window an open item waits on stays open for merges
+// already at Accept the code or in premerge, from when the dependent is first
+// seen. 0 = close at once (HZ-469); anything not a number >= 0 means the
+// default.
+const deployWaitedOnCapEnvS = process.env.HORIZON_DEPLOY_WAITED_ON_CAP_S?.trim() ? Number(process.env.HORIZON_DEPLOY_WAITED_ON_CAP_S) : NaN
+export const DEPLOY_WAITED_ON_CAP_S = deployWaitedOnCapEnvS >= 0 ? deployWaitedOnCapEnvS : 600
 // HZ-408: a release held for a running Execute job waits at most until the
 // job's budget runs out plus this grace. Anything not a number >= 0 means the
 // default.

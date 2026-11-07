@@ -74,6 +74,23 @@ Diagnosing a failed approval without reading code:
 - **Silence, no reply at all** — the sender is missing from the farm's own
   `FARM_WA_ALLOWED_JIDS`, which drops the message before it is ever read.
 
+HZ-786: a WhatsApp note on an item whose agent step is running re-runs that
+step through `POST /api/items/:id/retry-via-whatsapp`, which uses the same
+credential and the same approver list — the same 503/401/403 above apply, and
+the sender gets a `✗` naming the item. A `409` (`stale_step`,
+`not_running_step`) means the item moved on before the note landed; nothing
+was saved.
+
+HZ-790: a WhatsApp note on an item parked at a gate goes to
+`POST /api/items/:id/gates/:step/note-via-whatsapp`, and every WhatsApp
+priority change to `POST /api/items/:id/priority-via-whatsapp`. Same
+credential, same approver list, same 503/401/403. The note only queues for the
+next dispatch; it never approves or moves the gate. A `409 not_at_gate` means
+the item left that gate before the note landed; nothing was saved. Notes on any
+other item still go to `POST /api/items/:id/feedback`, which needs a login
+session and so answers the concierge 401. Deploy the server before the farm: a
+new farm on an old server gets 404 on these routes and saves nothing.
+
 After deploying, restart `horizon-server`, then restart farmd. Existing tmux
 sessions keep the environment they were launched with, so a pre-upgrade
 session still holds the old credential until farmd's teardown kills it.
@@ -1158,6 +1175,13 @@ target's queue (`server/src/deployQueue.js`, rows in `deploy_batch` and
   queue tick and the batch publishes then. The batch's `window_closes_at` is
   set to that moment, and the queued item's history records the time it
   replaced. A running job in the repo still holds the batch, as before.
+  If another item in the repo is at Accept the code or in its premerge check
+  (HZ-783), the window stays open for that merge instead, but closes at most
+  `HORIZON_DEPLOY_WAITED_ON_CAP_S` (default `600`) after the dependent is
+  first seen; it closes as soon as nothing is coming. The cap is never
+  extended by later merges, and the member's history records the hold and its
+  latest close time. A failed coming-to-deploy check closes the window at
+  once. `0` restores the close-at-once behaviour.
 - **Tag.** `deploy-<target>-<yyyymmdd>-b<batch id>`, e.g.
   `deploy-horizon-20261007-b7`. It is saved before the GitHub call and looked
   up first on every retry or restart, so a batch never publishes a second
@@ -1509,6 +1533,57 @@ actually runs `check.mjs` and reads its real exit code; that's the value
 this script sends back as the deploy verdict. A failing verdict pauses the
 item for a human rather than silently advancing (`server/src/orchestrator.js`
 `finalizeDeployStep`), the same way a failing review verdict does.
+
+### Live-data pages (HZ-789)
+
+A page can render its static text while every live section shows
+"unavailable" (US-250, US-298, US-307: an unprovisioned API key went
+unnoticed for 13 days). A repo declares its live pages in
+`.horizon/smoke.json`; `farm/smoke_config.py` validates the file:
+
+```json
+{
+  "version": 1,
+  "pages": [
+    {
+      "path": "/free/tips",
+      "liveValue": "[data-live-value]",
+      "sections": [
+        { "name": "price", "selector": "[data-live-section=price]", "emptyText": ["unavailable"] }
+      ]
+    }
+  ]
+}
+```
+
+- `liveValue` is a CSS selector for elements holding backend numbers or
+  rows; each section has a `name`, a CSS `selector` and the `emptyText`
+  pieces its unavailable or empty state shows.
+- When the checked URL's path matches a declared `path`, `check.mjs` gets
+  `--live=<json>` and, after the text check, polls up to 15s. It passes on
+  the first visible `liveValue` element whose text is not blank and contains
+  no `emptyText` from any section (the union — a placeholder carrying the
+  live marker is not a value), naming the selector and value:
+  `SMOKE_RESULT=pass — "<text>" rendered at <url>; live value [data-live-value] = "101.23"`.
+  It fails as soon as every section shows its `emptyText`, naming them, or
+  at the timeout, listing sections `unavailable`, `not resolved` and
+  `not found`.
+- A page not in the file, or a repo with no file, gets today's static-text
+  check, byte for byte. A bad file fails the deploy with
+  `SMOKE_RESULT=fail: smoke: .horizon/smoke.json <field>: <problem>`; the
+  line names the field, never its value.
+- Matching uses the URL's path alone: host, query and a trailing `/` are
+  ignored, so a declared path applies to whatever host the DevOps agent
+  checks.
+- The file is read from the item's worktree: the `checkout_sha` commit when
+  the server sends one, otherwise the item branch head — not necessarily
+  the released commit.
+- Markers are data only. Selectors with a Playwright engine prefix
+  (`xpath=`, `js=`, `text=`, `css=`, …), `//`, `>>` or `internal:` are
+  refused (in both `smoke_config.py` and `check.mjs`); `emptyText` is a
+  substring match. Nothing is evaluated or passed to a shell.
+- A failed live check fails the deploy verdict like any smoke failure. It
+  adds no rollback.
 
 ## Adding a new target
 

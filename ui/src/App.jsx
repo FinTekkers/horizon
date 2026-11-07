@@ -95,6 +95,7 @@ const SEND_BACK_ERRORS = {
   project_not_active: "This item's project is not active.",
   stale_step: 'This item has moved since — check the steps it offers now and try again.',
   bad_target_key: 'That step is not offered from here any more.',
+  invalid_target: 'That step is not offered from here any more.',
   not_earlier: 'That step is not offered from here any more.',
   lane_skipped: 'That step is not offered from here any more.',
   at_gate: 'This step waits for a decision — there is nothing to retry.',
@@ -104,6 +105,8 @@ const SEND_BACK_ERRORS = {
 function sendBackError(err) {
   if (Object.hasOwn(SEND_BACK_ERRORS, err?.message)) return SEND_BACK_ERRORS[err.message]
   if (err?.status === 401) return 'Gate PIN incorrect or not entered — nothing was sent.'
+  // HZ-802: a Restart that cannot dispatch says why ("Blocked by HZ-5 (…)").
+  if (typeof err?.serverMessage === 'string' && err.serverMessage) return err.serverMessage
   return 'That did not go through — try again.'
 }
 
@@ -506,12 +509,12 @@ function AuthenticatedApp({ user, onLogout }) {
 
   // Awaited (HZ-389): a failure keeps the dialog open with the error, its
   // choice and the note; the item's next snapshot shows what it offers now.
-  const submitMove = (action, key, note) => {
+  const submitMove = (_action, key, note) => {
     const d = moveDialog
     if (!d || d.busy) return
     setMoveDialog({ ...d, busy: true, error: null })
     const same = (cur) => cur && cur.itemId === d.itemId && cur.action === d.action
-    api.moveItem(d.itemId, { action, to: key, note }).then(
+    api.moveItem(d.itemId, { stepKey: key, note }).then(
       () => {
         clearFiledAutopilot(d.itemId)
         setMoveDialog((cur) => (same(cur) ? null : cur))
@@ -524,7 +527,7 @@ function AuthenticatedApp({ user, onLogout }) {
   const submitComposer = (text, modeArg) => {
     const { mode, itemId } = composer
     // HZ-365's Amend the rule — HZ-346's PIN-gated move with the owner's
-    // ruling as the note, to where the snapshot says (item.moves.amend) — and
+    // ruling as the note, to where the snapshot says (item.moves.amendKey) — and
     // HZ-470's Kill (abandon) are awaited: a failure keeps the composer open
     // with the error and the page as it was.
     if (itemId && (mode === 'amend' || mode === 'abandon')) {
@@ -532,7 +535,7 @@ function AuthenticatedApp({ user, onLogout }) {
       const sent =
         mode === 'amend'
           ? amend
-            ? api.moveItem(itemId, { action: amend.action, to: amend.key, note: `Owner's ruling on the blocking rule: ${text}` })
+            ? api.moveItem(itemId, { stepKey: amend.key, note: `Owner's ruling on the blocking rule: ${text}` })
             : Promise.reject(new Error('bad_target_key'))
           : api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
       setComposer((c) => ({ ...c, busy: true, error: null }))
@@ -690,6 +693,10 @@ function AuthenticatedApp({ user, onLogout }) {
           onAbandon={(id) => openComposer('abandon', id)}
           onAddDependency={(id) => setAddDependency({ itemId: id, fileNew: false })}
           onAmendRule={(id) => openComposer('amend', id)}
+          onReleaseRuleBlock={api.releaseRuleBlock}
+          onReleaseUsageWait={api.releaseUsageWait}
+          onOpenProjectSettings={(projectId) => openAdmin(`/admin/projects/${projectId}`)}
+          onOpenItem={openItem}
         />
       )}
 

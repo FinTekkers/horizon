@@ -74,6 +74,9 @@ const LITERALS_ALLOWED = {
   'farm/check_metrics.py': 'declares the check-run OUTCOMES vocabulary, whose "timeout" is a check outcome, not a failure reason',
   'farm/check_slots.py': 'docstring prose naming never_picked_up as what an unbounded slot wait would resurface as',
   'farm/checks.py': 'sets the check-metrics outcome "timeout" on a record — a check outcome, not a failure reason',
+  // HZ-769: the stored HZ-533 run plan, verbatim, lists the coreutils tool
+  // {"tool": "timeout"} in its `requires`.
+  'farm/tests/fixtures/run_plans/hz533.json': 'a stored run plan requiring the `timeout` tool — a tool name, not a failure reason',
   'farm/tests/test_backfill_check_metrics.py': 'asserts the check-metrics outcome "timeout" — a check outcome, not a failure reason',
   'farm/tests/test_check_metrics.py': 'asserts the check-metrics outcome "timeout" — a check outcome, not a failure reason',
   'farm/tests/test_check_slots.py': 'a spy recording subprocess.run\'s "timeout" kwarg, plus never_picked_up in docstrings — not a reason',

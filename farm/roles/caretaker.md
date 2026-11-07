@@ -76,12 +76,10 @@ are not rules in the JSON below.
   before execution, Accept the code and Review the work & close, the owner
   is pinged once per arrival and ask. Once the ask is filed or dismissed,
   the arrival is judged as usual. Soft asks and splits never hold a gate.
-- **File what the reviewer accepted.** With Autopilot `on`, an ask the
-  reviewer accepted is filed with its own draft, and one it amended is filed
-  with the amended draft, through the same File it the owner uses. An ask
-  the reviewer escalated, or whose review failed, is never filed: the owner
-  is pinged once. A filing that fails is not retried: the owner is pinged
-  once and can press File it.
+- **Never file.** Every ask waits for the owner's File it or Dismiss,
+  whatever the reviewer's verdict. With Autopilot `on`, once an ask's review
+  comes back (accepted, amended, escalated, failed or cut short) the owner is
+  pinged once with the verdict, and the ask stays open.
 - **Never dismiss.** Only the owner dismisses an ask.
 - In `shadow` mode each of these is a "caretaker would …" event and nothing
   else. With Autopilot off for the project or the item, nothing is filed or
