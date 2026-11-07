@@ -3,7 +3,7 @@
 // api.approveGate; approving untouched sends 'default'.
 
 import { expect, test, vi, afterEach } from 'vitest'
-import { render, fireEvent, cleanup, waitFor, screen } from '@testing-library/react'
+import { render, fireEvent, cleanup, waitFor, screen, within } from '@testing-library/react'
 import { APPROVE_FILE_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
 let items = []
@@ -26,14 +26,13 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   getPlanProgress: () => [],
   approveGate: vi.fn(async () => ({ ok: true, closed: false })),
-  requestChanges: vi.fn(),
+  moveItem: vi.fn(),
   getRestartSent: () => null,
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),
   releaseRuleBlock: vi.fn(),
   releaseUsageWait: vi.fn(),
-  restartPhase: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   getPlanDraft: vi.fn(async () => null),
@@ -48,6 +47,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 const plan = (id) => ({
   id,
@@ -64,6 +64,23 @@ const plan = (id) => ({
   stepOutputs: {},
   activeRun: null,
   projectAutopilot: 'on',
+  // HZ-711: the server's moves at Approve & file.
+  moves: servedMoves({
+    approve: { key: 'plan.approve-file', label: 'Approve & file' },
+    targets: [
+      {
+        key: 'plan.draft-items',
+        label: 'Draft items',
+        action: 'return',
+        isDefault: true,
+        redo: 'Redoes 4 steps, from “Draft items” to “Approve & file”.',
+        reapprovals: [],
+        stopsRunning: false,
+      },
+    ],
+    canAbandon: true,
+    amend: null,
+  }),
 })
 
 async function openPlan(item) {
@@ -74,8 +91,9 @@ async function openPlan(item) {
 }
 
 async function approveFromGate() {
+  // The gate card's own button; the step's label button names its hint too.
   fireEvent.click(screen.getByRole('button', { name: 'Approve & file' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+  fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Approve' }))
   await waitFor(() => expect(api.approveGate).toHaveBeenCalledTimes(1))
 }
 

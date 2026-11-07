@@ -982,7 +982,7 @@ export function buildApp({
     if (!restart || step?.kind !== 'agent' || step.runsIn === 'none') return { item }
     const run = item.activeRun?.step_index === item.cursor ? item.activeRun : null
     const attempt = run ? run.attempt : store.nextStepAttempt(id, item.cursor).attempt
-    return { item, restart: { stepIndex: item.cursor, attempt } }
+    return { item, restart: { stepIndex: item.cursor, stepKey: stepKeyAt(item.cursor), attempt } }
   }
 
   // HZ-318: `?v=2` leaves stepOutputs off, as the v2 stream does; the Tracker
@@ -2961,10 +2961,18 @@ export function buildApp({
             from: { type: 'string', minLength: 1, maxLength: 80 },
             to: { type: 'string', minLength: 1, maxLength: 80 },
             note: { type: 'string', maxLength: 2000 },
+            // HZ-711: what the approve route takes, so an approve here checks
+            // the same run plan, golden cases and filing choice the page showed.
+            planHash: { type: 'string', maxLength: 128 },
+            runner: { type: 'string', enum: ['container', 'host'] },
+            goldenHash: { type: 'string', maxLength: 128 },
+            filedAutopilot: { type: 'string', enum: ['default', 'off'] },
+            // HZ-711: an abandon may drop the links where this item blocks others.
+            removeDependentLinks: { type: 'boolean' },
           },
         },
         response: {
-          200: { ...OK_OBJECT, description: '`{ ok, move }` for `action`; `{ ok, move, item }` for `stepKey`.' },
+          200: { ...OK_OBJECT, description: '`{ ok, move, item }`, with `restart` (the attempt starting) after a return or retry.' },
           400: ERROR_OBJECT,
           401: ERROR_OBJECT,
           403: ERROR_OBJECT,
@@ -2989,30 +2997,43 @@ export function buildApp({
       if (action === 'abandon' && !note) return reply.code(400).send({ error: 'note_required' })
       if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
       const actor = actorOf(request)
+      const body = request.body
       if (stepKey != null) {
         const target = store.moveTargetsOf(id).find((t) => t.stepKey === stepKey)
         if (!target) return reply.code(400).send({ error: 'invalid_target' })
         const result = await moveToTarget(item, target, { note, actor, proof })
         if (result.status) return reply.code(result.status).send(gateFailureBody(result))
         if (result.error) return send(reply, result)
-        return reply.send({ ok: true, move: store.lastMove(id), item: store.itemViewById(id) })
+        // HZ-711: the item, and for a return or retry the attempt starting, for the step card.
+        const restart = target.action === 'return' || target.action === 'retry'
+        return reply.send({ ...actionState(id, { restart }), ok: true, move: store.lastMove(id) })
       }
       let result
       if (action === 'approve') {
         const planned = planMove(item, { action, toKey: to })
         if (planned.error) return send(reply, planned)
+        const human = {
+          proof,
+          planHash: body.planHash || null,
+          runner: body.runner || null,
+          goldenHash: body.goldenHash || null,
+          filedAutopilot: body.filedAutopilot || null,
+        }
         result =
           STEPS[item.cursor].kind === 'gate'
-            ? await gateActions.approve(id, item.cursor, note, actor, { proof })
+            ? await gateActions.approve(id, item.cursor, note, actor, human)
             : await orchestrator.forwardRejectedReview(id, actor)
         if (result.status) return reply.code(result.status).send(gateFailureBody(result))
       } else if (action === 'abandon') {
-        result = await abandonAndCloseIssue(id, note, actor)
+        result = await abandonAndCloseIssue(id, note, actor, { removeDependentLinks: body.removeDependentLinks === true })
       } else {
         result = store.moveByHuman(id, { action, toKey: to, note, who: actor, proof })
       }
       if (result.error) return send(reply, result)
-      return reply.send({ ok: true, move: store.lastMove(id) })
+      // HZ-711: an approve's own answer (closed, held) is kept; the item as the
+      // stream would upsert it, and for a return or retry the attempt starting.
+      const restart = action === 'return' || action === 'retry'
+      return reply.send({ ...result, ...actionState(id, { restart }), ok: true, move: store.lastMove(id) })
     },
   )
 

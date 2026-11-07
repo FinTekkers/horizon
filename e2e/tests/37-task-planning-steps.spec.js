@@ -27,7 +27,7 @@ test.beforeAll(() => {
 })
 
 const stepCard = (page, label) =>
-  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}$`) }) })
+  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}(\\s*(Return here|Retry|Approve))?$`) }) })
 
 test("a task's planning steps run and each card shows its summary and artifact links", async ({ page, request }) => {
   await page.goto(`/${ID.toLowerCase()}`)

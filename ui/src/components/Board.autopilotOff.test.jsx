@@ -12,6 +12,7 @@ vi.mock('../api', () => ({
 
 import Board from './Board'
 import { ACCEPT_GATE_INDEX } from '../../../domain/js/lifecycle.js'
+import { servedMoves } from './fixtures/servedMoves'
 
 afterEach(() => cleanup())
 
@@ -35,12 +36,19 @@ function renderCard(item) {
           activeRun: null,
           gateAction: null,
           events: [],
+          moves: servedMoves({
+            approve: { key: 'change.accept-code', label: 'Accept the code' },
+            targets: [],
+            canAbandon: true,
+            amend: null,
+          }),
           ...item,
         },
       ]}
       onOpen={noop}
       onApprove={noop}
-      onReject={noop}
+      onMove={noop}
+      onAbandon={noop}
       onTogglePause={noop}
       onNewItem={noop}
     />,

@@ -7,7 +7,6 @@ import {
   VERIFY_REPORT_STEP_INDEX,
   isClosed,
   isAbandoned,
-  phaseIdx,
   stepStatus,
   phaseStepIndexes,
   phasesFor,
@@ -29,6 +28,7 @@ import { pauseReason } from '../domain/pauseReason'
 import { holdFor } from '../domain/hold'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
+import { STEP_HINTS, retryTarget, returnTargets, stepActionFor } from '../domain/stepActions'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
@@ -49,7 +49,8 @@ import TaskBadge from './TaskBadge'
 import PlanItemsTable from './PlanItemsTable'
 import FiledAutopilotSelect from './FiledAutopilotSelect'
 import ScreenshotPanel from './ScreenshotPanel'
-import { BackIcon, LinkIcon, RestartIcon, PrIcon, CircleXIcon, PlanIcon } from './icons'
+import StepActionMenu from './StepActionMenu'
+import { BackIcon, LinkIcon, PrIcon, CircleXIcon, PlanIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
 
@@ -327,20 +328,22 @@ function StepProviderPicker({ item, index, status, output, onSetStepProvider }) 
   )
 }
 
-// HZ-389: "Sent: attempt N starting" on the step a send-back from this tab
-// restarted. N is the server's answer (restart.attempt), never derived here.
-// Shown while the item is still on that step and not paused, until a run for
-// it reaches another attempt or has been going a minute — so the normal path,
-// where the answer already carries the run, shows it too.
+// HZ-389: "Sent: attempt N starting" on the step a return or retry from this
+// tab restarted. N is the server's answer (restart.attempt), never derived
+// here. Shown while the item is still on that step and not paused, until a run
+// for it reaches another attempt or has been going a minute — so the normal
+// path, where the answer already carries the run, shows it too. HZ-711: the
+// step is named by its key.
 function restartSentLabel(item, index, restartSent) {
-  if (!restartSent || restartSent.stepIndex !== index || item.cursor !== index || item.paused) return null
+  const key = STEPS[index].key
+  if (!restartSent || restartSent.stepKey !== key || item.currentStepKey !== key || item.paused) return null
   const run = item.activeRun
   if (run && run.step_index !== index) return null
   if (run && (run.attempt !== restartSent.attempt || elapsedMinutes(run.started_at) >= 1)) return null
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -368,9 +371,16 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // approval, the table's one button is the gate's Approve.
   const goldenCases = item.goldenCases && index === item.goldenCases.gateIndex ? item.goldenCases : null
   const goldenPending = !!goldenCases && !goldenCases.approved && status === 'awaiting'
+  // HZ-711: what a click on this step offers, from the item's snapshot. An
+  // Approve the page would not offer now (a gate action runs, or a deploy
+  // holds the merge) only selects it.
+  const offered = stepActionFor(item, st.key)
+  const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
+  const retryHere = retryTarget(item)?.step === st.key
+  const canReturn = returnTargets(item).length > 0
 
   return (
-    <div className="step">
+    <div className={`step${selected ? ' step--selected' : ''}`}>
       <div className="step__rail">
         <div
           className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}${verdictIcon ? ` step__icon--${verdictIcon}` : ''}${ranAhead ? ` step__icon--ran-ahead${ranAhead.failed ? ' step__icon--verdict-fail' : ''}` : ''}`}
@@ -398,7 +408,17 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           data-testid={status === 'skipped' ? 'step-skipped' : undefined}
         >
           <div className="step-card__head">
-            <div className="step-card__label">{st.label}</div>
+            <button
+              type="button"
+              id={`step-${item.id}-${st.key}`}
+              className={`step-card__label step-card__select${stepAction ? ' step-card__select--action' : ''}`}
+              aria-current={selected ? 'true' : undefined}
+              onClick={() => onStepClick(st.key, stepAction, st.label)}
+            >
+              {st.label}
+              {stepAction && ' '}
+              {stepAction && <span className="step-card__hint">{STEP_HINTS[stepAction]}</span>}
+            </button>
             <span className="step-card__agent" style={{ color: agent.color }}>
               <span className="step-card__agent-dot" style={{ background: agent.color }} />
               {agentLabel}
@@ -650,14 +670,16 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   >
                     Approve with comments
                   </button>
-                  <button
-                    className="btn-gate-reject"
-                    disabled={gateBusy}
-                    aria-busy={gateBusy || undefined}
-                    onClick={() => onReject(item.id, st.label)}
-                  >
-                    {humanOnly ? 'Reject with feedback' : 'Send back with feedback'}
-                  </button>
+                  {canReturn && (
+                    <button
+                      className="btn-gate-reject"
+                      disabled={gateBusy}
+                      aria-busy={gateBusy || undefined}
+                      onClick={() => onMove(item.id, 'return', null)}
+                    >
+                      Return to…
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -672,17 +694,10 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               See agent output ↗
             </a>
           )}
-          {status === 'active' && (
+          {status === 'active' && retryHere && (
             <div className="step-card__actions">
-              <button className="btn-step-reject" onClick={() => onReject(item.id, st.label)}>
-                Request changes
-              </button>
-            </div>
-          )}
-          {status === 'blocked' && (
-            <div className="step-card__actions">
-              <button className="btn-gate-reject" onClick={() => onReject(item.id, st.label)}>
-                Send back for rework
+              <button className="btn-step-reject" onClick={() => onMove(item.id, 'retry', st.key)}>
+                Retry
               </button>
             </div>
           )}
@@ -1120,7 +1135,7 @@ function FarmUnreachableBanner({ onOpenFarmHealth }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onReject, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onRestartPhase, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1166,6 +1181,20 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
     else if (key === 'releaseUsageWait') sendAction((id) => onReleaseUsageWait(id))
     else if (key === 'openProjectSettings') onOpenProjectSettings?.(item.project_id)
     else if (key === 'openBlocker') onOpenItem?.(hold.action.target)
+  }
+  // HZ-711: the step selected in the step list, by key, kept with the item id
+  // so opening another item drops it. A click selects the step and opens what
+  // the snapshot offers there; a phase heading selects its first step.
+  const [selection, setSelection] = useState(null)
+  const selectedKey = selection?.id === item.id ? selection.key : null
+  const clickStep = (key, action, label) => {
+    setSelection({ id: item.id, key })
+    if (action === 'approve') onApprove(item.id, label)
+    else if (action === 'return' || action === 'retry') onMove(item.id, action, key)
+  }
+  const selectPhase = (key) => {
+    setSelection({ id: item.id, key })
+    document.getElementById(`step-${item.id}-${key}`)?.focus()
   }
 
   return (
@@ -1242,11 +1271,14 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
               </button>
             )}
             {pauseError?.id === item.id && <span role="alert">{pauseError.message}</span>}
-            {!closed && (
-              <button className="btn-outline" style={{ color: 'var(--danger-ink)' }} onClick={() => onAbandon(item.id)}>
-                Abandon
-              </button>
-            )}
+            <StepActionMenu
+              item={item}
+              onApprove={onApprove}
+              onMove={onMove}
+              onAbandon={onAbandon}
+              approveDisabled={gateBusy}
+              approveHidden={!!queuedToMerge(item, deployBlock, viewerName)}
+            />
           </div>
         )}
         {/* HZ-717: fixed text only — never the farm's error, URL or host. */}
@@ -1316,11 +1348,11 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
             const anyActive = idxs.some((i) => ['active', 'awaiting'].includes(stepStatus(item, i)))
             const phaseStatusLabel = allDone ? 'Complete' : anyActive ? 'In progress' : 'Upcoming'
             const phaseStatusColor = allDone ? 'var(--success-ink)' : anyActive ? 'var(--primary-ink)' : 'var(--muted)'
-            // An abandoned item is terminal too — it must not offer a restart.
-            const restartable = !isClosed(item) && !abandoned && phaseIdx(item) >= p
+            // HZ-711: the heading selects the phase's first step; moving is the steps' own.
+            const firstKey = idxs.length ? STEPS[idxs[0]].key : null
             return (
               <div key={name} className="phase">
-                <div className="phase__head">
+                <button type="button" className="phase__head" disabled={!firstKey} onClick={() => selectPhase(firstKey)}>
                   <span className="phase__num" style={{ background: PHASE_ACCENT_BG[p], color: PHASE_ACCENT[p] }}>
                     {p + 1}
                   </span>
@@ -1329,13 +1361,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                     {phaseStatusLabel}
                   </span>
                   <span className="phase__spacer" />
-                  {restartable && (
-                    <button className="phase__restart" onClick={() => onRestartPhase(item.id, p)}>
-                      <RestartIcon />
-                      Restart phase
-                    </button>
-                  )}
-                </div>
+                </button>
                 {idxs.map((i) => (
                   <Fragment key={i}>
                     <Step
@@ -1347,9 +1373,11 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                       viewerName={viewerName}
                       restartSent={restartSent}
                       linkContextFor={linkContextFor}
+                      selected={selectedKey === STEPS[i].key}
+                      onStepClick={clickStep}
                       onApprove={onApprove}
                       onApproveWithComments={onApproveWithComments}
-                      onReject={onReject}
+                      onMove={onMove}
                       onResolveConflicts={onResolveConflicts}
                       resolving={resolving}
                       gateBusy={gateBusy}

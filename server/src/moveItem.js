@@ -41,7 +41,7 @@ import {
   stepKeyAt,
   stepsFor,
 } from '../../domain/js/lifecycle.js'
-import { currentSubstep, encodeMoveKey, substepReworkTargets } from '../../domain/js/substeps.js'
+import { currentSubstep, decodeMoveKey, encodeMoveKey, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 
 // The five a human (or the route) can ask for, plus 'close', which only a
 // GitHub issue close makes — the route never offers it.
@@ -275,6 +275,52 @@ export function moveTargets(item, { running = false, enabled = true, approvable 
 // A target as item.moves serves it: without the route's own fields.
 export function toPublicTarget({ action, toIndex, ...target }) {
   return target
+}
+
+// HZ-711: item.moves as served — the targets, and beside them what the item
+// page, board cards and the Approvals drawer need to name each one without
+// working out a rule or holding a step table:
+//   actions     each target's stepKey → 'approve', 'return' or 'retry'
+//   labels      each return or retry target's key, each reapproval and the
+//               gate an approve passes → its label; a sub-step's is its own
+//   approveKey  the gate the item waits at, when it can be approved — even
+//               while the stepKey form cannot approve it (no run plan, golden
+//               cases unseen): the Approve those surfaces send carries what
+//               approveGate checks
+//   canAbandon  the item is open
+//   amendKey    the target Amend the rule moves to while a rule blocks the
+//               item: back to implement where that is listed, else the retry
+// Pure.
+export function movesView(item, targets, { enabled = true } = {}) {
+  const open = !isAbandoned(item) && !isClosed(item)
+  const approve = enabled && open && STEPS[item.cursor].kind === 'gate' ? planMove(item, { action: 'approve' }) : null
+  const approveKey = approve?.ok ? stepKeyAt(item.cursor) : null
+  const implementKey = stepKeyAt(IMPLEMENT_STEP_INDEX)
+  let amendKey = null
+  if (item.rule_block_json) {
+    const back = targets.find((t) => t.action === 'return' && t.stepKey === implementKey)
+    amendKey = (back ?? targets.find((t) => t.action === 'retry'))?.stepKey ?? null
+  }
+  // An approve target's stepKey is where it lands (past the end, when it
+  // closes the item), so the gate it passes is named instead.
+  const named = [
+    ...targets.flatMap((t) => (t.action === 'approve' ? [] : [t.stepKey, ...t.reapprovals])),
+    ...(approveKey ? [approveKey] : []),
+  ]
+  return {
+    targets: targets.map(toPublicTarget),
+    actions: Object.fromEntries(targets.map((t) => [t.stepKey, t.action])),
+    labels: Object.fromEntries(named.map((key) => [key, moveKeyLabel(item, key)])),
+    approveKey,
+    canAbandon: open,
+    amendKey,
+  }
+}
+
+function moveKeyLabel(item, key) {
+  const { stepKey, substepId } = decodeMoveKey(key)
+  const sub = substepId ? substepsOf(item).find((s) => s.id === substepId) : null
+  return sub?.label ?? STEPS[stepIndexOf(stepKey)].label
 }
 
 const quoted = (index, label = null) => `“${label ?? STEPS[index].label}”`

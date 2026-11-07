@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import * as api from './api'
-import { STEPS, IMPLEMENT_STEP_INDEX, APPROVE_FILE_GATE_INDEX, awaitingGate, isClosed, reworkTargets, defaultReworkTarget } from '../../domain/js/lifecycle.js'
-import { substepReworkTargets } from '../../domain/js/substeps.js'
+import { APPROVE_FILE_GATE_INDEX, awaitingGate, isClosed } from '../../domain/js/lifecycle.js'
 import TopBar from './components/TopBar'
 import BottomNav from './components/BottomNav'
 import { MOBILE_QUERY, useMediaQuery } from './useMediaQuery'
@@ -11,6 +10,7 @@ import ApprovalsDrawer from './components/ApprovalsDrawer'
 import FollowUpsPage, { softAsks } from './components/FollowUpsPage'
 import { blockingAsks } from './components/BlockingAsksBanner'
 import ComposerModal from './components/ComposerModal'
+import MoveDialog from './components/MoveDialog'
 import ConfirmGateDialog from './components/ConfirmGateDialog'
 import ResolveConflictsDialog from './components/ResolveConflictsDialog'
 import AdminPage from './components/AdminPage'
@@ -32,6 +32,7 @@ import {
   parseAdminPath,
 } from './components/admin/adminRoutes'
 import { gateActionBusy } from './domain/gateAction'
+import { amendMove } from './domain/stepActions'
 import { queuedToMerge } from './domain/status'
 import { validPlanId } from './domain/narrowing'
 import * as boardNarrowing from './boardNarrowing'
@@ -78,14 +79,13 @@ function resolveDialogView(dialog, item, pending) {
 // HZ-563: one Farm health reading feeds both the page and the menu's dot.
 const FARM_HEALTH_POLL_MS = 10_000
 
-const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, phase: null, target: '', stepOptions: [], defaultTargetLabel: null }
+const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, target: '' }
 
-// HZ-389: why a send-back did not go through, in words. HZ-470: Kill (abandon)
-// and Restart phase use the same map. serverApi.requestChanges, abandonItem
-// and restartPhase reject with Error('network') when no answer came, else the
-// server's error code with the HTTP status (401: the PIN dialog was cancelled
-// on a send-back). abandonItem and restartPhase reject with Error('pin_needed')
-// when the PIN dialog was cancelled (HZ-704); nothing went through.
+// HZ-389: why a move did not go through, in words. HZ-470: Kill (abandon) uses
+// the same map. serverApi.moveItem and abandonItem reject with
+// Error('network') when no answer came, Error('pin_needed') when the PIN
+// dialog was cancelled (HZ-704) — nothing went through — else the server's
+// error code with the HTTP status. HZ-711: the move route's refusals too.
 const SEND_BACK_ERRORS = {
   network: 'The server did not answer — nothing was sent. Try again.',
   pin_needed: 'Gate PIN needed',
@@ -93,7 +93,13 @@ const SEND_BACK_ERRORS = {
   closed: 'This item is closed.',
   abandoned: 'This item was abandoned.',
   project_not_active: "This item's project is not active.",
-  invalid_target: 'That step cannot be sent back to from here.',
+  stale_step: 'This item has moved since — check the steps it offers now and try again.',
+  bad_target_key: 'That step is not offered from here any more.',
+  invalid_target: 'That step is not offered from here any more.',
+  not_earlier: 'That step is not offered from here any more.',
+  lane_skipped: 'That step is not offered from here any more.',
+  at_gate: 'This step waits for a decision — there is nothing to retry.',
+  merged: 'This item is merged. File a follow-up item instead.',
 }
 
 function sendBackError(err) {
@@ -211,6 +217,9 @@ function AuthenticatedApp({ user, onLogout }) {
   // (which cannot click) can show it.
   const [approvalsOpen, setApprovalsOpen] = useState(() => new URLSearchParams(window.location.search).has('approvals'))
   const [composer, setComposer] = useState(CLOSED_COMPOSER)
+  // HZ-711: the Move dialog — Return to or Retry, from any surface:
+  // { itemId, action, stepKey (null: choose from the targets), busy, error }.
+  const [moveDialog, setMoveDialog] = useState(null)
   const [newItemOpen, setNewItemOpen] = useState(false)
   // HZ-365: the rule-block banner's Add dependency — the item it is for, and
   // whether "File a new upstream item" swapped the picker for NewItemModal.
@@ -485,68 +494,61 @@ function AuthenticatedApp({ user, onLogout }) {
       view === 'tracker' && selected ? `${selected.id} · Horizon` : 'Horizon · Delivery Lifecycle'
   }, [view, selected])
 
-  // Rejecting from a gate lets the human pick which earlier agent step the
-  // item goes back to (HZ-51) — offered only when the item is actually
-  // parked at a gate; picking one is optional, and submitting without a
-  // choice reproduces today's nearest-preceding-step behavior exactly.
+  // HZ-354: the abandon dialog lists what this item blocks, as of opening.
   const openComposer = (mode, itemId, opts = {}) => {
     const item = items.find((it) => it.id === itemId)
-    const atGate = mode === 'reject' && item && STEPS[item.cursor]?.kind === 'gate'
-    // HZ-435: with the item, a row its lane skips is never offered.
-    // HZ-540: each sub-step target right after its step.
-    const subOptions = atGate ? substepReworkTargets(item) : []
-    const stepOptions = atGate
-      ? reworkTargets(item.cursor, undefined, item).flatMap((opt) => [opt, ...subOptions.filter((s) => s.index === opt.index)])
-      : []
-    const defaultTargetLabel = stepOptions.length ? STEPS[defaultReworkTarget(item.cursor, undefined, item)].label : null
-    // HZ-354: the abandon dialog lists what this item blocks, as of opening.
     const dependents = mode === 'abandon' ? item?.dependents || [] : []
-    setComposer({ open: true, mode, itemId, phase: opts.phase ?? null, target: opts.target || '', stepOptions, defaultTargetLabel, dependents })
+    setComposer({ open: true, mode, itemId, target: opts.target || '', dependents })
   }
 
   const requestApprove = (itemId, gateLabel) => setConfirmApprove({ itemId, gateLabel })
 
-  // The second argument depends on the mode: reject passes the chosen
-  // send-back step index, abandon passes { removeDependentLinks }. HZ-540: a
-  // reject to a sub-step passes its id third.
-  const submitComposer = (text, modeArg, substepId = null) => {
-    const { mode, itemId, phase, target } = composer
-    // HZ-389: a send-back (reject, or HZ-365's Amend the rule — HZ-346's
-    // PIN-gated send-back to implement, with the owner's ruling as the note)
-    // is awaited: the page shows the answer's state, and a failure keeps the
-    // composer open with the error and the page as it was.
-    // HZ-470: Kill (abandon) and Restart phase are awaited the same way, so
-    // neither can fail silently.
-    if (itemId && (mode === 'reject' || mode === 'amend' || mode === 'restart' || mode === 'abandon')) {
+  // HZ-711: Return to (stepKey null: the dialog lists the targets) and Retry,
+  // from the step list, the item page's menu, a board card or the drawer.
+  const openMove = (itemId, action, stepKey = null) => setMoveDialog({ itemId, action, stepKey, busy: false, error: null })
+
+  // Awaited (HZ-389): a failure keeps the dialog open with the error, its
+  // choice and the note; the item's next snapshot shows what it offers now.
+  const submitMove = (_action, key, note) => {
+    const d = moveDialog
+    if (!d || d.busy) return
+    setMoveDialog({ ...d, busy: true, error: null })
+    const same = (cur) => cur && cur.itemId === d.itemId && cur.action === d.action
+    api.moveItem(d.itemId, { stepKey: key, note }).then(
+      () => {
+        clearFiledAutopilot(d.itemId)
+        setMoveDialog((cur) => (same(cur) ? null : cur))
+      },
+      (err) => setMoveDialog((cur) => (same(cur) ? { ...cur, busy: false, error: sendBackError(err) } : cur)),
+    )
+  }
+
+  // The second argument is abandon's { removeDependentLinks }.
+  const submitComposer = (text, modeArg) => {
+    const { mode, itemId } = composer
+    // HZ-365's Amend the rule — HZ-346's PIN-gated move with the owner's
+    // ruling as the note, to where the snapshot says (item.moves.amendKey) — and
+    // HZ-470's Kill (abandon) are awaited: a failure keeps the composer open
+    // with the error and the page as it was.
+    if (itemId && (mode === 'amend' || mode === 'abandon')) {
+      const amend = mode === 'amend' ? amendMove(items.find((it) => it.id === itemId)) : null
       const sent =
-        mode === 'reject'
-          ? substepId
-            ? api.requestChanges(itemId, target, text, modeArg ?? null, substepId)
-            : api.requestChanges(itemId, target, text, modeArg ?? null)
-          : mode === 'amend'
-            ? api.requestChanges(itemId, STEPS[IMPLEMENT_STEP_INDEX].label, `Owner's ruling on the blocking rule: ${text}`)
-            : mode === 'restart'
-              ? api.restartPhase(itemId, phase, text)
-              : api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
+        mode === 'amend'
+          ? amend
+            ? api.moveItem(itemId, { stepKey: amend.key, note: `Owner's ruling on the blocking rule: ${text}` })
+            : Promise.reject(new Error('bad_target_key'))
+          : api.abandonItem(itemId, text, { removeDependentLinks: modeArg?.removeDependentLinks === true })
       setComposer((c) => ({ ...c, busy: true, error: null }))
       // A composer cancelled or reopened meanwhile is left as it is.
       const same = (c) => c.open && c.itemId === itemId && c.mode === mode
       Promise.resolve(sent).then(
-        () => {
-          if (mode === 'reject') clearFiledAutopilot(itemId)
-          setComposer((c) => (same(c) ? CLOSED_COMPOSER : c))
-        },
+        () => setComposer((c) => (same(c) ? CLOSED_COMPOSER : c)),
         (err) => setComposer((c) => (same(c) ? { ...c, busy: false, error: sendBackError(err) } : c)),
       )
       return
     }
-    if (itemId) {
-      // Both sides changed this line for unrelated reasons: main routes approve
-      // through approveAndMaybeClose (HZ-62, return to the board once the
-      // closing gate is approved) and this branch adds the chosen send-back
-      // step to reject (HZ-51). They compose.
-      if (mode === 'approve') approveAndMaybeClose(itemId, text)
-    }
+    // HZ-62: approving the closing gate returns to the board.
+    if (itemId && mode === 'approve') approveAndMaybeClose(itemId, text)
     setComposer(CLOSED_COMPOSER)
   }
 
@@ -612,7 +614,8 @@ function AuthenticatedApp({ user, onLogout }) {
           viewerName={user?.name ?? null}
           onOpen={openItem}
           onApprove={requestApprove}
-          onReject={(id, target) => openComposer('reject', id, { target })}
+          onMove={openMove}
+          onAbandon={(id) => openComposer('abandon', id)}
           onTogglePause={api.setPaused}
           onNewItem={() => setNewItemOpen(true)}
           isGateBusy={isGateBusy}
@@ -676,13 +679,12 @@ function AuthenticatedApp({ user, onLogout }) {
           onBack={toBoard}
           onApprove={requestApprove}
           onApproveWithComments={(id, target) => openComposer('approve', id, { target })}
-          onReject={(id, target) => openComposer('reject', id, { target })}
+          onMove={openMove}
           onResolveConflicts={openResolveDialog}
           resolving={isResolving(selected)}
           gateBusy={isGateBusy(selected)}
           onForwardToAccept={(id) => api.forwardToAccept(id)}
           onTogglePause={api.setPaused}
-          onRestartPhase={(id, phase) => openComposer('restart', id, { phase })}
           onSetPersona={api.setPersona}
           onSetStepProvider={api.setStepProvider}
           filedAutopilot={filedAutopilotOf(selected.id)}
@@ -716,16 +718,25 @@ function AuthenticatedApp({ user, onLogout }) {
           onClose={() => setApprovalsOpen(false)}
           onOpenItem={openItem}
           onApprove={requestApprove}
-          onReject={(id, target) => openComposer('reject', id, { target })}
+          onMove={openMove}
+          onAbandon={(id) => openComposer('abandon', id)}
         />
       )}
 
       {composer.open && (
-        <ComposerModal
-          composer={composer}
-          item={items.find((it) => it.id === composer.itemId)}
-          onSubmit={submitComposer}
-          onCancel={() => setComposer(CLOSED_COMPOSER)}
+        <ComposerModal composer={composer} onSubmit={submitComposer} onCancel={() => setComposer(CLOSED_COMPOSER)} />
+      )}
+
+      {moveDialog && items.some((it) => it.id === moveDialog.itemId) && (
+        <MoveDialog
+          key={`${moveDialog.itemId}:${moveDialog.action}:${moveDialog.stepKey ?? ''}`}
+          item={items.find((it) => it.id === moveDialog.itemId)}
+          action={moveDialog.action}
+          stepKey={moveDialog.stepKey}
+          busy={moveDialog.busy}
+          error={moveDialog.error}
+          onConfirm={submitMove}
+          onCancel={() => setMoveDialog(null)}
         />
       )}
 

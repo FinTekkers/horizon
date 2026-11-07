@@ -80,9 +80,12 @@ test('one running and five queued dispatched steps render as one working card an
   await expect(stepCard).toHaveClass(/step-card--queued/)
   await expect(stepCard).toContainText('Queued')
 
-  await stepCard.locator('.btn-step-reject').click()
-  await page.locator('.composer__input').fill('Please try a different approach.')
-  await page.locator('.composer__submit').click()
+  // HZ-711: Retry (was Request changes) opens the Move dialog for this step.
+  await stepCard.getByRole('button', { name: 'Retry', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: `Retry this step · ${target}` })
+  await dialog.getByLabel('Note for the step (optional)').fill('Please try a different approach.')
+  await dialog.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
 
   // The step re-dispatches under a fresh step_run with no cached farm state,
   // so it reads "In progress…" again, then completes (mock agents are fast)

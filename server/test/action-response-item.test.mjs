@@ -22,7 +22,7 @@ delete process.env.FARM_URL
 delete process.env.GITHUB_WEBHOOK_SECRET
 
 const { db } = await import('../src/db.js')
-const { IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { IMPLEMENT_STEP_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const store = await import('../src/store.js')
 const deployDrain = await import('../src/deployDrain.js')
 const orchestrator = await import('../src/orchestrator.js')
@@ -70,7 +70,7 @@ test('a note on a paused, failed step answers with the item and the attempt the 
   assert.equal(res.statusCode, 200)
   const body = res.json()
   assert.equal(body.ok, true)
-  assert.deepEqual(body.restart, { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 3 })
+  assert.deepEqual(body.restart, { stepIndex: IMPLEMENT_STEP_INDEX, stepKey: stepKeyAt(IMPLEMENT_STEP_INDEX), attempt: 3 })
 
   const run = activeRunOf('AR-1')
   assert.equal(run.attempt, body.restart.attempt, 'the answer names the attempt written on the run row')
@@ -92,7 +92,7 @@ for (const [label, flags] of [
     failedImplementItem(id, 2, flags)
     const res = await sendNote(id)
     assert.equal(res.statusCode, 200)
-    assert.deepEqual(res.json().restart, { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 2 })
+    assert.deepEqual(res.json().restart, { stepIndex: IMPLEMENT_STEP_INDEX, stepKey: stepKeyAt(IMPLEMENT_STEP_INDEX), attempt: 2 })
     assert.equal(activeRunOf(id).attempt, 2)
   })
 }
@@ -105,7 +105,7 @@ test('a dispatch held for a deploy has no run yet: the answer names the attempt 
     assert.equal(res.statusCode, 200)
     const body = res.json()
     assert.equal(body.item.activeRun, null, 'the dispatch was held')
-    assert.deepEqual(body.restart, { stepIndex: IMPLEMENT_STEP_INDEX, attempt: 2 })
+    assert.deepEqual(body.restart, { stepIndex: IMPLEMENT_STEP_INDEX, stepKey: stepKeyAt(IMPLEMENT_STEP_INDEX), attempt: 2 })
 
     // nextStepAttempt is a pure read: asking again changes no row.
     const before = { runs: runsOf('AR-H'), item: itemRow('AR-H') }

@@ -7,7 +7,7 @@
 // seed.js), so no mock agent touches them before the action.
 //
 // HZ-704: setting the spec's own PIN locks the shared session, so line 1's
-// send-back (the spec's one gate action) opens the PIN dialog.
+// retry (the spec's one gate action) opens the PIN dialog.
 
 import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent, insertStepRun, setGatePinDirect } from '../fixtures/seed.js'
@@ -125,25 +125,32 @@ test('line 1: a note on a paused, failed step shows Pause work and the step runn
 
   await cutStreams(page)
   navigations.arm()
-  await card.getByRole('button', { name: 'Request changes' }).click()
-  await page.getByRole('dialog').getByRole('textbox').fill('try the other fixture')
-  // The send-back's first try is refused (the session is locked); the answer
+  // HZ-711: Retry (was Request changes) opens the Move dialog for this step.
+  await card.getByRole('button', { name: 'Retry', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Retry this step · NOTE-389' })
+  await dialog.getByLabel('Note for the step (optional)').fill('try the other fixture')
+  // The retry's first try is refused (the session is locked); the answer
   // that counts is the one sent with the PIN from the dialog.
   const answer = page.waitForResponse(
-    (res) => res.url().endsWith('/api/items/NOTE-389/reject') && res.request().method() === 'POST' && res.status() !== 401,
+    (res) => res.url().endsWith('/api/items/NOTE-389/move') && res.request().method() === 'POST' && res.status() !== 401,
   )
-  await page.getByRole('dialog').getByRole('button', { name: 'Send back' }).click()
+  await dialog.getByRole('button', { name: 'Retry', exact: true }).click()
   await answerPinDialog(page, GATE_PIN)
   const res = await answer
   expect(res.status()).toBe(200)
+  expect(res.request().postDataJSON()).toEqual({
+    stepKey: STEPS[IMPLEMENT_STEP_INDEX].key,
+    from: STEPS[IMPLEMENT_STEP_INDEX].key,
+    note: 'try the other fixture',
+  })
   const body = await res.json()
-  expect(body.restart).toEqual({ stepIndex: IMPLEMENT_STEP_INDEX, attempt: 2 })
+  expect(body.restart).toEqual({ stepIndex: IMPLEMENT_STEP_INDEX, stepKey: STEPS[IMPLEMENT_STEP_INDEX].key, attempt: 2 })
 
   await expect(page.getByRole('button', { name: 'Pause work' })).toBeVisible({ timeout: 2_000 })
   await expect(card.locator('.step-card__meta')).toContainText('In progress… · just started', { timeout: 2_000 })
   await expect(card.locator('.step-card__meta')).toContainText('Sent: attempt 2 starting', { timeout: 2_000 })
   await expect(
-    page.locator('.activity-row__text').filter({ hasText: 'requested changes on' }).filter({ hasText: 'try the other fixture' }),
+    page.locator('.activity-row__text').filter({ hasText: `retried “${STEP_LABEL}”: try the other fixture` }),
   ).toHaveCount(1, { timeout: 2_000 })
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await expectNoReloadAndNoStream(page, navigations.count)

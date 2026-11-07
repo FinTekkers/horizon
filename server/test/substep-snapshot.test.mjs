@@ -42,7 +42,7 @@ const store = await import('../src/store.js')
 // init()ed, so nothing is dispatched.
 await import('../src/orchestrator.js')
 const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, stepsFor } = await import('../../domain/js/lifecycle.js')
-const { moveTargets, toPublicTarget } = await import('../src/moveItem.js')
+const { moveTargets, movesView } = await import('../src/moveItem.js')
 
 store.purgeDemoItems()
 const project = store.createProject('Acme Capital')
@@ -117,8 +117,10 @@ test('the UI fixture is this served item', () => {
     steps,
     stepsFor('change').map((step) => ({ index: step.index, key: step.key, label: step.label, kind: step.kind })),
   )
-  assert.deepEqual(moves, { targets: moveTargets(store.getItem('AC-1')).map(toPublicTarget) })
+  assert.deepEqual(moves, movesView(store.getItem('AC-1'), moveTargets(store.getItem('AC-1'))))
   assert.equal(moves.targets[0].stepKey, 'change.implement#impl-audit')
+  // HZ-711: the sub-step item at implement offers that sub-step's retry.
+  assert.equal(moves.actions['change.implement#impl-audit'], 'retry')
   if (process.env.UPDATE_SUBSTEP_FIXTURE === '1') writeFileSync(FIXTURE, `${JSON.stringify(served, null, 2)}\n`)
   assert.deepEqual(JSON.parse(readFileSync(FIXTURE, 'utf8')), served)
 })

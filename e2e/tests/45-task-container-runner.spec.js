@@ -101,7 +101,7 @@ test.afterAll(() => {
 })
 
 const stepCard = (page, label) =>
-  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}$`) }) })
+  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}(\\s*(Return here|Retry|Approve))?$`) }) })
 
 test('Approve the run names the effective runner, and a reload keeps it', async ({ page }) => {
   const runPlanLine = () => stepCard(page, 'Approve the run').locator('.step-card__run-plan')

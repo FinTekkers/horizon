@@ -1,76 +1,106 @@
-// Tests for mockApi, covering two independent concerns that landed together:
+// Tests for mockApi, covering independent concerns that landed together:
 //
-//   HZ-51 — parity between mockApi's requestChanges and the server's
-//   store.js requestChanges: explicit-target routing, the Accept-gate
-//   exception, and server-side-style validation must not diverge, or mock
-//   mode stops being a faithful stand-in for the real backend.
+//   HZ-711 — parity between mockApi's moveItem and the server's one move: a
+//   Return to or Retry goes only to a target the item's `moves` offer (as the
+//   server sent them, written out in the mock's seed), anything else is the
+//   server's 409 bad_target_key, and the answer's restart is numbered and
+//   named by step key the way the server does — or mock mode stops being a
+//   faithful stand-in for the real backend. The default target and the rework
+//   rules are the server's alone, so nothing here tests them.
 //
 //   HZ-62 — mock mode's approveGate must report the same { ok, closed }
 //   shape the server does, so App.jsx's post-approval navigation behaves
 //   identically whether VITE_MOCK is on or off.
 //
 //   HZ-135 — createItem's priority default must be domain/priorities.json's,
-//   the same one POST /api/items answers with. Same parity concern as HZ-51's,
-//   on the one field this item moved.
+//   the same one POST /api/items answers with. Same parity concern as
+//   HZ-711's, on the one field this item moved.
 //
 // Each test claims one seeded fixture item and never revisits it, since
 // `items` is module-level state shared across tests in this file.
 
 import { expect, test, vi, afterEach } from 'vitest'
 import * as mockApi from './mockApi'
-import { requestChanges, getItems } from './mockApi'
-import { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, endIndex } from '../../../domain/js/lifecycle.js'
+import { moveItem, getRestartSent, getItems } from './mockApi'
+import { STEPS, endIndex, stepIndexOf } from '../../../domain/js/lifecycle.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 
 const findItem = (id) => getItems().find((it) => it.id === id)
 
-const PRE_EXECUTION_GATE_INDEX = STEPS.findIndex((s) => s.label === 'Review before execution')
+// The server's refusal of a target the item's moves do not offer.
+async function expectRefused(call) {
+  const err = await call.catch((e) => e)
+  expect(err).toBeInstanceOf(Error)
+  expect(err.message).toBe('invalid_target')
+  expect(err.status).toBe(400)
+}
 
-test('no target: rejecting the Accept-the-code gate sends the item to implement, not the nearest agent step (Review)', () => {
-  const before = findItem('BF-097')
-  expect(before.cursor).toBe(ACCEPT_GATE_INDEX)
-  requestChanges('BF-097', 'Accept the code', 'this has a bug')
-  expect(findItem('BF-097').cursor).toBe(IMPLEMENT_STEP_INDEX)
-})
-
-test('no target: rejecting any other gate still walks back to the nearest agent step', () => {
-  const before = findItem('BF-128')
-  const gateIdx = before.cursor
-  expect(STEPS[gateIdx].kind).toBe('gate')
-  requestChanges('BF-128', 'target label', 'needs another pass')
-  const after = findItem('BF-128')
-  expect(after.cursor).toBeLessThan(gateIdx)
-  expect(STEPS[after.cursor].kind).toBe('agent')
-})
-
-test('explicit target: a send-back can name a specific earlier agent step directly', () => {
+test('Return to: an offered earlier step moves the item there and answers its restart by key, attempt 2', async () => {
+  vi.useFakeTimers()
   const before = findItem('BF-140')
-  expect(before.cursor).toBe(PRE_EXECUTION_GATE_INDEX)
-  const draftPlanIdx = STEPS.findIndex((s) => s.label === 'Draft implementation plan')
-  requestChanges('BF-140', 'Review before execution', 'the plan skips a step', draftPlanIdx)
-  expect(findItem('BF-140').cursor).toBe(draftPlanIdx)
+  expect(STEPS[before.cursor].key).toBe('change.review-before-exec')
+  expect(before.moves.targets.map((t) => t.stepKey)).toContain('change.draft-plan')
+
+  const result = await moveItem('BF-140', { stepKey: 'change.draft-plan', note: 'the plan skips a step' })
+
+  const after = findItem('BF-140')
+  expect(after.cursor).toBe(stepIndexOf('change.draft-plan'))
+  expect(result).toEqual({ ok: true, item: after, restart: { stepKey: 'change.draft-plan', attempt: 2 } })
+  expect(getRestartSent('BF-140')).toEqual({ stepKey: 'change.draft-plan', attempt: 2 })
+  // The item moved, so the seed's moves no longer hold: the mock offers none,
+  // and a second move is the server's refusal.
+  expect(after.moves).toBeNull()
+  await expectRefused(moveItem('BF-140', { stepKey: 'change.draft-plan' }))
+  expect(findItem('BF-140').cursor).toBe(stepIndexOf('change.draft-plan'))
+  vi.clearAllTimers()
 })
 
-test('invalid target: pointing at a gate instead of an agent step is a no-op', async () => {
-  const before = findItem('BF-131')
-  const gateIdx = before.cursor
-  const targetGateIdx = STEPS.findIndex((s, i) => i < gateIdx && s.kind === 'gate')
-  await expect(requestChanges('BF-131', 'x', 'y', targetGateIdx)).rejects.toThrow('invalid_target')
-  expect(findItem('BF-131').cursor).toBe(gateIdx) // unchanged
-})
-
-test('invalid target: at or after the current gate is a no-op (no forward moves, no same-gate loops)', async () => {
-  const before = findItem('BF-090')
-  const gateIdx = before.cursor
-  await expect(requestChanges('BF-090', 'x', 'y', gateIdx)).rejects.toThrow('invalid_target')
-  expect(findItem('BF-090').cursor).toBe(gateIdx)
-})
-
-test('invalid target: supplied while the item is mid agent-step (not parked at a gate) is a no-op', async () => {
+test('Retry: the offered current agent step restarts in place with attempt 2, and a target not offered is refused first', async () => {
+  vi.useFakeTimers()
   const before = findItem('BF-119')
+  expect(STEPS[before.cursor].key).toBe('change.arch-review')
   expect(STEPS[before.cursor].kind).toBe('agent')
-  await expect(requestChanges('BF-119', 'x', 'y', 0)).rejects.toThrow('invalid_target')
+
+  // Not in BF-119's moves: refused, nothing changes.
+  await expectRefused(moveItem('BF-119', { stepKey: 'change.define-outcome' }))
   expect(findItem('BF-119').cursor).toBe(before.cursor)
+  expect(getRestartSent('BF-119')).toBeNull()
+
+  const result = await moveItem('BF-119', { stepKey: 'change.arch-review' })
+  expect(findItem('BF-119').cursor).toBe(before.cursor)
+  expect(result.restart).toEqual({ stepKey: 'change.arch-review', attempt: 2 })
+  expect(getRestartSent('BF-119')).toEqual({ stepKey: 'change.arch-review', attempt: 2 })
+  vi.clearAllTimers()
+})
+
+test('an earlier step the moves do not offer is refused with 400 invalid_target and leaves the item where it was', async () => {
+  const before = findItem('BF-097')
+  expect(STEPS[before.cursor].key).toBe('change.accept-code')
+  expect(before.moves.targets.map((t) => t.stepKey)).not.toContain('change.draft-plan')
+
+  await expectRefused(moveItem('BF-097', { stepKey: 'change.draft-plan' }))
+  // Nor is a retry of the gate itself.
+  await expectRefused(moveItem('BF-097', { stepKey: 'change.accept-code' }))
+  expect(findItem('BF-097').cursor).toBe(before.cursor)
+  expect(findItem('BF-097').moves).toEqual(before.moves)
+})
+
+test('a step at or after the current gate is refused (no forward moves, no same-gate loops)', async () => {
+  const before = findItem('BF-128')
+  expect(STEPS[before.cursor].key).toBe('change.approve-prioritize')
+
+  await expectRefused(moveItem('BF-128', { stepKey: 'change.approve-prioritize' }))
+  await expectRefused(moveItem('BF-128', { stepKey: 'change.plan-options' }))
+  expect(findItem('BF-128').cursor).toBe(before.cursor)
+})
+
+test('an item whose seed carries no moves offers none, so every move is refused', async () => {
+  const before = findItem('BF-102')
+  expect(before.moves).toBeNull()
+
+  await expectRefused(moveItem('BF-102', { stepKey: STEPS[before.cursor].key }))
+  await expectRefused(moveItem('BF-102', { stepKey: 'change.implement' }))
+  expect(findItem('BF-102').cursor).toBe(before.cursor)
 })
 
 afterEach(() => {

@@ -48,7 +48,7 @@ test.afterAll(() => {
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const stepCard = (page, label) =>
-  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${escape(label)}$`) }) })
+  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${escape(label)}(\\s*(Return here|Retry|Approve))?$`) }) })
 
 async function expectTrivialLane(page) {
   await expect(page.locator('.tracker__meta').getByText('trivial', { exact: true })).toBeVisible({ timeout: 15_000 })

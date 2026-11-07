@@ -30,14 +30,13 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   getPlanProgress: () => [],
   approveGate: vi.fn(),
-  requestChanges: vi.fn(),
+  moveItem: vi.fn(),
   getRestartSent: () => null,
   resolveConflicts: vi.fn(),
   forwardToAccept: vi.fn(),
   setPaused: vi.fn(),
   releaseRuleBlock: vi.fn(),
   releaseUsageWait: vi.fn(),
-  restartPhase: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   logout: vi.fn(),
@@ -50,6 +49,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 function acceptItem(id, extra = {}) {
   return {
@@ -70,6 +70,23 @@ function acceptItem(id, extra = {}) {
     activeRun: null,
     conflictRun: null,
     gateAction: null,
+    // HZ-711: the server's moves at Accept the code — the page offers only these.
+    moves: servedMoves({
+      approve: { key: 'change.accept-code', label: 'Accept the code' },
+      targets: [
+        {
+          key: 'change.implement',
+          label: 'Specialist agent implements',
+          action: 'return',
+          isDefault: true,
+          redo: 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.',
+          reapprovals: [],
+          stopsRunning: false,
+        },
+      ],
+      canAbandon: true,
+      amend: null,
+    }),
     ...extra,
   }
 }
@@ -106,8 +123,16 @@ async function openItem(item) {
   return view
 }
 
-const button = (name) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === name) || null
-const GATE_BUTTONS = ['Approve', 'Approve with comments', 'Send back with feedback']
+const buttons = (name) => [...document.querySelectorAll('button')].filter((b) => b.textContent.trim() === name)
+const button = (name) => buttons(name)[0] || null
+// HZ-711: the gate card's buttons; Approve is also the header menu's.
+const GATE_BUTTONS = ['Approve', 'Approve with comments', 'Return to…']
+const expectGateButtons = (disabled) => {
+  for (const name of GATE_BUTTONS) {
+    expect(buttons(name).length, name).toBeGreaterThan(0)
+    for (const b of buttons(name)) expect(b.disabled, name).toBe(disabled)
+  }
+}
 const status = () => document.querySelector('.gate-action-status')
 
 afterEach(() => {
@@ -124,18 +149,18 @@ test('a running pre-merge check shows its label and elapsed time and disables ev
   await openItem(acceptItem('GA-1', { gateAction: running(), pr_mergeable: false, reviewRejected: true }))
 
   expect(status().textContent).toMatch(/^Merging: running checks on main \+ PR #7 · 3m 1\ds/)
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(true)
+  expectGateButtons(true)
   expect(button('Resolve conflicts…').disabled).toBe(true)
   expect(button('Accept despite review findings').disabled).toBe(true)
 })
 
 test('a push alone — an approval from WhatsApp or another tab — disables the buttons, with no click here', async () => {
   await openItem(acceptItem('GA-2'))
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
+  expectGateButtons(false)
   expect(status()).toBeNull()
 
   pushItems([acceptItem('GA-2', { gateAction: running() })])
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(true)
+  expectGateButtons(true)
   expect(status().textContent).toMatch(/Merging: running checks on main \+ PR #7/)
   expect(api.approveGate).not.toHaveBeenCalled()
 })
@@ -148,12 +173,18 @@ test('a blocked result names the failing check and re-enables the buttons', asyn
     }),
   ])
   expect(status().textContent).toMatch(/Blocked: pre-merge check npm test --silent failed/)
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
+  expectGateButtons(false)
 })
 
 test('a merged result shows the merge and leaves no gate buttons once the gate advances', async () => {
   await openItem(acceptItem('GA-4', { gateAction: running() }))
-  pushItems([acceptItem('GA-4', { cursor: ACCEPT_INDEX + 1, gateAction: finished({ state: 'merged' }) })])
+  pushItems([
+    acceptItem('GA-4', {
+      cursor: ACCEPT_INDEX + 1,
+      gateAction: finished({ state: 'merged' }),
+      moves: servedMoves({ approve: null, targets: [], canAbandon: true, amend: null }),
+    }),
+  ])
   expect(status().textContent).toBe('Merged PR #7')
   expect(button('Approve')).toBeNull()
 })
@@ -161,14 +192,14 @@ test('a merged result shows the merge and leaves no gate buttons once the gate a
 test('a merge whose gate advance was refused does not leave the gate disabled', async () => {
   await openItem(acceptItem('GA-4b', { gateAction: running() }))
   pushItems([acceptItem('GA-4b', { gateAction: finished({ state: 'merged' }) })])
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
+  expectGateButtons(false)
 })
 
 test('a run whose lease ran out re-enables the gate and says so', async () => {
   await openItem(acceptItem('GA-5', { gateAction: running() }))
   pushItems([acceptItem('GA-5', { gateAction: finished({ state: 'interrupted', reason: 'Horizon restarted while this ran' }) })])
   expect(status().textContent).toMatch(/Checks did not finish/)
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
+  expectGateButtons(false)
 })
 
 test('the Approve click disables the buttons until the request settles, and a 502 with no push re-enables them', async () => {
@@ -183,14 +214,14 @@ test('the Approve click disables the buttons until the request settles, and a 50
   expect(api.approveGate).toHaveBeenCalledTimes(1)
 
   await act(async () => answer({ error: 'pre-merge checks failed: npm test', premerge: true }))
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
+  expectGateButtons(false)
 })
 
 test('an item from an older payload with no gateAction key renders enabled buttons', async () => {
   const item = acceptItem('GA-7')
   delete item.gateAction
   await openItem(item)
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(false)
+  expectGateButtons(false)
   expect(status()).toBeNull()
 })
 
@@ -245,7 +276,7 @@ test('Tracker: a double click on Retry and confirm starts one run; the gate stay
   fireEvent.click(submit)
   fireEvent.click(submit)
   await waitFor(() => expect(retryButton().disabled).toBe(true))
-  for (const name of GATE_BUTTONS) expect(button(name).disabled, name).toBe(true)
+  expectGateButtons(true)
   fireEvent.click(retryButton())
   fireEvent.click(button('Approve'))
   expect(document.querySelector('.composer__submit')).toBeNull()

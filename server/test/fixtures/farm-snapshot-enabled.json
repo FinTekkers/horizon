@@ -259,7 +259,16 @@
             "reapprovals": [],
             "stopsRunning": false
           }
-        ]
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
       },
       "acceptWaiting": "<pinned>"
     },
@@ -471,7 +480,22 @@
             "reapprovals": [],
             "stopsRunning": false
           }
-        ]
+        ],
+        "actions": {
+          "change.plan-options": "approve",
+          "change.define-outcome": "return",
+          "change.define-success": "return",
+          "change.set-guardrails": "return"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>",
+          "change.define-success": "<step-label:1>",
+          "change.set-guardrails": "<step-label:2>",
+          "change.approve-prioritize": "<step-label:3>"
+        },
+        "approveKey": "change.approve-prioritize",
+        "canAbandon": true,
+        "amendKey": null
       },
       "acceptWaiting": "<pinned>"
     },
@@ -626,7 +650,16 @@
             "reapprovals": [],
             "stopsRunning": false
           }
-        ]
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
       },
       "acceptWaiting": "<pinned>"
     },
@@ -798,7 +831,16 @@
             "reapprovals": [],
             "stopsRunning": false
           }
-        ]
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
       },
       "acceptWaiting": "<pinned>"
     },
@@ -953,7 +995,16 @@
             "reapprovals": [],
             "stopsRunning": false
           }
-        ]
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
       },
       "acceptWaiting": "<pinned>"
     },
@@ -1125,7 +1176,16 @@
             "reapprovals": [],
             "stopsRunning": false
           }
-        ]
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
       },
       "acceptWaiting": "<pinned>"
     },
@@ -1297,7 +1357,16 @@
             "reapprovals": [],
             "stopsRunning": false
           }
-        ]
+        ],
+        "actions": {
+          "change.define-outcome": "retry"
+        },
+        "labels": {
+          "change.define-outcome": "<step-label:0>"
+        },
+        "approveKey": null,
+        "canAbandon": true,
+        "amendKey": null
       },
       "acceptWaiting": "<pinned>"
     }
