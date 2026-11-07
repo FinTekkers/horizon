@@ -42,6 +42,7 @@ const store = await import('../src/store.js')
 // init()ed, so nothing is dispatched.
 await import('../src/orchestrator.js')
 const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, stepsFor } = await import('../../domain/js/lifecycle.js')
+const { moveTargets, toPublicTarget } = await import('../src/moveItem.js')
 
 store.purgeDemoItems()
 const project = store.createProject('Acme Capital')
@@ -110,11 +111,14 @@ test('the UI fixture is this served item', () => {
   // HZ-709: the served `steps` list is the item kind's step table with keys.
   // It is checked here against domain/ and left out of the UI fixture, so the
   // fixture never holds a copy of the table (domain-one-declaration.test.mjs).
-  const { steps, ...served } = stable(store.itemViewById('AC-1'))
+  // HZ-799: so do `moves`, whose lines name steps by label — moveItem.js's.
+  const { steps, moves, ...served } = stable(store.itemViewById('AC-1'))
   assert.deepEqual(
     steps,
     stepsFor('change').map((step) => ({ index: step.index, key: step.key, label: step.label, kind: step.kind })),
   )
+  assert.deepEqual(moves, { targets: moveTargets(store.getItem('AC-1')).map(toPublicTarget) })
+  assert.equal(moves.targets[0].stepKey, 'change.implement#impl-audit')
   if (process.env.UPDATE_SUBSTEP_FIXTURE === '1') writeFileSync(FIXTURE, `${JSON.stringify(served, null, 2)}\n`)
   assert.deepEqual(JSON.parse(readFileSync(FIXTURE, 'utf8')), served)
 })

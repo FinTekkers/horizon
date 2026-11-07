@@ -59,8 +59,8 @@ import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
-import { FIRST_GATE_INDEXES, approveGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
-import { moveItem, planMove } from './moveItem.js'
+import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
+import { moveItem, moveTargets, planMove, toPublicTarget } from './moveItem.js'
 
 const listeners = new Set()
 
@@ -2381,7 +2381,27 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...substepFields(row, overlay),
     // HZ-541: only on an item whose first gate approves golden cases.
     ...goldenCasesFields(row),
+    // HZ-799: every step POST /api/items/:id/move { stepKey } takes it to now.
+    moves: { targets: itemMoveTargets(row, activeRun).map(toPublicTarget) },
   }
+}
+
+// HZ-799: moveItem.js moveTargets for this row, with the state it does not
+// read itself — so a target listed here is one the move route carries out.
+// The approve leaves out what approveGate would refuse: no run plan at
+// Approve the run, golden cases not yet approved at the first gate (the move
+// route sends no golden-cases hash).
+function itemMoveTargets(row, activeRun = selectActiveRun.get(row.id) || null) {
+  const approvable =
+    !(row.cursor === APPROVE_RUN_GATE_INDEX && !currentRunPlan(row.id)) &&
+    !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesRequired(row) && !approvedGoldenCases(row.id))
+  return moveTargets(row, { running: activeRun != null, enabled: !disabledProject(row), approvable })
+}
+
+// The targets with the route's own fields (action, toIndex), for the route.
+export function moveTargetsOf(id) {
+  const row = getItem(id)
+  return row ? itemMoveTargets(row) : []
 }
 
 // HZ-185: the latest automated review rejected this item and sent it back to
