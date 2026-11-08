@@ -4,7 +4,7 @@
 // "Review the work & close", and before this fix their issues stayed open, so
 // the next sync saw an open issue on a closed item and restarted it at step 0.
 //
-// Driven end to end: the real approve route (stubbed GitHub fetch), then the
+// Driven end to end: the real approve move (stubbed GitHub fetch), then the
 // real /api/webhooks/github route with an HMAC-signed "issues" payload — the
 // same entry the live sync takes into store.upsertFromGithub.
 
@@ -23,7 +23,7 @@ delete process.env.FARM_URL
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, endIndex, firstStepIndex } = await import('../../domain/js/lifecycle.js')
+const { STEPS, endIndex, firstStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -75,7 +75,9 @@ function issuesWebhook(f, state) {
 
 const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor
 const eventTexts = (id) => db.prepare('SELECT text FROM event WHERE item_id = ? ORDER BY id').all(id).map((e) => e.text)
-const approveFinal = (f) => inject({ method: 'POST', url: `/api/items/${f.id}/gates/${endIndex(f.kind) - 1}/approve`, payload: {} })
+// HZ-712: an approve is a move from the final gate, by its key.
+const approveFinal = (f) =>
+  inject({ method: 'POST', url: `/api/items/${f.id}/move`, payload: { action: 'approve', from: stepKeyAt(endIndex(f.kind) - 1) } })
 
 test('every kind ends on a gate row, so its last step is the issue-closing gate', () => {
   for (const kind of KINDS) {

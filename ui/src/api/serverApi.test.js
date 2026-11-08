@@ -250,6 +250,32 @@ test('approving posts an approve move from <currentStepKey>, with no numeric ste
   expect(Object.values(body).some((value) => typeof value === 'number')).toBe(false)
 })
 
+// HZ-712: "Accept despite review findings" is an approve move from implement
+// to Accept the code — the retired /forward-to-accept is never called.
+test('forwardToAccept posts an approve move from implement to change.accept-code and returns the body', async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  seedItem({ id: 'FWD-1', cursor: 11, currentStepKey: 'change.implement', pr_url: null })
+  const fetchMock = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, forwarded: true }) }))
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(serverApi.forwardToAccept('FWD-1')).resolves.toMatchObject({ ok: true, forwarded: true })
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  const [url, init] = fetchMock.mock.calls[0]
+  expect(url.replace(serverApi.API_BASE, '')).toBe('/items/FWD-1/move')
+  expect(JSON.parse(init.body)).toEqual({ action: 'approve', from: 'change.implement', to: 'change.accept-code' })
+})
+
+test('forwardToAccept sends nothing for an item this tab has not seen', async () => {
+  const serverApi = await import('./serverApi')
+  serverApi.subscribe(() => {})
+  const fetchMock = vi.fn()
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(serverApi.forwardToAccept('NOPE-1')).resolves.toEqual({ ok: false, error: 'not_found' })
+  expect(fetchMock).not.toHaveBeenCalled()
+})
+
 // HZ-711: a Return to or Retry is one move, named by step keys only: `stepKey`
 // the target the tab picked from the item's moves (HZ-799), `from` the step
 // the tab shows the item at. No numeric step segment and no step index is sent.

@@ -2990,66 +2990,6 @@ export function setPriority(id, priority) {
   return { ok: true }
 }
 
-// HZ-710: a wrapper over moveItem — a return to the phase's first row, or a
-// retry when the item is on it — keeping this route's refusals and event.
-export function restartPhase(id, phase, reason, actor = 'You', { proof = null } = {}) {
-  const it = getItem(id)
-  if (!it) return { error: 'not_found' }
-  if (disabledProject(it)) return { error: 'project_not_active' }
-  // Abandonment must not be silently undone by a lever that predates it —
-  // reopening an abandoned item is a deliberate act this function doesn't own.
-  if (isAbandoned(it)) return { error: 'abandoned' }
-  // HZ-708: nor is a closed item reopened, or a phase skipped to — a forward
-  // restart would pass every gate in between unapproved. Each refusal comes
-  // before any cancel or write.
-  if (isClosed(it)) return { error: 'closed' }
-  // The phase restarts within the item's own kind: phase numbers repeat
-  // across kinds, so an unscoped lookup would land a task on change rows.
-  const kind = itemKindOf(it)
-  // HZ-435: the phase's first row the item's lane does not skip.
-  const skips = laneSkips(it)
-  const found = stepsFor(kind).find((st) => st.phase === phase && !skips.has(st.index))
-  if (!found) return { error: 'bad_phase' }
-  if (phase > STEPS[it.cursor].phase) return { error: 'phase_ahead' }
-  const firstIdx = found.index
-  const move = firstIdx === it.cursor ? { action: 'retry' } : { action: 'return', toKey: found.key }
-  // HZ-708: merged code is never rewound — no phase that starts before Accept the code.
-  const planned = planMove(it, move)
-  if (planned.error) return { error: planned.error === 'merged' ? 'merged_target' : planned.error }
-  // HZ-802: a retry that could not dispatch says why instead of logging a
-  // restart that starts nothing. The retry itself releases the pause, and a
-  // rule block with the human proof, so neither refuses it. Before any write.
-  if (move.action === 'retry') {
-    const hold = dispatchHold({ ...it, paused: false, rule_block_json: isHumanProof(proof) ? null : it.rule_block_json })
-    if (hold) return { error: hold.kind, message: hold.message, ...(hold.itemId ? { itemId: hold.itemId } : {}) }
-  }
-
-  agentRunner.cancel(id, 'superseded')
-  const moved = db.transaction(() => {
-    const result = moveItem(id, { ...move, who: actor, note: reason || '', proof })
-    if (result.error) return result
-    if (reason) {
-      // The restart reason is feedback: the first re-run agent must address it.
-      db.prepare('INSERT INTO feedback (item_id, target, message) VALUES (?, ?, ?)').run(
-        id,
-        STEPS[firstIdx].agent || '',
-        reason,
-      )
-    }
-    return result
-  })()
-  if (moved.error) return moved
-  addEvent(id, {
-    who: actor,
-    text: `restarted the ${phasesFor(kind)[phase]} phase${reason ? ': ' + reason : ''}`,
-    color: '#DFA200',
-    initials: 'YOU',
-  })
-  notify()
-  agentRunner.kick(id)
-  return { ok: true }
-}
-
 // Soft delete (HZ-59): a human stops a work item that should not proceed.
 // Dropping work is at least as consequential as approving it, so the route
 // gates this behind the same human gate PIN as gate approval — see app.js.

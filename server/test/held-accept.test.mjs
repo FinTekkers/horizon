@@ -36,7 +36,7 @@ const premerge = await import('../src/premerge.js')
 const deployDrain = await import('../src/deployDrain.js')
 const heldAccept = await import('../src/heldAccept.js')
 const accept = await import('../src/caretakerAccept.js')
-const { ACCEPT_GATE_INDEX, STEPS } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, STEPS, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
@@ -86,7 +86,12 @@ function acceptItem({ autopilot = true } = {}) {
   return id
 }
 const approve = (id, stepIndex = ACCEPT_GATE_INDEX) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload: {}, headers: { cookie, 'x-human-key': pin } })
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(stepIndex) },
+    headers: { cookie, 'x-human-key': pin },
+  })
 const heldRow = (id) => db.prepare('SELECT * FROM held_accept WHERE item_id = ?').get(id)
 const gateRows = (id) => db.prepare('SELECT COUNT(*) AS n FROM gate_action WHERE item_id = ?').get(id).n
 const cursorOf = (id) => store.getItem(id).cursor

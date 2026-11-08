@@ -7,7 +7,7 @@
 // { subscribe, getItems } + the action functions, so nothing else changes.
 //
 //   GET  /items                                → getItems()
-//   POST /items/:id/move (approve)             → approveGate(id)
+//   POST /items/:id/move (approve)             → approveGate(id), forwardToAccept(id)
 //   POST /items/:id/move (return, retry)       → moveItem(id, { stepKey, note })
 //   POST /items/:id/pause                      → setPaused(id, paused), releaseRuleBlock(id)
 //   POST /items/:id/usage-wait/release         → releaseUsageWait(id)

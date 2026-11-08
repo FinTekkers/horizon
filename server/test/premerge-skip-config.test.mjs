@@ -16,7 +16,7 @@ process.env.PREMERGE_SKIP_MAX_AGE_HOURS = '2'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -69,7 +69,12 @@ function acceptItemWithPass(ageMs) {
 }
 
 const approve = (id) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`, payload: {}, headers: { cookie, 'x-human-key': pin } })
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) },
+    headers: { cookie, 'x-human-key': pin },
+  })
 
 test('PREMERGE_SKIP_MAX_AGE_HOURS=2 sets a 2h limit', () => {
   assert.equal(config.PREMERGE_SKIP_MAX_AGE_MS, 2 * HOUR)

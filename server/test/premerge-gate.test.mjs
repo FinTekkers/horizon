@@ -25,7 +25,8 @@ process.env.PREMERGE_CHECK_TIMEOUT_MS = '90000'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { ACCEPT_GATE_INDEX, STEPS } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, STEPS, stepKeyAt } = await import('../../domain/js/lifecycle.js')
+const { MERGED_HINT } = await import('../src/moveItem.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -122,8 +123,8 @@ beforeEach(() => {
 const approve = (id) =>
   app.inject({
     method: 'POST',
-    url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`,
-    payload: {},
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) },
     headers: { cookie, 'x-human-key': pin },
   })
 const approveViaWhatsapp = (id) =>
@@ -496,10 +497,12 @@ test('HZ-216: a merge is shown on the done Accept step, but not when the item la
   assert.equal((await gateActionOf(id)).state, 'merged')
 
   // HZ-708: merged code is never rewound, so the item only comes back to the
-  // gate once its merge is undone (a reopen clears merged_at).
-  assert.deepEqual(store.restartPhase(id, STEPS[ACCEPT_GATE_INDEX].phase, 'rebuild it', 'You'), { error: 'merged_target' })
+  // gate once its merge is undone (a reopen clears merged_at). HZ-712: the
+  // phase restart is gone; a return to the phase's first step is the same move.
+  const rebuild = () => store.moveByHuman(id, { action: 'return', toKey: stepKeyAt(IMPLEMENT_STEP_INDEX), note: 'rebuild it', who: 'You' })
+  assert.deepEqual(rebuild(), { error: 'merged', hint: MERGED_HINT })
   db.prepare('UPDATE work_item SET merged_at = NULL WHERE id = ?').run(id)
-  assert.deepEqual(store.restartPhase(id, STEPS[ACCEPT_GATE_INDEX].phase, 'rebuild it', 'You'), { ok: true })
+  assert.equal(rebuild().ok, true)
   assert.equal(await gateActionOf(id), null, 'not on the upcoming gate while it is rebuilt')
   db.prepare("INSERT INTO step_run (item_id, step_index, agent, status) VALUES (?, ?, 'Eng', 'done')").run(id, ACCEPT_GATE_INDEX - 1)
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(ACCEPT_GATE_INDEX, id)

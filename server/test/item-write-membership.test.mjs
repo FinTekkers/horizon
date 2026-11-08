@@ -33,6 +33,7 @@ const config = await import('../src/config.js')
 const { PERSONAS } = await import('../src/personas.js')
 const { ensureUnlinkedProject } = await import('../src/membership.js')
 const { requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
+const { RETIRED_MOVE_ROUTES } = await import('../src/retiredRoutes.js')
 
 store.purgeDemoItems()
 
@@ -150,10 +151,7 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/screenshots/approve': { payload: { commit: 'abc123', all: true } },
   'POST /api/items/:id/job/stop': {},
   'POST /api/items/:id/job/resume': {},
-  'POST /api/items/:id/gates/:step/approve': { payload: {} },
-  'POST /api/items/:id/reject': { payload: { feedback: 'no' } },
   'POST /api/items/:id/resolve-conflicts': {},
-  'POST /api/items/:id/forward-to-accept': {},
   'POST /api/items/:id/move': { payload: { action: 'retry', from: 'change.implement' } },
   'POST /api/items/:id/feedback': { payload: { message: 'hello' } },
   'POST /api/items/:id/pause': { payload: { paused: true } },
@@ -162,11 +160,13 @@ const MEMBER_ITEM_ROUTES = {
   'PUT /api/items/:id/steps/:stepIndex/provider': { payload: { provider: 'default' } },
   'POST /api/items/:id/priority': { payload: { priority: 'High' } },
   'POST /api/items/:id/autopilot-off': { payload: { off: true } },
-  'POST /api/items/:id/phases/:phase/restart': { payload: {} },
   'POST /api/items/:id/abandon': { payload: { reason: 'drop it' } },
   'POST /api/items/:id/asks/:askId/file': { payload: {} },
   'POST /api/items/:id/asks/:askId/dismiss': { payload: { reason: 'covered elsewhere' } },
   'POST /api/items/:id/asks/:askId/release': { payload: { reason: 'covered elsewhere' } },
+  // HZ-712: the retired move routes are 410 stubs, still member:item, so a
+  // non-member gets the guard's 404 before the stub answers.
+  ...Object.fromEntries(RETIRED_MOVE_ROUTES.map(({ method, url }) => [`${method} ${url}`, { payload: {} }])),
 }
 const fillUrl = (url, id) =>
   url
@@ -176,8 +176,16 @@ const fillUrl = (url, id) =>
     .replace(':phase', '1')
     .replace(':askId', '1')
 
+// An approve at the gate the item is at, through POST /move (HZ-712).
+const approve = (id, who, headers) => post(`/api/items/${id}/move`, who, { action: 'approve', from: stepKeyAt(PRIORITIZE_GATE) }, headers)
+
 test('overlap spy is live: a member sending their own item back to step 9 runs the overlap check', async () => {
-  const res = await post(`/api/items/${ALPHA_REVIEW}/reject`, m, { feedback: 'redo the summary', targetStepIndex: SUMMARIZE })
+  const res = await post(`/api/items/${ALPHA_REVIEW}/move`, m, {
+    action: 'return',
+    from: stepKeyAt(REVIEW_GATE),
+    to: stepKeyAt(SUMMARIZE),
+    note: 'redo the summary',
+  })
   assert.equal(res.statusCode, 200, res.body)
   await until(() => overlapCalls >= 1, 'the overlap check ran')
   await until(
@@ -208,18 +216,17 @@ test('metric 1: a non-member gets exactly 404 on every member:item route; nothin
 })
 
 test('guardrail: membership never replaces the PIN — no PIN, or the owner’s PIN, is 401 on the member’s own item', async () => {
-  const url = `/api/items/${ALPHA_GATE}/gates/${PRIORITIZE_GATE}/approve`
-  const noPin = await post(url, m, {}, { cookie: m.cookie })
+  const noPin = await approve(ALPHA_GATE, m, { cookie: m.cookie })
   assert.equal(noPin.statusCode, 401)
   assert.deepEqual(noPin.json(), { error: 'human_gate_key_required' })
-  const ownersPin = await post(url, m, {}, as(m, owner.pin))
+  const ownersPin = await approve(ALPHA_GATE, m, as(m, owner.pin))
   assert.equal(ownersPin.statusCode, 401)
   assert.deepEqual(ownersPin.json(), { error: 'human_gate_key_required' })
   assert.deepEqual(decisions(ALPHA_GATE), [])
 })
 
 test('metric 2: a member with their own PIN approves a gate on an item in their project', async () => {
-  const res = await post(`/api/items/${ALPHA_GATE}/gates/${PRIORITIZE_GATE}/approve`, m, {})
+  const res = await approve(ALPHA_GATE, m)
   assert.equal(res.statusCode, 200, res.body)
   const rows = decisions(ALPHA_GATE)
   assert.equal(rows.length, 1)
@@ -228,13 +235,13 @@ test('metric 2: a member with their own PIN approves a gate on an item in their 
 })
 
 test('metric 3: a member’s valid PIN on another project’s approvable gate is 404 with no gate_decision row', async () => {
-  const res = await post(`/api/items/${BETA_GATE}/gates/${PRIORITIZE_GATE}/approve`, m, {})
+  const res = await approve(BETA_GATE, m)
   assert.equal(res.statusCode, 404)
   assert.deepEqual(res.json(), NOT_FOUND)
   assert.deepEqual(decisions(BETA_GATE), [])
 
   // The gate was approvable: the owner's own PIN approves that exact gate.
-  const control = await post(`/api/items/${BETA_GATE}/gates/${PRIORITIZE_GATE}/approve`, owner, {})
+  const control = await approve(BETA_GATE, owner)
   assert.equal(control.statusCode, 200, control.body)
   assert.equal(decisions(BETA_GATE).length, 1)
 })

@@ -14,10 +14,13 @@
 // response schema with no server test hitting them beforehand:
 //
 //   GET  /api/stream                           POST /api/items/:id/pause
-//   GET  /api/sync/status                      POST /api/items/:id/reject
-//   POST /api/projects                         POST /api/items/:id/phases/:phase/restart
+//   GET  /api/sync/status                      POST /api/items/:id/(send-back)
+//   POST /api/projects                         POST /api/items/:id/(restart phase)
 //   POST /api/projects/:id/activate            POST /api/projects/:id/repos
 //   POST /api/projects/:id/repos/disconnect    POST /api/sync/token
+//
+// HZ-712 retired the send-back and restart-phase routes; their human-gate 401
+// is now checked on POST /api/items/:id/move, which replaced them.
 //
 // "Every existing server test must pass unchanged" proves nothing where no test
 // exists, so each distinct payload shape among them is asserted here against the
@@ -210,21 +213,12 @@ test('POST /api/items/:id/pause adds only `paused` and `item`, with the same eve
   assert.equal(invalid.statusCode, 400)
 })
 
-test('POST /api/items/:id/reject carries the 401 body when the PIN is missing', async () => {
+test('POST /api/items/:id/move carries the 401 body when the PIN is missing', async () => {
   // The human-gate 401 is a handler-sent plain object, unlike Fastify's own
   // validation 400 — both go through ERROR_OBJECT, so both are checked.
-  const res = await inject({ method: 'POST', url: '/api/items/T-178/reject', payload: { feedback: 'no' } })
+  const res = await inject({ method: 'POST', url: '/api/items/T-178/move', payload: { action: 'retry', from: 'change.draft-plan' } })
   assert.equal(res.statusCode, 401)
   assert.deepEqual(res.json(), { error: 'human_gate_key_required' })
-})
-
-test('POST /api/items/:id/phases/:phase/restart returns the store result unchanged', async () => {
-  const res = await gated({ method: 'POST', url: '/api/items/T-178/phases/0/restart', payload: { reason: 'retry' } })
-  assert.ok([200, 404, 409].includes(res.statusCode), `unexpected ${res.statusCode}: ${res.body}`)
-  const body = res.json()
-  assert.ok(Object.keys(body).length >= 1, `the restart body came back empty: ${res.body}`)
-  if (res.statusCode === 200) assert.equal(body.ok, true)
-  else assert.ok(body.error, 'a non-200 must still carry its error key')
 })
 
 test('Fastify’s own validation 400 keeps all four of its fields', async () => {

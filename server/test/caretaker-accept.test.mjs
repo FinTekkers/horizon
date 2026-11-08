@@ -44,6 +44,7 @@ const actor = await import('../src/caretakerActor.js')
 const accept = await import('../src/caretakerAccept.js')
 const { DEPLOY_BLOCK_MESSAGE } = await import('../src/deployDrain.js')
 const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
+const { stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 const OWNER = '15550001111@s.whatsapp.net'
 const silent = { info() {}, warn() {}, error() {} }
@@ -440,7 +441,13 @@ test('one code path: the UI routes and the caretaker call the same gateActions.a
   const pid = project('off')
   db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id) VALUES ('UI-13', 'fixture', 'High', 13, ?)").run(pid)
   atGate('UI-rs', pid, { mergeable: 1 })
-  const approve = await app.inject({ method: 'POST', url: '/api/items/UI-13/gates/13/approve', headers: sessionHeaders, payload: {} })
+  // HZ-712: the UI's approve is POST /move (the old approve route was retired).
+  const approve = await app.inject({
+    method: 'POST',
+    url: '/api/items/UI-13/move',
+    headers: sessionHeaders,
+    payload: { action: 'approve', from: stepKeyAt(13) },
+  })
   assert.equal(approve.statusCode, 200)
   const resolve = await app.inject({ method: 'POST', url: '/api/items/UI-rs/resolve-conflicts', headers: sessionHeaders })
   assert.equal(resolve.statusCode, 409, 'not conflicted')

@@ -1,7 +1,8 @@
 // HZ-185: a human with the gate PIN forwards an item the latest automated
 // review just rejected to Accept the code, with that failing verdict attached,
-// instead of another implement cycle. These drive the real Fastify route
-// against a fake farmd and a fake GitHub (both through globalThis.fetch), with
+// instead of another implement cycle. These drive the real Fastify route —
+// since HZ-712 an approve through POST /api/items/:id/move, from implement to
+// Accept the code — against a fake farmd and a fake GitHub (both through globalThis.fetch), with
 // the rejection itself produced by the real finalizeReviewStep via
 // completeFarmRun — so the state being forwarded is exactly what review leaves.
 //
@@ -21,7 +22,7 @@ delete process.env.GITHUB_WEBHOOK_SECRET
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, ACCEPT_GATE_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -121,9 +122,24 @@ async function rejectedWithRun(id, opts) {
 const activeImplementRun = (id) =>
   db.prepare("SELECT id FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'active'").get(id, IMPLEMENT_STEP_INDEX)?.id
 
-const forwardPost = (id, headers = { 'x-human-key': pin }) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/forward-to-accept`, payload: {}, headers: { cookie, ...headers } })
 const row = (id) => db.prepare('SELECT * FROM work_item WHERE id = ?').get(id)
+// The forward is an approve from where the item is (implement, when the review
+// failed) to Accept the code — `from` is the step the page showed.
+const move = (id, payload, headers = { 'x-human-key': pin }) =>
+  app.inject({ method: 'POST', url: `/api/items/${id}/move`, payload, headers: { cookie, ...headers } })
+const forwardPost = (id, headers) => {
+  const from = row(id) ? stepKeyAt(row(id).cursor) : stepKeyAt(IMPLEMENT_STEP_INDEX)
+  return move(id, { action: 'approve', from, to: stepKeyAt(ACCEPT_GATE_INDEX) }, headers)
+}
+// /move answers the forward's own { ok, forwarded } plus the item and its move row.
+function assertForwarded(res, id) {
+  assert.equal(res.statusCode, 200, res.body)
+  const body = res.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.forwarded, true)
+  assert.equal(body.item.id, id)
+  assert.deepEqual([body.move.action, body.move.fromKey, body.move.toKey], ['approve', stepKeyAt(IMPLEMENT_STEP_INDEX), stepKeyAt(ACCEPT_GATE_INDEX)])
+}
 const runStatus = (runId) => db.prepare('SELECT status FROM step_run WHERE id = ?').get(runId).status
 const events = (id) => db.prepare('SELECT who, text, color, initials FROM event WHERE item_id = ? ORDER BY id').all(id)
 const lastEvent = (id) => events(id).at(-1)
@@ -152,8 +168,7 @@ test('forwarding moves the item to Accept the code and cancels the implement run
 
   const res = await forwardPost('FW-1')
 
-  assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.json(), { ok: true, forwarded: true })
+  assertForwarded(res, 'FW-1')
   assert.equal(row('FW-1').cursor, ACCEPT_GATE_INDEX)
   assert.equal(runStatus(implementRunId), 'cancelled')
   assert.deepEqual(farmCancels, [{ run_id: implementRunId }])
@@ -232,7 +247,7 @@ test('a Bearer header does not stand in for the PIN (HZ-179 stand-in, R4)', asyn
   assert.equal(row('FW-BEARER').cursor, IMPLEMENT_STEP_INDEX)
 })
 
-test('an item whose latest review passed is 409 review_not_rejected and unchanged (metric 4)', async () => {
+test('an item whose latest review passed is refused and unchanged (metric 4)', async () => {
   insertItem.run('FW-PASSED', 'Passed review', 'Medium', REVIEW_STEP_INDEX, null, null, null, 0)
   const runId = db
     .prepare('INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, 1, ?)')
@@ -242,22 +257,31 @@ test('an item whose latest review passed is 409 review_not_rejected and unchange
   const before = row('FW-PASSED')
   assert.equal(before.cursor, ACCEPT_GATE_INDEX)
 
+  // At Accept the code already, an approve goes on past it, not to it.
   const res = await forwardPost('FW-PASSED')
   assert.equal(res.statusCode, 409)
-  assert.deepEqual(res.json(), { error: 'review_not_rejected' })
+  assert.deepEqual(res.json(), { error: 'bad_target_key' })
   assert.deepEqual(row('FW-PASSED'), before)
+
+  // On implement with no failing review to forward, there is no gate to approve.
+  insertItem.run('FW-NOFAIL', 'Implementing', 'Medium', IMPLEMENT_STEP_INDEX, null, null, null, 0)
+  const noFail = row('FW-NOFAIL')
+  const res2 = await forwardPost('FW-NOFAIL')
+  assert.equal(res2.statusCode, 409)
+  assert.deepEqual(res2.json(), { error: 'not_at_gate' })
+  assert.deepEqual(row('FW-NOFAIL'), noFail)
 })
 
-test('an item outside Execute is 409 not_in_execute and unchanged (metric 4)', async () => {
+test('an item outside Execute is refused and unchanged (metric 4)', async () => {
   insertItem.run('FW-PLAN', 'Still planning', 'Medium', 3, null, null, null, 0)
   const before = row('FW-PLAN')
   const res = await forwardPost('FW-PLAN')
   assert.equal(res.statusCode, 409)
-  assert.deepEqual(res.json(), { error: 'not_in_execute' })
+  assert.deepEqual(res.json(), { error: 'bad_target_key' })
   assert.deepEqual(row('FW-PLAN'), before)
 })
 
-test('an unknown item is 404 not_found, and a re-review in progress is 409 review_not_rejected (R2, O5)', async () => {
+test('an unknown item is 404 not_found, and a re-review in progress is 409 not_at_gate (R2, O5)', async () => {
   const missing = await forwardPost('FW-NOPE')
   assert.equal(missing.statusCode, 404)
   assert.deepEqual(missing.json(), { error: 'not_found' })
@@ -267,7 +291,7 @@ test('an unknown item is 404 not_found, and a re-review in progress is 409 revie
   const before = row('FW-REREVIEW')
   const res = await forwardPost('FW-REREVIEW')
   assert.equal(res.statusCode, 409)
-  assert.deepEqual(res.json(), { error: 'review_not_rejected' })
+  assert.deepEqual(res.json(), { error: 'not_at_gate' })
   assert.deepEqual(row('FW-REREVIEW'), before)
 })
 
@@ -278,12 +302,7 @@ test('forwarding never approves: no gate decision, no merge, and Accept still ne
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM gate_decision WHERE item_id = 'FW-NOAPPROVE'").get().n, 0)
   assert.ok(!githubCalls.some((c) => c.url.endsWith('/merge')), 'no merge call')
 
-  const approve = await app.inject({
-    method: 'POST',
-    url: `/api/items/FW-NOAPPROVE/gates/${ACCEPT_GATE_INDEX}/approve`,
-    payload: {},
-    headers: { cookie },
-  })
+  const approve = await move('FW-NOAPPROVE', { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) }, {})
   assert.equal(approve.statusCode, 401)
   assert.deepEqual(approve.json(), { error: 'human_gate_key_required' })
   assert.equal(row('FW-NOAPPROVE').cursor, ACCEPT_GATE_INDEX)
@@ -388,13 +407,13 @@ test('forwardedReview.by comes from the forwarded_by column, and a send-back cle
   db.prepare("UPDATE event SET who = 'Someone Else', text = 'rewritten' WHERE item_id = 'FW-COLS'").run()
   assert.equal((await listItem('FW-COLS')).forwardedReview.by, user.name)
 
-  const sendBack = await app.inject({
-    method: 'POST',
-    url: '/api/items/FW-COLS/reject',
-    payload: { target: 'Accept the code', feedback: 'fix the findings' },
-    headers: { cookie, 'x-human-key': pin },
+  const sendBack = await move('FW-COLS', {
+    action: 'return',
+    from: stepKeyAt(ACCEPT_GATE_INDEX),
+    to: stepKeyAt(IMPLEMENT_STEP_INDEX),
+    note: 'fix the findings',
   })
-  assert.equal(sendBack.statusCode, 200)
+  assert.equal(sendBack.statusCode, 200, sendBack.body)
   const r = row('FW-COLS')
   assert.equal(r.forwarded_review_run_id, null)
   assert.equal(r.forwarded_by, null)
@@ -424,6 +443,5 @@ test('a failed PR head read refuses without locking the item; the next request g
 
   prHeads[512] = REVIEWED_SHA
   const second = await forwardPost('FW-THROW')
-  assert.equal(second.statusCode, 200)
-  assert.deepEqual(second.json(), { ok: true, forwarded: true })
+  assertForwarded(second, 'FW-THROW')
 })

@@ -42,7 +42,7 @@ const caretaker = await import('../src/caretaker.js')
 const actor = await import('../src/caretakerActor.js')
 const rules = await import('../src/caretakerRules.js')
 const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
-const { STEPS } = await import('../../domain/js/lifecycle.js')
+const { STEPS, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 // HZ-708: where each gate's send-back lands by default — the step that
 // produced what the gate reviews.
 const SENT_BACK_TO = {
@@ -223,13 +223,15 @@ test('a human send-back resets the count: the next caretaker send-back at that g
   const id = 'M2-10'
   await sendBackTwice(id, pid, 10)
   assert.equal(sentFor(id).length, 1)
-  const res = await app.inject({
-    method: 'POST',
-    url: `/api/items/${id}/reject`,
-    headers: sessionHeaders,
-    payload: { target: 'Review before execution', feedback: 'the credentials are in now' },
-  })
-  assert.equal(res.statusCode, 200)
+  // HZ-712: the send-back route was retired, and a /move return writes no
+  // gate_decision row, so the human send-back is the still-live gate path,
+  // called as the route called it.
+  const result = app.gateActions.sendBack(
+    id,
+    { target: 'Review before execution', feedback: 'the credentials are in now' },
+    'Alice Example',
+  )
+  assert.equal(result.ok, true, JSON.stringify(result))
   await settle()
   assert.equal(cursorOf(id), SENT_BACK_TO[10])
 
@@ -247,7 +249,13 @@ test('a human approval resets the count (the rewind after the approval is simula
   const pid = project()
   const id = 'R3-10'
   await sendBackTwice(id, pid, 10)
-  const res = await app.inject({ method: 'POST', url: `/api/items/${id}/gates/10/approve`, headers: sessionHeaders, payload: {} })
+  // HZ-712: the approve route is POST /move now.
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    headers: sessionHeaders,
+    payload: { action: 'approve', from: stepKeyAt(10) },
+  })
   assert.equal(res.statusCode, 200)
   await settle()
   assert.equal(cursorOf(id), 11)

@@ -1,8 +1,12 @@
-// HZ-708: the existing move paths refuse what the UI only hid. A restart may
-// not skip ahead or reopen a closed item, and a merged item's code is never
-// rewound to before Accept the code. Every refusal changes nothing: no cancel,
+// HZ-708: the existing move paths refuse what the UI only hid. A return may
+// not reopen a closed item, and a merged item's code is never rewound to
+// before Accept the code. Every refusal changes nothing: no cancel,
 // no gate_decision, feedback or event row, the cursor and runs as they were.
 // Steps are named by label throughout.
+//
+// HZ-712: the restart route and store.restartPhase are gone; a phase restart
+// is now a return (store.moveByHuman) to the phase's first step. The forward
+// restart refusal (phase_ahead) went with them — a return only goes earlier.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,7 +18,8 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-move-guards-')
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
-const { STEPS, kindStepIndex, firstStepIndex, isClosed } = await import('../../domain/js/lifecycle.js')
+const { STEPS, kindStepIndex, firstStepIndex, isClosed, stepsFor, stepKeyAt } = await import('../../domain/js/lifecycle.js')
+const { MERGED_HINT } = await import('../src/moveItem.js')
 
 store.purgeDemoItems()
 
@@ -36,6 +41,9 @@ const PLAN_PHASE = STEPS[DRAFT_PLAN].phase
 const EXECUTE_PHASE = STEPS[IMPLEMENT].phase
 const DEPLOY_PHASE = STEPS[DEPLOY].phase
 const FIRST_PHASE = STEPS[firstStepIndex('change')].phase
+// The step key a phase restart returns to: the phase's first row.
+const phaseStart = (phase) => stepKeyAt(stepsFor('change').find((st) => st.phase === phase).index)
+const returnTo = (id, phase, note) => store.moveByHuman(id, { action: 'return', toKey: phaseStart(phase), note })
 
 function makeItem(id, cursor, extra = {}) {
   const cols = ['id', 'title', 'priority', 'cursor', ...Object.keys(extra)]
@@ -68,42 +76,36 @@ const snapshot = (id) => ({
   runs: db.prepare('SELECT id, step_index, status FROM step_run WHERE item_id = ? ORDER BY id').all(id),
 })
 
-// The call is refused with `error` and leaves every trace of the item as it was.
-function assertRefused(id, error, call) {
+// The call is refused with `error` (and `extra`, e.g. a hint) and leaves every
+// trace of the item as it was.
+function assertRefused(id, error, call, extra = {}) {
   const before = snapshot(id)
   runnerCalls.length = 0
-  assert.deepEqual(call(), { error })
+  assert.deepEqual(call(), { error, ...extra })
   assert.deepEqual(snapshot(id), before, `${error} changed the item`)
   assert.deepEqual(runnerCalls, [], `${error} reached the agent runner`)
 }
 
-// ---- metric 1: no forward restart, no restart of a closed item ----
+// ---- metric 1: no return into a closed item ----
 
-test('restarting a phase after the current one is refused and changes nothing, a running agent included', () => {
-  const id = makeItem('MG-AHEAD', DRAFT_PLAN)
-  runningAgent(id, DRAFT_PLAN)
-  assertRefused(id, 'phase_ahead', () => store.restartPhase(id, EXECUTE_PHASE, 'skip ahead'))
-  assert.equal(snapshot(id).runs[0].status, 'active')
-})
-
-test('restarting the current phase still works', () => {
+test('returning to the start of the current phase still works', () => {
   const id = makeItem('MG-CURRENT', PLAN_GATE)
-  assert.deepEqual(store.restartPhase(id, PLAN_PHASE, 'again'), { ok: true })
+  assert.equal(returnTo(id, PLAN_PHASE, 'again').ok, true)
   assert.equal(STEPS[store.getItem(id).cursor].phase, PLAN_PHASE)
 })
 
-test('restarting an earlier phase still works', () => {
+test('returning to the start of an earlier phase still works', () => {
   const id = makeItem('MG-EARLIER', PLAN_GATE)
-  assert.deepEqual(store.restartPhase(id, FIRST_PHASE, 'from the top'), { ok: true })
+  assert.equal(returnTo(id, FIRST_PHASE, 'from the top').ok, true)
   assert.equal(store.getItem(id).cursor, firstStepIndex('change'))
 })
 
-test('an item closed through the Review the work & close approval refuses a restart of any phase', () => {
+test('an item closed through the Review the work & close approval refuses a return to any phase', () => {
   const id = makeItem('MG-CLOSED', REVIEW_CLOSE)
   assert.equal(store.approveGate(id, REVIEW_CLOSE, '', 'You').ok, true)
   assert.ok(isClosed(store.getItem(id)), 'the approval did not close the item')
   for (const phase of [FIRST_PHASE, EXECUTE_PHASE, DEPLOY_PHASE]) {
-    assertRefused(id, 'closed', () => store.restartPhase(id, phase, 'reopen'))
+    assertRefused(id, 'closed', () => returnTo(id, phase, 'reopen'))
   }
 })
 
@@ -116,10 +118,10 @@ test('merged: an explicit send-back to Specialist agent implements is refused an
   assertRefused(id, 'merged_target', () => store.requestChanges(id, 'Review the work & close', 'redo', 'You', IMPLEMENT))
 })
 
-test('merged: restarting the Execute phase is refused and changes nothing', () => {
+test('merged: returning to the start of the Execute phase is refused and changes nothing', () => {
   const id = makeItem('MG-M-EXEC', REVIEW_CLOSE, MERGED)
   runningAgent(id, DEPLOY)
-  assertRefused(id, 'merged_target', () => store.restartPhase(id, EXECUTE_PHASE, 'rewind'))
+  assertRefused(id, 'merged', () => returnTo(id, EXECUTE_PHASE, 'rewind'), { hint: MERGED_HINT })
   assert.equal(snapshot(id).runs[0].status, 'active')
 })
 
@@ -140,9 +142,9 @@ test('merged: a default send-back from Review the work & close lands on Deploy t
   assert.equal(STEPS[store.getItem(id).cursor].label, 'Deploy the changes')
 })
 
-test('merged: restarting the Deploy phase still works', () => {
+test('merged: returning to the start of the Deploy phase still works', () => {
   const id = makeItem('MG-M-RDEPLOY', REVIEW_CLOSE, MERGED)
-  assert.deepEqual(store.restartPhase(id, DEPLOY_PHASE, 'redeploy'), { ok: true })
+  assert.equal(returnTo(id, DEPLOY_PHASE, 'redeploy').ok, true)
   assert.equal(STEPS[store.getItem(id).cursor].label, 'Deploy the changes')
 })
 

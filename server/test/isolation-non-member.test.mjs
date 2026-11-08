@@ -60,6 +60,7 @@ const github = await import('../src/github.js')
 const projectValidate = await import('../src/projectValidate.js')
 const { PERSONAS } = await import('../src/personas.js')
 const { STEPS } = await import('../../domain/js/lifecycle.js')
+const { RETIRED_MOVE_ROUTES } = await import('../src/retiredRoutes.js')
 
 assert.equal(config.SCREENSHOT_LOGIN_KEY, '')
 assert.equal(config.TEST_HOOKS_ENABLED, true)
@@ -295,17 +296,21 @@ const WRITE_CASES = {
   'PUT /api/items/:id/steps/:stepIndex/provider': { expect: '404', url: `${ITEM}/steps/0/provider`, body: { provider: 'default' }, owner: 200 },
   'PUT /api/items/:id/plan-draft': { expect: '404', url: `${ITEM}/plan-draft`, body: { base_version: 1, doc: PLAN_DOC }, owner: 404 }, // no_plan_draft, as the GET
   'POST /api/items/:id/autopilot-off': { expect: '404', url: `${ITEM}/autopilot-off`, body: { off: true }, owner: 409 }, // no_github_issue: the seeded items have no issue
-  // 409 no_job / nothing_to_resume / review_not_rejected / no_pr: states the seeded item is not in.
+  // 409 no_job / nothing_to_resume / no_pr: states the seeded item is not in.
   'POST /api/items/:id/job/stop': { expect: '404', url: `${ITEM}/job/stop`, owner: 409 },
   'POST /api/items/:id/job/resume': { expect: '404', url: `${ITEM}/job/resume`, owner: 409 },
-  'POST /api/items/:id/forward-to-accept': { expect: '404', url: `${ITEM}/forward-to-accept`, owner: 409 },
   // HZ-710: 409 stale_step — the owner names a step the item is not at.
   'POST /api/items/:id/move': { expect: '404', url: `${ITEM}/move`, body: { action: 'retry', from: 'iso.not-here' }, owner: 409 },
   'POST /api/items/:id/resolve-conflicts': { expect: '404', url: `${ITEM}/resolve-conflicts`, owner: 409 },
   'POST /api/items/:id/screenshots/approve': { expect: '404', url: `${ITEM}/screenshots/approve`, body: { commit: SHOT_COMMIT, all: true }, owner: 200 },
-  'POST /api/items/:id/phases/:phase/restart': { expect: '404', url: '/api/items/ISOA-2/phases/0/restart', body: {}, owner: 200 },
-  'POST /api/items/:id/gates/:step/approve': { expect: '404', url: `${ITEM}/gates/${ACCEPT_INDEX}/approve`, body: {}, owner: 200 },
-  'POST /api/items/:id/reject': { expect: '404', url: `${ITEM}/reject`, body: {}, owner: 200 },
+  // HZ-712: the retired move routes are 410 stubs, still member:item — the
+  // guard's 404 for a non-member, the stub's 410 route_retired for the owner.
+  ...Object.fromEntries(
+    RETIRED_MOVE_ROUTES.map(({ method, url }) => [
+      `${method} ${url}`,
+      { expect: '404', url: url.replace(':id', 'ISOA-1').replace(/:\w+/g, '0'), body: {}, owner: 410 },
+    ]),
+  ),
   'POST /api/projects/:id/activate': { expect: '404', url: `/api/projects/${B}/activate`, owner: 200 },
   'POST /api/projects/:id/autopilot': { expect: '404', url: `/api/projects/${A}/autopilot`, body: { mode: 'off' }, owner: 200 },
   'POST /api/projects/:id/definitions-enabled': { expect: '404', url: `/api/projects/${A}/definitions-enabled`, body: { enabled: false }, owner: 200 },

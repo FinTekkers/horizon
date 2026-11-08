@@ -12,21 +12,25 @@ import { routeKey, startCoverage, writeCoverage } from './test-base.js'
 test('routeKey names an API request by method and path, with id-like segments as :id', () => {
   assert.equal(routeKey('get', 'http://localhost:4351/api/items/HZ-12'), 'route:GET /api/items/:id')
   assert.equal(routeKey('GET', 'http://localhost:4351/api/items/42?x=1'), 'route:GET /api/items/:id')
-  assert.equal(routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/13/approve'), 'route:POST /api/items/:id/gates/:id/approve')
+  assert.equal(
+    routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/13/approve-via-whatsapp'),
+    'route:POST /api/items/:id/gates/:id/approve-via-whatsapp',
+  )
   assert.equal(routeKey('GET', 'http://localhost:4351/assets/index-abc123.js'), null)
   assert.equal(routeKey('GET', 'http://localhost:4351/'), null)
   assert.equal(routeKey('GET', 'not a url'), null)
 })
 
 // HZ-709: the gate routes name a step by key; every step maps to one route key.
+// (HZ-712 retired the plain approve route; its WhatsApp leg keeps :step.)
 test('routeKey names a step key after /gates/ as :step, and nothing else', () => {
   assert.equal(
-    routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/change.accept-code/approve'),
-    'route:POST /api/items/:id/gates/:step/approve',
+    routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/change.accept-code/approve-via-whatsapp'),
+    'route:POST /api/items/:id/gates/:step/approve-via-whatsapp',
   )
   assert.equal(
-    routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/task.approve-run/approve'),
-    'route:POST /api/items/:id/gates/:step/approve',
+    routeKey('POST', 'http://localhost:4351/api/items/HZ-12/gates/task.approve-run/note-via-whatsapp'),
+    'route:POST /api/items/:id/gates/:step/note-via-whatsapp',
   )
   assert.equal(routeKey('GET', 'http://localhost:4351/api/openapi.json'), 'route:GET /api/openapi.json')
 })

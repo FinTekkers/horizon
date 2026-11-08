@@ -145,9 +145,9 @@ async function approve(id, gateIndex) {
   if (lifecycle.isHumanOnlyGate(gateIndex)) {
     const res = await app.inject({
       method: 'POST',
-      url: `/api/items/${id}/gates/${gateIndex}/approve`,
+      url: `/api/items/${id}/move`,
       headers: { cookie, 'x-human-key': pin },
-      payload: {},
+      payload: { action: 'approve', from: lifecycle.stepKeyAt(gateIndex) },
     })
     assert.equal(res.statusCode, 200, res.body)
     return

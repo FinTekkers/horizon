@@ -22,7 +22,7 @@ delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
 process.env.PREMERGE_CHECK_TIMEOUT_MS = '90000'
 
-const { ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const REPO = 'acme/demo'
 const HEAD = 'a'.repeat(40)
 const BASE = 'b'.repeat(40)
@@ -87,8 +87,8 @@ beforeEach(() => {
 const approve = (id) =>
   app.inject({
     method: 'POST',
-    url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`,
-    payload: {},
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) },
     headers: { cookie, 'x-human-key': pin },
   })
 const gateActionOf = async (id) => {

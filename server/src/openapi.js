@@ -16,6 +16,7 @@
 // per-route follow-up rather than something that has to be got right here.
 
 import { SESSION_COOKIE_NAME } from './config.js'
+import { isRetired } from './retiredRoutes.js'
 
 // Routes deliberately absent from the published spec. The success metric names
 // four prefixes; the fifth entry is approve-via-whatsapp, which matches none of
@@ -178,6 +179,8 @@ export function swaggerOptions() {
     // @fastify/swagger wants { schema, url } back, not a bare { hide: true } —
     // returning the latter publishes every internal route instead of hiding it.
     // Internal routes often have no schema at all, hence the `|| {}`.
-    transform: ({ schema, url }) => (isInternal(url) ? { schema: { ...(schema || {}), hide: true }, url } : { schema, url }),
+    // HZ-712: the retired move routes' 410 stubs are hidden the same way.
+    transform: ({ schema, url }) =>
+      isInternal(url) || isRetired(url) ? { schema: { ...(schema || {}), hide: true }, url } : { schema, url },
   }
 }

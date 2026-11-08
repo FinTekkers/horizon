@@ -20,7 +20,7 @@ process.env.PREMERGE_CHECK_TIMEOUT_MS = '90000'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -85,8 +85,14 @@ function setup() {
 
 beforeEach(() => db.prepare('DELETE FROM gate_action').run())
 
+// HZ-712: Accept is a move from the gate (the old approve route was retired).
 const accept = (id) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`, payload: {}, headers: SESSION })
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) },
+    headers: SESSION,
+  })
 const events = (id) => db.prepare('SELECT text FROM event WHERE item_id = ? ORDER BY id').all(id).map((r) => r.text)
 
 test('Accept promotes the screens approved at the gate, and only those (HZ-510)', async () => {

@@ -38,7 +38,7 @@ const planDraft = await import('../src/planDraft.js')
 const { filedMap } = await import('../src/planFiling.js')
 const { priorityLabelName } = await import('../src/priorityLabels.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, kindStepIndex, APPROVE_FILE_GATE_INDEX, PLAN_DRAFT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, kindStepIndex, stepKeyAt, APPROVE_FILE_GATE_INDEX, PLAN_DRAFT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 
 const app = buildApp({ logger: false })
 await app.ready()
@@ -123,9 +123,9 @@ function draftedPlan(doc = DOC, { local = false } = {}) {
 const approve = (id, pin = PIN, payload = {}) =>
   app.inject({
     method: 'POST',
-    url: `/api/items/${id}/gates/${APPROVE_FILE_GATE_INDEX}/approve`,
+    url: `/api/items/${id}/move`,
     headers: { cookie: owner.cookie, ...(pin ? { 'x-human-key': pin } : {}) },
-    payload,
+    payload: { action: 'approve', from: stepKeyAt(APPROVE_FILE_GATE_INDEX), ...payload },
   })
 const putDraft = (id, body) =>
   app.inject({ method: 'PUT', url: `/api/items/${id}/plan-draft`, headers: { cookie: owner.cookie, 'x-human-key': PIN }, payload: body })
@@ -379,18 +379,15 @@ const spawnRows = (id) => db.prepare("SELECT COUNT(*) AS n FROM item_spawn WHERE
 
 // The Plan back at Approve & file through a real send-back: the filing run is
 // cancelled and the cursor put back at the gate (as the read-only test above
-// does), then /reject sends it back to Draft items, and the redrafted Plan
-// returns to the gate.
+// does), then the gate's send-back returns it to Draft items, and the
+// redrafted Plan returns to the gate. HZ-712 retired the send-back HTTP route;
+// gateActions.sendBack is the path it ran, and it records the rejected
+// gate_decision row the choice history below counts.
 async function sendBackToGate(id) {
   orchestrator.cancel(id)
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(APPROVE_FILE_GATE_INDEX, id)
-  const res = await app.inject({
-    method: 'POST',
-    url: `/api/items/${id}/reject`,
-    headers: { cookie: owner.cookie, 'x-human-key': PIN },
-    payload: { feedback: 'Not yet.', targetStepIndex: PLAN_DRAFT_STEP_INDEX },
-  })
-  assert.equal(res.statusCode, 200, res.body)
+  const res = await app.gateActions.sendBack(id, { feedback: 'Not yet.', targetStepIndex: PLAN_DRAFT_STEP_INDEX }, owner.user.name)
+  assert.equal(res.ok, true, JSON.stringify(res))
   assert.equal(cursorOf(id), PLAN_DRAFT_STEP_INDEX)
   orchestrator.cancel(id)
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(APPROVE_FILE_GATE_INDEX, id)

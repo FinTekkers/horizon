@@ -20,7 +20,7 @@ delete process.env.FARM_URL
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -295,8 +295,8 @@ test('an item with no publish lists no shots, and the gate approve still works',
   assert.deepEqual(res.json(), { commit: null, shots: [] })
   const gate = await app.inject({
     method: 'POST',
-    url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`,
-    payload: {},
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) },
     headers: SESSION,
   })
   assert.equal(gate.statusCode, 200)

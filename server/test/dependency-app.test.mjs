@@ -15,7 +15,7 @@ process.env.MOCK_STEP_LATENCY_MS = '5'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -229,8 +229,14 @@ const acceptPair = async (blocker, pr) => {
   assert.equal((await addDep(dep, blocker)).statusCode, 200)
   return dep
 }
+// HZ-712: Accept in the UI is a move from the gate (the old approve route was retired).
 const approveAccept = (id) =>
-  inject({ method: 'POST', url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`, payload: {}, headers: { 'x-human-key': pin } })
+  inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) },
+    headers: { 'x-human-key': pin },
+  })
 // Only the dependents are dispatched for real; the merged blocker's own
 // Deploy is not part of these tests.
 const dispatchDependents = () =>

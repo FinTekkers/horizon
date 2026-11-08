@@ -600,7 +600,7 @@ test("stepOutputs carry the shown attempt's started and ended times, not a later
 
 // ---- abandon (HZ-59): soft delete with a reason and an audit trail ----
 
-const { isAbandoned, isClosed } = await import('../../domain/js/lifecycle.js')
+const { isAbandoned, isClosed, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 test('abandonItem on an unknown item is not_found', () => {
   assert.deepEqual(store.abandonItem('NOPE-1', 'no longer needed'), { error: 'not_found' })
@@ -714,7 +714,10 @@ test('abandoned items are rejected by every other mutation — the item is froze
   assert.deepEqual(store.setPersona('T-ABANDON-FROZEN', 'eng', 'fullstack'), { error: 'abandoned' })
   assert.deepEqual(store.setPriority('T-ABANDON-FROZEN', 'High'), { error: 'abandoned' })
   assert.deepEqual(store.addFeedback('T-ABANDON-FROZEN', { message: 'late note' }), { error: 'abandoned' })
-  assert.deepEqual(store.restartPhase('T-ABANDON-FROZEN', 0, 'reopen attempt'), { error: 'abandoned' })
+  // HZ-712: a phase restart is now a return to the phase's first step.
+  assert.deepEqual(store.moveByHuman('T-ABANDON-FROZEN', { action: 'return', toKey: stepKeyAt(0), note: 'reopen attempt' }), {
+    error: 'abandoned',
+  })
 })
 
 test('upsertFromGithub: closing the issue on an already-abandoned item does not silently complete it (self-webhook race, HZ-59)', () => {

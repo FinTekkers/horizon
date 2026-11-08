@@ -1,8 +1,9 @@
 // HZ-710 metric 3: every caller of the move writes exactly one item_move row —
 // who, from key, to key, action and note — through its own real entry point:
-// the send-back and restart routes, forward to Accept, boot recovery, a PR
-// merged on GitHub, an issue reopened on GitHub, conflict escalation and
-// POST /api/items/:id/move. (The Caretaker's ruling and a WhatsApp vote are
+// the gate's send-back, forward to Accept, boot recovery, a PR merged on
+// GitHub, an issue reopened on GitHub, conflict escalation and
+// POST /api/items/:id/move. (HZ-712 retired the old send-back, restart and
+// forward routes; forward to Accept is now an approve through /move.) (The Caretaker's ruling and a WhatsApp vote are
 // asserted in caretaker-ruling.test.mjs and wa-poll-votes.test.mjs, which
 // already drive those entry points.) Every refusal writes no row.
 //
@@ -40,7 +41,7 @@ const { buildApp } = await import('../src/app.js')
 const config = await import('../src/config.js')
 const auth = await import('../src/auth.js')
 const { CLOSED_KEY, MERGED_HINT } = await import('../src/moveItem.js')
-const { STEPS, stepIndexOf } = await import('../../domain/js/lifecycle.js')
+const { stepIndexOf } = await import('../../domain/js/lifecycle.js')
 const { connectReadyRepo } = await import('./helpers/readyRepo.mjs')
 
 store.purgeDemoItems()
@@ -73,27 +74,18 @@ const post = (url, payload = {}, headers = { 'x-human-key': pin }) =>
   app.inject({ method: 'POST', url, payload, headers: { cookie, ...headers } })
 const move = (id, body, headers) => post(`/api/items/${id}/move`, body, headers)
 
-test('send back (POST /reject): one return row, by the human, with the feedback', async () => {
+// The send-back caretaker and WhatsApp run, and /move's sub-step form. Its HTTP
+// route was retired in HZ-712; a plain return is the move route's (below).
+test('send back (gateActions.sendBack): one return row, by the human, with the feedback', async () => {
   const id = seed('L-SEND', 'change.approve-design')
-  const res = await post(`/api/items/${id}/reject`, { target: 'Architect', feedback: 'consider option B' })
-  assert.equal(res.statusCode, 200, res.body)
+  const result = await app.gateActions.sendBack(id, { target: 'Architect', feedback: 'consider option B' }, user.name)
+  assert.equal(result.ok, true, JSON.stringify(result))
   assert.deepEqual(moves(id), [
     { who: user.name, from_key: 'change.approve-design', to_key: 'change.plan-options', action: 'return', note: 'consider option B' },
   ])
 })
 
-test('restart (POST /phases/:phase/restart): one return row to the phase’s first step, with the reason', async () => {
-  const id = seed('L-RESTART', 'change.review-before-exec')
-  const phase = STEPS[at('change.review-before-exec')].phase
-  const res = await post(`/api/items/${id}/phases/${phase}/restart`, { reason: 'start the plan over' })
-  assert.equal(res.statusCode, 200, res.body)
-  const first = STEPS.find((s) => s.key.startsWith('change.') && s.phase === phase).key
-  assert.deepEqual(moves(id), [
-    { who: user.name, from_key: 'change.review-before-exec', to_key: first, action: 'return', note: 'start the plan over' },
-  ])
-})
-
-test('forward to Accept (POST /forward-to-accept): one approve row at Accept the code, the findings in its note', async () => {
+test('forward to Accept (an approve through /move): one approve row at Accept the code, the findings in its note', async () => {
   const id = seed('L-FWD', 'change.auto-review')
   const reviewRun = db
     .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent) VALUES (?, ?, 1, 'QA')")
@@ -106,7 +98,7 @@ test('forward to Accept (POST /forward-to-accept): one approve row at Accept the
   assert.equal(cursorOf(id), at('change.implement'))
   assert.deepEqual(moves(id), [], 'the failing review is a step completion, not a move')
 
-  const res = await post(`/api/items/${id}/forward-to-accept`)
+  const res = await move(id, { action: 'approve', from: 'change.implement', to: 'change.accept-code' })
   assert.equal(res.statusCode, 200, res.body)
   const rows = moves(id)
   assert.equal(rows.length, 1)

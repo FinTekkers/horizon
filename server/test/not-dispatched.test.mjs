@@ -1,8 +1,12 @@
 // HZ-802: a Task whose run was approved actually runs Execute — when its
 // dependencies clear, when the blocking ask that filed one is abandoned, and
-// when the owner presses Restart phase. An item at an agent step with nothing
-// running always says why (notDispatched), and Restart that cannot dispatch
-// answers with that reason instead of logging a restart that starts nothing.
+// when the owner retries Execute. An item at an agent step with nothing
+// running always says why (notDispatched).
+//
+// HZ-712 retired the phase restart route (and store.restartPhase with it); the
+// owner's retry is POST /api/items/:id/move { action: 'retry' }. The restart's
+// own refusals (blocked_by, held_by_ask, needs_reapproval answered as 409)
+// went with it, so those cases are gone; notDispatched still names each one.
 //
 // Mock mode (FARM_URL unset), like ask-start-check.test.mjs: a dispatch is a
 // step_run row. Routes go through the real app with the owner's PIN.
@@ -30,7 +34,7 @@ const auth = await import('../src/auth.js')
 const orchestrator = await import('../src/orchestrator.js')
 const drain = await import('../src/deployDrain.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, endIndex, stepsFor, requiredStepIndex, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX, EXECUTE_STEP_INDEX } = await import(
+const { STEPS, endIndex, requiredStepIndex, stepKeyAt, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX, EXECUTE_STEP_INDEX } = await import(
   '../../domain/js/lifecycle.js'
 )
 
@@ -51,7 +55,6 @@ const REPO = 'Acme/not-dispatched'
 const project = Number(db.prepare("INSERT INTO project (name, enabled) VALUES ('Not dispatched', 1)").run().lastInsertRowid)
 db.prepare("INSERT INTO project_repo (repo, prefix, project_id) VALUES (?, 'ND', ?)").run(REPO, project)
 const TASK_KIND = 'task'
-const EXECUTE_PHASE = STEPS[EXECUTE_STEP_INDEX].phase
 const FINAL_GATE = endIndex('change') - 1
 
 const PLAN =
@@ -96,16 +99,16 @@ const runsAt = (id, step) => db.prepare('SELECT COUNT(*) AS n FROM step_run WHER
 const activeRunsAt = (id, step) =>
   db.prepare("SELECT COUNT(*) AS n FROM step_run WHERE item_id = ? AND step_index = ? AND status = 'active'").get(id, step).n
 const eventTexts = (id) => db.prepare('SELECT text FROM event WHERE item_id = ? ORDER BY id').all(id).map((e) => e.text)
-const restartedEvents = (id) => eventTexts(id).filter((t) => t.startsWith('restarted the ')).length
 const listed = (id) => store.notDispatchedItems().find((n) => n.itemId === id)
-const restart = (id, phase = EXECUTE_PHASE) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/phases/${phase}/restart`, headers: ownerHeaders, payload: {} })
+const retry = (id) =>
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    headers: ownerHeaders,
+    payload: { action: 'retry', from: stepKeyAt(EXECUTE_STEP_INDEX) },
+  })
 const release = (id, askId, { reason = 'MDI-122 was abandoned; proceed without it', headers = ownerHeaders } = {}) =>
   app.inject({ method: 'POST', url: `/api/items/${id}/asks/${askId}/release`, headers, payload: { reason } })
-
-test('Restart on Execute is a retry of the step the cursor holds', () => {
-  assert.equal(stepsFor(TASK_KIND).find((s) => s.phase === EXECUTE_PHASE).index, EXECUTE_STEP_INDEX)
-})
 
 // ---- metric 1 ----
 
@@ -176,7 +179,7 @@ test('guardrail 2: repeated dependency clears create one step_run', () => {
 
 // ---- metric 2 ----
 
-test('metric 2: replaying MDI-115, Restart phase on Execute creates exactly one step_run', async () => {
+test('metric 2: replaying MDI-115, a retry of Execute creates exactly one step_run', async () => {
   seedApprovedTask('ND-MDI115')
   seedChange('ND-MDI122', 3)
   seedFiledAsk('ND-MDI115', 'ND-MDI122')
@@ -185,52 +188,16 @@ test('metric 2: replaying MDI-115, Restart phase on Execute creates exactly one 
   orchestrator.cancel('ND-MDI115')
   db.prepare("DELETE FROM step_run WHERE item_id = 'ND-MDI115' AND step_index = ?").run(EXECUTE_STEP_INDEX)
 
-  const res = await restart('ND-MDI115')
+  const res = await retry('ND-MDI115')
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(runsAt('ND-MDI115', EXECUTE_STEP_INDEX), 1)
   assert.equal(activeRunsAt('ND-MDI115', EXECUTE_STEP_INDEX), 1)
 })
 
-test('metric 2: with an open dependency Restart answers 409 naming it, and cancels, moves and logs nothing', async () => {
-  seedApprovedTask('ND-R8')
-  // A run already active when the dependency was added.
-  orchestrator.kick('ND-R8')
-  assert.equal(activeRunsAt('ND-R8', EXECUTE_STEP_INDEX), 1)
-  seedChange('ND-R8-DEP', 3)
-  store.addDependency('ND-R8', 'ND-R8-DEP')
-
-  const res = await restart('ND-R8')
-  assert.equal(res.statusCode, 409)
-  const body = res.json()
-  assert.equal(body.error, 'blocked_by')
-  assert.equal(body.itemId, 'ND-R8-DEP')
-  assert.match(body.message, /^Blocked by ND-R8-DEP \(Change ND-R8-DEP\)$/)
-  assert.equal(activeRunsAt('ND-R8', EXECUTE_STEP_INDEX), 1, 'the active run is not superseded')
-  assert.equal(runsAt('ND-R8', EXECUTE_STEP_INDEX), 1, 'no new step_run')
-  assert.equal(store.getItem('ND-R8').cursor, EXECUTE_STEP_INDEX)
-  assert.equal(restartedEvents('ND-R8'), 0)
-})
-
-test('metric 2: Restart on an item held by an open filed ask names the filed item', async () => {
-  seedApprovedTask('ND-HELD')
-  seedChange('ND-HELD-DEP', 3)
-  seedFiledAsk('ND-HELD', 'ND-HELD-DEP')
-  store.removeDependency('ND-HELD', 'ND-HELD-DEP', 'Owner')
-  const res = await restart('ND-HELD')
-  assert.equal(res.statusCode, 409)
-  assert.deepEqual(res.json(), {
-    error: 'held_by_ask',
-    message: 'Held by ask: Add FX feed → ND-HELD-DEP, open',
-    itemId: 'ND-HELD-DEP',
-  })
-  assert.equal(runsAt('ND-HELD', EXECUTE_STEP_INDEX), 0)
-  assert.equal(restartedEvents('ND-HELD'), 0)
-})
-
-test('guardrail 2: two Restart presses leave one active run, the first superseded', async () => {
+test('guardrail 2: two retries leave one active run, the first superseded', async () => {
   seedApprovedTask('ND-PRESS')
-  assert.equal((await restart('ND-PRESS')).statusCode, 200)
-  assert.equal((await restart('ND-PRESS')).statusCode, 200)
+  assert.equal((await retry('ND-PRESS')).statusCode, 200)
+  assert.equal((await retry('ND-PRESS')).statusCode, 200)
   assert.equal(activeRunsAt('ND-PRESS', EXECUTE_STEP_INDEX), 1)
   const statuses = db.prepare('SELECT status FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id').all('ND-PRESS', EXECUTE_STEP_INDEX)
   assert.deepEqual(statuses.map((r) => r.status), ['superseded', 'active'])
@@ -303,7 +270,7 @@ test('metric 4: the last dependency clears on an unapproved gate — no step_run
   assert.equal(store.getItem('ND-GATE').cursor, APPROVE_RUN_GATE_INDEX)
 })
 
-test('metric 4: the last dependency clears with the plan approval invalidated — no step_run in any state, not paused', async () => {
+test('metric 4: the last dependency clears with the plan approval invalidated — no step_run in any state, not paused', () => {
   seedApprovedTask('ND-STALE')
   // The Run plan re-ran since the approval: a new artifact, a new hash.
   db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES ('ND-STALE', ?, 2, 'Eng', 'done', 'ok', ?, datetime('now'))").run(
@@ -317,13 +284,6 @@ test('metric 4: the last dependency clears with the plan approval invalidated �
   assert.equal(runsAt('ND-STALE', EXECUTE_STEP_INDEX), 0)
   assert.equal(store.getItem('ND-STALE').paused, false)
   assert.equal(store.itemViewById('ND-STALE').notDispatched.kind, 'needs_reapproval')
-
-  // Restart says so too, and writes nothing.
-  const res = await restart('ND-STALE')
-  assert.equal(res.statusCode, 409)
-  assert.equal(res.json().error, 'needs_reapproval')
-  assert.equal(runsAt('ND-STALE', EXECUTE_STEP_INDEX), 0)
-  assert.equal(restartedEvents('ND-STALE'), 0)
 })
 
 // ---- guardrails 1 and 3 ----

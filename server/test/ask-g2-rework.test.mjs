@@ -1,9 +1,10 @@
 // HZ-731 metric 5: the "G2 rework" golden run, with asks in play. As HZ-710's
 // plan defines the run: start from a running "Specialist agent implements",
 // return to planning, then approve every gate and finish; the running run is
-// cancelled as superseded. HZ-710's own move is not on main, so the return
-// here is main's existing rework lever (restartPhase into the phase that
-// holds "Draft implementation plan").
+// cancelled as superseded. The return is HZ-710's human move
+// (store.moveByHuman, what POST /move runs) to the first row of the phase that
+// holds "Draft implementation plan" — where the retired restart-phase lever
+// used to land it (HZ-712).
 //
 // What this item adds must not change the run: an open soft ask never holds
 // it, and a blocking ask the rework raises holds Implement only until the
@@ -28,7 +29,7 @@ const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { dismissAsk } = await import('../src/asks.js')
-const { STEPS, IMPLEMENT_STEP_INDEX, isClosed, requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { STEPS, IMPLEMENT_STEP_INDEX, isClosed, requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 store.registerAgentRunner({ kick: orchestrator.kick, cancel: orchestrator.cancel })
@@ -38,6 +39,7 @@ after(() => {
 
 const DRAFT_PLAN = requiredStepIndex('Draft implementation plan')
 const REVIEW_BEFORE = requiredStepIndex('Review before execution')
+const PLANNING_START = STEPS.findIndex((s) => s.phase === STEPS[DRAFT_PLAN].phase)
 const ID = 'G2-REWORK'
 
 const runs = (stepIndex) => db.prepare('SELECT id, status FROM step_run WHERE item_id = ? AND step_index = ? ORDER BY id').all(ID, stepIndex)
@@ -72,7 +74,8 @@ test('G2 rework: a running Implement returns to planning and is superseded; a bl
   assert.deepEqual(runs(IMPLEMENT_STEP_INDEX).map((r) => r.status), ['active'])
 
   // Return to planning; the running Implement is superseded.
-  assert.equal(store.restartPhase(ID, STEPS[DRAFT_PLAN].phase, 'G2 rework: re-plan').ok, true)
+  const returned = store.moveByHuman(ID, { action: 'return', toKey: stepKeyAt(PLANNING_START), note: 'G2 rework: re-plan', who: 'Owner' })
+  assert.equal(returned.ok, true, JSON.stringify(returned))
   assert.deepEqual(runs(IMPLEMENT_STEP_INDEX).map((r) => r.status), ['superseded'])
 
   // Approve each gate up to Review before execution as it comes.
