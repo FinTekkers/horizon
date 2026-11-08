@@ -25,6 +25,7 @@ const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
+const { stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 const app = buildApp({ logger: false })
@@ -58,7 +59,7 @@ test('a Python item reaches the gate as eng/python, a UI item as eng/ui', async 
 
 test('gate approval confirms the proposal; a pre-approval override sticks', async () => {
   // PY-1: approve as proposed.
-  let res = await inject({ method: 'POST', url: '/api/items/PY-1/gates/3/approve', payload: {} })
+  let res = await inject({ method: 'POST', url: '/api/items/PY-1/move', payload: { action: 'approve', from: stepKeyAt(3) } })
   assert.equal(res.statusCode, 200)
   // UI-1: the human overrides to fullstack, then approves with comments —
   // the approve-with-comments path must not reset the override.
@@ -66,8 +67,8 @@ test('gate approval confirms the proposal; a pre-approval override sticks', asyn
   assert.equal(res.statusCode, 200)
   res = await inject({
     method: 'POST',
-    url: '/api/items/UI-1/gates/3/approve',
-    payload: { notes: 'go with the generalist' },
+    url: '/api/items/UI-1/move',
+    payload: { action: 'approve', from: stepKeyAt(3), note: 'go with the generalist' },
   })
   assert.equal(res.statusCode, 200)
 

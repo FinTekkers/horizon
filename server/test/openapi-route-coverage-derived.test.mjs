@@ -35,6 +35,7 @@ delete process.env.FARM_URL
 
 const { buildApp } = await import('../src/app.js')
 const { isInternal, INTERNAL_PREFIXES } = await import('../src/openapi.js')
+const { isRetired, RETIRED_MOVE_ROUTES } = await import('../src/retiredRoutes.js')
 
 // Every registration app.js makes, with the schema it authored, collected
 // through buildApp's onRoute seam — see the comment on buildApp for why a hook
@@ -50,8 +51,11 @@ const ROUTES = registered
   .filter(({ method }) => method !== 'HEAD')
   .map(({ method, url, schema }) => ({ method, url, schema }))
 
-const PUBLIC_ROUTES = ROUTES.filter(({ url }) => !isInternal(url))
+// HZ-712: the retired move routes' 410 stubs are hidden too, by
+// retiredRoutes.js's isRetired — the same check openapi.js's transform makes.
+const PUBLIC_ROUTES = ROUTES.filter(({ url }) => !isInternal(url) && !isRetired(url))
 const INTERNAL_ROUTES = ROUTES.filter(({ url }) => isInternal(url))
+const RETIRED_ROUTES = ROUTES.filter(({ url }) => isRetired(url))
 
 const spec = app.swagger()
 
@@ -196,6 +200,25 @@ test('no internal route appears in the spec', () => {
   const waApproval = ROUTES.find((r) => r.url.endsWith('/approve-via-whatsapp'))
   assert.ok(waApproval, 'the approve-via-whatsapp route is gone — drop its INTERNAL_PREFIXES entry')
   assert.equal(operationFor(waApproval), undefined, 'the credential-gated WhatsApp bridge leg is published')
+})
+
+test('the spec lists none of the retired move routes, and POST /api/items/{id}/move is its only move route', () => {
+  // HZ-712 metric 3. Each retired route is still registered (as its 410 stub),
+  // so "absent from the spec" is a statement about routes that exist.
+  assert.deepEqual(
+    RETIRED_ROUTES.map((r) => `${r.method} ${r.url}`).sort(),
+    RETIRED_MOVE_ROUTES.map((r) => `${r.method} ${r.url}`).sort(),
+    'a retired move route is not registered as its stub',
+  )
+  const leaked = RETIRED_ROUTES.filter((r) => operationFor(r)).map((r) => `${r.method} ${r.url}`)
+  assert.deepEqual(leaked, [], `these retired routes are still published: ${leaked.join(', ')}`)
+  for (const { url } of RETIRED_MOVE_ROUTES) assert.equal(spec.paths[specPath(url)], undefined, `${url} has a path in the spec`)
+  // Every published POST on an item that moves it — a gate approve, a
+  // send-back, a restart, a forward or a move — is the one move route.
+  const moveLike = Object.entries(spec.paths)
+    .filter(([path, ops]) => ops.post && /^\/api\/items\/\{id\}\/(.*\/)?(move|reject|restart|forward-to-accept)$|\/gates\/\{[^}]+\}\/approve$/.test(path))
+    .map(([path]) => path)
+  assert.deepEqual(moveLike, ['/api/items/{id}/move'])
 })
 
 test('the spec documents /api/stream as a text/event-stream', () => {

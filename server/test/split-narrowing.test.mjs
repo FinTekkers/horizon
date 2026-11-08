@@ -32,7 +32,7 @@ const auth = await import('../src/auth.js')
 const { composeIssueBody } = await import('../src/github.js')
 const { splitMarker } = await import('../src/split.js')
 const { UNFILED_NARROWING_REASON } = await import('../src/narrowing.js')
-const { requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 await orchestrator.init({ info: () => {}, warn: () => {} })
@@ -111,7 +111,12 @@ async function runStep(id, step, { split, patch, artifactMd = DIGEST_MD } = {}) 
 const runDigest = (id, opts = {}) => runStep(id, DIGEST, opts)
 
 const approve = (id, gate) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${gate}/approve`, payload: {}, headers: { cookie, 'x-human-key': pin } })
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(gate) },
+    headers: { cookie, 'x-human-key': pin },
+  })
 const rowsOf = (id) => db.prepare('SELECT target_repo, status FROM item_split WHERE source_item_id = ? ORDER BY id').all(id)
 const edgesOf = (id) =>
   db.prepare('SELECT item_id, depends_on_id FROM work_item_dependency WHERE item_id = ? OR depends_on_id = ? ORDER BY item_id').all(id, id)
@@ -264,7 +269,7 @@ test('idempotency: a restart mid-filing, the issue already on GitHub and the edg
 
 // ---- guardrail 3: filed only when the gate is approved ----
 
-test('send-back, reject and a re-run summary with no split file nothing and add no edge', async () => {
+test('send-back, a return and a re-run summary with no split file nothing and add no edge', async () => {
   const id = newSource('no filing')
   const creates = stub.creates().length
   await runDigest(id, { split: FOLLOW_UP, patch: { metric: NARROWED } })
@@ -275,12 +280,13 @@ test('send-back, reject and a re-run summary with no split file nothing and add 
   assert.equal(stub.creates().length, creates)
   assert.deepEqual(edgesOf(id), [])
 
-  // Reject through the browser route.
+  // A return through the browser's route (HZ-712: POST /move, which replaced
+  // the send-back route).
   await runDigest(id, { split: FOLLOW_UP })
   const rejected = await app.inject({
     method: 'POST',
-    url: `/api/items/${id}/reject`,
-    payload: { target: 'x', feedback: 'no', targetStepIndex: DIGEST },
+    url: `/api/items/${id}/move`,
+    payload: { action: 'return', from: stepKeyAt(REVIEW_GATE), to: stepKeyAt(DIGEST), note: 'no' },
     headers: { cookie, 'x-human-key': pin },
   })
   assert.equal(rejected.statusCode, 200, rejected.body)

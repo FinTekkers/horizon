@@ -2,7 +2,8 @@
 // through send-backs to Design, to Implement and to Review, and to a sub-step
 // that is not the golden-cases one. Only a send-back to the golden-cases
 // sub-step clears it; its re-run then reopens the first gate unapproved, with
-// a new hash, and the old hash is refused. All through the real POST /reject.
+// a new hash, and the old hash is refused. All through the real POST /move
+// (HZ-712): a return to a step, or the stepKey form for a sub-step.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -24,7 +25,7 @@ const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
 const golden = await import('../src/goldenCases.js')
-const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 const app = buildApp({ logger: false })
@@ -60,22 +61,29 @@ function seedApproved(id, cursor) {
     golden.hashOf(CASES),
   )
 }
-const reject = (id, body = {}) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/reject`, headers: { cookie, 'x-human-key': pin }, payload: { target: 'the work', feedback: 'redo', ...body } })
+const move = (id, payload) => app.inject({ method: 'POST', url: `/api/items/${id}/move`, headers: { cookie, 'x-human-key': pin }, payload })
+// From the item's gate back to a step, or with a sub-step id to that sub-step.
+const sendBack = (id, toIndex, substepId = null) => {
+  const from = stepKeyAt(cursorOf(id))
+  return substepId
+    ? move(id, { stepKey: `${stepKeyAt(toIndex)}#${substepId}`, from, note: 'redo' })
+    : move(id, { action: 'return', from, to: stepKeyAt(toIndex), note: 'redo' })
+}
+const approve = (id, body) => move(id, { action: 'approve', from: stepKeyAt(cursorOf(id)), ...body })
 const setRow = (id) => db.prepare('SELECT * FROM golden_case_set WHERE item_id = ?').get(id)
 const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor
 
-for (const [name, gate, body, landsOn] of [
-  ['to Design (from the design gate)', DESIGN_GATE, {}, DESIGN_STEP],
-  ['to Implement (from Accept the code)', ACCEPT_GATE_INDEX, {}, IMPLEMENT_STEP_INDEX],
-  ['to Review (from Accept the code)', ACCEPT_GATE_INDEX, { targetStepIndex: REVIEW_STEP_INDEX }, REVIEW_STEP_INDEX],
-  ['to the audit sub-step', ACCEPT_GATE_INDEX, { targetStepIndex: IMPLEMENT_STEP_INDEX, targetSubstepId: 'impl-audit' }, IMPLEMENT_STEP_INDEX],
+for (const [name, gate, substepId, landsOn] of [
+  ['to Design (from the design gate)', DESIGN_GATE, null, DESIGN_STEP],
+  ['to Implement (from Accept the code)', ACCEPT_GATE_INDEX, null, IMPLEMENT_STEP_INDEX],
+  ['to Review (from Accept the code)', ACCEPT_GATE_INDEX, null, REVIEW_STEP_INDEX],
+  ['to the audit sub-step', ACCEPT_GATE_INDEX, 'impl-audit', IMPLEMENT_STEP_INDEX],
 ]) {
   test(`a send-back ${name} keeps the approved set byte for byte`, async () => {
-    const id = `K-${gate}-${landsOn}-${body.targetSubstepId ?? 'n'}`
+    const id = `K-${gate}-${landsOn}-${substepId ?? 'n'}`
     seedApproved(id, gate)
     const before = setRow(id)
-    const res = await reject(id, body)
+    const res = await sendBack(id, landsOn, substepId)
     assert.equal(res.statusCode, 200, res.body)
     assert.equal(cursorOf(id), landsOn)
     assert.deepEqual(setRow(id), before)
@@ -85,7 +93,7 @@ for (const [name, gate, body, landsOn] of [
 test('a send-back to the golden-cases sub-step clears the set; its re-run reopens the gate unapproved with a new hash', async () => {
   seedApproved('R-1', PLAN_GATE)
   const oldHash = setRow('R-1').hash
-  const res = await reject('R-1', { targetStepIndex: 1, targetSubstepId: 'golden-cases' })
+  const res = await sendBack('R-1', 1, 'golden-cases')
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(setRow('R-1'), undefined)
 
@@ -97,22 +105,12 @@ test('a send-back to the golden-cases sub-step clears the set; its re-run reopen
   assert.notEqual(view.hash, oldHash)
   assert.equal(view.cases[0].expected, 3)
 
-  const stale = await app.inject({
-    method: 'POST',
-    url: `/api/items/R-1/gates/${FIRST_GATE}/approve`,
-    headers: { cookie, 'x-human-key': pin },
-    payload: { goldenHash: oldHash },
-  })
+  const stale = await approve('R-1', { goldenHash: oldHash })
   assert.equal(stale.statusCode, 409)
   assert.equal(stale.json().error, 'golden_cases_changed')
   assert.equal(setRow('R-1'), undefined)
 
-  const fresh = await app.inject({
-    method: 'POST',
-    url: `/api/items/R-1/gates/${FIRST_GATE}/approve`,
-    headers: { cookie, 'x-human-key': pin },
-    payload: { goldenHash: view.hash },
-  })
+  const fresh = await approve('R-1', { goldenHash: view.hash })
   assert.equal(fresh.statusCode, 200, fresh.body)
   assert.deepEqual(JSON.parse(setRow('R-1').cases_json), NEW_CASES)
 })
@@ -121,7 +119,7 @@ test('an item back at the first gate with its set still approved approves with n
   seedApproved('R-2', FIRST_GATE)
   const before = setRow('R-2')
   writeSubstepRun('R-2', NEW_CASES)
-  const res = await app.inject({ method: 'POST', url: `/api/items/R-2/gates/${FIRST_GATE}/approve`, headers: { cookie, 'x-human-key': pin }, payload: {} })
+  const res = await approve('R-2', {})
   assert.equal(res.statusCode, 200, res.body)
   assert.deepEqual(setRow('R-2'), before)
 })

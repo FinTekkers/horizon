@@ -37,7 +37,7 @@ const orchestrator = await import('../src/orchestrator.js')
 const { ACT_GATES, NEVER_ACT, PLAN_GATES } = await import('../src/caretakerActor.js')
 const { CARETAKER_GATES } = await import('../src/caretaker.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, kindStepIndex, gateStepIndexes, reworkTargets, defaultReworkTarget, APPROVE_FILE_GATE_INDEX } = await import(
+const { STEPS, kindStepIndex, stepKeyAt, gateStepIndexes, reworkTargets, defaultReworkTarget, APPROVE_FILE_GATE_INDEX } = await import(
   '../../domain/js/lifecycle.js'
 )
 
@@ -79,9 +79,9 @@ const itemCount = () => db.prepare('SELECT COUNT(*) AS n FROM work_item').get().
 const approve = (id, stepIndex, pin) =>
   app.inject({
     method: 'POST',
-    url: `/api/items/${id}/gates/${stepIndex}/approve`,
+    url: `/api/items/${id}/move`,
     headers: { cookie: alice.cookie, ...(pin === undefined ? {} : { 'x-human-key': pin }) },
-    payload: {},
+    payload: { action: 'approve', from: stepKeyAt(stepIndex) },
   })
 
 test('Approve & file without the PIN is refused on an Autopilot project, and the gate stays open', async () => {
@@ -112,7 +112,11 @@ test('Approve & file with the PIN advances; File items with no drafts files noth
   calls.length = 0
   const ok = await approve('P-FILE', APPROVE_FILE_GATE_INDEX, PIN)
   assert.equal(ok.statusCode, 200, ok.body)
-  assert.deepEqual(ok.json(), { ok: true, closed: false })
+  // /move adds the item as the stream would upsert it and the item_move row.
+  const { item, move, ...answer } = ok.json()
+  assert.deepEqual(answer, { ok: true, closed: false })
+  assert.equal(item.id, 'P-FILE')
+  assert.deepEqual([move.action, move.fromKey], ['approve', stepKeyAt(APPROVE_FILE_GATE_INDEX)])
 
   // File items ran in-process and, with nothing to file, paused at its own row.
   await new Promise((r) => setTimeout(r, 20))

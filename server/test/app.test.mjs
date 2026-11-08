@@ -20,7 +20,7 @@ process.env.WA_APPROVER_JIDS = '15550001111@s.whatsapp.net'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, ACCEPT_GATE_INDEX, endIndex } = await import('../../domain/js/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX, endIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const { FARM_SHARED_SECRET, WA_APPROVAL_SECRET } = config
 // The one allowlisted approver for this file's WhatsApp cases (HZ-140).
@@ -81,14 +81,36 @@ test('feedback at a gate returns {ok:true,queued:true} and stores an undelivered
   assert.equal(row.delivered_at, null)
 })
 
-test('feedback on a live agent step returns {ok:true,rerun:true} and re-runs it (attempt N+1)', async () => {
+// HZ-712: a note that would re-run a running agent step is 410 — the re-run
+// is the move route's Retry now — and nothing is written or superseded.
+test('feedback on a live agent step is 410 route_retired and leaves the run and the notes alone', async () => {
   // Mock mode (FARM_URL unset): init the real runner so kick() creates runs.
   const orchestrator = await import('../src/orchestrator.js')
   orchestrator.init({ info: () => {}, warn: () => {} })
-  // init() resumed T-AGENT onto an active run; feedback must supersede it.
+  const runsBefore = db.prepare("SELECT * FROM step_run WHERE item_id = 'T-AGENT' ORDER BY id").all()
+  assert.equal(runsBefore.at(-1)?.status, 'active', 'init() resumed T-AGENT onto an active run')
   const res = await feedbackPost('T-AGENT', { message: 'change of direction' })
+  assert.equal(res.statusCode, 410)
+  assert.deepEqual(res.json(), { error: 'route_retired', use: 'POST /api/items/:id/move' })
+  assert.deepEqual(db.prepare("SELECT * FROM step_run WHERE item_id = 'T-AGENT' ORDER BY id").all(), runsBefore)
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM feedback WHERE item_id = 'T-AGENT'").get().n, 0)
+})
+
+test('the move route\'s retry with a note re-runs a live agent step (attempt N+1)', async () => {
+  // T-AGENT is still on the active run the test above left alone; the retry
+  // must supersede it.
+  const res = await inject({
+    method: 'POST',
+    url: '/api/items/T-AGENT/move',
+    payload: { action: 'retry', from: stepKeyAt(11), note: 'change of direction' },
+  })
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.json(), { ok: true, rerun: true })
+  assert.equal(res.json().ok, true)
+  assert.equal(res.json().move.action, 'retry')
+  assert.equal(
+    db.prepare("SELECT message FROM feedback WHERE item_id = 'T-AGENT' ORDER BY id DESC").get().message,
+    'change of direction',
+  )
   const runs = db.prepare("SELECT * FROM step_run WHERE item_id = 'T-AGENT' ORDER BY id").all()
   assert.ok(runs.length >= 2, `expected a superseded run and a fresh attempt, got ${runs.length}`)
   assert.equal(runs.at(-1).status, 'active')
@@ -212,8 +234,9 @@ db.prepare(
   "INSERT INTO work_item (id, title, priority, cursor) VALUES ('T-GATE-FINAL', 'One approval from closed', 'Medium', ?)",
 ).run(endIndex('change') - 1)
 
+// HZ-712: an approve is a move from the gate (the old approve route was retired).
 const approvePost = (id, stepIndex, payload = {}) =>
-  inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, payload })
+  inject({ method: 'POST', url: `/api/items/${id}/move`, payload: { action: 'approve', from: stepKeyAt(stepIndex), ...payload } })
 
 const approveViaWhatsappPost = (id, stepIndex, payload, headers = {}) =>
   app.inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve-via-whatsapp`, payload, headers })
@@ -221,7 +244,9 @@ const approveViaWhatsappPost = (id, stepIndex, payload, headers = {}) =>
 test('session route: approving a gate advances the cursor and attributes the logged-in user\'s name', async () => {
   const res = await approvePost('T-GATE-HK', 3)
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.json(), { ok: true, closed: false })
+  const { ok, closed, move } = res.json()
+  assert.deepEqual({ ok, closed }, { ok: true, closed: false })
+  assert.deepEqual({ action: move.action, fromKey: move.fromKey, toKey: move.toKey }, { action: 'approve', fromKey: stepKeyAt(3), toKey: stepKeyAt(4) })
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-HK'").get().cursor, 4)
   assert.equal(
     db.prepare("SELECT decided_by FROM gate_decision WHERE item_id = 'T-GATE-HK'").get().decided_by,
@@ -236,12 +261,14 @@ test('session route: approving a gate advances the cursor and attributes the log
 test('approving the closing gate reports closed: true and advances the cursor past the last step', async () => {
   const res = await approvePost('T-GATE-FINAL', endIndex('change') - 1)
   assert.equal(res.statusCode, 200)
-  assert.deepEqual(res.json(), { ok: true, closed: true })
+  const { ok, closed, move } = res.json()
+  assert.deepEqual({ ok, closed }, { ok: true, closed: true })
+  assert.equal(move.toKey, 'closed')
   assert.equal(db.prepare("SELECT cursor FROM work_item WHERE id = 'T-GATE-FINAL'").get().cursor, endIndex('change'))
 })
 
 test('approving without a session cookie is 401 (HZ-21)', async () => {
-  const res = await app.inject({ method: 'POST', url: '/api/items/T-GATE-HK/gates/4/approve', payload: {} })
+  const res = await app.inject({ method: 'POST', url: '/api/items/T-GATE-HK/move', payload: { action: 'approve', from: stepKeyAt(4) } })
   assert.equal(res.statusCode, 401)
   assert.deepEqual(res.json(), { error: 'login_required' })
 })
@@ -249,8 +276,8 @@ test('approving without a session cookie is 401 (HZ-21)', async () => {
 test('approving with a session but the wrong gate PIN is 401 human_gate_key_required', async () => {
   const res = await app.inject({
     method: 'POST',
-    url: '/api/items/T-GATE-HK/gates/4/approve',
-    payload: {},
+    url: '/api/items/T-GATE-HK/move',
+    payload: { action: 'approve', from: stepKeyAt(4) },
     headers: { cookie, 'x-human-key': 'wrong-pin' },
   })
   assert.equal(res.statusCode, 401)
@@ -556,7 +583,7 @@ for (const [label, id, fail] of [
 
 // ---- HZ-92: /api/items/:id/resolve-conflicts — HTTP contract ----
 // The fast path is still an Accept-gate action: same session + gate-PIN
-// requirement as /reject, verified here without a real farm (FARM_URL is
+// requirement as a send-back, verified here without a real farm (FARM_URL is
 // deleted at the top of this file) so a missing farm reports cleanly instead
 // of hanging. The resolved/escalated behavior itself (a real farmd reply)
 // is covered by server/test/orchestrator-resolve-conflicts.test.mjs.

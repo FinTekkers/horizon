@@ -29,7 +29,7 @@ const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
 const golden = await import('../src/goldenCases.js')
 const { ACT_GATES, NEVER_ACT, ACTOR } = await import('../src/caretakerActor.js')
-const { kindStepIndex, requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { kindStepIndex, requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 const app = buildApp({ logger: false })
@@ -75,8 +75,14 @@ const view = async (id) => {
   const res = await app.inject({ method: 'GET', url: '/api/items?v=2', headers: { cookie } })
   return res.json().items.find((it) => it.id === id)
 }
+// An approve at the gate, through POST /move (HZ-712).
 const approve = (id, stepIndex, body = {}) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${stepIndex}/approve`, headers: { cookie, 'x-human-key': pin }, payload: body })
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    headers: { cookie, 'x-human-key': pin },
+    payload: { action: 'approve', from: stepKeyAt(stepIndex), ...body },
+  })
 const setRow = (id) => db.prepare('SELECT * FROM golden_case_set WHERE item_id = ?').get(id)
 const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor
 

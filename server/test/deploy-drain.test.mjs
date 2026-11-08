@@ -48,7 +48,9 @@ const deployDrain = await import('../src/deployDrain.js')
 const heldAccept = await import('../src/heldAccept.js')
 const votes = await import('../src/waPollVotes.js')
 const { POLL_APPROVE } = await import('../src/waSend.js')
-const { ACCEPT_GATE_INDEX, STEPS } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, STEPS, stepKeyAt } = await import('../../domain/js/lifecycle.js')
+// HZ-712: the browser's Accept is a move from this gate (the old approve route was retired).
+const ACCEPT_KEY = stepKeyAt(ACCEPT_GATE_INDEX)
 
 store.purgeDemoItems()
 store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
@@ -120,7 +122,12 @@ const drain = (method, url = '/api/farm/deploy-drain', { payload, headers = FARM
 
 const acceptPaths = {
   browser: async (id) =>
-    app.inject({ method: 'POST', url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`, payload: {}, headers: { cookie, 'x-human-key': pin } }),
+    app.inject({
+      method: 'POST',
+      url: `/api/items/${id}/move`,
+      payload: { action: 'approve', from: ACCEPT_KEY },
+      headers: { cookie, 'x-human-key': pin },
+    }),
   whatsapp: async (id) =>
     app.inject({
       method: 'POST',
@@ -158,6 +165,12 @@ for (const [name, accept] of Object.entries(acceptPaths)) {
       assert.equal(res.json().outcome, 'applied')
       const ack = db.prepare('SELECT body FROM gate_notice WHERE item_id = ? ORDER BY id DESC').get(id)
       assert.match(ack.body, /queued to merge until the deploy ends/)
+    } else if (name === 'browser') {
+      // The move route adds the item, and the move — none yet, the Accept is held.
+      const { item, move, ...body } = res.json()
+      assert.deepEqual(body, { ok: true, held: true, latestEnd: blockedUntil, actor: heldRow(id).actor })
+      assert.equal(item.id, id)
+      assert.equal(move, null)
     } else {
       assert.deepEqual(res.json(), { ok: true, held: true, latestEnd: blockedUntil, actor: heldRow(id).actor })
     }
@@ -233,7 +246,7 @@ test('M6: a restarted server starts unblocked, and Accept reaches the claim', ()
       const app = buildApp({ logger: false })
       const blocked = deployDrain.isDeployBlocked()
       // Not awaited: the stubbed check never finishes; the claim is synchronous.
-      app.inject({ method: 'POST', url: '/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve', payload: {},
+      app.inject({ method: 'POST', url: '/api/items/${id}/move', payload: { action: 'approve', from: '${ACCEPT_KEY}' },
         headers: { cookie: '${cookie}', 'x-human-key': '${pin}' } })
       for (let i = 0; i < 200 && !store.getGateAction('${id}', 'premerge'); i++) await new Promise((r) => setTimeout(r, 5))
       console.log(JSON.stringify({ blocked, state: store.getGateAction('${id}', 'premerge')?.state ?? null }))

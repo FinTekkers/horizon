@@ -35,7 +35,7 @@ process.env.GATE_ACTION_MARGIN_MS = '200'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { ACCEPT_GATE_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -82,8 +82,8 @@ function acceptItem() {
 const approve = (id) =>
   app.inject({
     method: 'POST',
-    url: `/api/items/${id}/gates/${ACCEPT_GATE_INDEX}/approve`,
-    payload: {},
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(ACCEPT_GATE_INDEX) },
     headers: { cookie, 'x-human-key': pin },
   })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

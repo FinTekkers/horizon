@@ -22,7 +22,7 @@ delete process.env.FARM_URL
 delete process.env.GITHUB_WEBHOOK_SECRET
 
 const { db } = await import('../src/db.js')
-const { IMPLEMENT_STEP_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
+const { IMPLEMENT_STEP_INDEX, STEPS, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const store = await import('../src/store.js')
 const deployDrain = await import('../src/deployDrain.js')
 const orchestrator = await import('../src/orchestrator.js')
@@ -61,8 +61,10 @@ function failedImplementItem(id, attempts, last = {}) {
   }
 }
 
-const sendNote = (id, feedback = 'try X') =>
-  gated({ method: 'POST', url: `/api/items/${id}/reject`, payload: { target: 'Eng', feedback } })
+// HZ-712: the note that re-runs a failed step is the move route's Retry (the
+// old send-back route was retired). `from` is where the item sits.
+const sendNote = (id, note = 'try X', from = stepKeyAt(IMPLEMENT_STEP_INDEX)) =>
+  gated({ method: 'POST', url: `/api/items/${id}/move`, payload: { action: 'retry', from, note } })
 
 test('a note on a paused, failed step answers with the item and the attempt the orchestrator wrote (MAX + 1)', async () => {
   failedImplementItem('AR-1', 2)
@@ -80,7 +82,8 @@ test('a note on a paused, failed step answers with the item and the attempt the 
   assert.equal(body.item.activeRun.id, run.id)
   assert.equal(body.item.activeRun.attempt, 3)
   assert.equal(body.item.stepOutputs, undefined, 'the item is the v2 stream shape, without stepOutputs')
-  assert.match(body.item.events[0].text, /^requested changes on Eng: try X — sent back to the /)
+  assert.equal(body.item.events[0].text, `retried “${STEPS[IMPLEMENT_STEP_INDEX].label}”: try X`)
+  assert.equal(body.move.action, 'retry')
 })
 
 for (const [label, flags] of [
@@ -135,7 +138,7 @@ test('a failed send-back keeps its exact error body, with no item', async () => 
   assert.deepEqual(missing.json(), { error: 'not_found' })
 
   db.prepare("INSERT INTO work_item (id, title, priority, cursor) VALUES ('AR-C', 'Closed', 'Medium', 99)").run()
-  const closed = await sendNote('AR-C')
+  const closed = await sendNote('AR-C', 'try X', 'closed')
   assert.equal(closed.statusCode, 409)
   assert.deepEqual(closed.json(), { error: 'closed' })
 })

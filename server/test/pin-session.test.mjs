@@ -49,7 +49,7 @@ const auth = await import('../src/auth.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, kindStepIndex, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, kindStepIndex, stepKeyAt, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 
@@ -142,7 +142,12 @@ function seedTask() {
 }
 const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor
 const approve = (id, headers) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${APPROVE_RUN_GATE_INDEX}/approve`, headers, payload: {} })
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    headers,
+    payload: { action: 'approve', from: stepKeyAt(APPROVE_RUN_GATE_INDEX) },
+  })
 
 // The UI's headers: the session cookie and the same-origin marker.
 const browser = (session, extra = {}) => ({ cookie: session.cookie, 'x-horizon-csrf': '1', ...extra })

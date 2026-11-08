@@ -4,7 +4,7 @@
 // POSTs; the server sends what changed after every mutation (HZ-318: a full
 // `snapshot` event on connect, then `delta` events at most once a second).
 
-import { APPROVE_FILE_GATE_INDEX, stepKeyAt } from '../../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, APPROVE_FILE_GATE_INDEX, stepKeyAt } from '../../../domain/js/lifecycle.js'
 
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
@@ -903,8 +903,15 @@ export async function resolveConflicts(id) {
 // HZ-185: forward an item the latest automated review rejected to Accept the
 // code with the failing verdict attached, gated by the same PIN. Resolves with
 // the server's {ok, forwarded} or {error} so the caller can say why not.
+// HZ-712: an approve move from implement to Accept the code.
 export async function forwardToAccept(id) {
-  const res = await gatePost(`/items/${id}/forward-to-accept`, {})
+  const item = items.find((it) => it.id === id)
+  if (!item) return { ok: false, error: 'not_found' }
+  const res = await gatePost(`/items/${id}/move`, {
+    action: 'approve',
+    from: item.currentStepKey ?? stepKeyAt(item.cursor),
+    to: stepKeyAt(ACCEPT_GATE_INDEX),
+  })
   return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
 }
 

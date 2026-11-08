@@ -45,7 +45,7 @@ const gateNotifier = await import('../src/gateNotifier.js')
 const votes = await import('../src/waPollVotes.js')
 const { POLL_APPROVE } = await import('../src/waSend.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, requiredStepIndex, kindStepIndex, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX, EXECUTE_STEP_INDEX } =
+const { STEPS, requiredStepIndex, kindStepIndex, stepKeyAt, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX, EXECUTE_STEP_INDEX } =
   await import('../../domain/js/lifecycle.js')
 const { REASON } = await import('../../domain/js/reasons.js')
 
@@ -134,9 +134,10 @@ function seedChange(id, cursor) {
 const row = (id) => db.prepare('SELECT cursor, approved_plan_hash FROM work_item WHERE id = ?').get(id)
 const eventsOf = (id) => db.prepare('SELECT who, text FROM event WHERE item_id = ? ORDER BY id').all(id)
 
-const approveUrl = (id, stepIndex = APPROVE_RUN_GATE_INDEX) => `/api/items/${id}/gates/${stepIndex}/approve`
-const approveAs = (id, headers, payload = {}, stepIndex) =>
-  app.inject({ method: 'POST', url: approveUrl(id, stepIndex), headers, payload })
+// HZ-712: the gate's approve is POST /move's approve, from the gate's key.
+const approveUrl = (id) => `/api/items/${id}/move`
+const approveAs = (id, headers, payload = {}, stepIndex = APPROVE_RUN_GATE_INDEX) =>
+  app.inject({ method: 'POST', url: approveUrl(id), headers, payload: { action: 'approve', from: stepKeyAt(stepIndex), ...payload } })
 const withSession = (pin) => ({ cookie: alice.cookie, ...(pin === undefined ? {} : { 'x-human-key': pin }) })
 const waApprove = (id) =>
   app.inject({
@@ -198,7 +199,11 @@ test('route matrix on an Autopilot project: only a session with the right PIN ap
 
   const ok = await approveAs('T-ROUTES', withSession(PIN))
   assert.equal(ok.statusCode, 200)
-  assert.deepEqual(ok.json(), { ok: true, closed: false })
+  // /move adds the item and its item_move row to the approve's own answer.
+  const { item, move, ...answer } = ok.json()
+  assert.deepEqual(answer, { ok: true, closed: false })
+  assert.equal(item.id, 'T-ROUTES')
+  assert.deepEqual([move.action, move.fromKey, move.toKey], ['approve', stepKeyAt(APPROVE_RUN_GATE_INDEX), stepKeyAt(EXECUTE_STEP_INDEX)])
   assert.equal(row('T-ROUTES').cursor, EXECUTE_STEP_INDEX)
   orchestrator.cancel('T-ROUTES') // HZ-378: approving dispatches the Execute job — clear its watchdog so the process can exit
 })
@@ -448,13 +453,19 @@ test("Execute's guard: a matching plan starts, a changed plan fails the run, an 
 
 // ---- metric 4: Reject with feedback goes back to Run plan ----
 
+// HZ-712: through POST /move's return, which replaced the send-back route.
 test('rejecting at Approve the run moves the Task to Run plan, and the feedback rides in its next run', async () => {
   seedTask('T-REJECT')
   const res = await app.inject({
     method: 'POST',
-    url: '/api/items/T-REJECT/reject',
+    url: '/api/items/T-REJECT/move',
     headers: withSession(PIN),
-    payload: { target: 'Approve the run', feedback: 'use the staging bucket, not prod' },
+    payload: {
+      action: 'return',
+      from: stepKeyAt(APPROVE_RUN_GATE_INDEX),
+      to: stepKeyAt(RUN_PLAN_STEP_INDEX),
+      note: 'use the staging bucket, not prod',
+    },
   })
   assert.equal(res.statusCode, 200)
   assert.equal(row('T-REJECT').cursor, RUN_PLAN_STEP_INDEX)

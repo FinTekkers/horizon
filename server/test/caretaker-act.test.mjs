@@ -45,7 +45,7 @@ const { buildApp } = await import('../src/app.js')
 const caretaker = await import('../src/caretaker.js')
 const actor = await import('../src/caretakerActor.js')
 const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
-const { STEPS } = await import('../../domain/js/lifecycle.js')
+const { STEPS, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 // HZ-708: Review before execution's default send-back target, the plan it reviews.
 const DRAFT_PLAN = STEPS.findIndex((s) => s.label === 'Draft implementation plan')
 
@@ -241,15 +241,28 @@ test('one code path: the UI routes and the caretaker call the same gateActions f
   const pid = project('off')
   item('UI-5', pid, 5)
   item('UI-10', pid, 10)
-  const approve = await app.inject({ method: 'POST', url: '/api/items/UI-5/gates/5/approve', headers: sessionHeaders, payload: {} })
-  assert.equal(approve.statusCode, 200)
-  const reject = await app.inject({
+  // HZ-712: the UI moves items through POST /move (the old approve and
+  // send-back routes were retired). A return to a sub-step is the one /move
+  // return that runs the gate's send-back, so UI-10 gets a sub-step snapshot
+  // on the plan Review before execution sends back to.
+  db.prepare('UPDATE work_item SET substeps_json = ? WHERE id = ?').run(
+    JSON.stringify([{ id: 'plan-check', label: 'Plan check', anchor: DRAFT_PLAN }]),
+    'UI-10',
+  )
+  const approve = await app.inject({
     method: 'POST',
-    url: '/api/items/UI-10/reject',
+    url: '/api/items/UI-5/move',
     headers: sessionHeaders,
-    payload: { target: 'Review before execution', feedback: 'redo it' },
+    payload: { action: 'approve', from: stepKeyAt(5) },
   })
-  assert.equal(reject.statusCode, 200)
+  assert.equal(approve.statusCode, 200)
+  const sendBack = await app.inject({
+    method: 'POST',
+    url: '/api/items/UI-10/move',
+    headers: sessionHeaders,
+    payload: { stepKey: `${stepKeyAt(DRAFT_PLAN)}#plan-check`, from: stepKeyAt(10), note: 'redo it' },
+  })
+  assert.equal(sendBack.statusCode, 200, sendBack.body)
   // HZ-384: the route also hands on its human proof, after the actor.
   assert.deepEqual(callsFor('UI-5').map((c) => [c.fn, c.args[3]]), [['approve', 'Alice Example']])
   assert.deepEqual(callsFor('UI-10').map((c) => [c.fn, c.args.at(-1)]), [['sendBack', 'Alice Example']])

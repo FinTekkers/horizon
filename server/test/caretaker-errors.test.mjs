@@ -24,6 +24,7 @@ const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
 const caretaker = await import('../src/caretaker.js')
+const { stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 const app = buildApp({ logger: false })
@@ -47,10 +48,11 @@ test('a missing role file: init() does not throw, logs, and records one wait wit
 })
 
 test('a human approving the gate while the caretaker fails still gets 200 and the cursor advances', async () => {
+  // HZ-712: the approve route is POST /move now.
   const res = await app.inject({
     method: 'POST',
-    url: '/api/items/BP-15/gates/15/approve',
-    payload: {},
+    url: '/api/items/BP-15/move',
+    payload: { action: 'approve', from: stepKeyAt(15) },
     headers: { cookie: alice.cookie, 'x-human-key': alice.pin },
   })
   assert.equal(res.statusCode, 200, res.body)

@@ -30,7 +30,7 @@ const config = await import('../src/config.js')
 const auth = await import('../src/auth.js')
 const { composeIssueBody } = await import('../src/github.js')
 const { decide, parsePolicy, ACTOR } = await import('../src/caretakerRules.js')
-const { requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 await orchestrator.init({ info: () => {}, warn: () => {} })
@@ -90,7 +90,12 @@ async function runPlan(id, split, artifactMd = PLAN_MD) {
 }
 
 const approve = (id) =>
-  app.inject({ method: 'POST', url: `/api/items/${id}/gates/${DESIGN_GATE}/approve`, payload: {}, headers: { cookie, 'x-human-key': pin } })
+  app.inject({
+    method: 'POST',
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(DESIGN_GATE) },
+    headers: { cookie, 'x-human-key': pin },
+  })
 const sendBack = (id) => app.gateActions.sendBack(id, { target: 'Approve the high-level design', feedback: 'rethink' }, 'You')
 const rows = (id) => db.prepare('SELECT * FROM item_split WHERE source_item_id = ? ORDER BY id').all(id)
 const deps = (id) => db.prepare('SELECT * FROM work_item_dependency WHERE item_id = ?').all(id)

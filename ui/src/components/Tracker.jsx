@@ -134,6 +134,9 @@ function runPlanSummary(runPlan) {
 // route's error code. Anything else falls back to a generic line.
 const FORWARD_ERRORS = {
   review_not_rejected: 'The latest review is no longer a rejection — nothing to forward.',
+  // HZ-712: the move route's answers for the same two cases.
+  not_at_gate: 'The latest review is no longer a rejection — nothing to forward.',
+  stale_step: 'This item has moved on since — nothing to forward.',
   not_in_execute: 'This item is no longer in Execute.',
   forward_in_progress: 'A forward is already in progress.',
   branch_moved: 'The PR moved past the reviewed commit — implement restarted with the findings instead.',

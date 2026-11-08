@@ -30,14 +30,16 @@ delete process.env.FARM_URL
 
 const { buildApp, SESSION_EXEMPT } = await import('../src/app.js')
 const { isInternal } = await import('../src/openapi.js')
+const { isRetired } = await import('../src/retiredRoutes.js')
 
 const registered = []
 const app = buildApp({ logger: false, onRoute: (routeOptions) => registered.push(routeOptions) })
 await app.ready()
 const spec = app.swagger()
 
+// HZ-712: the retired move routes' 410 stubs are unpublished, like internal ones.
 const PUBLIC_ROUTES = registered
-  .filter(({ url, method }) => url.startsWith('/api/') && method !== 'HEAD' && !isInternal(url))
+  .filter(({ url, method }) => url.startsWith('/api/') && method !== 'HEAD' && !isInternal(url) && !isRetired(url))
   .map(({ method, url }) => ({ method, url, label: `${method} ${url}` }))
 
 function operationFor({ method, url }) {
@@ -156,12 +158,9 @@ test('exactly as many operations declare the PIN header as there are gates in th
 test('the three routes the metric names by hand are among them', () => {
   // The metric lists approve, reject and resolve-conflicts. The count above is
   // the real gate; this pins the named three so a refactor cannot satisfy the
-  // count while losing one of them.
-  for (const url of [
-    '/api/items/:id/gates/:step/approve',
-    '/api/items/:id/reject',
-    '/api/items/:id/resolve-conflicts',
-  ]) {
+  // count while losing one of them. HZ-712: approve and reject are the move
+  // route now.
+  for (const url of ['/api/items/:id/move', '/api/items/:id/resolve-conflicts']) {
     const schemes = schemesOn({ method: 'POST', url })
     assert.ok(schemes.has('humanGateKey'), `${url} does not document the x-human-key header`)
     assert.ok(schemes.has('sessionCookie'), `${url} needs a session as well as the PIN`)
@@ -225,7 +224,7 @@ test('the token management routes are documented, cookie only', () => {
 test('no gate route offers the bearer token', () => {
   const offending = PUBLIC_ROUTES.filter((r) => schemesOn(r).has('humanGateKey') && schemesOn(r).has('bearerToken'))
   assert.deepEqual(offending.map((r) => r.label), [])
-  for (const url of ['/api/items/:id/gates/:step/approve', '/api/items/:id/reject', '/api/items/:id/resolve-conflicts']) {
+  for (const url of ['/api/items/:id/move', '/api/items/:id/resolve-conflicts']) {
     assert.equal(schemesOn({ method: 'POST', url }).has('bearerToken'), false, `${url} documents bearerToken`)
   }
 })

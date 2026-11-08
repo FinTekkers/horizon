@@ -25,7 +25,7 @@ const orchestrator = await import('../src/orchestrator.js')
 const { buildApp } = await import('../src/app.js')
 const auth = await import('../src/auth.js')
 const config = await import('../src/config.js')
-const { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 const posts = []
 globalThis.fetch = async (url, opts) => {
@@ -86,7 +86,12 @@ SETUPS.forEach(([name, projectId, substeps], n) => {
     const id = `OFF-GATE-${n}`
     seed(id, FIRST_GATE, projectId, substeps)
     assert.ok(!Object.hasOwn(store.itemViewById(id), 'goldenCases'))
-    const res = await app.inject({ method: 'POST', url: `/api/items/${id}/gates/${FIRST_GATE}/approve`, headers: { cookie, 'x-human-key': pin }, payload: {} })
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/items/${id}/move`,
+      headers: { cookie, 'x-human-key': pin },
+      payload: { action: 'approve', from: stepKeyAt(FIRST_GATE) },
+    })
     assert.equal(res.statusCode, 200, res.body)
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM golden_case_set').get().n, 0)
   })

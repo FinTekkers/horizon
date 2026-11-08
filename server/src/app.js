@@ -14,6 +14,7 @@ import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
 import { ROUTE_MOVE_ACTIONS, moveKeyOf, planMove } from './moveItem.js'
+import { registerRetiredMoveRoutes, sendRetired } from './retiredRoutes.js'
 import * as premerge from './premerge.js'
 import * as autoResolve from './autoResolve.js'
 import * as webhooks from './webhooks.js'
@@ -2047,24 +2048,6 @@ export function buildApp({
     return ref.index
   }
 
-  // HZ-709: the /reject body's send-back target — `targetStep` (a key), or the
-  // deprecated `targetStepIndex`. Both, naming different steps, is ambiguous.
-  // { index } (null for no target) or { error, status }.
-  function rejectTargetOf(request, id) {
-    const { targetStep, targetStepIndex } = request.body ?? {}
-    if (targetStep == null) {
-      if (targetStepIndex != null) {
-        request.log.warn(`deprecated: numeric step ref route=reject item=${id} step=${targetStepIndex}`)
-      }
-      return { index: targetStepIndex ?? null }
-    }
-    const item = store.getItem(id)
-    const ref = resolveStepRef(targetStep, item ? itemKindOf(item) : null)
-    if (ref.error || ref.deprecated) return { error: 'invalid_target', status: 409 }
-    if (targetStepIndex != null && targetStepIndex !== ref.index) return { error: 'ambiguous_target', status: 400 }
-    return { index: ref.index }
-  }
-
   const gateActions = {
     approve: (id, stepIndex, notes, actor, human) => performGateApproval(id, stepIndex, notes, actor, human),
     sendBack: (id, opts, actor) => performSendBack(id, opts, actor),
@@ -2072,51 +2055,9 @@ export function buildApp({
   }
   fastify.decorate('gateActions', gateActions)
 
-  fastify.post(
-    '/api/items/:id/gates/:step/approve',
-    {
-      config: { scope: 'member:item' },
-      schema: {
-        params: {
-          type: 'object',
-          required: ['id', 'step'],
-          // HZ-709: a step key; a position is deprecated (one release).
-          properties: { id: { type: 'string' }, step: STEP_REF_PARAM },
-        },
-        body: {
-          type: 'object',
-          properties: {
-            notes: { type: 'string', maxLength: 2000 },
-            // HZ-384: the run plan hash the Approve the run card showed.
-            planHash: { type: 'string', maxLength: 128 },
-            // HZ-491: the effective runner the same card showed.
-            runner: { type: 'string', enum: ['container', 'host'] },
-            // HZ-541: the golden-cases set the first gate's table showed.
-            goldenHash: { type: 'string', maxLength: 128 },
-            // HZ-642: Approve & file's Autopilot choice for the items it files.
-            filedAutopilot: { type: 'string', enum: ['default', 'off'] },
-          },
-        },
-        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
-        security: HUMAN_GATE_SECURITY,
-      },
-    },
-    async (request, reply) => {
-      const proof = humanAuthorized(request, reply)
-      if (!proof) return
-      const stepIndex = gateStepOf(request, reply, 'approve')
-      if (stepIndex === null) return
-      const { id } = request.params
-      const notes = (request.body?.notes || '').trim()
-      const planHash = request.body?.planHash || null
-      const runner = request.body?.runner || null
-      const goldenHash = request.body?.goldenHash || null
-      const filedAutopilot = request.body?.filedAutopilot || null
-      const result = await gateActions.approve(id, stepIndex, notes, actorOf(request), { proof, planHash, runner, goldenHash, filedAutopilot })
-      if (result.status) return reply.code(result.status).send(gateFailureBody(result))
-      return send(reply, result)
-    },
-  )
+  // HZ-712: the old move routes (approve, reject, forward to Accept, restart
+  // phase) answer 410 naming POST /api/items/:id/move — see retiredRoutes.js.
+  registerRetiredMoveRoutes(fastify)
 
   // WhatsApp-concierge leg of gate approval (HZ-15, re-secured by HZ-140).
   //
@@ -2310,52 +2251,8 @@ export function buildApp({
     },
   )
 
-  fastify.post(
-    '/api/items/:id/reject',
-    {
-      config: { scope: 'member:item' },
-      schema: {
-        params: idParam,
-        body: {
-          type: 'object',
-          properties: {
-            target: { type: 'string' },
-            feedback: { type: 'string' },
-            // HZ-709: the send-back target by step key.
-            targetStep: { type: 'string', minLength: 1, maxLength: 80 },
-            // Deprecated (one release): the target by position.
-            targetStepIndex: { type: 'integer' },
-            // HZ-540: a sub-step of the target step, from the item's snapshot.
-            targetSubstepId: { type: 'string', pattern: SUBSTEP_ID_PATTERN },
-          },
-        },
-        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
-        security: HUMAN_GATE_SECURITY,
-      },
-    },
-    (request, reply) => {
-      const proof = humanAuthorized(request, reply)
-      if (!proof) return
-      const { id } = request.params
-      const targetStep = rejectTargetOf(request, id)
-      if (targetStep.error) return reply.code(targetStep.status).send({ error: targetStep.error })
-      const result = gateActions.sendBack(
-        id,
-        {
-          target: request.body?.target,
-          feedback: request.body?.feedback,
-          targetStepIndex: targetStep.index,
-          targetSubstepId: request.body?.targetSubstepId,
-          proof,
-        },
-        actorOf(request),
-      )
-      return send(reply, result.error ? result : { ...result, ...actionState(id, { restart: true }) })
-    },
-  )
-
   // HZ-92/HZ-154: merge-conflict resolution — same gate PIN requirement as
-  // /reject above (this is the fast path that replaces sending the item
+  // a send-back (this is the fast path that replaces sending the item
   // straight back to the implement step), the Accept gate itself is untouched
   // either way. HZ-154 let the farm side resolve the conflicted hunks and
   // review just that resolution, so this can now involve an agent; what it
@@ -2378,26 +2275,6 @@ export function buildApp({
     },
   )
 
-  // HZ-185: forward an item the latest automated review just rejected to
-  // Accept the code, with that failing verdict attached — the same path the
-  // review cap takes. Same gate PIN as /reject: it never approves anything, it
-  // only moves the item to the gate, where Accept still needs the PIN.
-  fastify.post(
-    '/api/items/:id/forward-to-accept',
-    {
-      config: { scope: 'member:item' },
-      schema: {
-        params: idParam,
-        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
-        security: HUMAN_GATE_SECURITY,
-      },
-    },
-    async (request, reply) => {
-      if (!humanAuthorized(request, reply)) return
-      return send(reply, await orchestrator.forwardRejectedReview(request.params.id, request.user.name))
-    },
-  )
-
   // Mirrors a saved note onto the item's issue thread (the footer marks it
   // ours so ingestion skips it). Best-effort: a GitHub failure never fails the
   // note. Shared by /feedback and HZ-790's note-via-whatsapp.
@@ -2408,10 +2285,10 @@ export function buildApp({
       .catch(() => {})
   }
 
-  // Standalone feedback — the UI leg of "agents respond to feedback". If the
-  // item is mid-agent-step the attempt is superseded and re-run with the
-  // feedback ({rerun:true}); parked at a gate it queues for the next dispatch
-  // ({queued:true}).
+  // Standalone feedback: a note queued for the item's next dispatch
+  // ({queued:true}). HZ-712: a note that would re-run a running agent step
+  // (store.addFeedback's rerun) answers 410 before anything is written — that
+  // is the move route's Retry now.
   fastify.post(
     '/api/items/:id/feedback',
     {
@@ -2426,13 +2303,16 @@ export function buildApp({
             target: { type: 'string', maxLength: 40 },
           },
         },
-        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+        response: { 200: OK_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 410: ERROR_OBJECT },
       },
     },
     (request, reply) => {
       const { id } = request.params
       const { message, target = '' } = request.body
       const item = store.getItem(id)
+      if (item && !isClosed(item) && !isAbandoned(item) && STEPS[item.cursor]?.kind === 'agent' && !item.paused) {
+        return sendRetired(reply)
+      }
       const result = store.addFeedback(id, { message, target, source: 'ui' })
       if (!result.error) mirrorFeedback(id, item, message, 'Human')
       return send(reply, result)
@@ -2832,34 +2712,6 @@ export function buildApp({
       store.upsertFromGithub(issue, item.repo)
       const view = store.itemViewById(item.id)
       return { ok: true, autopilotOff: !!view?.autopilotOff, item: view }
-    },
-  )
-
-  fastify.post(
-    '/api/items/:id/phases/:phase/restart',
-    {
-      config: { scope: 'member:item' },
-      schema: {
-        params: {
-          type: 'object',
-          required: ['id', 'phase'],
-          properties: { id: { type: 'string' }, phase: { type: 'integer', minimum: 0, maximum: 4 } },
-        },
-        body: {
-          type: 'object',
-          properties: { reason: { type: 'string' } },
-        },
-        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
-        security: HUMAN_GATE_SECURITY,
-      },
-    },
-    (request, reply) => {
-      const proof = humanAuthorized(request, reply)
-      if (!proof) return
-      return send(
-        reply,
-        store.restartPhase(request.params.id, request.params.phase, request.body?.reason, actorOf(request), { proof }),
-      )
     },
   )
 

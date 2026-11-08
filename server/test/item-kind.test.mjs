@@ -2,7 +2,7 @@
 // kind read as `change`, an unknown kind is refused, the change rows keep
 // their labels, order and step numbers with the task rows after them, and a
 // stored closed change cursor still reads closed. Cursor movement for a task
-// (restart, send-back, gate advance) stays inside the task rows.
+// (return, send-back, gate advance) stays inside the task rows.
 //
 // Step positions are always derived through kindStepIndex/firstStepIndex/
 // endIndex — never typed — so this file cannot go stale on an insertion the
@@ -30,6 +30,7 @@ const {
   endIndex,
   kindStepIndex,
   requiredStepIndex,
+  stepKeyAt,
   IMPLEMENT_STEP_INDEX,
 } = await import('../../domain/js/lifecycle.js')
 
@@ -117,9 +118,16 @@ test('a change item stored with the old closed cursor still reads closed', () =>
   assert.equal(phaseIdx(item), phasesFor('change').length - 1)
 })
 
-test('restartPhase on a task restarts that kind\'s phase, never a change row', () => {
+// HZ-712: store.restartPhase is gone; a phase restart is a return to the
+// phase's first step through store.moveByHuman.
+test('a return on a task lands on that kind\'s step, never a change row', () => {
   insertItem.run('K-RESTART', 'Task restart', 'Medium', kindStepIndex('Run plan', 'task'), 'task')
-  assert.deepEqual(store.restartPhase('K-RESTART', 1, 'try again'), { ok: true })
+  assert.deepEqual(store.moveByHuman('K-RESTART', { action: 'return', toKey: stepKeyAt(IMPLEMENT_STEP_INDEX), note: 'wrong kind' }), {
+    error: 'bad_target_key',
+  })
+  assert.equal(store.getItem('K-RESTART').cursor, kindStepIndex('Run plan', 'task'))
+  const assess = stepKeyAt(kindStepIndex('Assess', 'task'))
+  assert.equal(store.moveByHuman('K-RESTART', { action: 'return', toKey: assess, note: 'try again' }).ok, true)
   assert.equal(store.getItem('K-RESTART').cursor, kindStepIndex('Assess', 'task'))
 })
 

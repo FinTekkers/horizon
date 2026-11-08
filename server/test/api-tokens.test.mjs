@@ -27,7 +27,7 @@ process.env.FARM_SHARED_SECRET = 'farm-shared-secret-for-api-tokens-test'
 
 const { db } = await import('../src/db.js')
 const { buildApp } = await import('../src/app.js')
-const { STEPS, ACCEPT_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, ACCEPT_GATE_INDEX, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
@@ -214,24 +214,31 @@ test('an action taken with a token is attributed to its user, with the token nam
 
 // ---- metric 5: gates refuse a token, with or without the PIN ----
 
+// HZ-712: approve and send back are both POST /move now (the old routes were
+// retired).
+const GATE_KEY = stepKeyAt(GATE_INDEX)
 const GATE_ROUTES = [
-  { label: 'approve', url: `/api/items/TOK-GATE-TOKEN/gates/${GATE_INDEX}/approve`, payload: {} },
-  { label: 'reject', url: '/api/items/TOK-GATE-TOKEN/reject', payload: { feedback: 'no' } },
+  { label: 'approve', url: '/api/items/TOK-GATE-TOKEN/move', payload: { action: 'approve', from: GATE_KEY } },
+  {
+    label: 'return',
+    url: '/api/items/TOK-GATE-TOKEN/move',
+    payload: { action: 'return', from: GATE_KEY, to: stepKeyAt(GATE_INDEX - 1), note: 'no' },
+  },
   { label: 'resolve-conflicts', url: '/api/items/TOK-CONFLICT/resolve-conflicts', payload: {} },
 ]
 
 test('positive control: a session with the PIN approves, so the token-with-PIN 401 below is not a wrong PIN', async () => {
   const res = await app.inject({
     method: 'POST',
-    url: `/api/items/TOK-GATE-SESSION/gates/${GATE_INDEX}/approve`,
+    url: '/api/items/TOK-GATE-SESSION/move',
     headers: { cookie: alice.cookie, 'x-human-key': alice.pin },
-    payload: {},
+    payload: { action: 'approve', from: GATE_KEY },
   })
   assert.equal(res.statusCode, 200, res.body)
   assert.equal(store.getItem('TOK-GATE-SESSION').cursor, GATE_INDEX + 1)
 })
 
-test('a valid token WITHOUT the PIN gets 401 human_gate_key_required on approve, reject and resolve-conflicts', async () => {
+test('a valid token WITHOUT the PIN gets 401 human_gate_key_required on approve, return and resolve-conflicts', async () => {
   const { token } = await newToken(alice, 'gate-no-pin')
   for (const route of GATE_ROUTES) {
     const res = await app.inject({ method: 'POST', url: route.url, headers: bearer(token), payload: route.payload })
@@ -241,7 +248,7 @@ test('a valid token WITHOUT the PIN gets 401 human_gate_key_required on approve,
   assert.equal(store.getItem('TOK-GATE-TOKEN').cursor, GATE_INDEX)
 })
 
-test('a valid token WITH the correct PIN still gets 401 on approve, reject and resolve-conflicts', async () => {
+test('a valid token WITH the correct PIN still gets 401 on approve, return and resolve-conflicts', async () => {
   const { token } = await newToken(alice, 'gate-with-pin')
   for (const route of GATE_ROUTES) {
     const res = await app.inject({
@@ -260,7 +267,7 @@ test('a token with the PIN gets 401 on the other human-gated routes too', async 
   const { token } = await newToken(alice, 'other-gates')
   const headers = { ...bearer(token), 'x-human-key': alice.pin }
   for (const [method, url, payload] of [
-    ['POST', '/api/items/TOK-GATE-TOKEN/phases/0/restart', {}],
+    ['POST', '/api/items/TOK-GATE-TOKEN/move', { action: 'retry', from: GATE_KEY }],
     ['POST', '/api/items/TOK-GATE-TOKEN/abandon', { reason: 'nope' }],
     ['PUT', '/api/definitions/role/pm', { content: 'x' }],
   ]) {

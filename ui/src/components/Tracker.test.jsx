@@ -963,6 +963,20 @@ test('a failed forward request re-enables the button too', async () => {
   expect(getByRole('alert').textContent).toMatch(/did not go through/)
 })
 
+// HZ-712: the forward is a move now, so its refusals are the move route's codes.
+test('the move route’s not_at_gate and stale_step refusals read as plain reasons', async () => {
+  for (const [error, text] of [
+    ['not_at_gate', /no longer a rejection/],
+    ['stale_step', /moved on since/],
+  ]) {
+    const onForward = vi.fn(() => Promise.resolve({ error }))
+    const { getByRole, unmount } = renderWithForward(rejectedItem, onForward)
+    fireEvent.click(getByRole('button', { name: 'Accept despite review findings' }))
+    await waitFor(() => expect(getByRole('alert').textContent).toMatch(text))
+    unmount()
+  }
+})
+
 test('the forward button is absent when the latest review did not reject (O2)', () => {
   const { queryByRole } = renderWithForward({ ...rejectedItem, reviewRejected: false }, vi.fn())
   expect(queryByRole('button', { name: 'Accept despite review findings' })).toBeNull()

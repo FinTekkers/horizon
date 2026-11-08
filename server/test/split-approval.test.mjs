@@ -42,7 +42,7 @@ const auth = await import('../src/auth.js')
 const { composeIssueBody } = await import('../src/github.js')
 const { splitMarker } = await import('../src/split.js')
 const { ACTOR } = await import('../src/caretakerRules.js')
-const { requiredStepIndex } = await import('../../domain/js/lifecycle.js')
+const { requiredStepIndex, stepKeyAt } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 await orchestrator.init({ info: () => {}, warn: () => {} })
@@ -104,8 +104,8 @@ async function runPlan(id, split = SPLIT) {
 async function approve(id) {
   const res = await app.inject({
     method: 'POST',
-    url: `/api/items/${id}/gates/${DESIGN_GATE}/approve`,
-    payload: {},
+    url: `/api/items/${id}/move`,
+    payload: { action: 'approve', from: stepKeyAt(DESIGN_GATE) },
     headers: { cookie, 'x-human-key': pin },
   })
   responses.push(res.body)
