@@ -100,6 +100,8 @@ const SEND_BACK_ERRORS = {
   lane_skipped: 'That step is not offered from here any more.',
   at_gate: 'This step waits for a decision — there is nothing to retry.',
   merged: 'This item is merged. File a follow-up item instead.',
+  // HZ-805: a signed-out 401 is not a PIN refusal (serverApi pinRefused).
+  login_required: 'You are signed out — sign in again. Nothing was sent.',
 }
 
 function sendBackError(err) {
@@ -239,6 +241,8 @@ function AuthenticatedApp({ user, onLogout }) {
   // covers the gap before the server's push says a gate action is running.
   const approveInFlight = useRef(new Set())
   const [approvePending, setApprovePending] = useState(() => new Set())
+  // HZ-805: why the server refused an approve, until the next one or Dismiss.
+  const [approveError, setApproveError] = useState(null)
   // HZ-642: Approve & file's Autopilot choice per Plan, 'default' until the
   // owner picks; cleared once that Plan is approved or sent back.
   const [filedAutopilot, setFiledAutopilot] = useState({})
@@ -392,6 +396,7 @@ function AuthenticatedApp({ user, onLogout }) {
     if (approveInFlight.current.has(itemId)) return
     approveInFlight.current.add(itemId)
     setApprovePending(new Set(approveInFlight.current))
+    setApproveError(null)
     let result
     try {
       // HZ-642: only Approve & file takes the Autopilot choice; every other
@@ -405,6 +410,11 @@ function AuthenticatedApp({ user, onLogout }) {
       setApprovePending(new Set(approveInFlight.current))
     }
     if (result?.ok) clearFiledAutopilot(itemId)
+    // HZ-805: a refusal says why and leaves the item as the stream shows it.
+    // A cancelled PIN dialog stays silent, as it always has.
+    if (!result?.ok && typeof result?.error === 'string' && result.error !== 'human_gate_key_required') {
+      setApproveError({ itemId, message: sendBackError(Object.assign(new Error(result.error), { serverMessage: result.message })) })
+    }
     if (result?.closed) toBoard()
   }
   const toTracker = () => {
@@ -594,6 +604,15 @@ function AuthenticatedApp({ user, onLogout }) {
         <div className="farm-banner">
           The bot farm is restarting with <strong>{activeProject?.name || 'the selected project'}</strong>'s
           context — agents resume automatically when it's up.
+        </div>
+      )}
+
+      {approveError && (
+        <div className="farm-banner farm-banner--error" role="alert">
+          {approveError.itemId}: {approveError.message}{' '}
+          <button type="button" className="farm-banner__dismiss" onClick={() => setApproveError(null)}>
+            Dismiss
+          </button>
         </div>
       )}
 
