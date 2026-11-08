@@ -42,8 +42,11 @@ const { pin, cookie } = loginFixtureUser(auth, config)
 after(() => app.close())
 
 const insert = db.prepare('INSERT INTO work_item (id, title, priority, cursor, kind) VALUES (?, ?, ?, ?, ?)')
-function seed(id, key) {
+const insertRun = db.prepare("INSERT INTO step_run (item_id, step_index, agent, status) VALUES (?, ?, 'Eng', 'active')")
+// An item at `key`; with `running`, an active run on that step too.
+function seed(id, key, { running = false } = {}) {
   insert.run(id, `Item ${id}`, 'Medium', stepIndexOf(key), 'change')
+  if (running) insertRun.run(id, stepIndexOf(key))
   return id
 }
 const post = (url, payload = {}, headers = { cookie, 'x-human-key': pin }) => app.inject({ method: 'POST', url, payload, headers })
@@ -107,10 +110,29 @@ test('an unauthenticated call is the scope check’s 401, not a 410', async () =
 })
 
 test('a /feedback note that would re-run a running agent step answers 410 and writes nothing', async () => {
-  const id = seed('RT-RERUN', 'change.implement')
+  const id = seed('RT-RERUN', 'change.implement', { running: true })
   const res = await post(`/api/items/${id}/feedback`, { message: 'use the other API' })
   assertRetired(res, '/feedback re-run')
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM feedback WHERE item_id = ?').get(id).n, 0)
+})
+
+test('a /feedback note on an agent step with nothing running is still saved, not 410', async () => {
+  // Held (a dependency, an ask, a deploy): the concierge's fallback for a note
+  // here is /feedback, as retry-via-whatsapp refuses it not_running_step.
+  const id = seed('RT-HELD', 'change.implement')
+  const res = await post(`/api/items/${id}/feedback`, { message: 'note while held' })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(
+    db.prepare('SELECT message FROM feedback WHERE item_id = ?').all(id).map((r) => r.message),
+    ['note while held'],
+  )
+})
+
+test('a blank /feedback note on a running agent step keeps its own refusal, not 410', async () => {
+  const id = seed('RT-BLANK', 'change.implement', { running: true })
+  const res = await post(`/api/items/${id}/feedback`, { message: '   ' })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.equal(res.json().error, 'empty_message')
 })
 
 test('a /feedback note on an item at a gate still queues and is saved', async () => {
@@ -126,7 +148,7 @@ test('a /feedback note on an item at a gate still queues and is saved', async ()
 
 test('calling every stub changes no item field, event, move, gate decision, feedback row or farm message', async () => {
   // On an agent step, so /feedback takes its re-run branch.
-  const id = seed('RT-QUIET', 'change.implement')
+  const id = seed('RT-QUIET', 'change.implement', { running: true })
   const before = snapshot(id)
   for (const { url, payload } of calls(id)) assertRetired(await post(url, payload), url)
   assertRetired(await post(`/api/items/${id}/feedback`, { message: 'a note that must not land' }), '/feedback')

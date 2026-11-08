@@ -2286,9 +2286,11 @@ export function buildApp({
   }
 
   // Standalone feedback: a note queued for the item's next dispatch
-  // ({queued:true}). HZ-712: a note that would re-run a running agent step
-  // (store.addFeedback's rerun) answers 410 before anything is written — that
-  // is the move route's Retry now.
+  // ({queued:true}). HZ-712: a note on an agent step with a run active on the
+  // cursor answers 410 before anything is written — that is the move route's
+  // Retry now. The test is retry-via-whatsapp's, so an agent step with nothing
+  // running (held by a dependency, an ask or a deploy) still saves the note,
+  // and addFeedback's own refusals (inactive project, blank note) come first.
   fastify.post(
     '/api/items/:id/feedback',
     {
@@ -2309,10 +2311,18 @@ export function buildApp({
     (request, reply) => {
       const { id } = request.params
       const { message, target = '' } = request.body
-      const item = store.getItem(id)
-      if (item && !isClosed(item) && !isAbandoned(item) && STEPS[item.cursor]?.kind === 'agent' && !item.paused) {
-        return sendRetired(reply)
-      }
+      // The view, not the raw row: it carries activeRun.
+      const item = store.itemViewById(id)
+      const running =
+        item &&
+        store.isProjectEnabled(item.project_id) &&
+        message.trim() &&
+        !isAbandoned(item) &&
+        !isClosed(item) &&
+        STEPS[item.cursor]?.kind === 'agent' &&
+        !item.paused &&
+        item.activeRun?.step_index === item.cursor
+      if (running) return sendRetired(reply)
       const result = store.addFeedback(id, { message, target, source: 'ui' })
       if (!result.error) mirrorFeedback(id, item, message, 'Human')
       return send(reply, result)
