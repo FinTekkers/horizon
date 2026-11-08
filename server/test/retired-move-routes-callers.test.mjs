@@ -22,7 +22,8 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', 'data', 
 const EXTENSIONS = /\.(m?js|cjs|jsx|ts|tsx|py|sh)$/
 const ALLOWED = [/^server\/src\/retiredRoutes\.js$/, /^server\/test\/retired-move-routes[^/]*\.test\.mjs$/]
 
-const SEGMENT = String.raw`[^/\s'"\x60]+`
+// A `${…}` template part may hold spaces (`${endIndex(kind) - 1}`).
+const SEGMENT = String.raw`(?:\$\{[^}]*\}|[^/\s'"\x60])+`
 // '/api/items/:id/reject' → /items/<segment>/reject, not followed by a word or dash.
 function patternFor(url) {
   const path = url
@@ -54,6 +55,7 @@ test('the patterns find each retired route in the shapes callers write it', () =
     ["page.route('**/api/items/*/gates/*/approve', …)", '/api/items/:id/gates/:step/approve'],
     ['f"{base}/api/items/{item_id}/gates/13/approve"', '/api/items/:id/gates/:step/approve'],
     ["'/api/items/HZ-1/gates/change.accept-code/approve'", '/api/items/:id/gates/:step/approve'],
+    ['`/api/items/${f.id}/gates/${endIndex(f.kind) - 1}/approve`', '/api/items/:id/gates/:step/approve'],
   ]
   for (const [text, url] of samples) assert.deepEqual(hitsIn(text), [url], text)
 })
