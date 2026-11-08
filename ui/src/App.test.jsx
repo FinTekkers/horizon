@@ -33,12 +33,11 @@ vi.mock('./api', () => ({
   getDeployBlock: () => null,
   getPlanProgress: () => [],
   approveGate: vi.fn(),
-  requestChanges: vi.fn(),
+  moveItem: vi.fn(),
   getRestartSent: () => null,
   setPaused: vi.fn(),
   releaseRuleBlock: vi.fn(),
   releaseUsageWait: vi.fn(),
-  restartPhase: vi.fn(),
   setPersona: vi.fn(),
   setStepProvider: vi.fn(),
   abandonItem: vi.fn(),
@@ -55,6 +54,7 @@ vi.mock('./api', () => ({
 
 import * as api from './api'
 import App from './App'
+import { servedMoves } from './components/fixtures/servedMoves'
 
 function setItems(next) {
   items = next
@@ -238,8 +238,8 @@ test('switching projects sends no write request, opens no dialog, and calls no i
 
   const calls = fetchSpy.mock.calls.map(([url, opts]) => ({ url: String(url), method: (opts?.method || 'GET').toUpperCase() }))
   expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
-  expect(calls.filter((c) => /\/activate|\/enabled|\/pause|\/abandon|\/phases\/[^/]+\/restart/.test(c.url))).toEqual([])
-  for (const action of ['setProjectEnabled', 'setPaused', 'abandonItem', 'restartPhase', 'approveGate', 'requestChanges']) {
+  expect(calls.filter((c) => /\/activate|\/enabled|\/pause|\/abandon|\/move/.test(c.url))).toEqual([])
+  for (const action of ['setProjectEnabled', 'setPaused', 'abandonItem', 'approveGate', 'moveItem']) {
     expect(api[action], action).not.toHaveBeenCalled()
   }
   expect(document.body.textContent).not.toMatch(/restart farm|switch bot farm/i)
@@ -394,7 +394,7 @@ test('changing repo chips calls no api mutator and sends no write request', asyn
   fireEvent.click(getByRole('button', { name: 'Select all' }))
 
   expect(fetchSpy.mock.calls.filter(([, opts]) => (opts?.method || 'GET').toUpperCase() !== 'GET')).toEqual([])
-  for (const action of ['setProjectEnabled', 'setPaused', 'abandonItem', 'restartPhase', 'approveGate', 'requestChanges', 'setPersona']) {
+  for (const action of ['setProjectEnabled', 'setPaused', 'abandonItem', 'approveGate', 'moveItem', 'setPersona']) {
     expect(api[action], action).not.toHaveBeenCalled()
   }
 })
@@ -492,21 +492,65 @@ test('a browser with only the old saved project value sees today\'s view, every 
   }
 })
 
+// HZ-711: the server's moves at Specialist agent implements — the item page
+// offers only these.
+// The first step's label is read off STEPS, so this file holds no copy of it
+// (domain-one-declaration.test.mjs).
+const FIRST_LABEL = STEPS[0].label
+const IMPLEMENT_MOVES = servedMoves({
+  approve: null,
+  targets: [
+    {
+      key: 'change.define-outcome',
+      label: FIRST_LABEL,
+      action: 'return',
+      isDefault: false,
+      redo: `Redoes 12 steps, from “${FIRST_LABEL}” to “Specialist agent implements”.`,
+      reapprovals: ['Approve & prioritize this work', 'Approve the high-level design', 'Review before execution'],
+      stopsRunning: false,
+    },
+    {
+      key: 'change.draft-plan',
+      label: 'Draft implementation plan',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 6 steps, from “Draft implementation plan” to “Specialist agent implements”.',
+      reapprovals: ['Review before execution'],
+      stopsRunning: false,
+    },
+    {
+      key: 'change.implement',
+      label: 'Specialist agent implements',
+      action: 'retry',
+      isDefault: false,
+      redo: 'Runs “Specialist agent implements” again.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+})
+
+function atImplement(id, extra = {}) {
+  return { ...itemAtClosingGate(id), cursor: IMPLEMENT_STEP_INDEX, currentStepKey: 'change.implement', moves: IMPLEMENT_MOVES, ...extra }
+}
+
+// HZ-711: Return to…, Retry and Abandon sit in the item's ⋯ menu.
+async function chooseFromMenu(findByRole, id, name) {
+  fireEvent.click(await findByRole('button', { name: `More actions for ${id}` }))
+  fireEvent.click(await findByRole('menuitem', { name }))
+}
+
 // HZ-354: the abandon dialog lists what the item blocks, and the checked
 // "Remove these links" box travels in the same abandon request.
 test('abandoning with "Remove these links" checked sends removeDependentLinks: true', async () => {
   const id = 'AB-1'
-  setItems([
-    {
-      ...itemAtClosingGate(id),
-      cursor: 11,
-      dependents: [{ id: 'AB-2', title: 'Waits on AB-1', abandoned: false }],
-    },
-  ])
+  setItems([atImplement(id, { dependents: [{ id: 'AB-2', title: 'Waits on AB-1', abandoned: false }] })])
   window.history.pushState({}, '', `/${id.toLowerCase()}`)
 
   const { findByRole, getByText, getByRole } = render(<App />)
-  fireEvent.click(await findByRole('button', { name: 'Abandon', exact: true }))
+  await chooseFromMenu(findByRole, id, 'Abandon')
   expect(getByText('AB-2 — Waits on AB-1')).toBeTruthy()
   expect(getByRole('checkbox', { name: 'Remove these links' }).checked).toBe(true)
   fireEvent.change(document.querySelector('.composer__input'), { target: { value: 'superseded' } })
@@ -518,11 +562,11 @@ test('abandoning with "Remove these links" checked sends removeDependentLinks: t
 // HZ-365: the rule-block banner's actions, wired through App to HZ-346's
 // existing routes.
 function ruleBlockedItem(id) {
-  return {
-    ...itemAtClosingGate(id),
-    cursor: IMPLEMENT_STEP_INDEX,
+  return atImplement(id, {
     ruleBlock: { rule: 'guardrail 6', needs: 'A ledger-models release.', runId: 9, blockedAt: '2026-10-08 14:02:11' },
-  }
+    // HZ-711: where Amend the rule moves the item is the server's to say.
+    moves: { ...IMPLEMENT_MOVES, amendKey: 'change.implement' },
+  })
 }
 
 test('Add dependency picks an existing item and links it with addDependency', async () => {
@@ -556,7 +600,7 @@ test('Add dependency → File a new upstream item creates it, then links the new
   expect(api.createItem).toHaveBeenCalledTimes(1)
 })
 
-test("Amend the rule sends the owner's ruling as a send-back to implement through requestChanges", async () => {
+test("Amend the rule sends the owner's ruling as the move the snapshot names, through moveItem", async () => {
   setItems([ruleBlockedItem('RB-3')])
   window.history.pushState({}, '', '/rb-3')
 
@@ -564,42 +608,49 @@ test("Amend the rule sends the owner's ruling as a send-back to implement throug
   fireEvent.click(await findByRole('button', { name: 'Amend the rule' }))
   expect(getByText(/not changed\. Needs your gate PIN/)).toBeTruthy()
   fireEvent.click(document.querySelector('.composer__submit'))
-  expect(api.requestChanges).not.toHaveBeenCalled() // a ruling is required
+  expect(api.moveItem).not.toHaveBeenCalled() // a ruling is required
 
   fireEvent.change(document.querySelector('.composer__input'), { target: { value: 'a local shim is allowed' } })
   fireEvent.click(document.querySelector('.composer__submit'))
-  expect(api.requestChanges).toHaveBeenCalledWith(
-    'RB-3',
-    STEPS[IMPLEMENT_STEP_INDEX].label,
-    "Owner's ruling on the blocking rule: a local shim is allowed",
-  )
+  expect(api.moveItem).toHaveBeenCalledWith('RB-3', {
+    stepKey: 'change.implement',
+    note: "Owner's ruling on the blocking rule: a local shim is allowed",
+  })
 })
 
-// ---- HZ-389: a send-back is awaited; a failure keeps the composer open ----
+// ---- HZ-389: a move is awaited; a failure keeps the Move dialog open ----
+// HZ-711: the running step's Retry (was Request changes) opens the Move dialog.
 
 function pausedAtImplement(id) {
-  return { ...itemAtClosingGate(id), cursor: IMPLEMENT_STEP_INDEX, paused: true }
+  return atImplement(id, { paused: true })
 }
 
-async function sendNote(findByRole, text = 'try X') {
-  fireEvent.click(await findByRole('button', { name: 'Request changes' }))
-  fireEvent.change(document.querySelector('.composer__input'), { target: { value: text } })
-  fireEvent.click(document.querySelector('.composer__submit'))
+const moveDialog = (getByRole) => getByRole('dialog', { name: /^Retry this step · / })
+const noteBox = (getByRole) => within(moveDialog(getByRole)).getByRole('textbox', { name: 'Note for the step (optional)' })
+const confirmRetry = (getByRole) => within(moveDialog(getByRole)).getByRole('button', { name: 'Retry' })
+
+// The step card's Retry — a failed run's hold banner (HZ-713) has its own,
+// which resumes the item.
+async function sendNote(findByRole, getByRole, text = 'try X') {
+  await findByRole('button', { name: /^Specialist agent implements/ })
+  fireEvent.click(within(document.querySelector('.step-card__actions')).getByRole('button', { name: 'Retry' }))
+  fireEvent.change(noteBox(getByRole), { target: { value: text } })
+  fireEvent.click(confirmRetry(getByRole))
 }
 
-test('a note that goes through closes the composer once the answer is in', async () => {
+test('a note that goes through closes the Move dialog once the answer is in', async () => {
   let answer
-  api.requestChanges.mockImplementation(() => new Promise((resolve) => (answer = resolve)))
+  api.moveItem.mockImplementation(() => new Promise((resolve) => (answer = resolve)))
   setItems([pausedAtImplement('SB-1')])
   window.history.pushState({}, '', '/sb-1')
 
-  const { findByRole } = render(<App />)
-  await sendNote(findByRole)
-  expect(api.requestChanges).toHaveBeenCalledWith('SB-1', STEPS[IMPLEMENT_STEP_INDEX].label, 'try X', null)
-  // Still open, and its submit disabled, while the request is out.
-  expect(document.querySelector('.composer__submit').disabled).toBe(true)
+  const { findByRole, getByRole, queryByRole } = render(<App />)
+  await sendNote(findByRole, getByRole)
+  expect(api.moveItem).toHaveBeenCalledWith('SB-1', { stepKey: 'change.implement', note: 'try X' })
+  // Still open, and its confirm disabled, while the request is out.
+  expect(confirmRetry(getByRole).disabled).toBe(true)
   await act(async () => answer({ ok: true }))
-  await waitFor(() => expect(document.querySelector('.composer')).toBeNull())
+  await waitFor(() => expect(queryByRole('dialog')).toBeNull())
 })
 
 for (const [label, err, message] of [
@@ -607,23 +658,24 @@ for (const [label, err, message] of [
   ['no answer', new Error('network'), 'The server did not answer — nothing was sent. Try again.'],
   ['a cancelled PIN retry', Object.assign(new Error('bad_human_gate_key'), { status: 401 }), 'Gate PIN incorrect or not entered — nothing was sent.'],
 ]) {
-  test(`a note that fails with ${label} keeps the composer open, its text kept, and shows why`, async () => {
-    api.requestChanges.mockRejectedValue(err)
+  test(`a note that fails with ${label} keeps the Move dialog open, its text kept, and shows why`, async () => {
+    api.moveItem.mockRejectedValue(err)
     setItems([pausedAtImplement('SB-2')])
     window.history.pushState({}, '', '/sb-2')
 
-    const { findByRole } = render(<App />)
-    await sendNote(findByRole, 'keep me')
+    const { findByRole, getByRole } = render(<App />)
+    await sendNote(findByRole, getByRole, 'keep me')
     const alert = await findByRole('alert')
     expect(alert.textContent).toBe(message)
-    expect(document.querySelector('.composer__input').value).toBe('keep me')
-    expect(document.querySelector('.composer__submit').disabled).toBe(false)
+    expect(moveDialog(getByRole).contains(alert)).toBe(true)
+    expect(noteBox(getByRole).value).toBe('keep me')
+    expect(confirmRetry(getByRole).disabled).toBe(false)
     expect(getItemsSnapshot('SB-2').paused).toBe(true)
   })
 }
 
 test('Amend the rule that fails keeps the composer open with the error', async () => {
-  api.requestChanges.mockRejectedValue(Object.assign(new Error('abandoned'), { status: 409 }))
+  api.moveItem.mockRejectedValue(Object.assign(new Error('abandoned'), { status: 409 }))
   setItems([ruleBlockedItem('RB-9')])
   window.history.pushState({}, '', '/rb-9')
 
@@ -639,25 +691,64 @@ function getItemsSnapshot(id) {
   return api.getItems().find((it) => it.id === id)
 }
 
-// ---- HZ-470: Kill and Restart phase are awaited; a failure keeps the dialog open ----
+// ---- HZ-470: Kill and a return are awaited; a failure keeps the dialog open ----
+// HZ-711: Restart phase is gone; returning to a phase's first step is
+// Return to… in the ⋯ menu, through the Move dialog and moveItem. The Move
+// dialog keeps its Cancel while the request is out, as a send-back always did;
+// only Kill locks it.
 
 const KILL_RESTART = [
   {
     name: 'Abandon',
     apiFn: 'abandonItem',
-    open: async (findByRole) => fireEvent.click(await findByRole('button', { name: 'Abandon', exact: true })),
+    open: async (findByRole, id) => chooseFromMenu(findByRole, id, 'Abandon'),
     calledWith: (id, text) => [id, text, { removeDependentLinks: false }],
+    locksCancel: true,
+    sent: (id, text) => ({ url: `/api/items/${id}/move`, body: { action: 'abandon', from: 'change.implement', note: text, removeDependentLinks: false } }),
   },
   {
-    name: 'Restart phase',
-    apiFn: 'restartPhase',
-    open: async (findByRole, findAllByRole) => {
-      await findByRole('button', { name: 'Abandon', exact: true })
-      fireEvent.click((await findAllByRole('button', { name: 'Restart phase' }))[0])
+    name: 'Return to…',
+    apiFn: 'moveItem',
+    open: async (findByRole, id) => {
+      await chooseFromMenu(findByRole, id, 'Return to…')
+      const dialog = await findByRole('dialog', { name: `Return to an earlier step · ${id}` })
+      // The gate's default is preselected; the phase's first step is a choice.
+      expect(within(dialog).getByRole('radio', { name: /Draft implementation plan/ }).checked).toBe(true)
+      fireEvent.click(within(dialog).getByRole('radio', { name: new RegExp(FIRST_LABEL) }))
+      expect(within(dialog).getByText(`Redoes 12 steps, from “${FIRST_LABEL}” to “Specialist agent implements”.`)).toBeTruthy()
+      const reapprovals = within(dialog).getByRole('list', { name: 'Approvals given again' })
+      expect([...reapprovals.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
+        'Approve & prioritize this work',
+        'Approve the high-level design',
+        'Review before execution',
+      ])
     },
-    calledWith: (id, text) => [id, 0, text],
+    calledWith: (id, text) => [id, { stepKey: 'change.define-outcome', note: text }],
+    locksCancel: false,
+    sent: (id, text) => ({ url: `/api/items/${id}/move`, body: { stepKey: 'change.define-outcome', from: 'change.implement', note: text } }),
   },
 ]
+
+// The real serverApi caches items only from its stream: a stand-in
+// EventSource hands it the board, so moveItem and abandonItem find the item.
+// Set directly, not stubbed, so the stream's own reconnect (its 45 s
+// watchdog) still finds one after afterEach unstubs globals; the newest
+// stand-in is the live stream.
+let realStream = null
+async function seedRealServerApi(real, board) {
+  if (!realStream) {
+    globalThis.EventSource = class {
+      constructor() {
+        realStream = this
+      }
+      addEventListener() {}
+      close() {}
+    }
+    globalThis.EventSource.CLOSED = 2
+    real.subscribe(() => {})
+  }
+  act(() => realStream.onmessage({ data: JSON.stringify({ items: board }) }))
+}
 
 function submitDialog(text) {
   fireEvent.change(document.querySelector('.composer__input'), { target: { value: text } })
@@ -669,17 +760,17 @@ for (const dialog of KILL_RESTART) {
     let answer
     api[dialog.apiFn].mockImplementation(() => new Promise((resolve) => (answer = resolve)))
     const id = 'KR-1'
-    setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
+    setItems([atImplement(id)])
     window.history.pushState({}, '', `/${id.toLowerCase()}`)
 
-    const { findByRole, findAllByRole } = render(<App />)
-    await dialog.open(findByRole, findAllByRole)
+    const { findByRole } = render(<App />)
+    await dialog.open(findByRole, id)
     submitDialog('superseded')
     expect(api[dialog.apiFn]).toHaveBeenCalledWith(...dialog.calledWith(id, 'superseded'))
 
     expect(document.querySelector('.composer')).not.toBeNull()
     expect(document.querySelector('.composer__submit').disabled).toBe(true)
-    expect(document.querySelector('.composer__cancel').disabled).toBe(true)
+    expect(document.querySelector('.composer__cancel').disabled).toBe(dialog.locksCancel)
     await act(async () => answer({ ok: true }))
     await waitFor(() => expect(document.querySelector('.composer')).toBeNull())
   })
@@ -687,11 +778,11 @@ for (const dialog of KILL_RESTART) {
   test(`${dialog.name}: a failed request shows why, keeps the text, and lets the owner send it again`, async () => {
     api[dialog.apiFn].mockRejectedValue(Object.assign(new Error('HTTP 500'), { status: 500 }))
     const id = 'KR-2'
-    setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
+    setItems([atImplement(id)])
     window.history.pushState({}, '', `/${id.toLowerCase()}`)
 
-    const { findByRole, findAllByRole } = render(<App />)
-    await dialog.open(findByRole, findAllByRole)
+    const { findByRole } = render(<App />)
+    await dialog.open(findByRole, id)
     submitDialog('keep me')
     const alert = await findByRole('alert')
     expect(alert.textContent).toBe('That did not go through — try again.')
@@ -722,16 +813,21 @@ for (const dialog of KILL_RESTART) {
         .mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) })
       vi.stubGlobal('fetch', fetchSpy)
       const id = 'KR-3'
-      setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
+      setItems([atImplement(id)])
+      await seedRealServerApi(real, items)
       window.history.pushState({}, '', `/${id.toLowerCase()}`)
 
-      const { findByRole, findAllByRole } = render(<App />)
-      await dialog.open(findByRole, findAllByRole)
+      const { findByRole } = render(<App />)
+      await dialog.open(findByRole, id)
       submitDialog('superseded')
       expect((await findByRole('alert')).textContent).toBe('Gate PIN needed')
       expect(requester).toHaveBeenCalledTimes(1)
-      // Only the PIN-less first request went out.
+      // Only the PIN-less first request went out, to the move route, naming
+      // steps by key.
       expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const { url, body } = dialog.sent(id, 'superseded')
+      expect(String(fetchSpy.mock.calls[0][0])).toBe(url)
+      expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toEqual(body)
       expect(fetchSpy.mock.calls[0][1].headers['x-horizon-csrf']).toBe('1')
       expect(fetchSpy.mock.calls[0][1].headers).not.toHaveProperty('x-human-key')
       expect(document.querySelector('.composer')).not.toBeNull()
@@ -740,19 +836,19 @@ for (const dialog of KILL_RESTART) {
   }
 }
 
-// HZ-802: a Restart that cannot dispatch answers 409 with why; the dialog
-// shows the server's words, not the generic retry line.
-test('Restart phase refused with a reason shows that reason in the dialog', async () => {
-  api.restartPhase.mockRejectedValue(
+// HZ-802: a restart that cannot dispatch answers 409 with why; the Move
+// dialog (HZ-711: Restart phase is a Retry now) shows the server's words, not
+// the generic retry line.
+test('a Retry refused with a reason shows that reason in the Move dialog', async () => {
+  api.moveItem.mockRejectedValue(
     Object.assign(new Error('blocked_by'), { status: 409, serverMessage: 'Blocked by MDI-129 (Add rates)' }),
   )
-  const id = 'KR-802'
-  setItems([{ ...itemAtClosingGate(id), cursor: 11 }])
-  window.history.pushState({}, '', `/${id.toLowerCase()}`)
+  setItems([atImplement('KR-802')])
+  window.history.pushState({}, '', '/kr-802')
 
-  const { findByRole, findAllByRole } = render(<App />)
-  await KILL_RESTART[1].open(findByRole, findAllByRole)
-  submitDialog('')
-  expect((await findByRole('alert')).textContent).toBe('Blocked by MDI-129 (Add rates)')
-  expect(document.querySelector('.composer')).not.toBeNull()
+  const { findByRole, getByRole } = render(<App />)
+  await sendNote(findByRole, getByRole, '')
+  const alert = await findByRole('alert')
+  expect(alert.textContent).toBe('Blocked by MDI-129 (Add rates)')
+  expect(moveDialog(getByRole).contains(alert)).toBe(true)
 })

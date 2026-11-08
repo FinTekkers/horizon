@@ -2,10 +2,12 @@
 // the Tracker's own wording (gateActionView) — the status line replaces the
 // gate buttons while the action runs, and the buttons come back once it
 // finishes. Fixtures use the exact payload shape server/src/store.js sends
-// (gateActionView / conflictRunView), absent values as null.
+// (gateActionView / conflictRunView), absent values as null. HZ-711: the gate
+// buttons are the shared menu — Approve, and Return to… under ⋯ — offered by
+// the item's `moves`, written out here as the snapshot sends it.
 
 import { expect, test, vi, afterEach } from 'vitest'
-import { render, cleanup, fireEvent } from '@testing-library/react'
+import { render, cleanup, fireEvent, within } from '@testing-library/react'
 
 vi.mock('../api', () => ({
   issueUrl: () => 'https://example.test/issue',
@@ -15,6 +17,7 @@ vi.mock('../api', () => ({
 import Board from './Board'
 import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, STEPS } from '../../../domain/js/lifecycle.js'
 import { gateActionView } from '../domain/gateAction'
+import { servedMoves } from './fixtures/servedMoves'
 
 afterEach(() => {
   cleanup()
@@ -41,6 +44,52 @@ function action(kind, state, extra = {}) {
   }
 }
 
+// What the snapshot offers at Accept the code: approve it, return to the
+// implement or review step, abandon.
+const ACCEPT_MOVES = servedMoves({
+  approve: { key: 'change.accept-code', label: 'Accept the code' },
+  targets: [
+    {
+      key: 'change.implement',
+      label: 'Specialist agent implements',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+    {
+      key: 'change.auto-review',
+      label: 'Automated review (code + QA)',
+      action: 'return',
+      isDefault: false,
+      redo: 'Redoes 2 steps, from “Automated review (code + QA)” to “Accept the code”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+})
+
+// The same at the first gate, Approve & prioritize this work.
+const PRIORITIZE_MOVES = servedMoves({
+  approve: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
+  targets: [
+    {
+      key: 'change.set-guardrails',
+      label: 'Set guardrails',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 2 steps, from “Set guardrails” to “Approve & prioritize this work”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+})
+
 function acceptItem(extra = {}) {
   return {
     id: 'BGS-1',
@@ -56,6 +105,7 @@ function acceptItem(extra = {}) {
     activeRun: null,
     gateAction: null,
     conflictRun: null,
+    moves: ACCEPT_MOVES,
     ...extra,
   }
 }
@@ -66,7 +116,8 @@ function renderBoard(item, handlers = {}) {
       items={[item]}
       onOpen={handlers.onOpen || noop}
       onApprove={handlers.onApprove || noop}
-      onReject={handlers.onReject || noop}
+      onMove={handlers.onMove || noop}
+      onAbandon={handlers.onAbandon || noop}
       onTogglePause={noop}
       onNewItem={noop}
     />,
@@ -74,6 +125,7 @@ function renderBoard(item, handlers = {}) {
 }
 
 const card = (container) => container.querySelector('.card')
+const MORE = 'More actions for BGS-1'
 
 // Every metric-1 state. `expectsStatus` is declared, not derived, so a
 // regression of gateActionView to null fails instead of switching branches.
@@ -95,7 +147,7 @@ test.each(ROWS)('Accept card, $name: status line text, tone, note and gate butto
   const view = gateActionView(a, PR)
   expect(view !== null).toBe(expectsStatus)
 
-  const { container, queryByRole, queryByText } = renderBoard(acceptItem({ gateAction: a }))
+  const { container, queryByRole } = renderBoard(acceptItem({ gateAction: a }))
   const status = queryByRole('status')
   if (expectsStatus) {
     expect(status).not.toBeNull()
@@ -113,11 +165,11 @@ test.each(ROWS)('Accept card, $name: status line text, tone, note and gate butto
   }
 
   if (running) {
-    expect(queryByText('Approve')).toBeNull()
-    expect(queryByText('Send back')).toBeNull()
+    expect(queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(queryByRole('button', { name: MORE })).toBeNull()
   } else {
-    expect(queryByText('Approve')).not.toBeNull()
-    expect(queryByText('Send back')).not.toBeNull()
+    expect(queryByRole('button', { name: 'Approve' })).not.toBeNull()
+    expect(queryByRole('button', { name: MORE })).not.toBeNull()
   }
 })
 
@@ -137,10 +189,10 @@ test('exact wording on the card for the headline states', () => {
 test('a running conflictRun with no gateAction key shows "Resolving conflicts" and hides the gate buttons', () => {
   const item = acceptItem({ conflictRun: { state: 'running', since: SINCE, reason: null } })
   delete item.gateAction
-  const { getByRole, queryByText } = renderBoard(item)
+  const { getByRole, queryByRole } = renderBoard(item)
   expect(getByRole('status').querySelector('.gate-action-status__text').textContent).toBe(`Resolving conflicts on PR #${PR}`)
-  expect(queryByText('Approve')).toBeNull()
-  expect(queryByText('Send back')).toBeNull()
+  expect(queryByRole('button', { name: 'Approve' })).toBeNull()
+  expect(queryByRole('button', { name: MORE })).toBeNull()
 })
 
 test('the status line is a polite live region and never moves focus as it appears and changes', () => {
@@ -148,7 +200,7 @@ test('the status line is a polite live region and never moves focus as it appear
     return (
       <div>
         <button type="button">Elsewhere</button>
-        <Board items={[acceptItem({ gateAction })]} onOpen={noop} onApprove={noop} onReject={noop} onTogglePause={noop} onNewItem={noop} />
+        <Board items={[acceptItem({ gateAction })]} onOpen={noop} onApprove={noop} onMove={noop} onAbandon={noop} onTogglePause={noop} onNewItem={noop} />
       </div>
     )
   }
@@ -184,22 +236,27 @@ test('a running card starts no timer, makes no fetch and shows no elapsed clock'
   vi.unstubAllGlobals()
 })
 
-test('once the run ends, Approve and Send back call the same handlers as before', () => {
+test('once the run ends, Approve and Return to… call their handlers, and neither opens the item', () => {
   const onApprove = vi.fn()
-  const onReject = vi.fn()
+  const onMove = vi.fn()
   const onOpen = vi.fn()
-  const { getByText } = renderBoard(acceptItem({ gateAction: action('premerge', 'blocked', { failingCheck: 'unit-tests' }) }), {
+  const { getByRole } = renderBoard(acceptItem({ gateAction: action('premerge', 'blocked', { failingCheck: 'unit-tests' }) }), {
     onApprove,
-    onReject,
+    onMove,
     onOpen,
   })
   const label = STEPS[ACCEPT_GATE_INDEX].label
-  fireEvent.click(getByText('Approve'))
+  fireEvent.click(getByRole('button', { name: 'Approve' }))
   expect(onApprove).toHaveBeenCalledTimes(1)
   expect(onApprove).toHaveBeenCalledWith('BGS-1', label)
-  fireEvent.click(getByText('Send back'))
-  expect(onReject).toHaveBeenCalledTimes(1)
-  expect(onReject).toHaveBeenCalledWith('BGS-1', label)
+  const toggle = getByRole('button', { name: MORE })
+  expect(toggle.getAttribute('aria-haspopup')).toBe('menu')
+  fireEvent.click(toggle)
+  const menu = getByRole('menu')
+  expect(within(menu).getAllByRole('menuitem').map((b) => b.textContent)).toEqual(['Return to…', 'Abandon'])
+  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Return to…' }))
+  expect(onMove).toHaveBeenCalledTimes(1)
+  expect(onMove).toHaveBeenCalledWith('BGS-1', 'return', null)
   expect(onOpen).not.toHaveBeenCalled()
 })
 
@@ -207,8 +264,8 @@ test('an Accept card with no action renders the same with gateAction null or abs
   const withNull = renderBoard(acceptItem({ gateAction: null, conflictRun: null }))
   const nullHtml = card(withNull.container).innerHTML
   expect(withNull.queryByRole('status')).toBeNull()
-  expect(withNull.queryByText('Approve')).not.toBeNull()
-  expect(withNull.queryByText('Send back')).not.toBeNull()
+  expect(withNull.queryByRole('button', { name: 'Approve' })).not.toBeNull()
+  expect(withNull.queryByRole('button', { name: MORE })).not.toBeNull()
   cleanup()
 
   const absent = acceptItem()
@@ -220,7 +277,7 @@ test('an Accept card with no action renders the same with gateAction null or abs
 
 test('a Deploy card with the real merged action renders exactly as with no action', () => {
   const merged = action('premerge', 'merged')
-  const base = { cursor: DEPLOY_STEP_INDEX, title: 'Past the Accept gate' }
+  const base = { cursor: DEPLOY_STEP_INDEX, title: 'Past the Accept gate', moves: servedMoves({ approve: null, targets: [], canAbandon: true, amend: null }) }
   const withMerged = renderBoard(acceptItem({ ...base, gateAction: merged }))
   const mergedHtml = card(withMerged.container).innerHTML
   expect(withMerged.container.querySelector('.gate-action-status')).toBeNull()
@@ -231,10 +288,12 @@ test('a Deploy card with the real merged action renders exactly as with no actio
 
 test('a card at another gate ignores a gateAction entirely', () => {
   const otherGate = STEPS.findIndex((s, i) => s.kind === 'gate' && i !== ACCEPT_GATE_INDEX)
-  const base = { cursor: otherGate }
+  expect(STEPS[otherGate].key).toBe('change.approve-prioritize')
+  const base = { cursor: otherGate, moves: PRIORITIZE_MOVES }
   const withAction = renderBoard(acceptItem({ ...base, gateAction: action('premerge', 'running', { detail: 'x' }) }))
   const html = card(withAction.container).innerHTML
-  expect(withAction.queryByText('Approve')).not.toBeNull()
+  expect(withAction.queryByRole('button', { name: 'Approve' })).not.toBeNull()
+  expect(withAction.queryByRole('button', { name: MORE })).not.toBeNull()
   cleanup()
   const without = renderBoard(acceptItem({ ...base, gateAction: null }))
   expect(card(without.container).innerHTML).toBe(html)

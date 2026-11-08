@@ -124,7 +124,8 @@ test('a red check on the test-merge keeps Accept the code open and names the fai
 
   const approves = []
   page.on('response', (res) => {
-    if (res.url().includes('/gates/') && res.url().endsWith('/approve')) approves.push(res.status())
+    // HZ-711: an approve is a move (POST /move, action approve).
+    if (res.url().endsWith('/move') && res.request().postDataJSON()?.action === 'approve') approves.push(res.status())
   })
 
   await page.goto('/pmc-1')

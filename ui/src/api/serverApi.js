@@ -76,8 +76,8 @@ function applyActionItem(item, restart) {
   emit()
 }
 
-// { stepIndex, attempt } of the last send-back this tab made on the item, or
-// null. The Tracker decides how long it is shown.
+// { stepKey, attempt } of the last return or retry this tab made on the item
+// (HZ-711: named by step key), or null. The Tracker decides how long it is shown.
 export function getRestartSent(id) {
   return restartsSent.get(id) ?? null
 }
@@ -444,7 +444,7 @@ function networkOrPin(err) {
   return null
 }
 
-// HZ-470: an awaited gate action (Kill, Restart phase). Rejects with
+// HZ-470: an awaited gate action (Kill, a move). Rejects with
 // Error('pin_needed') when the PIN dialog is cancelled; Error('network') when
 // no answer came; else Error(<error code>) with `status` on a non-2xx. HZ-802:
 // and `serverMessage`, the server's own words, when it sent a `message`.
@@ -852,15 +852,15 @@ export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}
   // HZ-491: and the runner it showed, so a newly pinned or cleared image is
   // not approved unseen.
   const body = {
-    ...(notes ? { notes } : {}),
+    ...(notes ? { note: notes } : {}),
     ...(item.runPlan?.hash ? { planHash: item.runPlan.hash } : {}),
     ...(item.runPlan?.runner ? { runner: item.runPlan.runner } : {}),
     // HZ-541: the golden-cases set this tab showed at the first gate.
     ...(item.goldenCases?.hash && !item.goldenCases.approved && item.cursor === item.goldenCases.gateIndex ? { goldenHash: item.goldenCases.hash } : {}),
     ...(item.cursor === APPROVE_FILE_GATE_INDEX ? { filedAutopilot } : {}),
   }
-  // HZ-709: the gate by its permanent key, never its position.
-  const res = await gatePost(`/items/${id}/gates/${item.currentStepKey ?? stepKeyAt(item.cursor)}/approve`, body)
+  // HZ-711: an approve is a move too, from the gate by its permanent key.
+  const res = await gatePost(`/items/${id}/move`, { action: 'approve', from: item.currentStepKey ?? stepKeyAt(item.cursor), ...body })
   if (!res) return { ok: false }
   const data = await res.json().catch(() => ({ ok: false }))
   if (!res.ok && res.status !== 401 && item.pr_url && !data.premerge) {
@@ -876,24 +876,17 @@ export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}
   return data
 }
 
-// HZ-389: awaited, so the composer stays open with the error when it fails.
-// Rejects with Error('network') when no answer came, or Error(<error code>)
-// with `status` on a non-2xx — items are untouched either way. A 2xx answer's
-// item is applied at once, and its `restart` recorded for the step card.
-// HZ-540: targetSubstepId sends it back to that sub-step of targetStepIndex.
-// HZ-709: the composer picks a step by position; the server is sent its key.
-export async function requestChanges(id, target, feedback, targetStepIndex, targetSubstepId) {
-  const body = { target: target || '', feedback: feedback || '' }
-  if (targetStepIndex != null) body.targetStep = stepKeyAt(targetStepIndex)
-  if (targetSubstepId != null) body.targetSubstepId = targetSubstepId
-  const res = await gatePost(`/items/${id}/reject`, body)
-  if (!res) throw new Error('network')
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    const err = new Error(data.error || `HTTP ${res.status}`)
-    err.status = res.status
-    throw err
-  }
+// HZ-711: the one move — Return to or Retry — to `stepKey`, one of the item's
+// moves.targets (HZ-799), from the step the item is at as this tab shows it.
+// The body names steps by key only. Rejects
+// with Error('pin_needed') when the PIN dialog is cancelled, Error('network')
+// when no answer came, else Error(<error code>) with `status` (409 stale_step:
+// the item moved since). A 2xx answer's item is applied at once, and its
+// `restart` recorded for the step card.
+export async function moveItem(id, { stepKey, note = '' }) {
+  const item = items.find((it) => it.id === id)
+  if (!item) throw new Error('not_found')
+  const data = await gateAction(`/items/${encodeURIComponent(id)}/move`, { stepKey, from: item.currentStepKey ?? stepKeyAt(item.cursor), note: note || '' })
   if (data.item) applyActionItem(data.item, data.restart)
   return data
 }
@@ -987,17 +980,21 @@ export function addDependency(id, dependsOnId) {
   return postJson(`/items/${id}/dependencies`, { dependsOnId })
 }
 
-// HZ-470: awaited through gateAction, so the dialog that sent it can show a
-// failure instead of closing on it.
-export async function restartPhase(id, phase, reason) {
-  return gateAction(`/items/${id}/phases/${phase}/restart`, { reason: reason || '' })
-}
-
-// Soft delete (HZ-59) — same gate PIN as approve/reject, reused via gatePost.
-// HZ-354: removeDependentLinks also drops every link where this item is the
-// blocker, in the same request. HZ-470: awaited, like restartPhase.
+// Soft delete (HZ-59) — same gate PIN as every move. HZ-354:
+// removeDependentLinks also drops every link where this item is the blocker,
+// in the same request. HZ-470: awaited, like moveItem. HZ-711: a move, from
+// the step the item is at.
 export async function abandonItem(id, reason, { removeDependentLinks = false } = {}) {
-  return gateAction(`/items/${id}/abandon`, { reason: reason || '', removeDependentLinks })
+  const item = items.find((it) => it.id === id)
+  if (!item) throw new Error('not_found')
+  const data = await gateAction(`/items/${encodeURIComponent(id)}/move`, {
+    action: 'abandon',
+    from: item.currentStepKey ?? stepKeyAt(item.cursor),
+    note: reason || '',
+    removeDependentLinks,
+  })
+  if (data.item) applyActionItem(data.item)
+  return data
 }
 
 // HZ-730: File it and Dismiss on one ask. Both need the gate PIN, so they go

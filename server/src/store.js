@@ -60,7 +60,7 @@ import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
-import { moveItem, moveTargets, planMove, toPublicTarget } from './moveItem.js'
+import { moveItem, moveTargets, movesView, planMove } from './moveItem.js'
 
 const listeners = new Set()
 
@@ -2382,7 +2382,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     // HZ-541: only on an item whose first gate approves golden cases.
     ...goldenCasesFields(row),
     // HZ-799: every step POST /api/items/:id/move { stepKey } takes it to now.
-    moves: { targets: itemMoveTargets(row, activeRun).map(toPublicTarget) },
+    // HZ-711: with what every surface's Approve, Return to…, Retry and
+    // Abandon need to name them (moveItem.js movesView).
+    moves: movesView(row, itemMoveTargets(row, activeRun), { enabled: !disabledProject(row) }),
   }
 }
 

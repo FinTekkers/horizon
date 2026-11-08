@@ -70,7 +70,10 @@ test.beforeAll(() => {
   }
 })
 
-const stepRow = (page, label) => page.locator('.step').filter({ has: page.locator('.step-card__label').getByText(label, { exact: true }) })
+// HZ-711: a step's label is a button that also names what a click offers.
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const stepRow = (page, label) =>
+  page.locator('.step').filter({ has: page.locator('.step-card__label', { hasText: new RegExp(`^${escape(label)}(\\s*(Return here|Retry|Approve))?$`) }) })
 const banner = (page) => page.getByRole('alert', { name: 'Blocking asks' })
 
 test('the held Task says why instead of the old verdict, and Release with the PIN gets Execute running', async ({ page }, testInfo) => {

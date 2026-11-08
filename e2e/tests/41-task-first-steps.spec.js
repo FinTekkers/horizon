@@ -45,8 +45,12 @@ test.afterAll(() => {
 })
 
 const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// HZ-711: a step's label is a button that may carry a hint (Return here,
+// Retry, Approve) after the label.
 const stepCard = (page, label) =>
-  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${escape(label)}$`) }) })
+  page.locator('.step-card', {
+    has: page.locator('.step-card__label', { hasText: new RegExp(`^${escape(label)}(\\s*(Return here|Retry|Approve))?$`) }),
+  })
 
 async function expectAtTheGate(page) {
   for (const step of FIRST_STEPS) {
@@ -57,7 +61,11 @@ async function expectAtTheGate(page) {
   const gate = stepCard(page, GATE.label)
   await expect(gate).toHaveClass(/step-card--awaiting/, { timeout: 15_000 })
   await expect(gate.getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Send back with feedback' })).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Return to…' })).toBeVisible()
+  // HZ-711: each earlier step is offered as a return target in the step list.
+  for (const step of FIRST_STEPS) {
+    await expect(page.getByRole('button', { name: new RegExp(`^${escape(step.label)}\\s*Return here$`) })).toBeVisible()
+  }
   await expect(page.locator('.tracker__desc')).toContainText(OUTCOME)
   const tile = (label) => page.locator('.tile', { has: page.locator('.tile__label', { hasText: label }) })
   await expect(tile('Success metric')).toContainText(METRIC)

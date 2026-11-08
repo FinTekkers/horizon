@@ -1,6 +1,7 @@
 // HZ-384: a Task's Approve the run gate is always a human with the gate PIN,
 // even on an Autopilot project. The amber awaiting card says so and shows the
-// run plan's size; Reject with feedback sends the Task back to Run plan; a
+// run plan's size; Return to… (HZ-711, was Reject with feedback) sends the
+// Task back to Run plan, the gate's default target; a
 // wrong PIN leaves the gate open; the right one passes it, and a reload keeps
 // it passed. Demo mode runs the planning steps through the mock path, whose
 // Run plan block is one command with a 5 minute budget.
@@ -35,10 +36,12 @@ test.beforeAll(() => {
   }
 })
 
+// HZ-711: a step's label is a button that may carry a hint (Return here,
+// Retry, Approve) after the label.
 const stepCard = (page, label) =>
-  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}$`) }) })
+  page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}(\\s*(Return here|Retry|Approve))?$`) }) })
 
-test('Approve the run: the human-only card, Reject back to Run plan, a wrong PIN refused, the right PIN passes', async ({ page }) => {
+test('Approve the run: the human-only card, Return to Run plan, a wrong PIN refused, the right PIN passes', async ({ page }) => {
   test.setTimeout(60_000)
   const pinDialog = page.getByRole('dialog', { name: 'Enter your gate PIN' })
 
@@ -49,15 +52,18 @@ test('Approve the run: the human-only card, Reject back to Run plan, a wrong PIN
   await expect(gate.getByText('Always a human · even on Autopilot')).toBeVisible({ timeout: 15_000 })
   await expect(gate.getByText('Run plan: 1 command · budget 5 min')).toBeVisible()
   await expect(gate).toHaveClass(/step-card--awaiting/)
-  await expect(gate.getByRole('button', { name: 'Approve the run' })).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Approve the run', exact: true })).toBeVisible()
 
-  // Reject with feedback: back to Run plan, which runs again and returns here.
-  // The first gate action since setGatePinDirect locked the session.
-  await gate.getByRole('button', { name: 'Reject with feedback' }).click()
-  await page.locator('.composer__input').fill('Run it against staging first.')
-  await page.locator('.composer__submit').click()
+  // Return to…: back to Run plan (the gate's default), which runs again and
+  // returns here. The first gate action since setGatePinDirect locked the session.
+  await gate.getByRole('button', { name: 'Return to…' }).click()
+  const moveDialog = page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` })
+  await expect(moveDialog.getByRole('radio', { name: /^Run plan/ })).toBeChecked()
+  await moveDialog.getByLabel('Note for the step (optional)').fill('Run it against staging first.')
+  await moveDialog.getByRole('button', { name: 'Return here' }).click()
   await answerPinDialog(page, GATE_PIN)
-  await expect(page.locator('.activity-row__text', { hasText: 'sent back to the run plan step' })).toBeVisible({
+  await expect(moveDialog).toHaveCount(0)
+  await expect(page.locator('.activity-row__text', { hasText: 'moved this item back to “Run plan”: Run it against staging first.' })).toBeVisible({
     timeout: 10_000,
   })
   await expect(stepCard(page, 'Run plan').getByRole('link', { name: /attempt 2 of 2/ })).toBeVisible({ timeout: 15_000 })
@@ -71,7 +77,7 @@ test('Approve the run: the human-only card, Reject back to Run plan, a wrong PIN
   } finally {
     db.close()
   }
-  await gate.getByRole('button', { name: 'Approve the run' }).click()
+  await gate.getByRole('button', { name: 'Approve the run', exact: true }).click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
   await page.locator('.composer__submit').click()
   await expect(pinDialog).toBeVisible({ timeout: 10_000 })
@@ -81,10 +87,10 @@ test('Approve the run: the human-only card, Reject back to Run plan, a wrong PIN
   await pinDialog.getByRole('button', { name: 'Cancel' }).click()
   await expect(pinDialog).toBeHidden()
   await expect(gate).toHaveClass(/step-card--awaiting/)
-  await expect(gate.getByRole('button', { name: 'Approve the run' })).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Approve the run', exact: true })).toBeVisible()
 
   // The right PIN passes the gate.
-  await gate.getByRole('button', { name: 'Approve the run' }).click()
+  await gate.getByRole('button', { name: 'Approve the run', exact: true }).click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
   await page.locator('.composer__submit').click()
   await answerPinDialog(page, GATE_PIN)

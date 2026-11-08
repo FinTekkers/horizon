@@ -33,6 +33,7 @@ import { ACCEPT_GATE_INDEX, DEPLOY_STEP_INDEX, IMPLEMENT_STEP_INDEX, REVIEW_STEP
 import { REASON, REASON_IDS } from '../../../domain/js/reasons.js'
 import { DEFAULT_PERSONAS, PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT } from '../domain/personas'
 import { AGENTS } from '../domain/agentTokens'
+import { servedMoves } from './fixtures/servedMoves'
 
 afterEach(() => {
   cleanup()
@@ -55,6 +56,70 @@ const baseItem = {
 
 const noop = () => {}
 
+// HZ-711: what the snapshot offers, written out as the server sends it. At the
+// first gate (baseItem's): approve it, return to an earlier step, abandon.
+const PRIORITIZE_MOVES = servedMoves({
+  approve: { key: 'change.approve-prioritize', label: 'Approve & prioritize this work' },
+  targets: [
+    {
+      key: 'change.set-guardrails',
+      label: 'Set guardrails',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 2 steps, from “Set guardrails” to “Approve & prioritize this work”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+})
+// At implement: return to the gate before it, retry implement, abandon.
+const IMPLEMENT_MOVES = servedMoves({
+  approve: null,
+  targets: [
+    {
+      key: 'change.review-before-exec',
+      label: 'Review before execution',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 2 steps, from “Review before execution” to “Specialist agent implements”.',
+      reapprovals: ['Review before execution'],
+      stopsRunning: false,
+    },
+    {
+      key: 'change.implement',
+      label: 'Specialist agent implements',
+      action: 'retry',
+      isDefault: false,
+      redo: 'Runs “Specialist agent implements” again.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+})
+// At Accept the code: approve it, return to implement, abandon.
+const ACCEPT_MOVES = servedMoves({
+  approve: { key: 'change.accept-code', label: 'Accept the code' },
+  targets: [
+    {
+      key: 'change.implement',
+      label: 'Specialist agent implements',
+      action: 'return',
+      isDefault: true,
+      redo: 'Redoes 3 steps, from “Specialist agent implements” to “Accept the code”.',
+      reapprovals: [],
+      stopsRunning: false,
+    },
+  ],
+  canAbandon: true,
+  amend: null,
+})
+// A closed or abandoned item: nothing.
+const NO_MOVES = servedMoves({ approve: null, targets: [], canAbandon: false, amend: null })
+
 function renderTracker(item, onSetPersona = noop, onAbandon = noop, onResolveConflicts = noop) {
   return render(
     <Tracker
@@ -62,10 +127,9 @@ function renderTracker(item, onSetPersona = noop, onAbandon = noop, onResolveCon
       onBack={noop}
       onApprove={noop}
       onApproveWithComments={noop}
-      onReject={noop}
+      onMove={noop}
       onResolveConflicts={onResolveConflicts}
       onTogglePause={noop}
-      onRestartPhase={noop}
       onSetPersona={onSetPersona}
       onAbandon={onAbandon}
     />,
@@ -244,11 +308,23 @@ test('a mergeable PR at the Accept gate shows no conflict-resolution button', ()
 
 // ---- abandon (HZ-59) ----
 
-test('a live item shows an Abandon button, and clicking it fires onAbandon with the item id', () => {
+// HZ-711: Abandon sits under the header's ⋯ menu, offered by moves.canAbandon.
+test('a live item offers Abandon under ⋯, and clicking it fires onAbandon with the item id', () => {
   const spy = vi.fn()
-  const { getByText } = renderTracker(baseItem, noop, spy)
-  fireEvent.click(getByText('Abandon'))
+  const { getByRole, queryByRole } = renderTracker({ ...baseItem, moves: PRIORITIZE_MOVES }, noop, spy)
+  expect(queryByRole('button', { name: 'Abandon' })).toBeNull()
+  const toggle = getByRole('button', { name: 'More actions for T-1' })
+  expect(toggle.getAttribute('aria-haspopup')).toBe('menu')
+  fireEvent.click(toggle)
+  fireEvent.click(within(getByRole('menu')).getByRole('menuitem', { name: 'Abandon' }))
+  expect(spy).toHaveBeenCalledTimes(1)
   expect(spy).toHaveBeenCalledWith('T-1')
+})
+
+test('an item whose snapshot carries no moves offers no ⋯ menu and no Abandon', () => {
+  const { queryByRole } = renderTracker(baseItem)
+  expect(queryByRole('button', { name: 'More actions for T-1' })).toBeNull()
+  expect(queryByRole('menuitem', { name: 'Abandon' })).toBeNull()
 })
 
 // HZ-346: the agent writes a block's rule and needs text, and Part 1 shows it
@@ -271,18 +347,25 @@ test('a rule-block event with a script tag and a URL renders as plain text, with
 })
 
 test('an abandoned item hides Pause/Resume and Abandon, and shows the reason instead', () => {
-  const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'no longer needed', abandoned_by: 'Dana' }
-  const { queryByText, getByText } = renderTracker(item)
+  const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'no longer needed', abandoned_by: 'Dana', moves: NO_MOVES }
+  const { queryByText, getByText, queryByRole } = renderTracker(item)
   expect(queryByText('Abandon')).toBeNull()
+  expect(queryByRole('button', { name: 'More actions for T-1' })).toBeNull()
   expect(queryByText('Pause work')).toBeNull()
   expect(queryByText('Resume work')).toBeNull()
   expect(getByText(/Abandoned by Dana: no longer needed/)).toBeTruthy()
 })
 
-test('an abandoned item offers no "Restart phase" button — reopening must be a deliberate act, not a leftover lever', () => {
-  const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'stopping this' }
-  const { queryByText } = renderTracker(item)
-  expect(queryByText('Restart phase')).toBeNull()
+// HZ-711: Restart phase became the steps' own Return to… and Retry; an
+// abandoned item's snapshot offers neither — reopening must be a deliberate
+// act, not a leftover lever.
+test('an abandoned item offers no Return to… or Retry, on its steps or in a menu', () => {
+  const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'stopping this', moves: NO_MOVES }
+  const { container, queryByRole } = renderTracker(item)
+  for (const name of ['Return to…', 'Retry', 'More actions for T-1']) {
+    expect(queryByRole('button', { name })).toBeNull()
+  }
+  expect(container.querySelector('.step-card__hint')).toBeNull()
 })
 
 // ---- HZ-54: queued vs running ----
@@ -837,11 +920,10 @@ function renderWithForward(item, onForwardToAccept) {
       onBack={noop}
       onApprove={noop}
       onApproveWithComments={noop}
-      onReject={noop}
+      onMove={noop}
       onResolveConflicts={noop}
       onForwardToAccept={onForwardToAccept}
       onTogglePause={noop}
-      onRestartPhase={noop}
       onSetPersona={noop}
       onAbandon={noop}
     />,
@@ -929,10 +1011,9 @@ test('the tracker row shows a badge with the item’s own project name', () => {
         onBack={noop}
         onApprove={noop}
         onApproveWithComments={noop}
-        onReject={noop}
+        onMove={noop}
         onResolveConflicts={noop}
         onTogglePause={noop}
-        onRestartPhase={noop}
         onSetPersona={noop}
         onAbandon={noop}
       />,
@@ -962,10 +1043,9 @@ test('clicking X beside a blocker in the item view calls onRemoveDependency(item
       onBack={noop}
       onApprove={noop}
       onApproveWithComments={noop}
-      onReject={noop}
+      onMove={noop}
       onResolveConflicts={noop}
       onTogglePause={noop}
-      onRestartPhase={noop}
       onSetPersona={noop}
       onAbandon={noop}
       onRemoveDependency={spy}
@@ -984,10 +1064,9 @@ test('a failed remove does not carry its error or disabled X over to the next it
     onBack: noop,
     onApprove: noop,
     onApproveWithComments: noop,
-    onReject: noop,
+    onMove: noop,
     onResolveConflicts: noop,
     onTogglePause: noop,
-    onRestartPhase: noop,
     onSetPersona: noop,
     onAbandon: noop,
     onRemoveDependency: spy,
@@ -1029,10 +1108,9 @@ const trackerProps = {
   onBack: noop,
   onApprove: noop,
   onApproveWithComments: noop,
-  onReject: noop,
+  onMove: noop,
   onResolveConflicts: noop,
   onTogglePause: noop,
-  onRestartPhase: noop,
   onSetPersona: noop,
   onAbandon: noop,
 }
@@ -1109,11 +1187,12 @@ const blockedAt = (extra = {}) => ({
 })
 
 test('a blocked item shows the Blocked status and no Pause work', () => {
-  const { container, queryByText, getByText } = renderTracker(blockedAt())
+  const { container, queryByText, getByRole } = renderTracker(blockedAt({ moves: IMPLEMENT_MOVES }))
   expect(container.querySelector('.tracker__status').textContent).toBe('Blocked')
   expect(queryByText('Pause work')).toBeNull()
   expect(queryByText('Resume work')).toBeNull()
-  expect(getByText('Abandon')).toBeTruthy()
+  fireEvent.click(getByRole('button', { name: 'More actions for T-1' }))
+  expect(within(getByRole('menu')).getByRole('menuitem', { name: 'Abandon' })).toBeTruthy()
 })
 
 test('a paused and blocked item still shows Resume work', () => {
@@ -1159,7 +1238,7 @@ import { clockTime } from '../domain/status'
 
 const DRAIN = { blocked: true, startedAt: '2026-10-08T19:12:52.000Z', latestEnd: '2026-10-08T19:37:52.000Z' }
 const QUEUED = `Queued to merge: Horizon is deploying, merges resume after it (by about ${clockTime(DRAIN.latestEnd)})`
-const atAccept = (extra = {}) => ({ ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 354, pr_url: 'https://example.test/pr/354', acceptWaiting: null, ...extra })
+const atAccept = (extra = {}) => ({ ...baseItem, cursor: ACCEPT_GATE_INDEX, pr: 354, pr_url: 'https://example.test/pr/354', acceptWaiting: null, moves: ACCEPT_MOVES, ...extra })
 const renderQueued = (item, deployBlock = DRAIN) =>
   render(
     <Tracker
@@ -1169,21 +1248,20 @@ const renderQueued = (item, deployBlock = DRAIN) =>
       onBack={noop}
       onApprove={noop}
       onApproveWithComments={noop}
-      onReject={noop}
+      onMove={noop}
       onResolveConflicts={noop}
       onTogglePause={noop}
-      onRestartPhase={noop}
       onSetPersona={noop}
       onAbandon={noop}
     />,
   )
 
-test('HZ-360: the item page reads Queued to merge with the approver, and offers no Approve or Send back', () => {
+test('HZ-360: the item page reads Queued to merge with the approver, and offers no Approve or Return to…', () => {
   const { container, queryByRole } = renderQueued(atAccept({ acceptWaiting: { source: 'human', actor: 'Dana' } }))
   expect(container.querySelector('.tracker__status').textContent).toBe('Queued to merge')
   expect(container.querySelector('.step-card__queued').textContent).toContain(QUEUED)
   expect(container.querySelector('.step-card__queued-by').textContent).toBe('Approved by you')
-  for (const name of ['Approve', 'Approve with comments', 'Send back with feedback']) {
+  for (const name of ['Approve', 'Approve with comments', 'Return to…']) {
     expect(queryByRole('button', { name })).toBeNull()
   }
   // The PR stays one click away.
@@ -1194,10 +1272,11 @@ test('HZ-360: Autopilot waiting reads Approved by Autopilot; with no drain the g
   const queued = renderQueued(atAccept({ acceptWaiting: { source: 'autopilot' } }))
   expect(queued.container.querySelector('.step-card__queued-by').textContent).toBe('Approved by Autopilot')
   queued.unmount()
-  const { container, getByRole } = renderQueued(atAccept(), null)
+  const { container } = renderQueued(atAccept(), null)
   expect(container.querySelector('.step-card__queued')).toBeNull()
-  expect(getByRole('button', { name: 'Approve' })).toBeTruthy()
-  expect(getByRole('button', { name: 'Send back with feedback' })).toBeTruthy()
+  const gate = container.querySelector('.step-card--awaiting')
+  expect(within(gate).getByRole('button', { name: 'Approve' })).toBeTruthy()
+  expect(within(gate).getByRole('button', { name: 'Return to…' })).toBeTruthy()
 })
 
 // The choice for a conflicted PR at a blocked gate: the same queued status,
@@ -1215,7 +1294,7 @@ test('HZ-360: a conflicted PR at a blocked Accept the code shows the queued stat
 // the cached item; it is disabled while the request runs, and a refusal shows.
 function renderPause(item, onTogglePause) {
   return render(
-    <Tracker item={item} onBack={noop} onApprove={noop} onApproveWithComments={noop} onReject={noop} onResolveConflicts={noop} onTogglePause={onTogglePause} onRestartPhase={noop} onSetPersona={noop} onAbandon={noop} />,
+    <Tracker item={item} onBack={noop} onApprove={noop} onApproveWithComments={noop} onMove={noop} onResolveConflicts={noop} onTogglePause={onTogglePause} onSetPersona={noop} onAbandon={noop} />,
   )
 }
 
@@ -1228,7 +1307,7 @@ test('Resume work sends (id, false) and Pause work sends (id, true), from a stal
   expect(onTogglePause).toHaveBeenLastCalledWith('T-1', false)
 
   view.rerender(
-    <Tracker item={{ ...baseItem, paused: false }} onBack={noop} onApprove={noop} onApproveWithComments={noop} onReject={noop} onResolveConflicts={noop} onTogglePause={onTogglePause} onRestartPhase={noop} onSetPersona={noop} onAbandon={noop} />,
+    <Tracker item={{ ...baseItem, paused: false }} onBack={noop} onApprove={noop} onApproveWithComments={noop} onMove={noop} onResolveConflicts={noop} onTogglePause={onTogglePause} onSetPersona={noop} onAbandon={noop} />,
   )
   await act(async () => fireEvent.click(view.getByRole('button', { name: 'Pause work' })))
   expect(onTogglePause).toHaveBeenLastCalledWith('T-1', true)

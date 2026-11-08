@@ -130,7 +130,8 @@ test('edit, drop and a refused cycle survive a reload; a stale tab reloads; Appr
 
   // Approve & file (the session is PIN-verified): the same table turns read-only.
   await page.getByRole('button', { name: 'Approve & file', exact: true }).click()
-  await page.getByRole('button', { name: 'Approve', exact: true }).click()
+  // The header's step menu has its own Approve; confirm in the dialog.
+  await page.getByRole('alertdialog', { name: 'Approve this gate?' }).getByRole('button', { name: 'Approve', exact: true }).click()
   await expect
     .poll(async () => itemsTable(page).getByRole('columnheader').last().textContent(), { timeout: 15_000 })
     .toBe('Filed as')

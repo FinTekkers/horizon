@@ -1,6 +1,6 @@
 import { test, expect } from '../fixtures/test-base.js'
 
-test('approve, approve-with-comments and send-back drive an item through consecutive gates', async ({
+test('approve, approve-with-comments and return-to drive an item through consecutive gates', async ({
   request,
   page,
 }) => {
@@ -17,8 +17,8 @@ test('approve, approve-with-comments and send-back drive an item through consecu
   // explicit confirm dialog (HZ-38) before anything reaches the server.
   await page.goto('/')
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
-  await expect(card.locator('.btn-approve')).toBeVisible({ timeout: 10_000 })
-  await card.locator('.btn-approve').click()
+  await expect(card.getByRole('button', { name: 'Approve', exact: true })).toBeVisible({ timeout: 10_000 })
+  await card.getByRole('button', { name: 'Approve', exact: true }).click()
   await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
   await page.locator('.composer__submit').click()
 
@@ -33,24 +33,35 @@ test('approve, approve-with-comments and send-back drive an item through consecu
 
   await expect(page.locator('.step-card--awaiting')).toContainText('Review before execution', { timeout: 10_000 })
 
-  // Send back with feedback rolls the item back to the prior agent step,
-  // which re-runs and returns it to the same gate.
-  await page.locator('.btn-gate-reject').click()
-  await page.locator('.composer__input').fill('Please double-check the test plan.')
-  await page.locator('.composer__submit').click()
+  // HZ-711: Return to… (was Send back with feedback) opens the Move dialog
+  // with the gate's default target chosen; confirming rolls the item back to
+  // that agent step, which re-runs and returns it to the same gate.
+  const awaiting = page.locator('.step-card--awaiting')
+  const moveDialog = page.getByRole('dialog', { name: `Return to an earlier step · ${id}` })
+  await awaiting.getByRole('button', { name: 'Return to…' }).click()
+  await expect(moveDialog).toBeVisible()
+  await expect(moveDialog.getByRole('radio', { checked: true })).toHaveCount(1)
+  await moveDialog.getByLabel('Note for the step (optional)').fill('Please double-check the test plan.')
+  await moveDialog.getByRole('button', { name: 'Return here' }).click()
+  await expect(moveDialog).toHaveCount(0)
 
-  await expect(page.locator('.step-card--awaiting')).toContainText('Review before execution', { timeout: 10_000 })
+  await expect(awaiting).toContainText('Review before execution', { timeout: 10_000 })
 
   // HZ-51: a human can name a specific earlier agent step instead of the
-  // nearest-preceding one — here, an explicit target that sits behind
-  // another gate (Approve the high-level design). Every gate between the
-  // chosen step and here must be crossed again on the way back, so picking
-  // it must re-present that gate before Review before execution reappears.
-  await page.locator('.btn-gate-reject').click()
-  await expect(page.locator('#composer-target-step')).toBeVisible()
-  await page.locator('#composer-target-step').selectOption({ label: 'Plan options & trade-offs (pros / cons)' })
-  await page.locator('.composer__input').fill('Reconsider the design options entirely.')
-  await page.locator('.composer__submit').click()
+  // default — here, an explicit target that sits behind another gate
+  // (Approve the high-level design). Every gate between the chosen step and
+  // here must be crossed again on the way back, so picking it must re-present
+  // that gate before Review before execution reappears — and the dialog says
+  // so before anything is sent.
+  await awaiting.getByRole('button', { name: 'Return to…' }).click()
+  await expect(moveDialog).toBeVisible()
+  await moveDialog.getByRole('radio', { name: /^Plan options & trade-offs \(pros \/ cons\)/ }).check()
+  await expect(moveDialog.getByRole('list', { name: 'Approvals given again' }).getByRole('listitem')).toHaveText([
+    'Approve the high-level design',
+  ])
+  await moveDialog.getByLabel('Note for the step (optional)').fill('Reconsider the design options entirely.')
+  await moveDialog.getByRole('button', { name: 'Return here' }).click()
+  await expect(moveDialog).toHaveCount(0)
 
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
     timeout: 10_000,
