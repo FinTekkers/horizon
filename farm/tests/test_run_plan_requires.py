@@ -538,6 +538,7 @@ def test_standard_vars_is_one_frozen_literal_list_defined_only_here():
         for top in ("farm", "domain", "server/src")
         for path in (REPO_ROOT / top).rglob("*")
         if path.suffix in (".py", ".js", ".mjs", ".json")
+        and ".venv" not in path.parts
         and "tests" not in path.parts
         and path.name != "run_plan_requires.py"
         and "OPTIND" in (text := path.read_text(errors="ignore"))

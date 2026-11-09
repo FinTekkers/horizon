@@ -198,7 +198,9 @@ def test_no_farm_file_writes_check_commands():
     offenders = [
         str(path.relative_to(REPO_ROOT))
         for path in (REPO_ROOT / "farm").rglob("*.py")
-        if "tests" not in path.relative_to(REPO_ROOT / "farm").parts and pattern.search(path.read_text())
+        if ".venv" not in path.parts
+        and "tests" not in path.relative_to(REPO_ROOT / "farm").parts
+        and pattern.search(path.read_text())
     ]
     assert offenders == []
 

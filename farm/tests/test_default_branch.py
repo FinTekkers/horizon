@@ -104,7 +104,9 @@ def test_no_farm_module_keeps_its_own_default_branch_copy():
     offenders = [
         str(path.relative_to(FARM_DIR))
         for path in FARM_DIR.rglob("*.py")
-        if "tests" not in path.parts and re.search(r"^def _default_branch\b", path.read_text(encoding="utf-8"), re.M)
+        if ".venv" not in path.parts
+        and "tests" not in path.parts
+        and re.search(r"^def _default_branch\b", path.read_text(encoding="utf-8"), re.M)
     ]
     assert offenders == []
 

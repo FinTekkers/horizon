@@ -468,9 +468,15 @@ prose telling the human to file something. Its reply may carry a top-level
 
 ## Tests
 
+Create the venv first — `run.sh` builds it with Python 3.13 unless
+`FARM_PYTHON` names another interpreter — then install the dev
+dependencies into it and run the suite with its interpreter, never
+the system `python3`:
+
 ```
-pip install -r farm/requirements-dev.txt
-python -m pytest farm/tests        # from the repo root
+./farm/run.sh prepare                        # if python3.13 is unavailable, prefix with FARM_PYTHON=python3
+farm/.venv/bin/pip install -r farm/requirements-dev.txt
+farm/.venv/bin/python -m pytest farm/tests  # from the repo root
 ```
 
 The suite drives the real step-agent code against `tests/fake_claude` (an
