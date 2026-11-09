@@ -258,6 +258,12 @@ TENANT_ENTRY = "/usr/local/libexec/horizon/tenant-entry"
 # and no other tenant can. Fixed like TENANT_ENTRY: tenant-entry and
 # infra/host/horizon-provision-run-user name the same path.
 TENANT_JOBS_DIR = Path("/var/lib/horizon/tenant-jobs")
+# HZ-815: besides the run's checkout (and a container run's own /tmp), the
+# only dirs a host Task run's declared `outputs` media may be copied from —
+# `:`-separated. Never offered to a tenant or container run.
+MEDIA_OUTPUT_ROOTS = tuple(
+    os.path.expanduser(p) for p in os.environ.get("MEDIA_OUTPUT_ROOTS", "~/recordings").split(":") if p.strip()
+)
 
 
 def ensure_dirs() -> None:

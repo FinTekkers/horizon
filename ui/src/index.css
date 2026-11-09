@@ -2003,3 +2003,13 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
 .db-changes__title { font: 700 13px var(--font-sans); color: var(--deep); }
 .db-changes__failed { color: var(--danger-ink); }
 .db-changes__source { margin-top: 4px; font-size: 12px; color: var(--muted); }
+
+/* HZ-815: a Task run's videos and images, on Execute, Verify & report and Review & close. */
+.task-media { margin-top: 12px; display: grid; gap: 12px; }
+.task-media__title { font: 700 13px var(--font-sans); color: var(--deep); }
+.task-media__file { margin: 0; min-width: 0; }
+.task-media__player, .task-media__image { display: block; max-width: 100%; max-height: 70vh; height: auto; border-radius: 6px; }
+.task-media__caption { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.task-media__name { overflow-wrap: anywhere; color: var(--text-secondary); }
+.task-media__reason, .task-media__error { color: var(--danger-ink); }
+.task-media__error { font-size: 13px; }

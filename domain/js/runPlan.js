@@ -11,6 +11,7 @@
 
 import { criteriaLines } from './fields.js'
 import dbChangesRules from '../dbChanges.json' with { type: 'json' }
+import taskMediaRules from '../taskMedia.json' with { type: 'json' }
 
 const FENCED = /```json run-plan\n([\s\S]*?)\n```/g
 
@@ -34,6 +35,7 @@ export function extractRunPlan(artifact) {
   if (block.requires !== undefined && !validRequires(block.requires)) return null
   if (block.proof !== undefined && !validProof(block.proof, commands.length, block.reports ?? [])) return null
   if (block.db_changes !== undefined && !validDbChanges(block.db_changes, block.env)) return null
+  if (block.outputs !== undefined && !validOutputs(block.outputs)) return null
   // HZ-416: optional; absent leaves it to effectiveRunner(). Unknown values
   // read as no plan, the same as any other malformed block.
   if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return null
@@ -101,6 +103,25 @@ function validDbChanges(dbChanges, env) {
   if (typeof connection !== 'string' || !ENV_REFERENCE.test(connection) || !envValues.includes(connection)) return false
   if (!Array.isArray(tables) || tables.length < 1 || tables.length > dbChangesRules.maxTables) return false
   return new Set(tables).size === tables.length && tables.every(validTableName)
+}
+
+// HZ-815: the same rule as run_plan.validate()'s `outputs` check — at most
+// maxOutputs entries of exactly `path` and `kind`; the kind one of
+// domain/taskMedia.json `kinds`; the path non-blank, with no `..` part and
+// no control character. Execute's realpath check owns where a file may be.
+export const TASK_MEDIA_RULES = taskMediaRules
+
+function validOutputs(outputs) {
+  if (!Array.isArray(outputs) || outputs.length > taskMediaRules.maxOutputs) return false
+  return outputs.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+    const keys = Object.keys(entry)
+    if (keys.length !== 2 || !keys.includes('path') || !keys.includes('kind')) return false
+    if (!taskMediaRules.kinds.includes(entry.kind)) return false
+    const { path } = entry
+    if (typeof path !== 'string' || !path.trim() || path.length > taskMediaRules.maxPathLength) return false
+    return !path.split('/').includes('..') && !CONTROL.test(path)
+  })
 }
 
 // HZ-503: the same shape rule as run_plan.validate()'s `proof` check — a

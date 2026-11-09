@@ -45,6 +45,7 @@ import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
 import DbChangesTable from './DbChangesTable'
+import TaskMedia from './TaskMedia'
 import PlanInventoryTables from './PlanInventoryTables'
 import GoldenCasesTable from './GoldenCasesTable'
 import ProjectBadge from './ProjectBadge'
@@ -80,6 +81,9 @@ const VERIFY_FAILED_LABEL = 'Verify & report failed'
 // as if it had just failed again; the cursor step says why instead. Paused or
 // stopped on a rule, the last outcome is still why, so it stays.
 const KEEPS_RAN_AHEAD = new Set(['paused', 'rule_block'])
+// HZ-815: the cards that show the Execute run's stored media.
+const TASK_MEDIA_STEP_INDEXES = new Set([EXECUTE_STEP_INDEX, VERIFY_REPORT_STEP_INDEX, TASK_REVIEW_CLOSE_GATE_INDEX])
+
 function ranAheadOf(item, index, status, output) {
   if (item.notDispatched && !KEEPS_RAN_AHEAD.has(item.notDispatched.kind)) return null
   if (status !== 'pending' || !output?.artifact || item.activeRun?.step_index === index) return null
@@ -384,6 +388,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // HZ-814: what the Execute run changed in its database, shown on Execute
   // and Verify & report and linked from Review & close.
   const dbChanges = status !== 'pending' ? stepOutputs?.[EXECUTE_STEP_INDEX]?.job?.dbChanges : null
+  // HZ-815: the videos and images the Execute run stored, played inline on
+  // Execute, Verify & report and Review & close.
+  const media = status !== 'pending' && TASK_MEDIA_STEP_INDEXES.has(index) ? stepOutputs?.[EXECUTE_STEP_INDEX]?.job?.media : null
   const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
   const retryHere = retryTarget(item)?.step === st.key
   const canReturn = returnTargets(item).length > 0
@@ -556,6 +563,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           {st.runsIn === 'job' && output?.job && <JobPanel item={item} job={output.job} onStop={stopJob} onResume={resumeJob} />}
           {index === EXECUTE_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} id="db-changes" />}
           {index === VERIFY_REPORT_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} />}
+          {media?.length > 0 && <TaskMedia itemId={item.id} media={media} />}
           {index === TASK_REVIEW_CLOSE_GATE_INDEX && dbChanges && (
             <a className="step-card__artifact-link" href="#db-changes">
               Database changes ↓

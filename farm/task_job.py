@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from domain.py import run_plan
-from farm import container_runner, db_changes, job_reports, run_reaper
+from farm import container_runner, db_changes, job_media, job_reports, run_reaper
 from farm import task_clone as task_clone_mod
 from farm.checks import redact
 
@@ -230,6 +230,7 @@ def _run_job(
     cpu_limit: str | None = None,
     memory_limit: str | None = None,
     first_line: str | None = None,
+    media_roots: tuple = (),
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -275,7 +276,10 @@ def _run_job(
     memory limit.
 
     HZ-772: `first_line`, when given, is logged (redacted) at the head of each
-    start's output, before the env line — a tenant job's `running as` line."""
+    start's output, before the env line — a tenant job's `running as` line.
+
+    HZ-815: `media_roots`, config.MEDIA_OUTPUT_ROOTS for a farm host run, are
+    the dirs besides the checkout a plan's `outputs` may be copied from."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -680,6 +684,14 @@ def _run_job(
         )
     except Exception as exc:
         state["reports"] = [{"path": "(reports)", "status": "refused", "bytes": 0, "text": f"could not be read ({type(exc).__name__})"}]
+    # HZ-815: the plan's declared media, copied into the item's store before
+    # a container run's /tmp is wiped. A plan with none writes no `media`
+    # key and touches no dir; collecting never keeps the job from ending.
+    outputs = block.get("outputs") or []
+    if outputs:
+        state["media"] = _collect_media(
+            outputs, cwd, repo_dir, state_path, item_id, secrets, media_roots, container_dirs(state_path, log_path)["tmp"] if started else None
+        )
     _finish_db_changes(state, db_block, env_values, log_line)
     state["status"] = "finished"
     state["ended_at"] = _now_iso()
@@ -687,6 +699,40 @@ def _run_job(
     save_state(state_path, state)
     nudge()
     return state["summary"]
+
+
+def _collect_media(outputs, cwd, repo_dir, state_path, item_id, secrets, media_roots, tmp_dir) -> list[dict]:
+    """HZ-815: job_media.collect_media() for this run. Only a host run of the
+    farm's own may read config.MEDIA_OUTPUT_ROOTS; a container or tenant run
+    gets its checkout (and a container's own /tmp) only. Never raises."""
+    tenant = _in_tenant_results(state_path)
+    try:
+        return job_media.collect_media(
+            outputs,
+            cwd,
+            repo_dir,
+            job_media.media_dir_for(state_path, item_id),
+            secrets,
+            forbid=str(HORIZON_ROOT),
+            tmp_root=str(tmp_dir) if tmp_dir else None,
+            extra_roots=() if tmp_dir or tenant else tuple(media_roots or ()),
+            file_mode=0o640 if tenant else 0o644,
+        )
+    except Exception as exc:
+        return [
+            {
+                "name": "outputs",
+                "path": "(outputs)",
+                "kind": None,
+                "mime": None,
+                "bytes": 0,
+                "durationS": None,
+                "width": None,
+                "height": None,
+                "status": job_media.REFUSED,
+                "reason": f"could not be collected ({type(exc).__name__})",
+            }
+        ]
 
 
 def _db_connection(db_block: dict, env_values: dict | None) -> str | None:
@@ -847,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
     # refused at start.
     repo_dir = task.get("repo_dir")
     # Imported here so unit tests can import this module without a FARM_HOME.
-    from farm.config import LOGS_DIR, STATE_DIR
+    from farm.config import LOGS_DIR, MEDIA_OUTPUT_ROOTS, STATE_DIR
 
     # HZ-772: a tenant job (run as its run user by farm.tenant_job) writes its
     # state and log to its project's results dir, which farmd reads.
@@ -887,6 +933,7 @@ def main(argv: list[str] | None = None) -> int:
             cpu_limit=task.get("cpu_limit"),
             memory_limit=task.get("memory_limit"),
             first_line=first_line,
+            media_roots=() if results_dir else MEDIA_OUTPUT_ROOTS,
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

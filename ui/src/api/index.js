@@ -50,6 +50,7 @@ export const {
   outputUrl,
   runLogViewUrl,
   jobLogUrl,
+  mediaUrl,
   issueUrl,
   issueLabel,
   approveGate,

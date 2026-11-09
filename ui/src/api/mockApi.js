@@ -104,6 +104,10 @@ export function jobLogUrl() {
   return '#'
 }
 
+export function mediaUrl() {
+  return '#'
+}
+
 export function issueUrl(item) {
   return `${REPO_URL}/issues/${item.issue}`
 }

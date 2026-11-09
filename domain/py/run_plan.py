@@ -106,6 +106,8 @@ def validate(block: object) -> dict:
     _check_proof(block.get("proof", []), len(commands), reports)
     if "db_changes" in block:
         _check_db_changes(block["db_changes"], env)
+    if "outputs" in block:
+        _check_outputs(block["outputs"])
     return block
 
 
@@ -179,6 +181,31 @@ def _check_db_changes(block: object, env: dict) -> None:
     for table in tables:
         if not isinstance(table, str) or len(table) > DB_CHANGES["maxTableNameLength"] or not TABLE_NAME.fullmatch(table):
             raise ValueError(DB_CHANGES_TABLES)
+
+
+# HZ-815: the media files the run writes, copied into the item's store after
+# Execute (farm/job_media.py). Shape only: where a file may be read from is
+# Execute's realpath check. The kinds and the cap are declared once in
+# domain/taskMedia.json; domain/js/runPlan.js validOutputs() is the same rule.
+TASK_MEDIA: dict = json.loads((Path(__file__).resolve().parent.parent / "taskMedia.json").read_text())
+OUTPUTS_SHAPE = (
+    f"run_plan 'outputs' must be a list of at most {TASK_MEDIA['maxOutputs']} "
+    "{\"path\": \"<file>\", \"kind\": \"video\" or \"image\"} objects"
+)
+OUTPUTS_PARENT = "run_plan 'outputs' paths must not contain '..' or a control character"
+
+
+def _check_outputs(outputs: object) -> None:
+    if not isinstance(outputs, list) or len(outputs) > TASK_MEDIA["maxOutputs"]:
+        raise ValueError(OUTPUTS_SHAPE)
+    for entry in outputs:
+        if not isinstance(entry, dict) or set(entry) != {"path", "kind"} or entry["kind"] not in TASK_MEDIA["kinds"]:
+            raise ValueError(OUTPUTS_SHAPE)
+        path = entry["path"]
+        if not isinstance(path, str) or not path.strip() or len(path) > TASK_MEDIA["maxPathLength"]:
+            raise ValueError(OUTPUTS_SHAPE)
+        if ".." in PurePosixPath(path).parts or _CONTROL.search(path):
+            raise ValueError(OUTPUTS_PARENT)
 
 
 # HZ-503: what proves each metric line. validate() checks the shape only, so

@@ -226,6 +226,24 @@ def test_shared_db_changes_cases(case):
                 assert value not in str(raised.value)
 
 
+# ---- HZ-815: the same `outputs` rule as domain/js/runPlan.js ----
+
+
+def test_the_outputs_fixture_has_none_a_valid_list_and_invalid_cases():
+    assert any(c["valid"] and "outputs" not in c["block"] for c in CASES["outputs"])
+    assert any(c["valid"] and c["block"].get("outputs") for c in CASES["outputs"])
+    assert any(not c["valid"] for c in CASES["outputs"])
+
+
+@pytest.mark.parametrize("case", CASES["outputs"], ids=lambda c: c["case"])
+def test_shared_outputs_cases(case):
+    if case["valid"]:
+        assert run_plan.validate(dict(case["block"])) == case["block"]
+    else:
+        with pytest.raises(ValueError, match="'outputs'"):
+            run_plan.validate(dict(case["block"]))
+
+
 # ---- HZ-503: the same `proof` rule as domain/js/runPlan.js ----
 
 
