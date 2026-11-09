@@ -1870,6 +1870,42 @@ export function hasRejectedColumn(database = db) {
   return database.prepare('PRAGMA table_info(work_item)').all().some((col) => col.name === 'rejected')
 }
 
+// HZ-820: a soft ask never outlives its item. When the item closes or is
+// abandoned, Horizon dismisses its open soft asks with one of these reasons
+// (server/src/moveItem.js through asks.js dismissSoftAsksForParent). Defined
+// here, the one module both the boot sweep below and asks.js can import, so
+// the reasons that let File it re-file such an ask cannot drift apart.
+export const PARENT_CLOSED_REASON = 'Parent item closed'
+export const PARENT_ABANDONED_REASON = 'Parent item abandoned'
+export const PARENT_REASONS = Object.freeze([PARENT_CLOSED_REASON, PARENT_ABANDONED_REASON])
+
+// HZ-820: the open soft asks left on items that were already closed or
+// abandoned before the hook existed, dismissed by Horizon with the matching
+// reason — abandoned wins over closed. Only open soft asks are read, so a
+// blocking ask, a split and an already filed or dismissed ask keep their
+// status, and a second run changes nothing. Exported for its test.
+export function sweepParentClosedSoftAsks(database = db) {
+  const rows = database
+    .prepare(
+      `SELECT a.id AS ask_id, w.kind, w.cursor, w.abandoned_at FROM ask a JOIN work_item w ON w.id = a.item_id
+        WHERE a.kind = 'soft' AND a.status = 'open' ORDER BY a.id`,
+    )
+    .all()
+  const dismiss = database.prepare(
+    `UPDATE ask SET status = 'dismissed', dismiss_reason = ?, resolved_by = 'Horizon', resolved_at = datetime('now'),
+            updated_at = datetime('now')
+      WHERE id = ? AND kind = 'soft' AND status = 'open'`,
+  )
+  const counts = { closed: 0, abandoned: 0 }
+  database.transaction(() => {
+    for (const row of rows) {
+      if (row.abandoned_at != null) counts.abandoned += dismiss.run(PARENT_ABANDONED_REASON, row.ask_id).changes
+      else if (row.cursor >= endIndex(itemKindOf(row))) counts.closed += dismiss.run(PARENT_CLOSED_REASON, row.ask_id).changes
+    }
+  })()
+  return counts
+}
+
 // One-time on first boot after HZ-141 ships, and placed LAST on purpose: it
 // reads final cursors, so it must run after both cursor-shift migrations AND
 // after the demo seed (whose SEED_ITEMS park items on all five gates — without
@@ -1881,5 +1917,14 @@ if (!db.prepare("SELECT value FROM setting WHERE key = 'gate_notice_baseline'").
   db.transaction(() => {
     baselineNotifiedStep(db)()
     db.prepare("INSERT INTO setting (key, value) VALUES ('gate_notice_baseline', 'done')").run()
+  })()
+}
+
+// HZ-820: one-time, after the cursor-shift migrations (it reads final
+// cursors). Same double-boot guard: the setting INSERT is the last statement.
+if (!db.prepare("SELECT value FROM setting WHERE key = 'soft_ask_parent_sweep'").get()) {
+  db.transaction(() => {
+    sweepParentClosedSoftAsks(db)
+    db.prepare("INSERT INTO setting (key, value) VALUES ('soft_ask_parent_sweep', 'done')").run()
   })()
 }

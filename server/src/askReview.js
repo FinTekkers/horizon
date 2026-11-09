@@ -26,7 +26,7 @@
 import { db } from './db.js'
 import * as store from './store.js'
 import { farmFetch } from './orchestrator.js'
-import { stepLabel, validateAsk } from './asks.js'
+import { PARENT_DISMISSED_SQL, stepLabel, validateAsk } from './asks.js'
 import { footprintOf, inFlightPeers, planFootprintOf } from './overlapService.js'
 import { decideOverlap, extractPlanFootprint, isEmptyFootprint, peerStateOf } from './overlap.js'
 import { servedRulesFor } from './rulesStore.js'
@@ -74,12 +74,15 @@ const RESWEEP_MS = 60 * 1000
 const REVIEW_FARM_MS = 180_000
 const PLAN_KIND = STEPS[PLAN_DRAFT_STEP_INDEX].itemKind
 
+// HZ-820: a soft ask Horizon dismissed when its item closed can still be
+// filed by hand, so it is reviewed as an open one is.
 const insertMissing = db.prepare(
-  "INSERT OR IGNORE INTO ask_review (ask_id) SELECT id FROM ask WHERE status = 'open' AND id NOT IN (SELECT ask_id FROM ask_review)",
+  `INSERT OR IGNORE INTO ask_review (ask_id) SELECT a.id FROM ask a
+    WHERE (a.status = 'open' OR ${PARENT_DISMISSED_SQL}) AND a.id NOT IN (SELECT ask_id FROM ask_review)`,
 )
 const selectAwaiting = db.prepare(
   `SELECT a.* FROM ask a JOIN ask_review r ON r.ask_id = a.id
-    WHERE r.status = 'awaiting' AND a.status = 'open' ORDER BY a.id`,
+    WHERE r.status = 'awaiting' AND (a.status = 'open' OR ${PARENT_DISMISSED_SQL}) ORDER BY a.id`,
 )
 const selectReview = db.prepare('SELECT * FROM ask_review WHERE ask_id = ?')
 const selectRun = db.prepare('SELECT provider, runs_on FROM step_run WHERE id = ?')
