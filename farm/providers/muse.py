@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..config import FARM_MUSE_BIN, MAX_TURNS, STEP_TIMEOUT_S
 from ..credentials import without_gate_credentials
-from .base import AgentError, AgentExhaustedError, AgentUsageLimitedError, decode_partial, reset_from_text
+from .base import AgentError, AgentExhaustedError, AgentModelUnavailableError, AgentUsageLimitedError, decode_partial, reset_from_text
 from .muse_stream import LineRenderer
 
 # `muse exec --session-id <UUID>` genuinely carries context across calls
@@ -238,6 +238,23 @@ def _usage_limit(text: str) -> AgentUsageLimitedError | None:
     return AgentUsageLimitedError(f"muse usage limit: {line[:300]}", reset_at=reset_from_text(text))
 
 
+_MODEL_UNAVAILABLE_RE = re.compile(r"model\s+`[^`]+`\s+does not exist or you lack access|model\s+\S+\s+does not exist", re.IGNORECASE)
+
+
+def _model_unavailable(text: str) -> AgentModelUnavailableError | None:
+    """The model-not-found refusal `text` reports, or None. The observed
+    form is a 404 task failure naming the model; a generic exit or an
+    agent's own prose mentioning a model must never match, so the
+    model's quoted name and the refusal wording are both required."""
+    if not text:
+        return None
+    match = _MODEL_UNAVAILABLE_RE.search(text)
+    if not match:
+        return None
+    line = next((ln.strip() for ln in text.splitlines() if _MODEL_UNAVAILABLE_RE.search(ln)), text.strip())
+    return AgentModelUnavailableError(f"muse model unavailable: {line[:300]}")
+
+
 def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
     events = []
     for line in proc.stdout.splitlines():
@@ -290,6 +307,9 @@ def _parse_events(proc: subprocess.CompletedProcess, session_id: str) -> dict:
     limited = _usage_limit(proc.stdout)
     if limited is not None:
         raise limited
+    unavailable = _model_unavailable(proc.stdout) or _model_unavailable(proc.stderr)
+    if unavailable is not None:
+        raise unavailable
     if proc.returncode != 0:
         raise AgentError(f"muse exited {proc.returncode}: {proc.stderr.strip()[:300]}")
     raise AgentError(f"muse produced no terminal.completed event: {proc.stdout[:300]}")

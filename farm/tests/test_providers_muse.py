@@ -343,6 +343,16 @@ def test_any_other_nonzero_exit_is_still_a_plain_agent_error(monkeypatch):
     assert str(err.value) == "muse exited 2: model unavailable"
 
 
+def test_a_model_not_found_404_is_model_unavailable(monkeypatch):
+    from farm.providers.base import AgentModelUnavailableError
+
+    stderr = "run ended with Failed: model `muse-spark-1.3` does not exist or you lack access [request_id=abc]"
+    monkeypatch.setattr(muse, "_stream", lambda cmd, **kw: _completed("", returncode=1, stderr=stderr))
+
+    with pytest.raises(AgentModelUnavailableError):
+        muse.run("hello")
+
+
 def test_a_completed_run_whose_reply_mentions_a_429_quota_is_not_a_usage_limit(monkeypatch):
     stdout = _terminal_completed_jsonl("fixed the 429 quota handling")
     monkeypatch.setattr(muse, "_stream", lambda cmd, **kw: _completed(stdout, stderr="429 quota exhausted"))

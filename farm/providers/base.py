@@ -92,6 +92,23 @@ class AgentUsageLimitedError(AgentError):
         self.model: str | None = None
 
 
+class AgentModelUnavailableError(AgentError):
+    """The provider refused the run because the named model does not exist
+    on this box or the caller lacks access to it — a 404 / "does not exist"
+    refusal, never a usage limit and never an auth failure for the provider
+    as a whole. run_agent() retries the same call on the next candidate
+    model instead of pausing the item: the model, not the step, is what
+    differs between boxes.
+
+    * provider, model — what was unavailable. Set by agent_runner.run_agent(),
+      the dispatcher, never by a provider module."""
+
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg)
+        self.provider: str | None = None
+        self.model: str | None = None
+
+
 def iso_utc(moment: datetime) -> str:
     """A reset time as the ISO-8601 UTC string AgentUsageLimitedError carries.
     A naive time is taken as UTC already."""

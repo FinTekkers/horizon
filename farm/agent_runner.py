@@ -19,12 +19,13 @@ from domain.py.personas import MODELS, resolve_model
 
 from .config import FARM_PROVIDER, MAX_TURNS, STATE_DIR, STEP_TIMEOUT_S
 from .providers import claude, muse
-from .providers.base import AgentError, AgentExhaustedError, AgentMessageTooLargeError, AgentUsageLimitedError
+from .providers.base import AgentError, AgentExhaustedError, AgentMessageTooLargeError, AgentModelUnavailableError, AgentUsageLimitedError
 
 __all__ = [
     "AgentError",
     "AgentExhaustedError",
     "AgentMessageTooLargeError",
+    "AgentModelUnavailableError",
     "AgentUsageLimitedError",
     "FIRST_OBJECT_NOTE",
     "REPAIRS",
@@ -156,6 +157,47 @@ def assert_provider_auth(name: str | None = None) -> None:
     provider.assert_subscription_auth()
 
 
+def _next_unavailable_candidate(
+    head_provider: str,
+    head_model: str | None,
+    provider_locked: bool,
+    tried: frozenset,
+    disallowed_tools: str | None = None,
+    add_dirs: list[str] | None = None,
+) -> tuple[str, str] | None:
+    """The next (provider, model) to try after a model-unavailable refusal,
+    or None when every candidate is tried. Same-provider selectable models
+    first, in catalogue order, then — unless the step is provider-locked —
+    every other provider's selectable models, also in catalogue order. A
+    model is never tried twice in one call: `tried` holds every
+    (provider, model) already attempted, head included. Providers with no
+    catalogue entry (test fakes registered under a throwaway name) have no
+    candidates of their own and never appear here."""
+    ordered: list[tuple[str, str]] = []
+    catalogue = domain_providers.PROVIDERS
+    for provider_name in catalogue:
+        module = _PROVIDERS.get(provider_name)
+        if disallowed_tools and not getattr(module, "ENFORCES_DENY_RULES", False):
+            continue
+        if add_dirs and not getattr(module, "READS_ADD_DIRS", False):
+            continue
+        entry = catalogue[provider_name]
+        for model_entry in entry.get("models", ()):  # type: ignore[attr-defined]
+            if model_entry.get("selectable"):
+                ordered.append((provider_name, model_entry["id"]))
+    head_first = [(head_provider, head_model)] if head_model is not None else []
+    same_provider = [c for c in ordered if c[0] == head_provider]
+    others = [c for c in ordered if c[0] != head_provider]
+    if provider_locked:
+        sequence = same_provider
+    else:
+        sequence = same_provider + others
+    for candidate in sequence:
+        if candidate not in tried and candidate not in head_first:
+            return candidate
+    return None
+
+
 # ---- usage meter (HZ-550) ----
 # Every run_agent() call made inside usage_meter() is added to its meter: the
 # first try, a parse retry, a re-prompt, a fix-loop turn, a handoff note.
@@ -236,6 +278,7 @@ def run_agent(
     disallowed_tools: str | None = None,
     overlay: dict | None = None,
     add_dirs: list[str] | None = None,
+    _tried_unavailable: frozenset | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
     "model": <id or None>, "command_id": <id or None>}, plus "num_turns" (HZ-458)
@@ -317,6 +360,42 @@ def run_agent(
             retry_fresh=retry_fresh,
             **({"disallowed_tools": disallowed_tools} if disallowed_tools else {}),
             **({"add_dirs": add_dirs} if add_dirs else {}),
+        )
+    except AgentModelUnavailableError as exc:
+        # The model, not the step, differs between boxes: retry the same
+        # call on the next candidate model, fresh (no resume of a session
+        # that never started), without using another step attempt — the
+        # server only sees success, or the last candidate's failure. A
+        # provider-wide auth failure never reaches here: it is a plain
+        # AgentError in the provider modules, so it pauses as before.
+        exc.provider = name
+        exc.model = model
+        _meter_call(name, model, None)
+        tried = frozenset({(name, model)}) | (_tried_unavailable or frozenset())
+        nxt = _next_unavailable_candidate(name, model, provider_locked, tried, disallowed_tools, add_dirs)
+        if nxt is None:
+            raise
+        next_provider, next_model = nxt
+        _log(f"model unavailable: {name}:{model} — retrying on {next_provider}:{next_model}")
+        return run_agent(
+            prompt,
+            agent=agent,
+            step=step,
+            persona=persona,
+            session_id=None,
+            append_system=append_system,
+            cwd=cwd,
+            max_turns=max_turns,
+            timeout_s=timeout_s,
+            allowed_tools=allowed_tools,
+            provider=next_provider,
+            model_choice=next_model,
+            provider_locked=provider_locked,
+            retry_fresh=retry_fresh,
+            disallowed_tools=disallowed_tools,
+            overlay=overlay,
+            add_dirs=add_dirs,
+            _tried_unavailable=tried,
         )
     except AgentExhaustedError as exc:
         # The same provenance a reply carries, so a salvaged reply can record
