@@ -13,8 +13,11 @@ cd ui && npm install && npm run dev       # UI on :5173 (proxies /api to :3001)
 
 ## Running the tests on a fresh checkout
 
-Prerequisites: Node >= 22, Python 3.13, and a Go toolchain (the root
-suite also runs the WhatsApp bridge checks in `infra/whatsapp-bridge/`).
+Prerequisites: Node >= 22, Python 3.13, a Go toolchain (the root
+suite also runs the WhatsApp bridge checks in `infra/whatsapp-bridge/`),
+and `ffmpeg`/`ffprobe` with the `libx264` encoder on `PATH` (the root
+suite also runs the recorder tests in `scripts/recorder/`, which fail
+without them — a limited build such as `ffmpeg-free` has no `libx264`).
 If only an older Python is available, build the farm venv with it
 explicitly — `run.sh` defaults to `python3.13`:
 
@@ -25,8 +28,21 @@ npm --prefix server install --no-audit --no-fund
 npm --prefix ui install --no-audit --no-fund
 npm --prefix e2e install --no-audit --no-fund
 npx --prefix e2e playwright install chromium   # once, for the e2e suite
+sudo dnf install -y ffmpeg-free                 # CentOS/RHEL: ffmpeg + ffprobe, no libx264
+# then, on a host whose package ffmpeg lacks libx264, replace both
+# binaries with a full static build (verified: ffmpeg 7.0.2-static):
+curl -L -o /tmp/ffmpeg-release-amd64-static.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+tar -xJf /tmp/ffmpeg-release-amd64-static.tar.xz -C /tmp
+sudo cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/
+ffmpeg -hide_banner -encoders | grep libx264     # must list libx264
 npm test                                  # root suite: server, UI, farm, infra
 ```
+
+On macOS, `brew install ffmpeg` provides `libx264`; on Debian/Ubuntu,
+`apt install ffmpeg` does. If the tools are absent on a host, the
+recorder tests fail unless `RECORDER_ALLOW_SKIP=1` is set, in which
+case they skip instead of failing — that env var never skips a host
+that has the tools.
 
 Run the farm suite with the venv's interpreter, never the system
 `python3` (`farm/.venv/bin/python -m pytest farm/tests` from the repo

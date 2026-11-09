@@ -14,6 +14,16 @@ npx --prefix scripts/recorder playwright install chromium
 ```
 
 You also need `ffmpeg`, `ffprobe`, `curl` and `openssl` on the PATH.
+The `ffmpeg` build must include the `libx264` encoder — check with
+`ffmpeg -hide_banner -encoders | grep libx264`. A limited build such
+as `ffmpeg-free` (CentOS/RHEL `dnf install ffmpeg-free`) has no
+`libx264` and the production tests fail with "Unknown encoder
+'libx264'"; on macOS `brew install ffmpeg` and on Debian/Ubuntu
+`apt install ffmpeg` provide it, and on a host whose package build
+lacks it, replace both binaries with a full static build (see the
+fresh-checkout section in the repo `README.md`). Without the tools
+the tests fail unless `RECORDER_ALLOW_SKIP=1` is set, which skips
+them only on a host that lacks the tools.
 
 ## The throwaway board
 
