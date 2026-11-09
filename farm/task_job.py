@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from domain.py import run_plan
-from farm import container_runner, job_reports, run_reaper
+from farm import container_runner, db_changes, job_reports, run_reaper
 from farm import task_clone as task_clone_mod
 from farm.checks import redact
 
@@ -494,6 +494,26 @@ def _run_job(
     save_state(state_path, state)
     nudge()
 
+    # HZ-814: the declared tables' counts before the first command, outside
+    # the command budget. A Resume of the same approved plan keeps the first
+    # attempt's: the run's changes are measured from before it began.
+    db_block = block.get("db_changes")
+    if db_block:
+        if prior and prior.get("approved_hash") == approved_hash and isinstance(prior.get("db_before"), dict):
+            state["db_before"] = prior["db_before"]
+        else:
+            _log_db_line(log_path, db_changes.counting_line(db_block["tables"], "before the run"), secrets)
+            state["db_before"] = _db_snapshot(
+                lambda: db_changes.snapshot(
+                    _db_connection(db_block, env_values),
+                    db_block["tables"],
+                    deadline=time.monotonic() + db_changes.PHASE_CAP_S,
+                ),
+                db_block["tables"],
+            )
+        save_state(state_path, state)
+        nudge()
+
     child = {**_child_env(env_values or {}, venv), **(run_tag or {})}
     if started:
         # HZ-416: `podman exec` needs only the client's own env — the
@@ -519,6 +539,7 @@ def _run_job(
         elapsed = time.monotonic() - job_start
         remaining = budget_s - elapsed
         if remaining <= 0:
+            _finish_db_changes(state, db_block, env_values, log_line)
             state["status"] = "budget_exceeded"
             state["ended_at"] = _now_iso()
             state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
@@ -612,6 +633,7 @@ def _run_job(
             entry["status"] = "stopped"
             entry["ended_at"] = _now_iso()
             entry["exit_code"] = None
+            _finish_db_changes(state, db_block, env_values, log_line)
             state["status"] = "budget_exceeded"
             state["ended_at"] = _now_iso()
             state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
@@ -658,12 +680,65 @@ def _run_job(
         )
     except Exception as exc:
         state["reports"] = [{"path": "(reports)", "status": "refused", "bytes": 0, "text": f"could not be read ({type(exc).__name__})"}]
+    _finish_db_changes(state, db_block, env_values, log_line)
     state["status"] = "finished"
     state["ended_at"] = _now_iso()
     state["summary"] = {"run": attempted, "passed": passed, "failed": len(failing), "failing": list(failing)}
     save_state(state_path, state)
     nudge()
     return state["summary"]
+
+
+def _db_connection(db_block: dict, env_values: dict | None) -> str | None:
+    """HZ-814: the connection's resolved value — the plan's `env` reference
+    `$NAME`, resolved farm-side like every env value (job_env) and already in
+    the secrets redact() masks. None when it did not resolve."""
+    value = (env_values or {}).get(db_block["connection"][1:])
+    return value if isinstance(value, str) and value else None
+
+
+def _db_snapshot(take, tables: list[str]) -> dict:
+    """A snapshot that cannot fail the run: anything it raises marks every
+    table snapshot_error."""
+    try:
+        return take()
+    except Exception:
+        return db_changes.failed(tables, db_changes.SNAPSHOT_ERROR)
+
+
+def _log_db_line(log_path: Path, line: str, secrets: dict) -> None:
+    try:
+        with Path(log_path).open("a", encoding="utf-8") as log:
+            log.write(redact(f"{line}\n", secrets))
+    except OSError:
+        pass
+
+
+def _finish_db_changes(state: dict, db_block: dict | None, env_values: dict | None, log_line, *, cap_s: float | None = None) -> None:
+    """HZ-814: the after snapshot and the stored summary, `state["db_changes"]`,
+    taken on every path where commands ran — before the terminal status is
+    written, so farmd never forwards the run without it. `cap_s` caps the
+    whole phase (db_changes.PHASE_CAP_S by default). Never raises, and never
+    changes the run's status, summary or exit code; a plan with no
+    `db_changes` block writes nothing."""
+    if not db_block:
+        return
+    tables = db_block["tables"]
+    try:
+        if not isinstance(state.get("db_before"), dict):
+            # Stopped before the first count finished: nothing to compare with.
+            state["db_changes"] = db_changes.summarize(None, None, tables)
+        else:
+            log_line(db_changes.counting_line(tables, "after the run"))
+            deadline = time.monotonic() + (db_changes.PHASE_CAP_S if cap_s is None else cap_s)
+            after = _db_snapshot(lambda: db_changes.settled_after(_db_connection(db_block, env_values), tables, deadline=deadline), tables)
+            state["db_changes"] = db_changes.summarize(state["db_before"], after, tables)
+    except Exception:
+        state["db_changes"] = db_changes.summarize(db_changes.failed(tables, db_changes.SNAPSHOT_ERROR), None, tables)
+    try:
+        log_line(db_changes.result_line(state["db_changes"]))
+    except Exception:
+        pass
 
 
 def _read_env_file(path: str | None) -> tuple[dict, dict]:
@@ -726,6 +801,10 @@ def mark_stopped(state_path: Path, log_path: Path, run_id) -> None:
     if state.get("status") == "running":
         state["status"] = "stopped"
         state["ended_at"] = now
+    # HZ-814: farmd waits only TENANT_STOP_WAIT_S for this, so a tenant Stop
+    # takes no after snapshot: each declared table is snapshot_not_taken.
+    if isinstance(state.get("db_before"), dict) and "db_changes" not in state:
+        state["db_changes"] = db_changes.summarize(None, None, list(state["db_before"].get("tables") or {}))
     save_state(state_path, state)
     try:
         with Path(log_path).open("a", encoding="utf-8") as log:

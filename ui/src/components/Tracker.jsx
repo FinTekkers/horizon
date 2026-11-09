@@ -5,6 +5,8 @@ import {
   REVIEW_STEP_INDEX,
   ACCEPT_GATE_INDEX,
   VERIFY_REPORT_STEP_INDEX,
+  EXECUTE_STEP_INDEX,
+  TASK_REVIEW_CLOSE_GATE_INDEX,
   isClosed,
   isAbandoned,
   stepStatus,
@@ -42,6 +44,7 @@ import BlockingAsksBanner from './BlockingAsksBanner'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
+import DbChangesTable from './DbChangesTable'
 import PlanInventoryTables from './PlanInventoryTables'
 import GoldenCasesTable from './GoldenCasesTable'
 import ProjectBadge from './ProjectBadge'
@@ -378,6 +381,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // Approve the page would not offer now (a gate action runs, or a deploy
   // holds the merge) only selects it.
   const offered = stepActionFor(item, st.key)
+  // HZ-814: what the Execute run changed in its database, shown on Execute
+  // and Verify & report and linked from Review & close.
+  const dbChanges = status !== 'pending' ? stepOutputs?.[EXECUTE_STEP_INDEX]?.job?.dbChanges : null
   const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
   const retryHere = retryTarget(item)?.step === st.key
   const canReturn = returnTargets(item).length > 0
@@ -548,6 +554,13 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
           )}
           {/* HZ-407: a Task's Execute job, live from the item's own stream. */}
           {st.runsIn === 'job' && output?.job && <JobPanel item={item} job={output.job} onStop={stopJob} onResume={resumeJob} />}
+          {index === EXECUTE_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} id="db-changes" />}
+          {index === VERIFY_REPORT_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} />}
+          {index === TASK_REVIEW_CLOSE_GATE_INDEX && dbChanges && (
+            <a className="step-card__artifact-link" href="#db-changes">
+              Database changes ↓
+            </a>
+          )}
           <StepProviderPicker
             item={item}
             index={index}

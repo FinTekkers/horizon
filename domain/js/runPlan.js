@@ -10,6 +10,7 @@
 // domain/runPlan.schema.json; only the fields a reader relies on are checked.
 
 import { criteriaLines } from './fields.js'
+import dbChangesRules from '../dbChanges.json' with { type: 'json' }
 
 const FENCED = /```json run-plan\n([\s\S]*?)\n```/g
 
@@ -32,6 +33,7 @@ export function extractRunPlan(artifact) {
   if (block.reports !== undefined && !validReports(block.reports)) return null
   if (block.requires !== undefined && !validRequires(block.requires)) return null
   if (block.proof !== undefined && !validProof(block.proof, commands.length, block.reports ?? [])) return null
+  if (block.db_changes !== undefined && !validDbChanges(block.db_changes, block.env)) return null
   // HZ-416: optional; absent leaves it to effectiveRunner(). Unknown values
   // read as no plan, the same as any other malformed block.
   if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return null
@@ -76,6 +78,29 @@ function validRequires(requires) {
     if (key === 'file') return value.startsWith('/') && !CONTROL.test(value)
     return false
   })
+}
+
+// HZ-814: the same rule as run_plan.validate()'s `db_changes` check —
+// exactly `connection` and `tables`; the connection one of the plan's `env`
+// values; 1 to maxTables distinct names, each `table` or `schema.table`.
+// The rule's data is domain/dbChanges.json, shared with the farm.
+export const DB_CHANGES_RULES = dbChangesRules
+export const TABLE_NAME = new RegExp(dbChangesRules.tableName)
+const ENV_REFERENCE = /^\$[A-Z_][A-Z0-9_]*$/
+
+export function validTableName(name) {
+  return typeof name === 'string' && name.length <= dbChangesRules.maxTableNameLength && TABLE_NAME.test(name)
+}
+
+function validDbChanges(dbChanges, env) {
+  if (!dbChanges || typeof dbChanges !== 'object' || Array.isArray(dbChanges)) return false
+  const keys = Object.keys(dbChanges)
+  if (keys.length !== 2 || !keys.includes('connection') || !keys.includes('tables')) return false
+  const { connection, tables } = dbChanges
+  const envValues = env && typeof env === 'object' && !Array.isArray(env) ? Object.values(env) : []
+  if (typeof connection !== 'string' || !ENV_REFERENCE.test(connection) || !envValues.includes(connection)) return false
+  if (!Array.isArray(tables) || tables.length < 1 || tables.length > dbChangesRules.maxTables) return false
+  return new Set(tables).size === tables.length && tables.every(validTableName)
 }
 
 // HZ-503: the same shape rule as run_plan.validate()'s `proof` check — a

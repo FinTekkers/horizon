@@ -104,6 +104,8 @@ def validate(block: object) -> dict:
             raise ValueError(REPORTS_PARENT)
     _check_requires(block.get("requires", []))
     _check_proof(block.get("proof", []), len(commands), reports)
+    if "db_changes" in block:
+        _check_db_changes(block["db_changes"], env)
     return block
 
 
@@ -150,6 +152,34 @@ def _check_requires(requires: object) -> None:
             raise ValueError(REQUIRES_ENV)
         if key == "file" and (not os.path.isabs(value) or _CONTROL.search(value)):
             raise ValueError(REQUIRES_FILE)
+
+
+# HZ-814: the tables a run changes, counted read-only before and after
+# Execute (farm/db_changes.py). The table-name rule, the cap and the failure
+# reasons are declared once in domain/dbChanges.json; domain/js/runPlan.js
+# validDbChanges() is the same rule.
+DB_CHANGES: dict = json.loads((Path(__file__).resolve().parent.parent / "dbChanges.json").read_text())
+TABLE_NAME = re.compile(DB_CHANGES["tableName"])
+DB_CHANGES_SHAPE = "run_plan 'db_changes' must be {\"connection\": \"$NAME\", \"tables\": [...]} and nothing else"
+DB_CHANGES_CONNECTION = "run_plan 'db_changes' connection must be one of the plan's 'env' values, like $NAME"
+DB_CHANGES_TABLES = (
+    f"run_plan 'db_changes' tables must be 1 to {DB_CHANGES['maxTables']} distinct names like table or schema.table"
+)
+
+
+def _check_db_changes(block: object, env: dict) -> None:
+    if not isinstance(block, dict) or set(block) != {"connection", "tables"}:
+        raise ValueError(DB_CHANGES_SHAPE)
+    connection = block["connection"]
+    if not isinstance(connection, str) or not ENV_REFERENCE.match(connection) or connection not in env.values():
+        raise ValueError(DB_CHANGES_CONNECTION)
+    tables = block["tables"]
+    if not isinstance(tables, list) or not 1 <= len(tables) <= DB_CHANGES["maxTables"] or len(set(map(str, tables))) != len(tables):
+        raise ValueError(DB_CHANGES_TABLES)
+    for table in tables:
+        if not isinstance(table, str) or len(table) > DB_CHANGES["maxTableNameLength"] or not TABLE_NAME.fullmatch(table):
+            raise ValueError(DB_CHANGES_TABLES)
+
 
 # HZ-503: what proves each metric line. validate() checks the shape only, so
 # a plan approved before HZ-503 (no `proof`) still passes extract() at

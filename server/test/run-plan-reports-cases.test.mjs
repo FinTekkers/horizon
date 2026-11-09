@@ -103,3 +103,20 @@ for (const c of cases.circular_proofs) {
     assert.deepEqual(got && got.map((entry) => entry.line), c.lines)
   })
 }
+
+// HZ-814: the same fixture's `db_changes` cases (farm/tests/test_job_reports.py
+// is the Python half), so a block the Approve the run card shows is one
+// Execute snapshots, and an injection-shaped table name is refused by both.
+test('the fixture has a db_changes case with none, a valid block and invalid ones', () => {
+  assert.ok(cases.db_changes.some((c) => c.valid && c.block.db_changes === undefined))
+  assert.ok(cases.db_changes.some((c) => c.valid && c.block.db_changes))
+  assert.ok(cases.db_changes.some((c) => !c.valid))
+})
+
+for (const c of cases.db_changes) {
+  test(`db_changes: ${c.case}`, () => {
+    const block = extractRunPlan(artifactOf(c.block))
+    if (c.valid) assert.deepEqual(block, c.block)
+    else assert.equal(block, null)
+  })
+}

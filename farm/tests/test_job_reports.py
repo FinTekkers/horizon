@@ -202,6 +202,30 @@ def test_shared_requires_cases(case):
             run_plan.validate(dict(case["block"]))
 
 
+# ---- HZ-814: the same `db_changes` rule as domain/js/runPlan.js ----
+
+
+def test_the_db_changes_fixture_has_none_a_valid_block_and_invalid_cases():
+    assert any(c["valid"] and "db_changes" not in c["block"] for c in CASES["db_changes"])
+    assert any(c["valid"] and c["block"].get("db_changes") for c in CASES["db_changes"])
+    assert any(not c["valid"] for c in CASES["db_changes"])
+
+
+@pytest.mark.parametrize("case", CASES["db_changes"], ids=lambda c: c["case"])
+def test_shared_db_changes_cases(case):
+    if case["valid"]:
+        assert run_plan.validate(dict(case["block"])) == case["block"]
+    else:
+        with pytest.raises(ValueError, match="'db_changes'") as raised:
+            run_plan.validate(dict(case["block"]))
+        # The error names the field, never the value it holds.
+        block = case["block"]["db_changes"]
+        values = [block.get("connection"), *block.get("tables", [])] if isinstance(block, dict) else []
+        for value in values:
+            if isinstance(value, str) and value.startswith(("$", "a;", "postgres")):
+                assert value not in str(raised.value)
+
+
 # ---- HZ-503: the same `proof` rule as domain/js/runPlan.js ----
 
 

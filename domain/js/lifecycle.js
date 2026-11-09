@@ -426,6 +426,8 @@ export const PLAN_METRICS_REVIEW_STEP_INDEX = keyIndex('plan.review-metrics')
 // card shows what was filed.
 export const FILE_ITEMS_STEP_INDEX = keyIndex('plan.file-items')
 export const REVIEW_CLOSE_GATE_INDEX = keyIndex('plan.review-close')
+// HZ-814: a Task's last gate, whose card links the run's database changes.
+export const TASK_REVIEW_CLOSE_GATE_INDEX = keyIndex('task.review-close')
 // HZ-462: the Plan step whose artifact carries the Inventory block
 // (domain/js/planInventory.js), rendered as tables on the item page.
 export const PLAN_INVENTORY_STEP_INDEX = keyIndex('plan.inventory')
