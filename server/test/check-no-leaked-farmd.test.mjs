@@ -19,7 +19,8 @@
 //     is the ONLY thing the sweep selects directories on. A sibling file's
 //     startTestFarmd() sweeps the temp root, and a decoy under that prefix
 //     satisfies every one of the sweep's ownership conditions — `farm.farmd` in
-//     argv, a FARM_HOME naming the directory, ppid 1 — so it would be SIGKILLed
+//     argv, a FARM_HOME naming the directory, reparented to an init — so it
+//     would be SIGKILLed
 //     mid-test and the script would then correctly find nothing. The script
 //     keys on "FARM_HOME under the temp root", never on the directory's name,
 //     so the rename costs the decoy nothing.
@@ -35,7 +36,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { DECOY_ENV_VAR, FARM_HOME_PREFIX, procStat, sweepStaleTestFarmds } from './helpers/farmd.mjs'
+import { DECOY_ENV_VAR, FARM_HOME_PREFIX, isReparentedOrphan, procStat, sweepStaleTestFarmds } from './helpers/farmd.mjs'
 
 // Under the temp root (which is what the script judges on) but outside the
 // sweep's prefix (which is what the sweep judges on).
@@ -65,8 +66,8 @@ test('no test farmd has been leaked', () => {
 
 // A decoy, not a real daemon: what the script decides is decided entirely from
 // /proc, and a decoy lets the leaked shape be produced without another farmd.
-// Double-forked so the kernel reparents it to pid 1 — the state all three real
-// leaks were found in.
+// Double-forked so the kernel reparents it to an init — the state all three
+// real leaks were found in.
 async function orphanedDecoy(t, { marked }) {
   const home = mkdtempSync(path.join(tmpdir(), DECOY_HOME_PREFIX))
   assert.equal(
@@ -99,8 +100,8 @@ async function orphanedDecoy(t, { marked }) {
   })
 
   const deadline = Date.now() + 5000
-  while (Date.now() < deadline && procStat(pid)?.ppid !== 1) await new Promise((r) => setTimeout(r, 50))
-  assert.equal(procStat(pid)?.ppid, 1, `decoy ${pid} never reparented to pid 1`)
+  while (Date.now() < deadline && !isReparentedOrphan(procStat(pid)?.ppid)) await new Promise((r) => setTimeout(r, 50))
+  assert.ok(isReparentedOrphan(procStat(pid)?.ppid), `decoy ${pid} never reparented to an init`)
   return { pid, home }
 }
 
@@ -114,7 +115,7 @@ test('NEGATIVE LEG: an orphaned process with a temp FARM_HOME is reported and na
   assert.ok(result.stdout.includes(home), `the output does not name the FARM_HOME:\n${result.stdout}`)
   // It reports; it does not act. Killing by name pattern is exactly what
   // guardrail 4 forbids, and a production farmd would be in pgrep's output.
-  assert.equal(procStat(pid)?.ppid, 1, 'the check script killed the process it was only supposed to report')
+  assert.ok(isReparentedOrphan(procStat(pid)?.ppid), 'the check script killed the process it was only supposed to report')
 })
 
 test('a decoy another test is deliberately holding is listed but not reported', async (t) => {

@@ -964,7 +964,10 @@ def prepare_branch(ws: Path, item: dict, *, rebase_checkpoint: bool = False) -> 
         remote_branch = git(ws, "rev-parse", "--verify", f"origin/{branch}", check=False)
     lease_sha = remote_branch.stdout.strip() if remote_branch.returncode == 0 else ""
     default = default_branch(ws)
-    git(ws, "checkout", "-B", branch, unpushed or lease_sha or f"origin/{default}")
+    # --no-track: basing the branch on origin/<default> must not make it
+    # track main, or a source-only push resolves to main (see
+    # _push_with_lease). The push there sets the correct upstream.
+    git(ws, "checkout", "--no-track", "-B", branch, unpushed or lease_sha or f"origin/{default}")
     note, rebased = _rebase_checkpoint(ws, default, unpushed or lease_sha) if rebase_checkpoint else ("", False)
     return PreparedBranch(branch, lease_sha, note, rebased)
 
@@ -1325,7 +1328,12 @@ def _push_with_lease(ws: Path, item: dict, branch: str, lease_sha: str) -> None:
     not exist yet), the same explicit lease conflict_resolver uses. Same
     hub-shared-refs lock as the fetch in prepare_branch."""
     with hub_lock(item["repo"]):
-        git(ws, "push", f"--force-with-lease=refs/heads/{branch}:{lease_sha}", "-u", "origin", branch)
+        # Explicit destination: a source-only refspec pushes to the
+        # branch's configured upstream, and prepare_branch() bases the
+        # item branch on origin/<default>, so on a host whose
+        # push.default is upstream the push updated main instead of
+        # this branch. The destination here is always this branch.
+        git(ws, "push", f"--force-with-lease=refs/heads/{branch}:{lease_sha}", "-u", "origin", f"{branch}:refs/heads/{branch}")
 
 
 def commit_work(ws: Path, item: dict, conflicted: list[str] | None = None) -> str:

@@ -22,6 +22,7 @@ import path from 'node:path'
 
 import { PRIORITIES, DEFAULT_PRIORITY, PRIORITY, isPriority } from '../../domain/js/priorities.js'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
+import { resolveFarmPython } from './helpers/farmd.mjs'
 
 function spawnedPython(expression) {
   const script = `import json; from domain.py import priorities; print(json.dumps(${expression}))`
@@ -72,7 +73,9 @@ test('both bindings answer isPriority/is_priority identically, for members and n
 test("the wizard's numbering follows the JS binding's order, 1-based", () => {
   const script =
     'import json; from farm import wizard; print(json.dumps({"line": wizard._priority_options(), "byNumber": wizard._priority_by_number()}))'
-  const wizard = JSON.parse(execFileSync('python3', ['-c', script], { cwd: REPO_ROOT, encoding: 'utf8' }))
+  // wizard.py imports httpx, so this one import needs the farm venv, unlike
+  // the domain-only spawnedPython() imports above it.
+  const wizard = JSON.parse(execFileSync(resolveFarmPython(REPO_ROOT), ['-c', script], { cwd: REPO_ROOT, encoding: 'utf8' }))
   assert.deepEqual(wizard.byNumber, Object.fromEntries(PRIORITIES.map((value, i) => [String(i + 1), value])))
   assert.equal(wizard.line, PRIORITIES.map((value, i) => `${i + 1}) ${value}`).join(' '))
 })

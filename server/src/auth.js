@@ -318,7 +318,11 @@ export function getSessionUser(token) {
   if (!token) return null
   const session = db.prepare('SELECT * FROM session WHERE id = ?').get(sha256(token))
   if (!session) return null
-  if (new Date(session.expires_at).getTime() <= now()) {
+  // timestampMs, not new Date(): SQLite datetime('now') is UTC without a
+  // zone, and new Date() reads a zoneless "YYYY-MM-DD HH:MM:SS" as local
+  // time — on a non-UTC host an expired session looked live for the whole
+  // timezone offset. ISO-with-Z expiries parse the same either way.
+  if (timestampMs(session.expires_at) <= now()) {
     db.prepare('DELETE FROM session WHERE id = ?').run(session.id)
     return null
   }
@@ -420,7 +424,7 @@ export function getTokenAuth(raw) {
   if (!crypto.timingSafeEqual(Buffer.from(row.token_hash, 'hex'), Buffer.from(hash, 'hex'))) return null
   if (row.revoked_at) return null
   const now = Date.now()
-  if (new Date(row.expires_at).getTime() <= now) return null
+  if (timestampMs(row.expires_at) <= now) return null
   // A token whose Google user is no longer entitled is refused, not revoked:
   // unlike a session it was created deliberately, so it works again once the
   // user pays again (HZ-635).
