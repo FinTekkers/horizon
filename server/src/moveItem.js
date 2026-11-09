@@ -10,10 +10,14 @@
 // (current step, target) pair of every kind. Steps are named by key here and
 // in item_move; the record keeps its position (domain/js/lifecycle.js).
 //
-// This module moves and logs, nothing else: cancelling a run, queueing
-// feedback, the activity event and the kick stay with the callers
-// (store.js's wrappers), so each existing route keeps its own wording.
+// This module moves and logs, and one more write: HZ-820 — a move that closes
+// or abandons the item dismisses its open soft asks in the same transaction
+// (asks.js dismissSoftAsksForParent), so a soft ask never outlives its item.
+// Cancelling a run, queueing feedback, the activity event and the kick stay
+// with the callers (store.js's wrappers), so each existing route keeps its
+// own wording.
 import { db } from './db.js'
+import { PARENT_ABANDONED_REASON, PARENT_CLOSED_REASON, dismissSoftAsksForParent } from './asks.js'
 import { isHumanProof } from './humanProof.js'
 import { clearGoldenCases } from './goldenCases.js'
 import {
@@ -394,6 +398,10 @@ export function moveItem(id, { action, toKey = null, substepId = null, who, note
 
     const text = String(note ?? '')
     const moveId = insertMove.run(id, who, plan.fromKey, plan.toKey, action, text).lastInsertRowid
+    // HZ-820: abandon first — an abandon is never a close. A reopen never
+    // reaches CLOSED_KEY, so it leaves these asks dismissed.
+    if (action === 'abandon') dismissSoftAsksForParent(id, PARENT_ABANDONED_REASON)
+    else if (plan.toKey === CLOSED_KEY) dismissSoftAsksForParent(id, PARENT_CLOSED_REASON)
     return {
       ok: true,
       move: { id: Number(moveId), itemId: id, who, fromKey: plan.fromKey, toKey: plan.toKey, action, note: text },

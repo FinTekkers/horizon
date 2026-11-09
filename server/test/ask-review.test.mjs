@@ -674,3 +674,34 @@ test('guardrail: another project on the same repo never reaches the review — i
   const ask = db.prepare('SELECT * FROM ask WHERE id = ?').get(npAsk)
   assert.deepEqual(await askReview.askOverlap(ask, draftOf(), store.getItem('NP-1')), { matches: [], candidates: [], abandoned: [], siblings: [] })
 })
+
+// ---- HZ-820: a soft ask closed with its item is still reviewed ----
+
+test('HZ-820: a soft ask Horizon dismissed when its item closed, with no review yet, is queued and reviewed; an owner-dismissed one is not', async () => {
+  const { PARENT_CLOSED_REASON, PARENT_ABANDONED_REASON } = await import('../src/asks.js')
+  const dismiss = (askId, resolvedBy, reason) =>
+    db.prepare("UPDATE ask SET status = 'dismissed', resolved_by = ?, dismiss_reason = ? WHERE id = ?").run(resolvedBy, reason, askId)
+  const closed = seedAsk()
+  const abandoned = seedAsk()
+  const byOwner = seedAsk()
+  const ownerAsHorizon = seedAsk()
+  const blocking = seedAsk({ kind: 'blocking' })
+  dismiss(closed.askId, 'Horizon', PARENT_CLOSED_REASON)
+  dismiss(abandoned.askId, 'Horizon', PARENT_ABANDONED_REASON)
+  dismiss(byOwner.askId, 'Owner Example', 'Not needed now')
+  // dismissAsk's default actor is 'Horizon': the reason is what tells them apart.
+  dismiss(ownerAsHorizon.askId, 'Horizon', 'Not needed now')
+  dismiss(blocking.askId, 'Horizon', PARENT_CLOSED_REASON)
+
+  const f = farm()
+  await askReview.reviewAsks({ review: f.review })
+  for (const { askId } of [closed, abandoned]) {
+    assert.equal(f.callsFor(askId).length, 1)
+    assert.equal(reviewRow(askId).status, 'done')
+    assert.equal(reviewRow(askId).verdict, 'accept')
+  }
+  for (const { askId } of [byOwner, ownerAsHorizon, blocking]) {
+    assert.equal(f.callsFor(askId).length, 0)
+    assert.equal(reviewRow(askId), undefined, 'not queued')
+  }
+})

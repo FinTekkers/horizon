@@ -57,7 +57,7 @@ import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
-import { askHolderIds, openAsks, startCheckAsks } from './asks.js'
+import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 import { moveItem, moveTargets, movesView, planMove } from './moveItem.js'
@@ -1698,6 +1698,11 @@ export function startHoldOf(row) {
   return askStartHold(row, startCheckAsks(row.id))
 }
 
+function parentClosedAskFields(itemId) {
+  const closed = parentClosedAsks(itemId)
+  return closed.length ? { parentClosedAsks: closed } : {}
+}
+
 function startHoldFields(row) {
   const startHold = startHoldOf(row)
   return startHold ? { startHold } : {}
@@ -2373,6 +2378,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...spawnFields(row.id),
     // HZ-728: open asks — drafted follow-up and prerequisite items — read-only.
     asks: openAsks(row.id),
+    // HZ-820: soft asks Horizon dismissed when the item closed or was
+    // abandoned, still fileable by hand. Absent when there are none.
+    ...parentClosedAskFields(row.id),
     // HZ-731: only on an item held at Implement or Execute — the blocking ask,
     // or the item it filed, that the start waits for. Absent otherwise, so
     // the payload of every item nothing holds is unchanged.

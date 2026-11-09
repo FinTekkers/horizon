@@ -850,6 +850,8 @@ button { font-family: var(--font-sans); }
 .asks-panel__list { margin: 0; padding: 0; list-style: none; font: 500 13px var(--font-sans); color: var(--deep); line-height: 1.5; }
 .asks-panel__ask + .asks-panel__ask { margin-top: 8px; }
 .asks-panel__kind { font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+/* HZ-820: soft asks that closed with their item, still fileable. */
+.asks-panel__label--closed { margin-top: 12px; }
 /* HZ-730: one ask the owner can file or dismiss — the item page's banner and
    Suggested follow-ups, the Approvals drawer and the Follow-ups page. */
 .ask-card {
@@ -862,6 +864,7 @@ button { font-family: var(--font-sans); }
 .ask-card__repo { font: 500 12px var(--font-mono); color: var(--muted-strong); overflow-wrap: anywhere; }
 .ask-card__why { color: var(--muted-strong); overflow-wrap: anywhere; }
 .ask-card__step { font-weight: 700; }
+.ask-card__closed { margin-top: 2px; font-size: 12px; font-weight: 700; color: var(--muted-strong); }
 .ask-card__review { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 4px; font-size: 12px; }
 .ask-card__verdict {
   font-weight: 700; border-radius: 6px; padding: 1px 7px; background: var(--chip); color: var(--muted-strong);

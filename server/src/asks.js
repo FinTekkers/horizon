@@ -16,11 +16,18 @@
 // agent step through the injected queueFeedbackOnce. Nothing here touches a
 // gate.
 //
+// HZ-820: a soft ask never outlives its item. moveItem calls
+// dismissSoftAsksForParent in the move's own transaction when the item closes
+// or is abandoned: its open soft asks are dismissed by Horizon with the
+// parent reason (db.js PARENT_REASONS), no feedback queued and no GitHub call.
+// Blocking asks and splits are left alone. The item page lists those asks
+// (parentClosedAsks) and File it still files one by hand.
+//
 // Depends on db.js and leaf modules only; callers pass in what it needs (the
 // connected repos, the spawn and feedback calls) and write the events, so
 // nothing here imports store.js or spawn.js.
 
-import { db } from './db.js'
+import { PARENT_ABANDONED_REASON, PARENT_CLOSED_REASON, PARENT_REASONS, db } from './db.js'
 import { redact } from './caretakerRules.js'
 import { HOST_PATH, hasHostPath } from './planText.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
@@ -53,14 +60,12 @@ const supersedeStep = db.prepare(
   "UPDATE ask SET status = 'superseded', updated_at = datetime('now') WHERE item_id = ? AND step_index = ? AND step_run_id != ? AND status = 'open'",
 )
 // HZ-729: each open ask with its review (server/src/askReview.js), if any.
-const selectOpen = db.prepare(
-  `SELECT a.*, r.id AS review_id, r.status AS review_status, r.provider AS review_provider, r.verdict AS review_verdict,
+const WITH_REVIEW = `SELECT a.*, r.id AS review_id, r.status AS review_status, r.provider AS review_provider, r.verdict AS review_verdict,
           r.reasons_json AS review_reasons_json, r.amended_draft_json AS review_amended_draft_json,
           r.refers_to_json AS review_refers_to_json, r.wait_reason AS review_wait_reason,
           r.contradiction_json AS review_contradiction_json
-     FROM ask a LEFT JOIN ask_review r ON r.ask_id = a.id
-    WHERE a.item_id = ? AND a.status = 'open' ORDER BY a.id DESC`,
-)
+     FROM ask a LEFT JOIN ask_review r ON r.ask_id = a.id`
+const selectOpen = db.prepare(`${WITH_REVIEW} WHERE a.item_id = ? AND a.status = 'open' ORDER BY a.id DESC`)
 
 // HZ-730: who resolved an ask, and how. 'filed' is set by id whatever the
 // status, so an ask a step re-run superseded mid-filing still names its item.
@@ -78,6 +83,31 @@ const markReleased = db.prepare(
   "UPDATE ask SET status = 'released', dismiss_reason = ?, resolved_by = ?, resolved_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND status = 'filed'",
 )
 export const DISMISS_REASON_MAX = 500
+
+// ---- HZ-820: soft asks close with their item ----
+
+export { PARENT_ABANDONED_REASON, PARENT_CLOSED_REASON, PARENT_REASONS }
+
+const dismissParentSoft = db.prepare(
+  `UPDATE ask SET status = 'dismissed', dismiss_reason = ?, resolved_by = 'Horizon', resolved_at = datetime('now'),
+          updated_at = datetime('now')
+    WHERE item_id = ? AND kind = 'soft' AND status = 'open'`,
+)
+// The SQL test for an ask Horizon dismissed because its item closed, over
+// the `ask` row aliased `a` — askReview.js reviews these too.
+export const PARENT_DISMISSED_SQL = `(a.kind = 'soft' AND a.status = 'dismissed' AND a.resolved_by = 'Horizon' AND a.dismiss_reason IN (${PARENT_REASONS.map((r) => `'${r}'`).join(', ')}))`
+const selectParentDismissed = db.prepare(`${WITH_REVIEW} WHERE a.item_id = ? AND ${PARENT_DISMISSED_SQL} ORDER BY a.id DESC`)
+
+// Both checks: dismissAsk's actor also defaults to 'Horizon', so resolved_by
+// alone could match an owner's dismissal.
+export const isParentDismissed = (row) =>
+  row.kind === 'soft' && row.status === 'dismissed' && row.resolved_by === 'Horizon' && PARENT_REASONS.includes(row.dismiss_reason)
+
+// Dismisses the item's open soft asks with `reason`. No feedback, no event,
+// no GitHub call. Returns how many it closed.
+export function dismissSoftAsksForParent(itemId, reason) {
+  return dismissParentSoft.run(reason, itemId).changes
+}
 
 export const stepLabel = (stepIndex) => STEPS[stepIndex]?.label ?? 'an unknown step'
 
@@ -217,24 +247,33 @@ function reviewOf(row) {
   }
 }
 
-// The item snapshot's `asks`: open asks, newest first, with the step by name.
+// One ask as the snapshot shows it, with the step by name.
+function askView(row) {
+  const draft = parseDraft(row.draft_json)
+  return {
+    id: row.id,
+    kind: row.kind,
+    step: stepLabel(row.step_index),
+    title: draft.title ?? '',
+    repo: draft.repo ?? '',
+    outcome: draft.outcome ?? '',
+    metric: draft.metric ?? '',
+    guardrails: draft.guardrails ?? '',
+    why: row.why,
+    created_at: row.created_at,
+    review: reviewOf(row),
+  }
+}
+
+// The item snapshot's `asks`: open asks, newest first.
 export function openAsks(itemId) {
-  return selectOpen.all(itemId).map((row) => {
-    const draft = parseDraft(row.draft_json)
-    return {
-      id: row.id,
-      kind: row.kind,
-      step: stepLabel(row.step_index),
-      title: draft.title ?? '',
-      repo: draft.repo ?? '',
-      outcome: draft.outcome ?? '',
-      metric: draft.metric ?? '',
-      guardrails: draft.guardrails ?? '',
-      why: row.why,
-      created_at: row.created_at,
-      review: reviewOf(row),
-    }
-  })
+  return selectOpen.all(itemId).map(askView)
+}
+
+// HZ-820: the item's soft asks Horizon dismissed when it closed or was
+// abandoned, newest first, with the reason and when.
+export function parentClosedAsks(itemId) {
+  return selectParentDismissed.all(itemId).map((row) => ({ ...askView(row), dismiss_reason: row.dismiss_reason, resolved_at: row.resolved_at }))
 }
 
 // ---- HZ-731: blocking asks hold gates and the start of work ----
@@ -305,7 +344,8 @@ export function effectiveDraft(row, review, { repos = [] } = {}) {
   return { draft: { ...Object.fromEntries(DRAFT_FIELDS.map((f) => [f, checked.ask[f]])), repo: connected } }
 }
 
-// Files one open blocking or soft ask. spawnItems files under the ask's own
+// Files one open blocking or soft ask, or a soft ask Horizon dismissed when
+// its item closed (HZ-820). spawnItems files under the ask's own
 // request key (a retry after a half-finished call files nothing new) and a
 // blocking ask's item becomes a dependency of the asking item. The ask must
 // have been reviewed first (HZ-729); an escalated ask is the owner's call.
@@ -315,7 +355,7 @@ export async function fileAsk(item, askId, { repos = [], actor = 'Horizon', spaw
   if (!row) return { error: 'not_found', status: 404 }
   if (!ASK_KINDS.includes(row.kind)) return { error: 'ask_not_fileable', status: 409, message: 'A split is filed at its own gate.' }
   if (row.status === 'filed') return { ok: true, itemId: row.filed_item_id, alreadyFiled: true, dependencyAdded: false }
-  if (row.status !== 'open') return { error: 'ask_closed', status: 409, message: `This ask is ${row.status}.` }
+  if (row.status !== 'open' && !isParentDismissed(row)) return { error: 'ask_closed', status: 409, message: `This ask is ${row.status}.` }
   const review = selectReviewOf.get(row.id)
   if (!review?.verdict) return { error: 'ask_not_reviewed', status: 409, message: 'This ask has not been reviewed yet.' }
   const checked = effectiveDraft(row, review, { repos })

@@ -4,6 +4,8 @@
 // Dismiss needs a reason, which goes to the item's next agent step. Both ask
 // for the gate PIN. Agent-written text renders as plain React text. HZ-793:
 // the reviewer's finding that the ask contradicts its parent item shows too.
+// HZ-820: `parentClosed` — a soft ask Horizon dismissed when its item closed
+// or was abandoned. It shows why it closed and keeps File it; no Dismiss.
 
 import { useState } from 'react'
 import { fileAsk, dismissAsk } from '../api'
@@ -38,7 +40,7 @@ export function effectiveDraft(ask) {
   return amended ? { ...amended, amended: true } : { title: ask.title, repo: ask.repo, outcome: ask.outcome, metric: ask.metric, guardrails: ask.guardrails, amended: false }
 }
 
-export default function AskCard({ item, ask, compact = false }) {
+export default function AskCard({ item, ask, compact = false, parentClosed = false }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [dismissing, setDismissing] = useState(false)
@@ -80,6 +82,7 @@ export default function AskCard({ item, ask, compact = false }) {
       <div className="ask-card__why">
         <span className="ask-card__step">{ask.step}:</span> {ask.why}
       </div>
+      {parentClosed && <div className="ask-card__closed">Closed: {ask.dismiss_reason}</div>}
       <div className="ask-card__review">
         <span className={`ask-card__verdict ask-card__verdict--${review.verdict ?? 'none'}`}>{review.label}</span>
         {draft.amended && <span className="ask-card__amended">Reviewer’s amended draft</span>}
@@ -131,9 +134,11 @@ export default function AskCard({ item, ask, compact = false }) {
           >
             File it
           </button>
-          <button type="button" className="btn-reject" disabled={busy} onClick={() => setDismissing(true)}>
-            Dismiss
-          </button>
+          {!parentClosed && (
+            <button type="button" className="btn-reject" disabled={busy} onClick={() => setDismissing(true)}>
+              Dismiss
+            </button>
+          )}
         </div>
       )}
       {error && (
