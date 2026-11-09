@@ -138,6 +138,7 @@ const ROWS = [
   { name: 'premerge failed', action: action('premerge', 'failed', { reason: 'GitHub refused the merge' }), expectsStatus: true, running: false, literalNote: 'GitHub refused the merge' },
   { name: 'premerge timed_out', action: action('premerge', 'timed_out', { reason: 'checks ran past the deadline' }), expectsStatus: true, running: false, literalNote: 'checks ran past the deadline' },
   { name: 'premerge interrupted', action: action('premerge', 'interrupted', { reason: 'Horizon restarted mid-run' }), expectsStatus: true, running: false, literalNote: 'Horizon restarted mid-run' },
+  { name: 'premerge superseded', action: action('premerge', 'superseded', { reason: 'PR merged on GitHub' }), expectsStatus: true, running: false },
   { name: 'resolve running', action: action('resolve', 'running'), expectsStatus: true, running: true },
   { name: 'resolve resolved', action: action('resolve', 'resolved'), expectsStatus: false, running: false },
   { name: 'resolve escalated', action: action('resolve', 'escalated', { reason: 'conflicts too large' }), expectsStatus: false, running: false },
@@ -184,6 +185,14 @@ test('exact wording on the card for the headline states', () => {
     expect(getByRole('status').querySelector('.gate-action-status__text').textContent).toBe(text)
     unmount()
   }
+})
+
+// HZ-822: a check stopped because the PR merged on GitHub reads as such, and
+// the gate offers no Retry for it.
+test('a superseded pre-merge check shows its label and no Retry button', () => {
+  const { getByText, queryByRole } = renderBoard(acceptItem({ gateAction: action('premerge', 'superseded', { reason: 'PR merged on GitHub' }) }))
+  expect(getByText('Merged on GitHub — pre-merge check stopped')).toBeTruthy()
+  expect(queryByRole('button', { name: 'Retry' })).toBeNull()
 })
 
 test('a running conflictRun with no gateAction key shows "Resolving conflicts" and hides the gate buttons', () => {

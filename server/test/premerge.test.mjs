@@ -253,6 +253,56 @@ for (const [name, run] of [
   })
 }
 
+// ---- HZ-822: a PR merged on GitHub stops only that PR's own run ----
+
+function groupAlive(pgid) {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (err) {
+    return err.code === 'EPERM'
+  }
+}
+
+test('interruptRun with another PR returns false and leaves the tracked group alive; its own PR stops it as pr_merged', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'horizon-premerge-pr-'))
+  const pidFile = path.join(dir, 'pid')
+  const bin = fakePython(`echo $$ > ${JSON.stringify(pidFile)}
+sleep 30`)
+  await withPython(bin, () =>
+    withReaper(async () => ({ code: 0 }), async () => {
+      const pending = premerge.runner.spawn([], { cwd: REPO_ROOT, timeoutMs: 30_000, env: process.env, itemId: 'HZ-822-PR', runId: 'premerge-hz-822-1-abcdef', pr: 7 })
+      const deadline = Date.now() + 5000
+      while (!existsSync(pidFile) || !readFileSync(pidFile, 'utf8').trim()) {
+        assert.ok(Date.now() < deadline, 'the run wrote its pid')
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      const pgid = Number(readFileSync(pidFile, 'utf8').trim())
+      assert.equal(await premerge.interruptRun('HZ-822-PR', { cause: 'pr_merged', pr: 8, graceMs: 200 }), false)
+      assert.equal(groupAlive(pgid), true, "another PR's merge never signals this run")
+      assert.equal(await premerge.interruptRun('HZ-822-PR', { cause: 'pr_merged', pr: 7, graceMs: 200 }), true)
+      assert.equal(groupAlive(pgid), false)
+      const out = await pending
+      assert.equal(out.interrupted, true)
+      assert.equal(out.cause, 'pr_merged')
+    }),
+  )
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('a run stopped as pr_merged reads as superseded, a deploy stop still as interrupted, and the run carries its PR', async () => {
+  await withRunner({ code: null, interrupted: true, cause: 'pr_merged' }, async (calls) => {
+    const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+    assert.deepEqual(result, { ok: false, reason: 'superseded', detail: 'PR merged on GitHub', head_sha: HEAD, base_sha: BASE })
+    assert.equal(calls[0].opts.pr, ITEM.pr)
+  })
+  await withRunner({ code: null, interrupted: true, cause: 'deploy' }, async () => {
+    const result = await premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+    assert.equal(result.reason, 'interrupted')
+    assert.equal(result.detail, 'server restarted for deploy')
+  })
+})
+
 // ---- HZ-598: the cap counts run time, from the slot grant ----
 
 // A stand-in CLI: each step is `event <name>` (a HORIZON_EVENT line on

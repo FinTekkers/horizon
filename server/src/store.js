@@ -318,6 +318,37 @@ export function interruptGateActionsForDeploy(runs) {
   return moved.map(({ itemId, kind }) => ({ itemId, kind }))
 }
 
+// HZ-822: the reason a pre-merge run ends with when its PR merged on GitHub.
+export const PR_MERGED_REASON = 'PR merged on GitHub'
+
+// HZ-822: ends the item's running pre-merge row as `superseded` because PR
+// #pr was merged on GitHub — only while the item still points at that PR, so
+// a merge of any other PR moves nothing. True when a row moved. The run_token
+// is rotated, as interruptGateActionsForDeploy does, so the owner's late
+// finishGateAction()/setGateActionDetail() match nothing; the new token is
+// derived from the old, so the owner can still ask premergeSuperseded().
+const SUPERSEDED_TOKEN_PREFIX = 'pr_merged:'
+
+export function supersedePremerge(itemId, pr) {
+  const res = db
+    .prepare(
+      `UPDATE gate_action
+          SET state = 'superseded', reason = @reason, finished_at = @now, run_token = @prefix || run_token
+        WHERE item_id = @itemId AND kind = 'premerge' AND state = 'running'
+          AND EXISTS (SELECT 1 FROM work_item WHERE id = @itemId AND pr = @pr)`,
+    )
+    .run({ itemId, pr, reason: PR_MERGED_REASON, now: new Date().toISOString(), prefix: SUPERSEDED_TOKEN_PREFIX })
+  if (res.changes > 0) notify()
+  return res.changes > 0
+}
+
+// HZ-822: true when the pre-merge claim `token` was ended by supersedePremerge
+// — its PR merged on GitHub — rather than by anything else.
+export function premergeSuperseded(itemId, token) {
+  const row = selectGateAction.get(itemId, 'premerge')
+  return row?.state === 'superseded' && row.run_token === `${SUPERSEDED_TOKEN_PREFIX}${token}`
+}
+
 // Ends every running row whose lease has run out: `interrupted` when it
 // started before this process (its owner is gone), `timed_out` otherwise.
 // Returns how many rows it moved.

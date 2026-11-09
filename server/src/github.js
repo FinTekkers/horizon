@@ -1397,6 +1397,15 @@ export async function pollRepo(repo, log) {
 // A PR merged directly on GitHub approves the "Accept the code" gate; a PR
 // closed without merging sends the item back to the implement step.
 
+// HZ-822: called with (itemId, prNumber) when GitHub reports the item's PR
+// merged — by the webhook or the poll — so app.js stops that item's pre-merge
+// check. A listener, like setMainHeadListener below. Null until app.js sets it.
+let prMergedListener = null
+
+export function setPrMergedListener(fn) {
+  prMergedListener = fn
+}
+
 export function handlePrStateChange(repoFullName, prNumber, { merged, state }, log) {
   const item = db
     .prepare('SELECT id, cursor FROM work_item WHERE repo = ? AND pr = ?')
@@ -1404,7 +1413,17 @@ export function handlePrStateChange(repoFullName, prNumber, { merged, state }, l
   if (!item || item.cursor !== ACCEPT_GATE_INDEX) return false
   if (merged) {
     log?.info(`PR #${prNumber} merged on GitHub — accepting the code for ${item.id}`)
-    return !store.approveGateFromGithub(item.id).error
+    const accepted = !store.approveGateFromGithub(item.id).error
+    // HZ-822: whatever the approve returned — the PR is merged either way, so
+    // its pre-merge check has nothing left to decide.
+    if (prMergedListener) {
+      try {
+        prMergedListener(item.id, prNumber)
+      } catch (err) {
+        log?.warn(`PR #${prNumber} merged listener failed for ${item.id}: ${err.message}`)
+      }
+    }
+    return accepted
   }
   if (state === 'closed') {
     log?.info(`PR #${prNumber} closed unmerged on GitHub — sending ${item.id} back`)

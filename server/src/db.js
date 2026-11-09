@@ -316,7 +316,7 @@ db.exec(`
     item_id       TEXT NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
     kind          TEXT NOT NULL CHECK (kind IN ('premerge','resolve')),
     state         TEXT NOT NULL CHECK (state IN ('running','merged','blocked','failed',
-                    'resolved','escalated','timed_out','interrupted')),
+                    'resolved','escalated','timed_out','interrupted','superseded')),
     run_token     TEXT NOT NULL,
     epoch         TEXT NOT NULL,
     detail        TEXT,
@@ -843,6 +843,46 @@ if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name
 // row from before this column, which only a human could have started.
 if (!db.prepare('PRAGMA table_info(gate_action)').all().some((column) => column.name === 'started_by')) {
   db.exec('ALTER TABLE gate_action ADD COLUMN started_by TEXT')
+}
+
+// HZ-822: `superseded` — a pre-merge run stopped because its PR was merged on
+// GitHub (store.supersedePremerge). A gate_action table whose stored DDL lacks
+// it is rebuilt once, by HZ-697's procedure: only the state CHECK changes,
+// every row and index is copied, foreign keys are off for the rebuild, and a
+// bad shape or a new foreign-key violation throws, rolls back and stops the boot.
+{
+  const LEGACY_STATES = "'timed_out','interrupted'))"
+  const STATES = "'timed_out','interrupted','superseded'))"
+  const stored = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'gate_action'").get().sql
+  if (!stored.includes("'superseded'")) {
+    if (stored.split(LEGACY_STATES).length !== 2) throw new Error('db: expected one state CHECK on gate_action')
+    const head = /^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?["`]?gate_action["`]?\s*\(/i
+    if (!head.test(stored)) throw new Error('db: unexpected gate_action DDL — will not rebuild it')
+    const ddl = stored.replace(head, 'CREATE TABLE gate_action_v2 (').replace(LEGACY_STATES, STATES)
+    const indexes = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'gate_action' AND sql IS NOT NULL")
+      .all()
+      .map((row) => row.sql)
+    const violations = () => db.pragma('foreign_key_check').length
+    const before = violations()
+    db.pragma('foreign_keys = OFF')
+    try {
+      db.transaction(() => {
+        db.exec(ddl)
+        const columns = (table) => db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('${table}')`).get().n
+        if (columns('gate_action_v2') !== columns('gate_action')) throw new Error('db: gate_action rebuild changed the column count')
+        db.exec(`
+          INSERT INTO gate_action_v2 SELECT * FROM gate_action;
+          DROP TABLE gate_action;
+          ALTER TABLE gate_action_v2 RENAME TO gate_action;
+        `)
+        for (const sql of indexes) db.exec(sql)
+        if (violations() > before) throw new Error('db: gate_action rebuild left a foreign-key violation')
+      })()
+    } finally {
+      db.pragma('foreign_keys = ON')
+    }
+  }
 }
 
 // HZ-384: the Run plan hash an Approve the run decision approved. NULL on

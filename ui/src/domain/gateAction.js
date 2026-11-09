@@ -62,6 +62,11 @@ export function gateActionView(action, pr) {
     return { tone: 'running', text, note }
   }
   if (action.state === 'merged') return { tone: 'ok', text: `Merged PR #${pr}` }
+  // HZ-822: the PR was merged on GitHub, which stopped the check — not a
+  // failure, so no Retry (RETRY_STATES leaves it out).
+  if (action.kind === 'premerge' && action.state === 'superseded') {
+    return { tone: 'ok', text: 'Merged on GitHub — pre-merge check stopped' }
+  }
   if (action.state === 'blocked') {
     return {
       tone: 'error',

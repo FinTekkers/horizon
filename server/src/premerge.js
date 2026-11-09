@@ -190,7 +190,9 @@ export const runner = {
   // without it, and a listener that throws is ignored.
   //
   // itemId (HZ-250), when given, registers the run for interruptRun(); a run
-  // it stopped resolves with `interrupted: true`.
+  // it stopped resolves with `interrupted: true` and (HZ-822) the `cause`
+  // interruptRun was given. pr (HZ-822) is recorded beside it, so a stop
+  // meant for one PR's run never reaches another's.
   //
   // runId (HZ-569), when given, is reaped (reapRun) after the timeout's group
   // kill, before this resolves.
@@ -198,7 +200,7 @@ export const runner = {
   // onTimer (HZ-598), when given, is called once at spawn with
   // { restart(ms) }: restart drops the running cap and arms a new one, ms
   // from now. A no-op once the run has settled or the cap has fired.
-  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId, onTimer }) {
+  spawn(args, { cwd, timeoutMs, env, onStderrLine, itemId, runId, onTimer, pr = null }) {
     return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
@@ -239,13 +241,13 @@ export const runner = {
         if (tracked) {
           if (runningChecks.get(itemId) === tracked) runningChecks.delete(itemId)
           tracked.settle()
-          if (tracked.interrupted) out = { ...out, interrupted: true }
+          if (tracked.interrupted) out = { ...out, interrupted: true, cause: tracked.cause }
         }
         resolve({ stdout, stderr, timedOut, ...out })
       }
       const child = spawn(pythonBin(), args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       if (itemId != null && Number.isInteger(child.pid)) {
-        tracked = { pgid: child.pid, interrupted: false, runId, env }
+        tracked = { pgid: child.pid, interrupted: false, cause: null, runId, env, pr }
         tracked.settled = new Promise((resolveSettled) => (tracked.settle = resolveSettled))
         runningChecks.set(itemId, tracked)
       }
@@ -342,7 +344,7 @@ export async function runPreMergeChecks(
   if (checksWaiver) args.push('--checks-waiver', checksWaiver)
   if (testEnvFile) args.push('--test-env-file', testEnvFile)
   const runId = newRunId(item.id)
-  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs: queueTimeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId }
+  const spawnOpts = { cwd: path.dirname(FARM_DIR), timeoutMs: queueTimeoutMs, env: childEnv(timeoutMs, runId), itemId: item.id, runId, pr: item.pr ?? null }
   let timer = null
   let held = false
   let waiting = false
@@ -366,6 +368,10 @@ export async function runPreMergeChecks(
     }
   }
   const out = await runner.spawn(args, spawnOpts)
+  // HZ-822: stopped because the PR merged on GitHub — not a failure of it.
+  if (out.interrupted && out.cause === 'pr_merged') {
+    return { ok: false, reason: 'superseded', detail: PR_MERGED_DETAIL, ...shas }
+  }
   if (out.interrupted) {
     return { ok: false, reason: 'interrupted', detail: DEPLOY_INTERRUPTED_DETAIL, ...shas }
   }
@@ -399,6 +405,7 @@ export async function runPreMergeChecks(
 }
 
 const DEPLOY_INTERRUPTED_DETAIL = 'server restarted for deploy'
+const PR_MERGED_DETAIL = 'PR merged on GitHub'
 
 function groupAlive(pgid) {
   try {
@@ -425,10 +432,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 // server or another item's run. Resolves true once the group is gone, after
 // the run itself has settled, so the gate's "stopped" event is already
 // written; false when no run is tracked for the item.
-export async function interruptRun(itemId, { graceMs = 5000 } = {}) {
+//
+// HZ-822: cause ('deploy' or 'pr_merged') rides on the run's result. pr, when
+// given, must be the PR the run was started for, else nothing is signalled
+// and this resolves false.
+export async function interruptRun(itemId, { graceMs = 5000, cause = 'deploy', pr = null } = {}) {
   const run = runningChecks.get(itemId)
   if (!run || !(run.pgid > 1) || run.pgid === process.pid) return false
+  if (pr != null && run.pr !== pr) return false
   run.interrupted = true
+  run.cause = cause
   signalGroup(run.pgid, 'SIGTERM')
   // Once the group has been seen empty it is never probed or signalled again:
   // its id is free for the kernel to hand to some other process group.

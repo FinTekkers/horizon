@@ -1747,6 +1747,23 @@ export function buildApp({
         ? { error: result.error, narrowing: true }
         : { error: result.error }
 
+  // HZ-822: a PR merged on GitHub ends its item's pre-merge check. The row is
+  // marked superseded first (its token rotated, so the run's late writes match
+  // nothing and the gate's lock is free at once), then the run's own recorded
+  // process group is stopped — only when a row for exactly that PR moved.
+  github.setPrMergedListener((itemId, pr) => {
+    if (!store.supersedePremerge(itemId, pr)) return
+    store.addEvent(itemId, {
+      who: 'Horizon',
+      text: `stopped the pre-merge check — PR #${pr} was merged on GitHub`,
+      color: '#2A2A2E',
+      initials: 'HZ',
+    })
+    premerge
+      .interruptRun(itemId, { cause: 'pr_merged', pr, graceMs: 1000 })
+      .catch((err) => fastify.log.warn(`could not stop pre-merge for ${itemId}: ${err.message}`))
+  })
+
   // HZ-183: test-merge the PR head into the current base tip and run the
   // repo's checks there (server/src/premerge.js -> farm/premerge.py) before
   // the merge call. Resolves { headSha } when the merge may proceed with
@@ -1756,6 +1773,8 @@ export function buildApp({
   // HZ-216: `token` is the item's premerge gate_action claim. Each error result
   // also carries `outcome` — what that row finishes as — which the routes do
   // not send (gateFailureBody picks error and premerge only).
+  //
+  // HZ-822: { superseded: true } when the PR merged on GitHub meanwhile.
   async function preMergeChecks(id, item, token) {
     const blocked = (text, error, outcome = { state: 'blocked', reason: error }) => {
       store.addEvent(id, {
@@ -1792,6 +1811,9 @@ export function buildApp({
       store.notifyChange()
       return { headSha: pass.sha, skipped: true }
     }
+    // HZ-822: merged on GitHub while the PR was read — no run starts. No
+    // await lies between here and the run being tracked for interruptRun.
+    if (store.premergeSuperseded(id, token)) return { superseded: true }
     store.setGateActionDetail(id, 'premerge', token, `running checks on ${head.baseRef} + PR #${item.pr}`)
     // Logged and pushed BEFORE the run: it takes minutes, and the human must
     // see that something is happening rather than click Accept again. HZ-468:
@@ -1846,6 +1868,9 @@ export function buildApp({
     checkFlakes.recordFlakes({ itemId: id, source: 'premerge', flakes })
     testResults.recordTestRuns({ itemId: id, source: 'premerge', testRuns })
     result = report
+    // HZ-822: stopped for, or finished after, a merge on GitHub — no verdict
+    // to act on, and no "not merged" event for a PR that is.
+    if (result.reason === 'superseded' || store.premergeSuperseded(id, token)) return { superseded: true }
     if (!result.ok) {
       const error =
         result.reason === 'checks_failed'
@@ -1943,6 +1968,11 @@ export function buildApp({
   // HZ-541: and goldenHash, so a first gate with golden cases refuses every
   // other approver (store.approveGate). HZ-642: and filedAutopilot, Approve &
   // file's Autopilot choice for the items it files.
+  //
+  // HZ-822: { ok: true, superseded: true } when the PR was merged on GitHub
+  // while its pre-merge check was queued or running: the code was accepted
+  // there (handlePrStateChange already moved the gate), so this neither
+  // merges, closes the issue nor approves — and answers at once.
   async function performGateApproval(id, stepIndex, notes, actor = 'You', human = {}) {
     // Accepting the code means merging its PR — the gate does not advance if
     // the pre-merge checks or the merge fail, and the reason is logged to the
@@ -1998,6 +2028,10 @@ export function buildApp({
       let outcome = { state: 'failed', reason: 'pre-merge checks stopped unexpectedly' }
       try {
         const gate = await preMergeChecks(id, item, claim.token)
+        if (gate.superseded) {
+          outcome = { state: 'superseded', reason: store.PR_MERGED_REASON }
+          return { ok: true, superseded: true }
+        }
         if (gate.error) {
           outcome = gate.outcome
           return gate
@@ -2008,6 +2042,12 @@ export function buildApp({
         try {
           // HZ-510: only the screens approved at this gate reach e2e-baseline.
           const approvals = await screenshots.mergeApprovals(item)
+          // HZ-822: the last look before the merge call — a skip, or a pass
+          // that landed just before the stop, must not merge a merged PR.
+          if (store.premergeSuperseded(id, claim.token)) {
+            outcome = { state: 'superseded', reason: store.PR_MERGED_REASON }
+            return { ok: true, superseded: true }
+          }
           await github.mergePr(item, { sha: gate.headSha, approvals, log: fastify.log })
           outcome = { state: 'merged' }
           store.addEvent(id, {

@@ -78,6 +78,7 @@ test.each([
   ['merged', action('merged')],
   ['blocked', action('blocked', { failingCheck: 'unit-tests' })],
   ['timed_out', action('timed_out', { reason: 'pre-merge checks did not finish: timed out' })],
+  ['superseded', action('superseded', { reason: 'PR merged on GitHub' })],
 ])('Tracker and Board card show identical status text when %s', (_, a) => {
   const it = item(a)
   const tracker = render(
