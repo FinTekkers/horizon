@@ -92,28 +92,30 @@ def probe(real: str, kind: str, *, timeout: float = PROBE_TIMEOUT_S) -> dict:
     binary = shutil.which("ffprobe")
     if not binary or timeout <= 0:
         return found
-    argv = [binary, "-v", "error", "-print_format", "json", "-show_entries", "format=duration:stream=width,height", real]
+    # Plain `key=value` lines, one stream's width then height at a time, then
+    # the format's duration: nothing here is JSON, so no reply parser is involved.
+    argv = [
+        binary, "-v", "error", "-print_format", "default=noprint_wrappers=1",
+        "-show_entries", "format=duration:stream=width,height", real,
+    ]  # fmt: skip
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
-        data = json.loads(proc.stdout or "{}")
     except (OSError, subprocess.SubprocessError, ValueError):
         return found
-    if not isinstance(data, dict):
-        return found
-    for stream in data.get("streams") or []:
-        if not isinstance(stream, dict):
-            continue
-        width, height = stream.get("width"), stream.get("height")
-        if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
-            found["width"], found["height"] = width, height
-            break
-    if kind == "video":
-        try:
-            duration = float((data.get("format") or {}).get("duration"))
-        except (TypeError, ValueError, AttributeError):
-            duration = math.nan
-        if math.isfinite(duration) and duration > 0:
-            found["durationS"] = round(duration, 1)
+    width = None
+    for line in (proc.stdout or "").splitlines():
+        key, _, value = line.strip().partition("=")
+        if key == "width":
+            width = int(value) if value.isdigit() else None
+        elif key == "height" and found["width"] is None and width and value.isdigit() and int(value) > 0:
+            found["width"], found["height"] = width, int(value)
+        elif key == "duration" and kind == "video":
+            try:
+                duration = float(value)
+            except ValueError:
+                continue
+            if math.isfinite(duration) and duration > 0:
+                found["durationS"] = round(duration, 1)
     return found
 
 
