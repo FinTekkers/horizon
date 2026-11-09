@@ -75,7 +75,7 @@ def pg():
     """{"dsn", "psql"} for a fresh cluster with trust auth on a private
     socket. The DSN carries a marker password (trust ignores it) so the leak
     test can look for it everywhere the summary goes."""
-    pytest.importorskip("psycopg", reason="psycopg is not installed in this interpreter (farm/requirements.txt installs it)")
+    pytest.importorskip("psycopg", reason="psycopg is not installed in this interpreter (farm/requirements-db.txt installs it)")
     bindir = _pg_bindir()
     if not bindir:
         pytest.skip("no Postgres server binaries (initdb, pg_ctl) via pg_config --bindir or PATH")
