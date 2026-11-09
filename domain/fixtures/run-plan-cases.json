@@ -172,5 +172,22 @@
     { "case": "an unknown key", "metric": "1. a", "value": [{ "line": 1, "reason": "x", "note": "y" }], "lines": null },
     { "case": "a line sent as a string", "metric": "1. a\n2. b", "value": [{ "line": "2", "reason": "x" }], "lines": null },
     { "case": "a line past the metric", "metric": "1. a\n2. b", "value": [{ "line": 3, "reason": "x" }], "lines": null }
+  ],
+  "$comment7": "HZ-814. `db_changes`: the tables Execute counts before and after the run, asserted by BOTH server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js extractRunPlan) and farm/tests/test_job_reports.py (domain/py/run_plan.py validate). The connection is one of the plan's `env` values; each table matches domain/dbChanges.json `tableName`; 1 to `maxTables` distinct names; no other key.",
+  "db_changes": [
+    { "case": "no db_changes block", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" } }, "valid": true },
+    { "case": "a table and a schema.table", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": ["prices", "public.positions"] } }, "valid": true },
+    { "case": "an unknown key", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": ["prices"], "dsn": "postgres://x" } }, "valid": false },
+    { "case": "no tables key", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL" } }, "valid": false },
+    { "case": "an empty tables list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": [] } }, "valid": false },
+    { "case": "51 tables", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": ["t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10", "t11", "t12", "t13", "t14", "t15", "t16", "t17", "t18", "t19", "t20", "t21", "t22", "t23", "t24", "t25", "t26", "t27", "t28", "t29", "t30", "t31", "t32", "t33", "t34", "t35", "t36", "t37", "t38", "t39", "t40", "t41", "t42", "t43", "t44", "t45", "t46", "t47", "t48", "t49", "t50"] } }, "valid": false },
+    { "case": "a table named twice", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": ["prices", "prices"] } }, "valid": false },
+    { "case": "a connection not in env", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$OTHER_DATABASE_URL", "tables": ["prices"] } }, "valid": false },
+    { "case": "a literal connection", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "postgres://user:pw@db/mdi", "tables": ["prices"] } }, "valid": false },
+    { "case": "an injection-shaped table name", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": ["a; drop table b"] } }, "valid": false },
+    { "case": "a quoted table name", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": ["\"prices\""] } }, "valid": false },
+    { "case": "three name parts", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": ["db.public.prices"] } }, "valid": false },
+    { "case": "a table that is not a string", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": { "connection": "$MDI_DATABASE_URL", "tables": [7] } }, "valid": false },
+    { "case": "db_changes is a list", "block": { "cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "env": { "DATABASE_URL": "$MDI_DATABASE_URL" }, "db_changes": [] }, "valid": false }
   ]
 }

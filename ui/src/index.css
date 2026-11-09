@@ -1997,3 +1997,9 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
 .autopilot-off-note--approval { margin: 0 0 14px; padding: 0; background: none; font-size: 13px; color: var(--text-secondary); }
 .autopilot-off-note__label { font: 500 13px var(--font-mono); }
 .autopilot-off-note__link { display: block; margin-top: 8px; font-weight: 700; color: var(--primary-ink); }
+
+/* HZ-814: a Task run's database changes, on Execute and Verify & report. */
+.db-changes { margin-top: 12px; scroll-margin-top: 80px; }
+.db-changes__title { font: 700 13px var(--font-sans); color: var(--deep); }
+.db-changes__failed { color: var(--danger-ink); }
+.db-changes__source { margin-top: 4px; font-size: 12px; color: var(--muted); }

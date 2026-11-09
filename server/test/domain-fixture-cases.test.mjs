@@ -154,6 +154,7 @@ test('js/index constants: each resolves to its own step BY LABEL, never by a pin
     'VERIFY_REPORT_STEP_INDEX',
     'ASSESS_STEP_INDEX',
     'IMPACT_REVIEW_STEP_INDEX',
+    'TASK_REVIEW_CLOSE_GATE_INDEX',
   ]) {
     for (const c of js[name]) {
       assert.equal(binding.STEPS[binding[name]].label, c.expectLabel, `${name}: ${c.case}`)

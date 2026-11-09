@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, job_env, job_reports, knowledge, login_env, pause, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_reports, knowledge, login_env, pause, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -1494,6 +1494,7 @@ def job_artifact_md(
     commands: list[str] | None = None,
     reports_md: str = "",
     full_log: str = "",
+    db_changes_md: str = "",
 ) -> str:
     """The Execute step's artifact: the one-line summary plus the runner's
     redacted log, capped with a marker. Pure, so tests cover it without
@@ -1502,13 +1503,17 @@ def job_artifact_md(
     HZ-434: with `commands` it is this attempt's evidence — each command's
     outcome, the plan's report files, then only this attempt's log. The
     server's digest keeps sections head-first, so the reports come before
-    the log and the `Full log:` pointer sits in the first section."""
+    the log and the `Full log:` pointer sits in the first section.
+
+    HZ-814: `db_changes_md`, the `## Database changes` table, comes before
+    the reports, so the digest keeps it ahead of a long report or log."""
     if commands is None:
         return cap_job_artifact(f"## Commands\n{summary_text}\n\n## Log\n{log_text or '(no output)'}\n")
     head = "\n".join([summary_text, *commands] + ([f"\n{full_log}"] if full_log else []))
     reports = f"{reports_md}\n" if reports_md else ""
+    changes = f"{db_changes_md}\n" if db_changes_md else ""
     return cap_job_artifact(
-        f"{job_reports.COMMANDS_HEADING}\n{head}\n\n{reports}{job_reports.ATTEMPT_LOG_HEADING}\n{log_text or '(no output)'}\n"
+        f"{job_reports.COMMANDS_HEADING}\n{head}\n\n{changes}{reports}{job_reports.ATTEMPT_LOG_HEADING}\n{log_text or '(no output)'}\n"
     )
 
 
@@ -1597,6 +1602,7 @@ def _poll_jobs() -> None:
                         log_text,
                         commands=_command_lines(state.get("commands"), _job_secrets(task)),
                         reports_md=job_reports.reports_md(state.get("reports") or []),
+                        db_changes_md=db_changes.changes_md(state.get("db_changes")),
                         full_log=(
                             f"Full log: `{log_path}` (this attempt is bytes {start:,}–{end:,}); "
                             f"also `GET /api/items/{item_id}/job/log?format=text`."
@@ -2441,7 +2447,7 @@ def _job_view(run_id: str, task: dict) -> dict:
     status = state.get("status", "running") if state else "running"
     if status == "running" and not tmux_mgr.session_exists(name):
         status = "unknown"
-    return {
+    view = {
         "status": status,
         "elapsedS": elapsed,
         "budgetS": budget_s,
@@ -2450,6 +2456,11 @@ def _job_view(run_id: str, task: dict) -> dict:
         "commands": commands,
         "logTail": [redact(line, secrets) for line in _job_log_tail(run_id, item_id, log_path=log_path)],
     }
+    # HZ-814: the declared tables' counts, only once the after snapshot ran
+    # and only for a plan with a `db_changes` block — names and integers.
+    if state and isinstance(state.get("db_changes"), dict):
+        view["dbChanges"] = state["db_changes"]
+    return view
 
 
 def _forward_progress(run_id, view: dict) -> None:
@@ -2524,6 +2535,36 @@ def _mark_job_stopped(run_id, item_id: str) -> None:
         pass
 
 
+def _stop_db_changes(run_id, task: dict) -> None:
+    """HZ-814: Stop's after snapshot. The killed runner took none, so farmd
+    counts the plan's `db_changes` tables itself — the env resolved as at
+    launch, on its own read-only connection, capped at STOP_PHASE_CAP_S to
+    fit the server's Stop request — and stores the summary in the state
+    file. Nothing for a plan with no block. Never raises: Stop still ends
+    the run `stopped`."""
+    try:
+        state_path, log_path = _job_paths(run_id, task)
+        state = task_job.load_state(state_path)
+        if not state or str(state.get("run_id")) != str(run_id) or "db_changes" in state:
+            return
+        block = run_plan.extract(task.get("plan_artifact") or "")
+        db_block = block.get("db_changes")
+        if not db_block:
+            return
+        cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
+        env_values = _resolve_job_env(cwd, block.get("env", {}), _job_login_env(task))
+        secrets = _job_secrets(task)
+
+        def log_line(line: str) -> None:
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(redact(f"{line}\n", secrets))
+
+        task_job._finish_db_changes(state, db_block, env_values, log_line, cap_s=db_changes.STOP_PHASE_CAP_S)
+        task_job.save_state(state_path, state)
+    except Exception as exc:
+        print(f"farmd: job {run_id} stop snapshot skipped ({type(exc).__name__})", flush=True)
+
+
 # HZ-772: how long Stop waits for a tenant runner to record its own stop.
 TENANT_STOP_WAIT_S = 5.0
 
@@ -2567,6 +2608,7 @@ async def jobs_stop(request: Request):
         await asyncio.to_thread(_await_tenant_job_stop, run_id, task)
     else:
         _mark_job_stopped(run_id, task["item"]["id"])
+        await asyncio.to_thread(_stop_db_changes, run_id, task)
     # Built before the session is forgotten, so the log path still resolves.
     view = _job_view(run_id, task)
     JOB_SESSIONS.pop(run_id, None)

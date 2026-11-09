@@ -1,0 +1,14 @@
+{
+  "$comment": "HZ-814: the one declaration of a run plan's `db_changes` rules and of the reasons a table could not be counted. Read by domain/py/run_plan.py and farm/db_changes.py (the block's validation and the snapshot), and by domain/js/runPlan.js and server/src/orchestrator.js (the Approve the run card and cleanJobView's whitelist), so a reason the farm emits is never dropped by the server. `tableName` is `table` or `schema.table`, each part an unquoted identifier.",
+  "maxTables": 50,
+  "maxTableNameLength": 128,
+  "tableName": "^[A-Za-z_][A-Za-z0-9_$]*(\\.[A-Za-z_][A-Za-z0-9_$]*)?$",
+  "reasons": [
+    "snapshot_timeout",
+    "snapshot_error",
+    "snapshot_unreadable_table",
+    "snapshot_driver_missing",
+    "snapshot_connection_unset",
+    "snapshot_not_taken"
+  ]
+}

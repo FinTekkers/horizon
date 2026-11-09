@@ -1,0 +1,5 @@
+# HZ-814: the Postgres driver farm/db_changes.py counts a Task run's tables
+# with. Kept out of requirements.txt, which test_agent_runner_repair.py pins;
+# run.sh prepare installs both. Without it a snapshot fails cleanly
+# (snapshot_driver_missing), never the run.
+psycopg[binary]>=3.2

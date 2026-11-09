@@ -4894,6 +4894,8 @@ export function buildApp({
       updatedAt: { type: ['string', 'null'], maxLength: 64 },
       commands: { type: 'array', maxItems: orchestrator.JOB_VIEW_MAX_COMMANDS, items: { type: 'object' } },
       logTail: { type: 'array', maxItems: orchestrator.JOB_VIEW_MAX_LOG_LINES, items: { type: 'string', maxLength: 4096 } },
+      // HZ-814: shape only; orchestrator.cleanDbChanges keeps names and counts.
+      dbChanges: { type: 'object' },
     },
   }
   const TEST_RUNS_BODY_LIMIT = 32 * 1024 * 1024

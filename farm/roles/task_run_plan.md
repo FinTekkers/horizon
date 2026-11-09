@@ -48,6 +48,10 @@ checkout. An absolute path or a `..` in `cwd` fails the step.
 as a JSON summary, relative to `cwd` or under `/tmp`. Verify & report reads
 them beside the log. A command's `--report <path>` is found without it.
 
+If the run changes a Postgres database, add `"db_changes": {"connection":
+"$<an env value>", "tables": ["schema.table"]}`. Execute counts those rows
+before and after, read-only, from the host.
+
 `proof` names what proves each metric line. Give one entry per metric
 line, numbered as the metric lists them, starting at 1:
 - `{"line": <n>, "command": <k>}` when command `k` (1-based, in

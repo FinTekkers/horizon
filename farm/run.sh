@@ -33,6 +33,8 @@ prepare() {
     "$VENV/bin/pip" install --quiet --upgrade pip
   fi
   "$VENV/bin/pip" install --quiet -r "$FARM_DIR/requirements.txt"
+  # HZ-814: the Postgres driver for Execute's db_changes snapshots.
+  "$VENV/bin/pip" install --quiet -r "$FARM_DIR/requirements-db.txt"
 
   # HZ-506: the screenshot capture worker's pinned Playwright. Reinstalled when
   # missing or older than its lockfile; a failure only warns — the screenshots

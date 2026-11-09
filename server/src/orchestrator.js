@@ -43,7 +43,7 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines, criteriaLines } from '../../domain/js/fields.js'
-import { circularProofs } from '../../domain/js/runPlan.js'
+import { DB_CHANGES_RULES, circularProofs, validTableName } from '../../domain/js/runPlan.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { isCommitSha } from '../../domain/js/codeRefs.js'
 import { ingestDraft } from './planDraft.js'
@@ -3748,6 +3748,29 @@ const JOB_VIEW_MAX_COMMAND_CHARS = 2000
 const shortString = (v, max = 64) => (typeof v === 'string' ? v.slice(0, max) : null)
 const wholeSeconds = (v) => (Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
 
+// HZ-814: the run's database change summary — table names, a status, a
+// reason id from domain/dbChanges.json and whole counts, nothing else, so no
+// row value, DSN or driver message can reach the browser. A malformed
+// summary is dropped (undefined), never a refused result.
+const DB_CHANGES_REASONS = new Set(DB_CHANGES_RULES.reasons)
+const DB_CHANGE_COUNTS = ['before', 'after', 'inserted', 'updated', 'deleted']
+const countOrNull = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null)
+
+export function cleanDbChanges(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.tables)) return undefined
+  const tables = []
+  for (const row of value.tables.slice(0, DB_CHANGES_RULES.maxTables)) {
+    if (!row || typeof row !== 'object' || !validTableName(row.table)) continue
+    if (row.status === 'ok') {
+      if (!Number.isSafeInteger(row.before) || !Number.isSafeInteger(row.after)) continue
+      tables.push({ table: row.table, status: 'ok', ...Object.fromEntries(DB_CHANGE_COUNTS.map((k) => [k, countOrNull(row[k])])) })
+    } else if (row.status === 'failed' && DB_CHANGES_REASONS.has(row.reason)) {
+      tables.push({ table: row.table, status: 'failed', reason: row.reason })
+    }
+  }
+  return tables.length ? { source: 'pg_stat', tables } : undefined
+}
+
 // The whitelisted, capped copy of a view, or null when it is not one.
 export function cleanJobView(view) {
   if (!view || typeof view !== 'object' || !Array.isArray(view.commands)) return null
@@ -3759,6 +3782,7 @@ export function cleanJobView(view) {
     if (chars > JOB_VIEW_MAX_LOG_CHARS) break
     logTail.unshift(line)
   }
+  const dbChanges = cleanDbChanges(view.dbChanges)
   return {
     status: shortString(view.status, 40) ?? 'unknown',
     elapsedS: wholeSeconds(view.elapsedS),
@@ -3771,6 +3795,7 @@ export function cleanJobView(view) {
       exit_code: Number.isInteger(c?.exit_code) ? c.exit_code : null,
     })),
     logTail,
+    ...(dbChanges ? { dbChanges } : {}),
   }
 }
 
