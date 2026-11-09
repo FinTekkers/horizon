@@ -52,6 +52,9 @@ If the run changes a Postgres database, add `"db_changes": {"connection":
 "$<an env value>", "tables": ["schema.table"]}`. Execute counts those rows
 before and after, read-only, from the host.
 
+To show videos or images on the Task, add `"outputs": [{"path": "<file>",
+"kind": "video"}]` (or `"image"`).
+
 `proof` names what proves each metric line. Give one entry per metric
 line, numbered as the metric lists them, starting at 1:
 - `{"line": <n>, "command": <k>}` when command `k` (1-based, in

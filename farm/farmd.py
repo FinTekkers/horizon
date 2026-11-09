@@ -20,14 +20,14 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 # HZ-128: the step model lives in domain/, not in farm/ — an absolute import
 # off the repo root, which farmd already runs from (`python -m farm.farmd`).
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_reports, knowledge, login_env, pause, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, knowledge, login_env, pause, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -1495,6 +1495,7 @@ def job_artifact_md(
     reports_md: str = "",
     full_log: str = "",
     db_changes_md: str = "",
+    outputs_md: str = "",
 ) -> str:
     """The Execute step's artifact: the one-line summary plus the runner's
     redacted log, capped with a marker. Pure, so tests cover it without
@@ -1506,14 +1507,18 @@ def job_artifact_md(
     the log and the `Full log:` pointer sits in the first section.
 
     HZ-814: `db_changes_md`, the `## Database changes` table, comes before
-    the reports, so the digest keeps it ahead of a long report or log."""
+    the reports, so the digest keeps it ahead of a long report or log.
+
+    HZ-815: `outputs_md`, the `## Outputs` list of the plan's media, follows
+    it; "" (no `outputs`) leaves the artifact exactly as before."""
     if commands is None:
         return cap_job_artifact(f"## Commands\n{summary_text}\n\n## Log\n{log_text or '(no output)'}\n")
     head = "\n".join([summary_text, *commands] + ([f"\n{full_log}"] if full_log else []))
     reports = f"{reports_md}\n" if reports_md else ""
     changes = f"{db_changes_md}\n" if db_changes_md else ""
+    media = f"{outputs_md}\n" if outputs_md else ""
     return cap_job_artifact(
-        f"{job_reports.COMMANDS_HEADING}\n{head}\n\n{changes}{reports}{job_reports.ATTEMPT_LOG_HEADING}\n{log_text or '(no output)'}\n"
+        f"{job_reports.COMMANDS_HEADING}\n{head}\n\n{changes}{media}{reports}{job_reports.ATTEMPT_LOG_HEADING}\n{log_text or '(no output)'}\n"
     )
 
 
@@ -1603,6 +1608,7 @@ def _poll_jobs() -> None:
                         commands=_command_lines(state.get("commands"), _job_secrets(task)),
                         reports_md=job_reports.reports_md(state.get("reports") or []),
                         db_changes_md=db_changes.changes_md(state.get("db_changes")),
+                        outputs_md=job_media.outputs_md(state.get("media")),
                         full_log=(
                             f"Full log: `{log_path}` (this attempt is bytes {start:,}–{end:,}); "
                             f"also `GET /api/items/{item_id}/job/log?format=text`."
@@ -2460,6 +2466,10 @@ def _job_view(run_id: str, task: dict) -> dict:
     # and only for a plan with a `db_changes` block — names and integers.
     if state and isinstance(state.get("db_changes"), dict):
         view["dbChanges"] = state["db_changes"]
+    # HZ-815: the plan's declared media, stored or not, once the run copied
+    # them — only for a plan with `outputs`. The server whitelists the fields.
+    if state and isinstance(state.get("media"), list):
+        view["media"] = state["media"]
     return view
 
 
@@ -2657,6 +2667,88 @@ def jobs_log(run_id: str, request: Request, offset: int = 0, item_id: str | None
         "next_offset": offset + len(content),
         "active": tmux_mgr.session_exists(name),
     }
+
+
+# HZ-815: a project id as the server sends it, and the one Range form served.
+_MEDIA_PROJECT_ID_RE = re.compile(r"^[0-9]{1,12}$")
+_MEDIA_RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+MEDIA_CHUNK_BYTES = 64 * 1024
+
+
+def _media_dirs(item_id: str, project_id: str | None) -> list[Path]:
+    """Where an item's media may be: a tenant project's results dir (only for
+    a project id the server sent), then the farm's own state dir."""
+    from farm.config import STATE_DIR as _STATE
+
+    dirs = []
+    if project_id and _MEDIA_PROJECT_ID_RE.match(project_id):
+        dirs.append(job_media.media_dir_for(Path(farm_config.TENANT_JOBS_DIR) / project_id / f"{item_id}.json", item_id))
+    dirs.append(job_media.media_dir_for(_STATE / "jobs" / f"{item_id}.json", item_id))
+    return dirs
+
+
+def media_byte_range(header: str | None, size: int) -> tuple[int, int] | None | bool:
+    """The inclusive (start, end) a single `bytes=` Range asks for; None to
+    send the whole file (no header, or a form not served, such as several
+    ranges); False when it cannot be satisfied."""
+    found = _MEDIA_RANGE_RE.match((header or "").strip())
+    if not found or found.group(1) == found.group(2) == "":
+        return None
+    first, last = found.group(1), found.group(2)
+    if first == "":
+        suffix = int(last)
+        if suffix == 0 or size == 0:
+            return False
+        return max(0, size - suffix), size - 1
+    start = int(first)
+    end = size - 1 if last == "" else min(int(last), size - 1)
+    if start >= size or start > end:
+        return False
+    return start, end
+
+
+def _media_chunks(path: Path, start: int, length: int):
+    with path.open("rb") as f:
+        f.seek(start)
+        left = length
+        while left > 0:
+            chunk = f.read(min(MEDIA_CHUNK_BYTES, left))
+            if not chunk:
+                break
+            left -= len(chunk)
+            yield chunk
+
+
+@app.get("/media/{item_id}/{name}")
+def media_file(item_id: str, name: str, request: Request, project_id: str | None = None):
+    """HZ-815, loopback only: one stored media file of an item, for the
+    server's member-only GET /api/items/:id/media/:name. Only a name the
+    item's manifest records `stored`, whose realpath is inside its media dir
+    (job_media.stored_file); never a listing. A single Range is served as
+    206 (phones need it to play video), an unsatisfiable one as 416."""
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "loopback only"}, status_code=403)
+    real = None
+    if _JOB_ITEM_ID_RE.match(item_id):
+        real = next((f for d in _media_dirs(item_id, project_id) if (f := job_media.stored_file(d, name))), None)
+    if real is None:
+        return JSONResponse({"error": "unknown media"}, status_code=404)
+    try:
+        size = real.stat().st_size
+    except OSError:
+        return JSONResponse({"error": "unknown media"}, status_code=404)
+    media_type = job_media.MEDIA_TYPES.get(real.suffix.lower(), {}).get("mime", "application/octet-stream")
+    headers = {"Accept-Ranges": "bytes", "X-Content-Type-Options": "nosniff"}
+    span = media_byte_range(request.headers.get("range"), size)
+    if span is False:
+        return JSONResponse({"error": "range not satisfiable"}, status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+    start, end = span or (0, size - 1)
+    length = max(0, end - start + 1)
+    headers["Content-Length"] = str(length)
+    if span:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return StreamingResponse(_media_chunks(real, start, length), status_code=206 if span else 200, media_type=media_type, headers=headers)
 
 
 # HZ-245: `owner/name`, each part starting with an alphanumeric — so no

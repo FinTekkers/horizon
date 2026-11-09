@@ -43,7 +43,7 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines, criteriaLines } from '../../domain/js/fields.js'
-import { DB_CHANGES_RULES, circularProofs, validTableName } from '../../domain/js/runPlan.js'
+import { DB_CHANGES_RULES, TASK_MEDIA_RULES, circularProofs, validTableName } from '../../domain/js/runPlan.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { isCommitSha } from '../../domain/js/codeRefs.js'
 import { ingestDraft } from './planDraft.js'
@@ -3771,6 +3771,51 @@ export function cleanDbChanges(value) {
   return tables.length ? { source: 'pg_stat', tables } : undefined
 }
 
+// HZ-815: the run's declared media — the stored name the media route
+// serves, the declared path, a kind, a status from domain/taskMedia.json and
+// whole numbers, nothing else. `mime` is only ever one of taskMedia.json's
+// types, else application/octet-stream, so a farm body can never make the
+// route serve text/html. An entry whose name the route would refuse is
+// dropped; no list (or an empty one) is undefined.
+export const MEDIA_NAME = new RegExp(TASK_MEDIA_RULES.storedName)
+export const MEDIA_MIMES = new Set(Object.values(TASK_MEDIA_RULES.types).map((t) => t.mime))
+const MEDIA_STATUSES = new Set(TASK_MEDIA_RULES.statuses)
+const MEDIA_KINDS = new Set(TASK_MEDIA_RULES.kinds)
+const positiveIntOrNull = (v) => (Number.isSafeInteger(v) && v > 0 ? v : null)
+
+export function cleanJobMedia(value) {
+  if (!Array.isArray(value)) return undefined
+  const media = []
+  for (const entry of value.slice(0, TASK_MEDIA_RULES.maxOutputs)) {
+    if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string' || !MEDIA_NAME.test(entry.name)) continue
+    if (!MEDIA_STATUSES.has(entry.status)) continue
+    media.push({
+      name: entry.name,
+      path: shortString(entry.path, TASK_MEDIA_RULES.maxPathLength),
+      kind: MEDIA_KINDS.has(entry.kind) ? entry.kind : null,
+      mime: MEDIA_MIMES.has(entry.mime) ? entry.mime : 'application/octet-stream',
+      bytes: countOrNull(entry.bytes) ?? 0,
+      durationS: Number.isFinite(entry.durationS) && entry.durationS > 0 ? entry.durationS : null,
+      width: positiveIntOrNull(entry.width),
+      height: positiveIntOrNull(entry.height),
+      status: entry.status,
+      reason: shortString(entry.reason, 300),
+    })
+  }
+  return media.length ? media : undefined
+}
+
+// HZ-815: one stored media file from farmd, as the raw fetch Response so the
+// route streams its body. `range` is the browser's Range header, passed on
+// as is; `signal` aborts the farm request when the browser goes away.
+export async function fetchJobMedia(itemId, projectId, name, { range, signal } = {}) {
+  const project = projectId == null ? '' : `?project_id=${encodeURIComponent(projectId)}`
+  return fetch(`${FARM_URL}/media/${encodeURIComponent(itemId)}/${encodeURIComponent(name)}${project}`, {
+    headers: range ? { range } : {},
+    signal,
+  })
+}
+
 // The whitelisted, capped copy of a view, or null when it is not one.
 export function cleanJobView(view) {
   if (!view || typeof view !== 'object' || !Array.isArray(view.commands)) return null
@@ -3783,6 +3828,7 @@ export function cleanJobView(view) {
     logTail.unshift(line)
   }
   const dbChanges = cleanDbChanges(view.dbChanges)
+  const media = cleanJobMedia(view.media)
   return {
     status: shortString(view.status, 40) ?? 'unknown',
     elapsedS: wholeSeconds(view.elapsedS),
@@ -3796,6 +3842,7 @@ export function cleanJobView(view) {
     })),
     logTail,
     ...(dbChanges ? { dbChanges } : {}),
+    ...(media ? { media } : {}),
   }
 }
 

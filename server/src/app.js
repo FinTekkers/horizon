@@ -7,6 +7,7 @@ import fastifyCookie from '@fastify/cookie'
 // where it is called in buildApp() for why it is invoked directly (HZ-178).
 import { fastifySwagger } from '@fastify/swagger'
 import crypto from 'node:crypto'
+import { Readable } from 'node:stream'
 import * as store from './store.js'
 import { dismissAsk, fileAsk, releaseAsk } from './asks.js'
 import { linkSpawned, spawnItems } from './spawn.js'
@@ -1534,6 +1535,76 @@ export function buildApp({
       } catch {
         return reply.code(503).send({ error: 'farm unavailable' })
       }
+    },
+  )
+
+  // HZ-815: one stored media file of the item's Execute run, for the Task's
+  // output cards' <video> and <img>. Members of the item's project only, on
+  // the item page's own login; the bytes come from farmd over loopback and
+  // are never on a static mount or a public URL. Only a name the current
+  // Execute view lists as stored reaches farmd. A Range is passed through,
+  // so phones get the 206s they need to play video. Content-Type is the
+  // view's whitelisted mime, never farmd's; every file is nosniff and
+  // sandboxed, so an SVG cannot run script on this origin.
+  fastify.get(
+    '/api/items/:id/media/:name',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'name'],
+          properties: { id: { type: 'string', minLength: 1 }, name: { type: 'string', minLength: 1, maxLength: 200 } },
+        },
+        response: {
+          200: { content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary', description: 'The file, from farmd' } } } },
+          206: { content: { 'application/octet-stream': { schema: { type: 'string', format: 'binary', description: 'The requested bytes' } } } },
+          404: ERROR_OBJECT,
+          416: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id, name } = request.params
+      const item = store.getItem(id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      const entry = orchestrator.MEDIA_NAME.test(name) ? store.jobMedia(id).find((m) => m.name === name) : null
+      if (!entry) return reply.code(404).send({ error: 'no_media' })
+      if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
+      // A phone drops Range requests all the time: stop reading from farmd
+      // the moment the browser goes away (and, harmlessly, once it is sent).
+      const abort = new AbortController()
+      reply.raw.once('close', () => abort.abort())
+      let res
+      try {
+        const range = typeof request.headers.range === 'string' ? request.headers.range : undefined
+        res = await orchestrator.fetchJobMedia(id, item.project_id ?? null, name, { range, signal: abort.signal })
+      } catch {
+        return reply.code(503).send({ error: 'farm unavailable' })
+      }
+      if (res.status !== 200 && res.status !== 206) {
+        res.body?.cancel().catch(() => {})
+        if (res.status === 416) {
+          const unsatisfied = res.headers.get('content-range')
+          if (unsatisfied) reply.header('Content-Range', unsatisfied)
+          return reply.code(416).send({ error: 'range_not_satisfiable' })
+        }
+        return res.status === 404 ? reply.code(404).send({ error: 'no_media' }) : reply.code(503).send({ error: 'farm unavailable' })
+      }
+      for (const header of ['content-length', 'content-range']) {
+        const value = res.headers.get(header)
+        if (value) reply.header(header, value)
+      }
+      reply
+        .code(res.status)
+        .header('Content-Type', orchestrator.MEDIA_MIMES.has(entry.mime) ? entry.mime : 'application/octet-stream')
+        .header('Accept-Ranges', 'bytes')
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Content-Security-Policy', "default-src 'none'; sandbox")
+        .header('Content-Disposition', `inline; filename="${name}"`)
+        .header('Cache-Control', 'private, max-age=300')
+      return reply.send(res.body ? Readable.fromWeb(res.body) : '')
     },
   )
 
@@ -4896,6 +4967,8 @@ export function buildApp({
       logTail: { type: 'array', maxItems: orchestrator.JOB_VIEW_MAX_LOG_LINES, items: { type: 'string', maxLength: 4096 } },
       // HZ-814: shape only; orchestrator.cleanDbChanges keeps names and counts.
       dbChanges: { type: 'object' },
+      // HZ-815: shape only; orchestrator.cleanJobMedia whitelists the entries.
+      media: { type: 'array', items: { type: 'object' } },
     },
   }
   const TEST_RUNS_BODY_LIMIT = 32 * 1024 * 1024

@@ -804,6 +804,12 @@ export function jobLogUrl(itemId) {
   return `${API_BASE}/items/${itemId}/job/log?format=text`
 }
 
+// HZ-815: one stored output file of a Task's run, for its <video> or <img>;
+// the server serves it to members of the item's project only.
+export function mediaUrl(itemId, name) {
+  return `${API_BASE}/items/${encodeURIComponent(itemId)}/media/${encodeURIComponent(name)}`
+}
+
 // A member with no active repo (HZ-661) gets null, never a "null/issues/…" link.
 export function issueUrl(item) {
   if (item.repo) return `https://github.com/${item.repo}/issues/${item.issue}`

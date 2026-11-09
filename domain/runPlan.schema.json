@@ -60,6 +60,19 @@
         "tables": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
       }
     },
+    "outputs": {
+      "$comment": "HZ-815: the media files the run writes, which Execute copies into the item's own store so its cards play them. Each `path` is relative to `cwd`, absolute, or `~/…`, never with a `..` part or a control character; `kind` is `video` or `image`. At most domain/taskMedia.json `maxOutputs` of them. Where a file may be read from is Execute's realpath check (farm/job_media.py), not this shape. Asserted by both bindings.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "enum": ["video", "image"] }
+        }
+      }
+    },
     "proof": {
       "$comment": "HZ-503: what proves each metric line, one entry per line, numbered as domain/py/fields.py criteria_lines() numbers the metric. Each entry names exactly one source: `command`, a 1-based index into `commands`; `report`, `<path>#<field>` with both parts non-empty and the path listed in `reports`; or HZ-770's `manual`, the owner check that proves the line, as non-blank text. Optional here, so a plan approved before HZ-503 still runs; farm/step_agent.py requires one entry per metric line when a Run plan reply is written (both bindings name the uncovered lines). Exactly-one-source, the command range and the report rule are asserted by both bindings.",
       "type": "array",

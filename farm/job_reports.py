@@ -65,18 +65,24 @@ def _inside(path: str, root: str) -> bool:
     return os.path.commonpath([path, root]) == root
 
 
-def resolve_report(
+def resolve_inside(
     path: str,
     cwd: str,
     *,
+    roots: list[str],
+    outside: str,
     forbid: str | None,
     tmp_root: str | None = None,
 ) -> tuple[str | None, str | None, str]:
-    """(real_path, None, "") for a readable report, else (None, reason,
-    status) with status `refused` or `missing`. Never opens the file.
+    """(real_path, None, "") for a regular file whose realpath — symlinks
+    resolved first — lies inside one of `roots` and not inside `forbid`, else
+    (None, reason, status) with status `refused` or `missing`; `outside` is
+    the reason for a path under none of the roots. A relative path is
+    relative to `cwd`. Never opens the file. HZ-815: the one path check
+    behind both reports (resolve_report) and output media (farm/job_media.py).
 
     HZ-416: a container job's /tmp is the host dir `tmp_root`, so a
-    `/tmp/<path>` report is read from there instead, and only there."""
+    `/tmp/<path>` is looked up there instead, and only there."""
     try:
         candidate = path if os.path.isabs(path) else os.path.join(cwd, path)
         if tmp_root and os.path.isabs(path) and _inside(os.path.normpath(path), REPORT_TMP_ROOT):
@@ -84,9 +90,8 @@ def resolve_report(
         real = os.path.realpath(candidate)
         if forbid and _inside(real, os.path.realpath(forbid)):
             return None, "inside Horizon's own checkout", "refused"
-        roots = [os.path.realpath(cwd), os.path.realpath(tmp_root or REPORT_TMP_ROOT)]
-        if not any(_inside(real, root) for root in roots):
-            return None, "outside the plan's cwd and /tmp", "refused"
+        if not any(_inside(real, os.path.realpath(root)) for root in roots):
+            return None, outside, "refused"
         if not os.path.lexists(real):
             return None, "no such file", "missing"
         if not stat.S_ISREG(os.stat(real).st_mode):
@@ -94,6 +99,25 @@ def resolve_report(
         return real, None, ""
     except (OSError, TypeError, ValueError) as exc:
         return None, f"the path check failed ({type(exc).__name__})", "refused"
+
+
+def resolve_report(
+    path: str,
+    cwd: str,
+    *,
+    forbid: str | None,
+    tmp_root: str | None = None,
+) -> tuple[str | None, str | None, str]:
+    """resolve_inside() with the plan's cwd and /tmp (a container job's
+    `tmp_root`) as the roots."""
+    return resolve_inside(
+        path,
+        cwd,
+        roots=[cwd, tmp_root or REPORT_TMP_ROOT],
+        outside="outside the plan's cwd and /tmp",
+        forbid=forbid,
+        tmp_root=tmp_root,
+    )
 
 
 def summarise_json(obj, secrets: dict | None = None) -> str:

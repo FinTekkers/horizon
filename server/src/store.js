@@ -1221,6 +1221,20 @@ function stepOutputs(itemId) {
   return map
 }
 
+// HZ-815: the stored media of the item's current Execute view — the same
+// view the Execute card shows (stepOutputs), so a file a send-back retired,
+// or a run replaced, is no longer served. Only `stored` entries; [] for none.
+export function jobMedia(itemId) {
+  const row = selectJobView.get(itemId, EXECUTE_STEP_INDEX)
+  if (!row?.job_view) return []
+  try {
+    const media = JSON.parse(row.job_view)?.media
+    return Array.isArray(media) ? media.filter((m) => m && typeof m === 'object' && m.status === 'stored') : []
+  } catch {
+    return []
+  }
+}
+
 // HZ-546: step_run.source_shas as an object, or null when missing or unreadable.
 export function parseSourceShas(json) {
   if (!json) return null

@@ -224,6 +224,8 @@ const READ_CASES = {
   // 404 no_job / no_plan_draft: ISOA-1 is a change item, with no Execute job or plan draft.
   'GET /api/items/:id/job': { expect: '404', url: `${ITEM}/job`, owner: 404 },
   'GET /api/items/:id/job/log': { expect: '404', url: `${ITEM}/job/log`, owner: 404 },
+  // HZ-815: 404 no_media for the owner — ISOA-1 has no Execute run, so no media.
+  'GET /api/items/:id/media/:name': { expect: '404', url: `${ITEM}/media/cut.mp4`, owner: 404 },
   'GET /api/items/:id/plan-draft': { expect: '404', url: `${ITEM}/plan-draft`, owner: 404 },
   'GET /api/items/:id/screenshots': { expect: '404', url: `${ITEM}/screenshots`, owner: 200 },
   'GET /api/items/:id/screenshots/:screen/:kind': { expect: '404', url: `${ITEM}/screenshots/home/new`, owner: 200 },

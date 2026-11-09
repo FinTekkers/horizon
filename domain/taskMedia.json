@@ -1,0 +1,18 @@
+{
+  "$comment": "HZ-815: the one declaration of a run plan's `outputs` rules and of how Execute stores the declared media. Read by domain/py/run_plan.py and farm/job_media.py (the block's validation, the copy and the stored names), and by domain/js/runPlan.js, server/src/orchestrator.js and server/src/app.js (the Approve the run card, cleanJobView's whitelist and the media route's name check), so a name the farm stores is always one the server serves, and a `mime` the farm records is only ever one of `types`. `storedName` is the sanitised basename the farm stores a file under.",
+  "maxOutputs": 20,
+  "maxPathLength": 1024,
+  "kinds": ["video", "image"],
+  "types": {
+    ".mp4": { "kind": "video", "mime": "video/mp4" },
+    ".webm": { "kind": "video", "mime": "video/webm" },
+    ".png": { "kind": "image", "mime": "image/png" },
+    ".jpg": { "kind": "image", "mime": "image/jpeg" },
+    ".jpeg": { "kind": "image", "mime": "image/jpeg" },
+    ".svg": { "kind": "image", "mime": "image/svg+xml" }
+  },
+  "fileMaxBytes": 209715200,
+  "itemMaxBytes": 1073741824,
+  "storedName": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$",
+  "statuses": ["stored", "refused", "missing", "over_cap"]
+}

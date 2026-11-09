@@ -120,3 +120,20 @@ for (const c of cases.db_changes) {
     else assert.equal(block, null)
   })
 }
+
+// HZ-815: the same fixture's `outputs` cases (farm/tests/test_job_reports.py
+// is the Python half), so a block the Approve the run card shows is one
+// Execute collects, and a `..` path or an unknown kind is refused by both.
+test('the fixture has an outputs case with none, a valid list and invalid ones', () => {
+  assert.ok(cases.outputs.some((c) => c.valid && c.block.outputs === undefined))
+  assert.ok(cases.outputs.some((c) => c.valid && c.block.outputs?.length))
+  assert.ok(cases.outputs.some((c) => !c.valid))
+})
+
+for (const c of cases.outputs) {
+  test(`outputs: ${c.case}`, () => {
+    const block = extractRunPlan(artifactOf(c.block))
+    if (c.valid) assert.deepEqual(block, c.block)
+    else assert.equal(block, null)
+  })
+}
