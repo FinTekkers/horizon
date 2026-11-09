@@ -33,6 +33,7 @@ from .base import (
     AgentError,
     AgentExhaustedError,
     AgentMessageTooLargeError,
+    AgentModelUnavailableError,
     AgentUsageLimitedError,
     assert_metered_billing_authorized,
     brief,
@@ -131,6 +132,23 @@ def _usage_limit(text: str | None) -> AgentUsageLimitedError | None:
         return AgentUsageLimitedError(f"claude rate limited: {text.strip()[:300]}", reset_at=reset_from_text(text))
     if _LIMIT_RESETS_RE.search(text):
         return AgentUsageLimitedError(f"claude usage limit: {text.strip()[:300]}", reset_at=reset_from_text(text))
+    return None
+
+
+_MODEL_UNAVAILABLE_RE = re.compile(
+    r"model\s+[`'\"]?[a-z0-9][a-z0-9._-]*[`'\"]?\s+(?:was\s+)?not found|model\s+does not exist|unknown model|404\s+.*\bmodel\b",
+    re.IGNORECASE,
+)
+
+
+def _model_unavailable(text: str | None) -> AgentModelUnavailableError | None:
+    """The model-not-found refusal `text` reports, or None. Deliberately
+    narrow: "Invalid API key" and usage-limit wording never match, so a
+    provider-wide auth failure is never retried as a different model."""
+    if not text:
+        return None
+    if _MODEL_UNAVAILABLE_RE.search(text):
+        return AgentModelUnavailableError(f"claude model unavailable: {text.strip()[:300]}")
     return None
 
 
@@ -344,6 +362,9 @@ async def _stream_query(
                     limited = _usage_limit(result_text)
                     if limited is not None:
                         raise limited
+                    unavailable = _model_unavailable(result_text)
+                    if unavailable is not None:
+                        raise unavailable
                     raise AgentError(f"claude reported an error result [{subtype}]: {detail}")
     finally:
         # Cancellation (asyncio.wait_for timeout) lands here too: closing the
@@ -434,6 +455,9 @@ def _run_subprocess(
         limited = _usage_limit(proc.stderr) or _usage_limit(proc.stdout)
         if limited is not None:
             raise limited
+        unavailable = _model_unavailable(proc.stderr) or _model_unavailable(proc.stdout)
+        if unavailable is not None:
+            raise unavailable
         # A stale --resume session is the common recoverable failure: retry fresh.
         if session_id and retry_fresh:
             return _run_subprocess(
