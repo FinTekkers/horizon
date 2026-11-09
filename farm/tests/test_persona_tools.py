@@ -349,7 +349,7 @@ def test_only_persona_tools_references_the_allowlist_and_only_reads_it():
     for top in ("server/src", "ui/src", "farm"):
         for path in (REPO_ROOT / top).rglob("*"):
             rel = path.relative_to(REPO_ROOT).as_posix()
-            if not path.is_file() or rel.startswith(("farm/tests/", "docs/")) or "node_modules" in rel:
+            if not path.is_file() or rel.startswith(("farm/tests/", "docs/")) or "node_modules" in rel or ".venv" in path.parts:
                 continue
             if path.suffix not in (".py", ".js", ".mjs", ".jsx", ".ts", ".tsx", ".json", ".sh"):
                 continue

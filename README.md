@@ -11,6 +11,29 @@ cd server && npm install && npm run dev   # API + SQLite on :3001
 cd ui && npm install && npm run dev       # UI on :5173 (proxies /api to :3001)
 ```
 
+## Running the tests on a fresh checkout
+
+Prerequisites: Node >= 22, Python 3.13, and a Go toolchain (the root
+suite also runs the WhatsApp bridge checks in `infra/whatsapp-bridge/`).
+If only an older Python is available, build the farm venv with it
+explicitly — `run.sh` defaults to `python3.13`:
+
+```
+FARM_PYTHON=python3 ./farm/run.sh prepare  # creates farm/.venv on first run
+farm/.venv/bin/pip install -r farm/requirements-dev.txt
+npm --prefix server install --no-audit --no-fund
+npm --prefix ui install --no-audit --no-fund
+npm --prefix e2e install --no-audit --no-fund
+npx --prefix e2e playwright install chromium   # once, for the e2e suite
+npm test                                  # root suite: server, UI, farm, infra
+```
+
+Run the farm suite with the venv's interpreter, never the system
+`python3` (`farm/.venv/bin/python -m pytest farm/tests` from the repo
+root). The server parity tests resolve the same interpreter themselves
+(`FARM_TEST_PYTHON` overrides it). The repo scans in the farm tests
+skip `farm/.venv`, so a prepared venv does not trip them.
+
 Real agents (optional — without this, agent steps are mocked in-process):
 
 ```

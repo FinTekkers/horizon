@@ -28,14 +28,15 @@ import path from 'node:path'
 
 import { BOT_MARKER } from '../src/waSend.js'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
+import { resolveFarmPython } from './helpers/farmd.mjs'
 
-// Imported through a real python3 rather than regex-scraped out of the source:
+// Imported through a real farm-venv python rather than regex-scraped out of the source:
 // the two files spell the same codepoint differently on purpose (JS
 // '\u{1F916} ', Python '\U0001F916 '), so a textual comparison would fail on
 // two constants that are in fact identical.
 function pythonBotMarker() {
   const out = execFileSync(
-    'python3',
+    resolveFarmPython(REPO_ROOT),
     ['-c', 'import json; from farm.whatsapp.mcp_bridge import BOT_MARKER; print(json.dumps(BOT_MARKER))'],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   )

@@ -57,7 +57,7 @@ def test_no_farm_git_call_decodes_strictly():
     found, problems = 0, []
     for path in sorted(FARM_DIR.rglob("*.py")):
         rel = path.relative_to(REPO_ROOT)
-        if "tests" in rel.parts:
+        if "tests" in rel.parts or ".venv" in path.parts:
             continue
         count, file_problems = git_call_problems(path.read_text(), str(rel))
         found += count

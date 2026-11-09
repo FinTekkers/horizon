@@ -13,8 +13,8 @@
 // three bindings consume it). These reasons have no retry semantics — they are
 // one gate action's farmd -> orchestrator detail.
 //
-// The Python half is imported through a real python3, not regex-scraped, so the
-// committed tuple is what gets compared.
+// The Python half is imported through a real farm-venv python, not
+// regex-scraped, so the committed tuple is what gets compared.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -24,14 +24,20 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
+import { resolveFarmPython } from './helpers/farmd.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-conflict-reason-parity-')), 'test.db')
 
 const { CONFLICT_ESCALATION_REASONS } = await import('../src/orchestrator.js')
 
+// The farm venv interpreter, not bare `python3`: conflict_resolver.py
+// imports through step_agent.py, which needs the farm venv's httpx, and
+// a bare system interpreter must not decide whether this test passes.
+const FARM_PYTHON = resolveFarmPython(REPO_ROOT)
+
 function pythonReasons() {
   const out = execFileSync(
-    'python3',
+    FARM_PYTHON,
     ['-c', 'import json; from farm.conflict_resolver import ESCALATION_REASONS; print(json.dumps(list(ESCALATION_REASONS)))'],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   )
@@ -57,9 +63,9 @@ test('each message is a distinct sentence a human can act on', () => {
   }
 })
 
-test('POSITIVE CONTROL: the python3 import really is reading the committed tuple', () => {
+test('POSITIVE CONTROL: the python import really is reading the committed tuple', () => {
   const resolved = execFileSync(
-    'python3',
+    FARM_PYTHON,
     ['-c', 'from farm import conflict_resolver; print(conflict_resolver.__file__)'],
     { cwd: REPO_ROOT, encoding: 'utf8' },
   ).trim()

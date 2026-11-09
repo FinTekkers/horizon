@@ -183,7 +183,7 @@ def test_only_the_provider_modules_build_a_model_flag_and_only_from_their_parame
     problems = []
     for path in sorted(FARM_DIR.rglob("*.py")):
         rel = path.relative_to(FARM_DIR).as_posix()
-        if rel.startswith("tests/"):
+        if rel.startswith("tests/") or ".venv" in path.parts:
             continue
         problems += model_flag_problems(path.read_text(), f"farm/{rel}", rel in PROVIDER_MODULES)
     assert not problems, "\n".join(problems)

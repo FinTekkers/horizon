@@ -17,8 +17,9 @@
 //     test created, not a deployed one. The production farmd has no FARM_HOME
 //     in its environment at all (farm/config.py defaults it to
 //     ~/.horizon-farm), so it can never match.
-//   * it is an orphan, ppid == 1 — the state all three leaked daemons were
-//     found in. A test farmd belonging to a run still in flight is parented to
+//   * it is an orphan, reparented to an init (pid 1, or systemd --user on
+//     a systemd host) — the state all three leaked daemons were found
+//     in. A test farmd belonging to a run still in flight is parented to
 //     that runner, which is what lets this script run from inside the suite
 //     without reporting the suite's own daemon.
 //
@@ -32,8 +33,8 @@
 //     file's withheld list), so nothing real can hide behind it.
 //   * a suspect is re-read after a grace period and reported only if it is
 //     STILL an orphan with the same temp FARM_HOME. A daemon being torn down by
-//     PR_SET_PDEATHSIG is briefly reparented to pid 1 on its way out; a genuine
-//     leak stays that way indefinitely.
+//     PR_SET_PDEATHSIG is briefly reparented to an init on its way out; a
+//     genuine leak stays that way indefinitely.
 //
 // Usage:
 //   node scripts/check-no-leaked-farmd.mjs
@@ -42,7 +43,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-import { DECOY_ENV_VAR, isFarmdCmdline, procCmdline, procEnviron, procStat } from '../test/helpers/farmd.mjs'
+import { DECOY_ENV_VAR, isFarmdCmdline, isReparentedOrphan, procCmdline, procEnviron, procStat } from '../test/helpers/farmd.mjs'
 
 const TMP = path.resolve(tmpdir())
 
@@ -86,7 +87,7 @@ function inspect(pid) {
   }
 }
 
-const looksLeaked = (entry) => entry !== null && !entry.decoy && isUnderTmp(entry.farmHome) && entry.ppid === 1
+const looksLeaked = (entry) => entry !== null && !entry.decoy && isUnderTmp(entry.farmHome) && isReparentedOrphan(entry.ppid)
 
 const examined = []
 const suspects = []
@@ -128,7 +129,7 @@ if (leaked.length === 0) {
 
 console.log(`LEAKED: ${leaked.length} orphaned test farmd process(es) with a temp FARM_HOME:`)
 for (const entry of leaked) {
-  console.log(`  pid ${entry.pid} (orphaned to ppid 1)`)
+  console.log(`  pid ${entry.pid} (orphaned to ppid ${entry.ppid})`)
   console.log(`    FARM_HOME=${entry.farmHome}`)
   console.log(`    ${entry.cmdline}`)
 }

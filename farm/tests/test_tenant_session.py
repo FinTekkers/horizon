@@ -405,7 +405,7 @@ def test_the_part_1_gate_is_gone_from_the_farm():
     hits = [
         p.relative_to(REPO_ROOT)
         for p in farm_dir.rglob("*.py")
-        if "tests" not in p.parts and "TENANT_WORKSPACE_GATE" in p.read_text()
+        if ".venv" not in p.parts and "tests" not in p.parts and "TENANT_WORKSPACE_GATE" in p.read_text()
     ]
     assert hits == []
     assert not hasattr(farmd, "TENANT_WORKSPACE_GATE")

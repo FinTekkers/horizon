@@ -105,7 +105,9 @@ def farm_modules() -> list[Path]:
     flat glob would have silently exempted them.
     """
     return sorted(
-        path for path in FARM.rglob("*.py") if path != PARSER_MODULE and TESTS not in path.parents
+        path
+        for path in FARM.rglob("*.py")
+        if path != PARSER_MODULE and TESTS not in path.parents and ".venv" not in path.parts
     )
 
 

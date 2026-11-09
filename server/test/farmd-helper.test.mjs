@@ -26,6 +26,7 @@ import {
   FARMD_ENV_WITHHELD,
   FARM_HOME_PREFIX,
   PIDFILE_NAME,
+  isReparentedOrphan,
   PYTHON_OVERRIDE_VAR,
   TEST_SHARED_SECRET,
   buildFarmdEnv,
@@ -198,7 +199,8 @@ function decoy(t, { farmHome, orphan = false }) {
   let pid
   if (orphan) {
     // Double-fork: the shell exits at once and the kernel reparents the
-    // decoy to pid 1, which is the state every leaked daemon was found in.
+    // decoy to an init (pid 1, or systemd --user on a systemd host),
+    // which is the state every leaked daemon was found in.
     const launched = spawnSync(
       'sh',
       ['-c', `exec "$1" -e "$2" farm.farmd >/dev/null 2>&1 & echo $!`, 'sh', process.execPath, script],
@@ -229,6 +231,15 @@ async function waitForPpid(pid, expected, timeoutMs = 5000) {
     await new Promise((r) => setTimeout(r, 50))
   }
   return procStat(pid)?.ppid === expected
+}
+
+async function waitForOrphan(pid, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (isReparentedOrphan(procStat(pid)?.ppid)) return true
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return isReparentedOrphan(procStat(pid)?.ppid)
 }
 
 // A scratch root, so no case can see (let alone act on) a real FARM_HOME
@@ -312,7 +323,7 @@ test('the sweep does kill an orphaned test farmd and remove its FARM_HOME', asyn
   const pid = decoy(t, { farmHome: dir, orphan: true })
   writeFileSync(path.join(dir, PIDFILE_NAME), String(pid))
 
-  assert.ok(await waitForPpid(pid, 1), `decoy ${pid} never reparented to pid 1`)
+  assert.ok(await waitForOrphan(pid), `decoy ${pid} never reparented to an init`)
 
   const result = sweepStaleTestFarmds({ root })
 
@@ -384,7 +395,7 @@ test('the sweep kills a pre-HZ-138 orphan that left no pidfile behind', async (t
   const longAgo = Date.now() / 1000 - 60 * 60 * 24
   utimesSync(dir, longAgo, longAgo)
 
-  assert.ok(await waitForPpid(pid, 1), `decoy ${pid} never reparented to pid 1`)
+  assert.ok(await waitForOrphan(pid), `decoy ${pid} never reparented to an init`)
 
   const result = sweepStaleTestFarmds({ root })
 

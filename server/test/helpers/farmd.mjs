@@ -303,11 +303,25 @@ export async function waitForExit(pid, timeoutMs = 5000) {
 // a candidate (guardrail 4): its FARM_HOME is ~/.horizon-farm, which is
 // neither under `root` nor named with our prefix.
 //
-// The ppid === 1 condition is load-bearing, not belt-and-braces:
-// `node --test` runs test FILES in parallel, so a sibling test's farmd is
-// alive, is genuinely a test farmd, and would satisfy both the cmdline and
-// FARM_HOME checks. Only an orphan is stale, and an orphan is exactly what
-// ppid === 1 means.
+// Whether a ppid means "reparented after its parent died". ppid === 1 on
+// a bare init host, but on a systemd host orphans reparent to the
+// systemd --user manager (ppid 1's child named `systemd`), never to
+// pid 1 itself. Either form is an orphan; a live test process as
+// parent is not. This condition is load-bearing, not belt-and-braces:
+// `node --test` runs test FILES in parallel, so a sibling test's farmd
+// is alive, is genuinely a test farmd, and would satisfy both the
+// cmdline and FARM_HOME checks. Only an orphan is stale.
+export function isReparentedOrphan(ppid) {
+  if (ppid === 1) return true
+  if (!Number.isInteger(ppid) || ppid <= 1) return false
+  try {
+    const comm = readFileSync(`/proc/${ppid}/comm`, 'utf8').trim()
+    const parent = procStat(ppid)
+    return comm === 'systemd' && parent?.ppid === 1
+  } catch {
+    return false
+  }
+}
 export function sweepStaleTestFarmds({ root = tmpdir(), maxDirAgeMs = STALE_DIR_AGE_MS, now = Date.now() } = {}) {
   const killed = []
   const removed = []
@@ -356,7 +370,7 @@ export function sweepStaleTestFarmds({ root = tmpdir(), maxDirAgeMs = STALE_DIR_
         continue
       }
       const stat = procStat(pid)
-      if (stat?.ppid !== 1) {
+      if (!isReparentedOrphan(stat?.ppid)) {
         skipped.push({ dir, pid, reason: `still parented to ${stat?.ppid} — a live run owns it` })
         holders++
         continue
