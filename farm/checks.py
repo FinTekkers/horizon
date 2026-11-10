@@ -1647,6 +1647,22 @@ def _login_env_for(env: dict[str, str], login_values: dict[str, str]):
     return env_for
 
 
+def _venv_bin_dir(executable=None, prefix=None, base_prefix=None):
+    """The venv's `bin` dir for the current interpreter, or None when this
+    process is not in a venv. A plain symlink to a venv interpreter does
+    not count: Python resolves its prefix from the invoked path, so a
+    `python` symlink outside the venv resolves to the system prefix and
+    misses the venv's packages — the executable must be run by its venv
+    path, as farmd itself is."""
+    exe = Path(executable or sys.executable)
+    if (prefix or sys.prefix) == (base_prefix or sys.base_prefix):
+        return None
+    bin_dir = exe.parent
+    if (bin_dir / "python").exists():
+        return bin_dir
+    return None
+
+
 def _check_env() -> dict[str, str]:
     """The environment the check commands run under.
 
@@ -1668,6 +1684,18 @@ def _check_env() -> dict[str, str]:
     "drop every FARM_*".
     """
     env = {k: v for k, v in os.environ.items() if k not in config.CHECK_SUBPROCESS_SCRUB}
+    # The farm venv's bin first: a check command such as `python -m pytest
+    # -q` must resolve `python` to this venv's interpreter, which carries
+    # the farm dependencies. The host PATH cannot be relied on for that:
+    # on this devvm Chef restores /usr/local/bin/python to a dangling
+    # symlink, and a shim in a user's home only exists on that box. The
+    # running farmd's own interpreter is the venv's, so its bin dir is
+    # the one to prepend here, and only when this process is in a venv.
+    venv_bin = _venv_bin_dir()
+    if venv_bin is not None:
+        parts = env.get("PATH", "").split(os.pathsep) if env.get("PATH") else []
+        if str(venv_bin) not in parts:
+            env["PATH"] = os.pathsep.join([str(venv_bin), *parts])
     env[check_slots.IN_CHECKS_ENV] = "1"
     # Checks are never interactive. Older test runners decide watch mode from
     # CI alone, not from a TTY: FinTekkers/ui-service's vitest 0.34 hung in
