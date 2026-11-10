@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -153,6 +154,10 @@ def _stream(cmd: list[str], *, timeout: int, cwd: str | None, env: dict) -> subp
         errors="replace",
         cwd=cwd,
         env=env,
+        # Its own session, so a budget kill can take the whole process
+        # group: an interpreter launcher (Meta's fbpython forks the real
+        # interpreter) would otherwise survive proc.kill() as an orphan.
+        start_new_session=True,
     )
     lines: queue.Queue = queue.Queue()
     stderr: list[str] = []
@@ -183,18 +188,31 @@ def _stream(cmd: list[str], *, timeout: int, cwd: str | None, env: dict) -> subp
                 _print_lines(renderer.feed(event))
         proc.wait(timeout=max(deadline - time.monotonic(), 0))
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+        _kill_group(proc)
         _print_lines(renderer.flush())
         raise subprocess.TimeoutExpired(cmd, timeout, output="".join(stdout)) from None
     finally:
         if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+            _kill_group(proc)
         for reader in readers:
             reader.join(_READER_GRACE_S)
     _print_lines(renderer.flush())
     return subprocess.CompletedProcess(cmd, proc.returncode, "".join(stdout), "".join(stderr))
+
+
+def _kill_group(proc) -> None:
+    """Kill the whole process group, then reap the direct child. The
+    group kill is what reaches an interpreter forked by a launcher
+    (see start_new_session above); proc.kill() alone left it alive
+    as an orphan under systemd --user."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait()
+    except Exception:  # noqa: BLE001 - reaping must never mask the timeout
+        pass
 
 
 def _decode_json(text: str):

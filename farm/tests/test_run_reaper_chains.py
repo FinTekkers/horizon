@@ -88,8 +88,21 @@ def test_a_check_past_its_time_limit_leaves_no_worker_browser_or_server(procs, c
     assert helpers and all(h["ppid"] in by_pid for h in helpers), "Chromium's zygote and helpers descend from the browser"
     run_id = leak["own_tag"]
     assert run_id and run_id.startswith("chk-")
+    # Chromium overwrites its own environ, so a browser helper can carry
+    # no tag at all; per run_reaper's ownership rule it belongs to the
+    # run when it descends from a tagged process. Direct children of
+    # the worker whose tag is present must carry this run's tag.
+    def belongs(proc, seen=None):
+        if proc["tag"] == run_id:
+            return True
+        if proc["tag"] is not None:
+            return False
+        seen = seen or set()
+        parent = by_pid.get(proc["ppid"])
+        return parent is not None and parent["pid"] not in seen and belongs(parent, seen | {proc["pid"]})
+
     for proc in (worker, server, *browsers):
-        assert proc["tag"] == run_id, f"{proc['comm']} pid {proc['pid']} does not carry the run's tag"
+        assert belongs(proc), f"{proc['comm']} pid {proc['pid']} does not belong to run {run_id}: {leak['procs']}"
 
     wait_until("every process of the run to be gone", lambda: all(gone(p["pid"]) for p in leak["procs"]), WITHIN_S)
     assert tagged_with(run_id) == []
