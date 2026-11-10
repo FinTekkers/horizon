@@ -395,6 +395,13 @@ def _capture(ws, cfg, *, env, login_values, secrets, deadline, log) -> dict:
     # HZ-557: cookies replace the headers; only a run that logs in needs them.
     cookies = login_cookies(cfg.login_cookies, login_values) if cfg.login_cookies and needs_login else []
     headers = {} if cfg.login_cookies else login_headers(login_values)
+    # A login:true shot with no values captures anonymously: its waitFor
+    # selector never appears and every shot burns its whole timeout.
+    if needs_login and not login_values:
+        raise CaptureFailed(
+            "login shots need test-login values, but none were loaded: "
+            "set the repo's test credentials file in Admin"
+        )
     serve_env = {**env, **login_values} if needs_login else env
     fd, serve_out = tempfile.mkstemp(prefix="horizon-capture-serve-")
     os.close(fd)

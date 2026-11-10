@@ -689,6 +689,20 @@ def test_an_unset_cookie_variable_fails_the_run_naming_it(tmp_path, monkeypatch)
     assert not app.state.exists()  # serve never started
 
 
+def test_login_shots_with_no_test_login_values_fail_at_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(screenshot_runner, "preflight", lambda *_: None)
+    app = App(tmp_path, [{"name": "in", "path": "/one", "login": True, "timeoutMs": 1500}])
+    with pytest.raises(CheckFailure) as err:
+        checks._capture_screenshots(
+            app.ws, app.cfg, env=app.env, login_values={}, secrets={}, deadline=time.monotonic() + 30, log=lambda *_: None
+        )
+    assert err.value.headline == (
+        "screenshots: login shots need test-login values, but none were loaded: "
+        "set the repo's test credentials file in Admin"
+    )
+    assert not app.state.exists()  # serve never started
+
+
 def test_a_v1_config_without_new_keys_is_unchanged(tmp_path, monkeypatch):
     valid =screenshots_config.parse(json.loads((FIXTURES / "valid.json").read_text()))
     assert {shot.mask for shot in valid} == {()}
