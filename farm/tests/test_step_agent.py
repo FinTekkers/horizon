@@ -2494,14 +2494,18 @@ def make_checkpoint(ws, origin, *, cause="checks-failed", detail="not ok 7 - x",
     """Pushes a checkpoint commit to origin/horizon/t-1 the way salvage writes
     it (cause=None: a pre-HZ-184 checkpoint, with no body at all) and returns
     its sha."""
-    git(ws, "checkout", "-B", "horizon/t-1", "origin/main")
+    # --no-track + explicit destination: a source-only push resolves to
+    # the branch's upstream, and basing on origin/main would make this
+    # branch track main — on a host with push.default=upstream the push
+    # updated main instead of horizon/t-1 and rev-parse below failed.
+    git(ws, "checkout", "--no-track", "-B", "horizon/t-1", "origin/main")
     (ws / path).write_text(text)
     git(ws, "add", "-A")
     msg = ["-m", f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)"]
     if cause:
         msg += ["-m", f"cause: {cause}\n\n{detail}"]
     git(ws, "commit", *msg)
-    git(ws, "push", "-f", "origin", "horizon/t-1")
+    git(ws, "push", "-f", "origin", "horizon/t-1:refs/heads/horizon/t-1")
     git(ws, "checkout", "main")
     return subprocess.run(
         ["git", "--git-dir", str(origin), "rev-parse", "horizon/t-1"], capture_output=True, text=True, check=True
@@ -2572,18 +2576,18 @@ def test_checkpoint_whose_parent_is_a_merge_of_main_takes_a_known_path(tmp_path)
     """HZ-188's send-back merges main into the branch, so a checkpoint can sit
     on a merge commit. Rebase linearizes it; either way no work is lost."""
     ws, origin = make_git_workspace(tmp_path)
-    git(ws, "checkout", "-B", "horizon/t-1", "origin/main")
+    git(ws, "checkout", "--no-track", "-B", "horizon/t-1", "origin/main")
     (ws / "feature.txt").write_text("feature\n")
     git(ws, "add", "-A")
     git(ws, "commit", "-m", "T-1: feature")
-    git(ws, "push", "-f", "origin", "horizon/t-1")
+    git(ws, "push", "-f", "origin", "horizon/t-1:refs/heads/horizon/t-1")
     advance_main(tmp_path, origin, path="m1.txt")
     git(ws, "fetch", "origin")
     git(ws, "merge", "--no-edit", "origin/main")
     (ws / "wip.txt").write_text("wip\n")
     git(ws, "add", "-A")
     git(ws, "commit", "-m", f"T-1: {step_agent.CHECKPOINT_MARKER} (Horizon Eng agent)", "-m", "cause: exhausted")
-    git(ws, "push", "-f", "origin", "horizon/t-1")
+    git(ws, "push", "-f", "origin", "horizon/t-1:refs/heads/horizon/t-1")
     git(ws, "checkout", "main")
     advance_main(tmp_path, origin, path="m2.txt")
 
@@ -4308,11 +4312,11 @@ def test_deploy_checkpoint_on_a_locally_rebased_branch_fast_forwards_and_the_nex
 def test_a_merge_of_main_still_in_progress_is_kept_as_a_merge(tmp_path, monkeypatch, deploy_stop):
     pause, outcome_path = deploy_stop
     ws, origin = make_git_workspace(tmp_path)
-    git(ws, "checkout", "-B", "horizon/t-1", "origin/main")
+    git(ws, "checkout", "--no-track", "-B", "horizon/t-1", "origin/main")
     (ws / "feature.txt").write_text("feature\n")
     git(ws, "add", "-A")
     git(ws, "commit", "-m", "T-1: feature")
-    git(ws, "push", "origin", "horizon/t-1")
+    git(ws, "push", "origin", "horizon/t-1:refs/heads/horizon/t-1")
     advance_main(tmp_path, origin, path="m1.txt")
     git(ws, "fetch", "origin")
     git(ws, "merge", "--no-commit", "--no-ff", "origin/main")

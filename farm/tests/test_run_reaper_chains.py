@@ -82,9 +82,9 @@ def test_a_check_past_its_time_limit_leaves_no_worker_browser_or_server(procs, c
     assert leak["ready"] == {"ready": True}
     by_pid = {p["pid"]: p for p in leak["procs"]}
     worker, server = leak["procs"][0], leak["procs"][-1]
-    browsers = [p for p in leak["procs"] if p["comm"] == "headless_shell" and p["ppid"] == worker["pid"]]
-    assert browsers, f"no headless_shell under the worker: {leak['procs']}"
-    helpers = [p for p in leak["procs"] if p["comm"] == "headless_shell" and p["ppid"] != worker["pid"]]
+    browsers = [p for p in leak["procs"] if p["comm"] in run_reaper.BROWSER_COMMS and p["ppid"] == worker["pid"]]
+    assert browsers, f"no browser under the worker: {leak['procs']}"
+    helpers = [p for p in leak["procs"] if p["comm"] in run_reaper.BROWSER_COMMS and p["ppid"] != worker["pid"]]
     assert helpers and all(h["ppid"] in by_pid for h in helpers), "Chromium's zygote and helpers descend from the browser"
     run_id = leak["own_tag"]
     assert run_id and run_id.startswith("chk-")

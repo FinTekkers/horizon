@@ -176,8 +176,25 @@ def test_a_half_line_then_silence_past_the_budget_kills_muse_and_logs_the_half_l
 
     _, exited, pid = _emits(emit_log)
     assert exited is None, "fake muse ran to its end instead of being killed"
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    # A killed process stays a zombie until its (now dead) parent's
+    # reaper collects it, and os.kill(pid, 0) succeeds on a zombie:
+    # poll until it is gone or a zombie, rather than asserting on the
+    # first check under load.
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[-1].split()[0]
+        except OSError:
+            break
+        if state == "Z":
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail(f"fake muse pid {pid} is still running after being killed")
+        time.sleep(0.05)
 
 
 def test_the_renderer_turns_the_recorded_muse_stream_into_the_golden_log():

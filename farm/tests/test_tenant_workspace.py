@@ -74,10 +74,20 @@ def hub_helpers(hub: Path) -> list[str]:
 
 
 def credential_fill(hub: Path, env: dict) -> subprocess.CompletedProcess:
+    # Scrub the ambient credential-asking environment: on a developer's
+    # box GIT_ASKPASS (VS Code) answers `git credential fill` with that
+    # session's real GitHub credential, so "no token" would succeed and
+    # the marker assertions below would test the developer, not the hub.
+    # The hub's own helper and the fixture's global helper stay in play.
+    scrubbed = {
+        k: v
+        for k, v in env.items()
+        if k not in ("GIT_ASKPASS", "SSH_ASKPASS", "GIT_ASKPASS_REQUIRE", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
+    }
     return subprocess.run(
         ["git", "-C", str(hub), "credential", "fill"],
         input="protocol=https\nhost=github.com\npath=acme/demo.git\n\n",
-        capture_output=True, text=True, env=env, timeout=20,
+        capture_output=True, text=True, env=scrubbed, timeout=20,
     )
 
 

@@ -138,11 +138,17 @@ def item_lock_held(repo_full: str, item_id: str) -> bool:
     except OSError:
         proc_locks = None
     if proc_locks is not None:
-        # "1: FLOCK  ADVISORY  WRITE 1234 103:01:5678 0 EOF" — the device is
-        # printed as %02x:%02x:%lu (major:minor:inode).
-        dev = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+        # "1: FLOCK  ADVISORY  WRITE 1234 103:01:5678 0 EOF" — the last
+        # field of the device column is the inode. Match on the inode
+        # alone: the device prefix as printed by the kernel does not
+        # always equal os.major()/os.minor() of the same file (observed
+        # on this host: /proc/locks prints 00:1e for a file whose
+        # st_dev decodes to 00:1f), so a full device-string match
+        # reported a held lock as free.
         return any(
-            len(fields) > 5 and fields[1] == "FLOCK" and fields[5] == dev
+            len(fields) > 5
+            and fields[1] == "FLOCK"
+            and fields[5].rsplit(":", 1)[-1] == str(st.st_ino)
             for fields in (line.split() for line in proc_locks.splitlines())
         )
     with open(lock_path, "a") as fh:
