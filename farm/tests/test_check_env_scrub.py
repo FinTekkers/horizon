@@ -18,6 +18,7 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -97,6 +98,25 @@ def test_check_env_keeps_what_the_inner_suite_actually_needs(monkeypatch):
     assert env["FARM_HOME"] == "/tmp/farm-home"
     assert env["FARM_CLAUDE_BIN"] == "/tmp/fake_claude"
     assert "PATH" in env
+
+
+def test_venv_bin_dir_returns_the_venv_bin_only_inside_a_venv(tmp_path):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").write_text("")
+    assert checks._venv_bin_dir(executable=str(venv_bin / "python"), prefix="/tmp/venv", base_prefix="/usr") == venv_bin
+    assert checks._venv_bin_dir(executable=str(venv_bin / "python"), prefix="/usr", base_prefix="/usr") is None
+    assert checks._venv_bin_dir(executable="/usr/bin/python3", prefix="/usr", base_prefix="/usr") is None
+
+
+def test_check_env_puts_the_venv_bin_first_on_path(monkeypatch):
+    """`python -m pytest -q` in a check command must resolve to the farm
+    venv, not to whatever the host PATH happens to offer (a dangling
+    symlink Chef restores, or a bare system interpreter without pytest)."""
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    env = checks._check_env()
+    venv_bin = str(Path(sys.executable).parent)
+    assert env["PATH"].split(os.pathsep)[0] == venv_bin
 
 
 def test_check_env_marks_the_child_as_already_inside_a_check_slot():

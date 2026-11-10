@@ -56,7 +56,9 @@ RUN_ENV = "HORIZON_RUN_ID"
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 CAPTURE_WORKER_SCRIPT = "farm/capture/worker.mjs"
 # comm is cut at 15 characters: chrome_crashpad_handler shows as chrome_crashpad.
-BROWSER_COMMS = ("headless_shell", "chrome", "chromium", "chromium-browse", "chrome_crashpad")
+# Playwright's headless shell reports as chrome-headless on current
+# builds, not headless_shell.
+BROWSER_COMMS = ("headless_shell", "chrome-headless", "chrome", "chromium", "chromium-browse", "chrome_crashpad")
 KINDS = ("capture_worker", "browser", "e2e_server")
 KILL_WAIT_S = 2.0
 

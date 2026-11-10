@@ -50,6 +50,18 @@ root). The server parity tests resolve the same interpreter themselves
 (`FARM_TEST_PYTHON` overrides it). The repo scans in the farm tests
 skip `farm/.venv`, so a prepared venv does not trip them.
 
+Check commands such as `python -m pytest -q` do not rely on the
+host `PATH`: farm check subprocesses prepend the running farmd
+venv's `bin` to `PATH`, so `python` resolves to that venv on any
+host. Do not fix a missing `python` with a symlink or shim at
+`/usr/local/bin/python` — host management restores that path (on
+this devvm, Chef restored a dangling symlink within minutes), and
+a symlink to a venv interpreter resolves to the system prefix
+anyway, missing the venv's packages. If the full farm pytest suite
+exceeds the 600 s check timeout on a slow host, raise it for
+farmd with `FARM_CHECK_TIMEOUT_S` (for example 1800) on restart;
+do not shorten the suite to fit the timeout.
+
 Real agents (optional — without this, agent steps are mocked in-process):
 
 ```
