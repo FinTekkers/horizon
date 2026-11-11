@@ -70,6 +70,9 @@ process.env.HORIZON_E2E_FARM_HOME = FARM_HOME
 // the real loopback-only /api/farm/deploy-drain routes, which need this.
 const FARM_SECRET = 'e2e-farm-secret'
 process.env.HORIZON_E2E_FARM_SECRET = FARM_SECRET
+// HO-822: 21-gate-in-flight.spec.js signs a "PR merged" webhook with this.
+const GITHUB_WEBHOOK_SECRET = 'e2e-github-webhook-secret'
+process.env.HORIZON_E2E_GITHUB_WEBHOOK_SECRET = GITHUB_WEBHOOK_SECRET
 
 export default defineConfig({
   testDir: './tests',
@@ -136,7 +139,9 @@ export default defineConfig({
         // this suite must never reach real GitHub or a real farm daemon.
         HORIZON_REPO: '',
         GITHUB_TOKEN: '',
-        GITHUB_WEBHOOK_SECRET: '',
+        // HO-822: set, never inherited, so 21-gate-in-flight.spec.js can post a
+        // signed "PR merged" webhook through the real /api/webhooks/github.
+        GITHUB_WEBHOOK_SECRET,
         FARM_URL: '',
         FARM_HOME,
         // …and must never message a real human (HZ-141). This suite drives demo

@@ -50,6 +50,13 @@ os.environ.setdefault("PYTEST_DEBUG_TEMPROOT", _REAL_TMP)
 RUN_TMP = tempfile.mkdtemp(prefix=f"horizon-run-{os.getpid()}-", dir=_REAL_TMP)
 os.environ["TMPDIR"] = RUN_TMP
 tempfile.tempdir = RUN_TMP
+# The host's /usr/local/bin/git (2.53.0-Meta) carries Artillery tracing, which
+# writes a control cache to $TMPDIR/artillery_cli_control.26042.json on every
+# invocation. With TMPDIR now the sandbox, any test that runs git leaves that
+# host-tool file behind and the guard fails the run. Point the cache at the
+# path git uses outside the suite (the real temp root, shared by every git on
+# the host) so the sandbox only ever holds what this run's code creates.
+os.environ.setdefault("ARTILLERY_CONTROL_CACHE_PATH", os.path.join(_REAL_TMP, "artillery_cli_control.26042.json"))
 TEST_FARM_HOME = tempfile.mkdtemp(prefix="horizon-farm-test-")
 # HZ-716: tmux session names are shared across a whole tmux server, and the
 # host's default server is where the live farm's sessions live. From here on
