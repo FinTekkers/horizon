@@ -46,7 +46,55 @@
           "tool": { "type": "string", "minLength": 1 },
           "path": { "type": "string", "minLength": 1 },
           "env": { "type": "string", "minLength": 1 },
-          "file": { "type": "string", "minLength": 1 }
+          "file": { "type": "string", "minLength": 1 },
+          "access": {
+            "$comment": "HO-835: whether the run reads (`r`, the default when absent) or writes (`w`) a `file`. The schema puts it at item level, but both bindings allow it only beside `file`.",
+            "type": "string",
+            "enum": ["r", "w"]
+          },
+          "service": {
+            "$comment": "HO-835: a service the run needs, as {name, version_cmd, expect}. `name` matches domain/runPlanContract.json `serviceName`; `version_cmd` is a one-line, read-only command and `expect` the one line it should print. Never run by the bindings.",
+            "type": "object",
+            "required": ["name", "version_cmd", "expect"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "version_cmd": { "type": "string", "minLength": 1 },
+              "expect": { "type": "string", "minLength": 1 }
+            }
+          },
+          "precondition": {
+            "$comment": "HO-835: a state that must hold before the run, as {kind, check}. `kind` is one of domain/runPlanContract.json `preconditionKinds`; `check` is a one-line, read-only command or query. Both bindings refuse the contract's `writeShapes` in it (best-effort: a shape check cannot prove a command read-only) and never run it.",
+            "type": "object",
+            "required": ["kind", "check"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "type": "string", "enum": ["lock_free", "no_deploy_running", "row_exists", "account_exists", "artifact_exists"] },
+              "check": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "rehearsal": {
+      "$comment": "HO-835: the plan's rehearsal, kept apart from the live `commands`. `dry_run` is the command that previews the run (the `--dry-run` form); `limit` caps what a rehearsal touches; `ro_env` names the read-only variables a rehearsal or a precondition `check` uses — variable names with no `$`, never a live `env` key or a name an `env` value references; `samples` holds one expected line per `proof` command, `command` a 1-based index into `commands`. Names, paths and read-only commands only: never a secret value, file contents or live row data. Every key is optional; an unknown key fails. Rules and reason texts are declared once in domain/runPlanContract.json and asserted by both bindings. farm/step_agent.py requires a sample for each `proof` command only when a Run plan reply is written (run_plan.unrehearsed()), so a plan stored before this block still validates.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dry_run": { "type": "string", "minLength": 1 },
+        "limit": { "type": "integer", "minimum": 1 },
+        "ro_env": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "samples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["command", "expect"],
+            "additionalProperties": false,
+            "properties": {
+              "command": { "type": "integer", "minimum": 1 },
+              "expect": { "type": "string", "minLength": 1 }
+            }
+          }
         }
       }
     },

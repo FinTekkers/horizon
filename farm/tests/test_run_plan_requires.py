@@ -249,6 +249,14 @@ def fixture_reply(name, **changes):
     return reply_for(step_agent.RUN_PLAN_LABEL, run_plan={**fixture_plan(name), **changes})
 
 
+def rehearsal_for(name):
+    """HO-835: one sample per `proof` command of a stored plan, which
+    predates the rehearsal block. Sent beside it so the requires gaps these
+    tests name are reached; the fixture file is never edited."""
+    proved = sorted({entry["command"] for entry in fixture_plan(name)["proof"] if "command" in entry})
+    return {"samples": [{"command": k, "expect": f"command {k} would pass"} for k in proved]}
+
+
 def env_plan(*requires, env=None, **plan):
     return plan_reply(*requires, env=env or {}, **plan)
 
@@ -360,13 +368,13 @@ def test_hz514_shape_no_requires_and_an_undeclared_name_fails_naming_it(monkeypa
 
 def test_hz533_plan_item_fails_as_stored_and_passes_once_declared(monkeypatch, repo):
     names = ["PLAN_ITEM", "TASK_ITEM"]
-    _, reason = gap_reason(monkeypatch, fixture_task(repo, names), fixture_reply("hz533"))
+    _, reason = gap_reason(monkeypatch, fixture_task(repo, names), fixture_reply("hz533", rehearsal=rehearsal_for("hz533")))
     assert "command uses `$PLAN_ITEM`, which is not declared in requires.env or set by the plan" in reason
 
     # PLAN_ITEM declared (and set in farmd's env): no longer named.
     declared = fixture_plan("hz533")["requires"] + [{"env": "PLAN_ITEM"}]
     _, reason = gap_reason(
-        monkeypatch, fixture_task(repo, names), fixture_reply("hz533", requires=declared)
+        monkeypatch, fixture_task(repo, names), fixture_reply("hz533", requires=declared, rehearsal=rehearsal_for("hz533"))
     )
     assert "PLAN_ITEM" not in reason
     assert "`$TASK_ITEM`" in reason
@@ -378,7 +386,7 @@ def test_hz533_plan_item_fails_as_stored_and_passes_once_declared(monkeypatch, r
     fake_bin = make_venv(repo, *[e["tool"] for e in fixture_plan("hz533")["requires"] if "tool" in e])
     monkeypatch.setattr(run_plan_requires, "_implied_files", lambda block: [])
     full = declared + [{"env": "TASK_ITEM"}]
-    calls = stub_agent(monkeypatch, [fixture_reply("hz533", requires=full)])
+    calls = stub_agent(monkeypatch, [fixture_reply("hz533", requires=full, rehearsal=rehearsal_for("hz533"))])
     result = step_agent.execute(fixture_task(repo, names, venv_dir=str(fake_bin)))
     assert len(calls) == 1
     assert run_plan.extract(result["artifacts"]["artifact_md"])["requires"] == full
@@ -485,7 +493,7 @@ def test_the_stored_hz514_plan_stops_at_run_plan_naming_its_token(monkeypatch, r
 
 
 def test_the_stored_hz532_plan_stops_at_run_plan_naming_both_inputs(monkeypatch, repo):
-    _, reason = gap_reason(monkeypatch, fixture_task(repo), fixture_reply("hz532"))
+    _, reason = gap_reason(monkeypatch, fixture_task(repo), fixture_reply("hz532", rehearsal=rehearsal_for("hz532")))
     for name in ("RECORD_SITE_URL", "RECORD_ITEM"):
         assert f"command uses `${name}`, which is not declared in requires.env or set by the plan" in reason
         assert f"env var `{name}` is not set in the job's environment" in reason
@@ -495,7 +503,7 @@ def test_the_stored_hz700_attempt5_plan_stops_at_run_plan_naming_the_stripe_file
     stripe = "/etc/horizon/stripe.env"
     if os.access(stripe, os.R_OK):
         pytest.fail(f"{stripe} is readable by this user, so this test cannot show the gap: run as a non-root user")
-    _, reason = gap_reason(monkeypatch, fixture_task(repo, ["HOME"]), fixture_reply("hz700-a5"))
+    _, reason = gap_reason(monkeypatch, fixture_task(repo, ["HOME"]), fixture_reply("hz700-a5", rehearsal=rehearsal_for("hz700-a5")))
     assert f"file `{stripe}` is not readable by the job user" in reason
     # Read through `sudo -n cat`, the recorder file is not the job user's to open.
     assert "recorder.env" not in reason
@@ -622,3 +630,87 @@ def test_farmd_stamps_a_tenant_run_plan_task_with_its_session_env_names_and_run_
     assert "HZ769_FARMD_NAME" not in written["job_env_names"]
     assert {"GITHUB_TOKEN", "HOME"} <= set(written["job_env_names"])
     assert written["job_uid"] == 76999
+
+
+# ==== HO-835: `service`, `precondition` and `access` are never run here ====
+
+V2_SERVICE = {"service": {"name": "postgresql", "version_cmd": "psql --version", "expect": "psql (PostgreSQL) 16"}}
+V2_PRECONDITIONS = [
+    {"precondition": {"kind": "lock_free", "check": "flock -n /tmp/hz835.lock true"}},
+    {"precondition": {"kind": "no_deploy_running", "check": "pgrep -f deploy-horizon.sh 2>/dev/null"}},
+    {"precondition": {"kind": "row_exists", "check": "psql \"$RO_DB_URL\" -tAc 'SELECT 1 FROM accounts WHERE n > 0'"}},
+    {"precondition": {"kind": "account_exists", "check": "psql \"$RO_DB_URL\" -tAc 'SELECT 1 FROM accounts WHERE id = 42'"}},
+    {"precondition": {"kind": "artifact_exists", "check": "test -e /tmp/hz835-prices.csv"}},
+]
+
+
+def test_service_and_precondition_entries_alone_run_nothing(monkeypatch, repo):
+    """Guardrail 4: they never reach the probe, and nothing else runs either."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the requires check ran a subprocess")
+
+    monkeypatch.setattr(run_plan_requires.subprocess, "run", refuse)
+    block = run_plan.validate({**VALID_PLAN, "cwd": "sub", "env": {}, "requires": [V2_SERVICE, *V2_PRECONDITIONS]})
+    gaps = run_plan_requires.check(
+        block, repo_dir=str(repo), venv_dir=None, runner="host", container_image=None, forbid=str(REPO_ROOT),
+        job_env_names=[], job_uid=os.geteuid(),
+    )  # fmt: skip
+    assert gaps == []
+
+
+def test_a_mixed_plan_probes_its_tool_and_written_file_and_never_a_check_or_version_cmd(repo, probes, config_root):
+    written = config_root / "app.env"
+    written.write_text("x\n")
+    requires = [{"tool": "bash"}, V2_SERVICE, V2_PRECONDITIONS[2], {"file": str(written), "access": "w"}]
+    block = run_plan.validate({**VALID_PLAN, "cwd": "sub", "env": {}, "requires": requires})
+    gaps = run_plan_requires.check(
+        block, repo_dir=str(repo), venv_dir=None, runner="host", container_image=None, forbid=str(REPO_ROOT),
+        job_env_names=[], job_uid=os.geteuid(),
+    )  # fmt: skip
+    assert gaps == []
+    (probe,) = probes
+    argv = probe["argv"]
+    assert argv[2] == run_plan_requires.PROBE_ENV_FILES
+    assert argv[argv.index(run_plan_requires.FILES_MARKER) + 1 :] == [os.path.realpath(written)]
+    assert "bash" in argv[: argv.index(run_plan_requires.PATHS_MARKER)]
+    joined = " ".join(argv)
+    for text in ("psql", "SELECT", "postgresql", "16"):
+        assert text not in joined
+
+
+def test_a_full_v2_plan_finishes_run_plan_and_the_card_reads_it(monkeypatch, repo, config_root):
+    """Metrics 1-3 as one journey: the Run plan step passes a plan with a
+    service, all five preconditions, a written file and a rehearsal; a
+    `$RO_DB_URL` inside a check is no undeclared-name gap; and the server's
+    reader (domain/js/runPlan.js) shows the same artifact."""
+    written = config_root / "app.env"
+    written.write_text("x\n")
+    plan = {
+        "cwd": "sub",
+        "commands": ["bash -c 'echo backfill --limit 50'", "bash -c 'echo count'"],
+        "budget_minutes": 5,
+        "env": {},
+        "requires": [{"tool": "bash"}, V2_SERVICE, *V2_PRECONDITIONS, {"file": str(written), "access": "w"}],
+        "proof": [{"line": 1, "command": 1}, {"line": 2, "command": 2}] + [{"line": n, "manual": f"the owner checks line {n}"} for n in (3, 4, 5)],
+        "rehearsal": {
+            "dry_run": "bash -c 'echo backfill --dry-run'",
+            "limit": 50,
+            "ro_env": ["RO_DB_URL"],
+            "samples": [{"command": 1, "expect": "would update 50 rows in accounts"}, {"command": 2, "expect": "accounts: 50"}],
+        },
+    }
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, run_plan=plan)])
+    result = step_agent.execute(fixture_task(repo))
+    assert len(calls) == 1
+    artifact = result["artifacts"]["artifact_md"]
+    assert run_plan.extract(artifact) == plan
+    script = (
+        "import { extractRunPlan } from './domain/js/runPlan.js';"
+        "import { readFileSync } from 'node:fs';"
+        "console.log(JSON.stringify(extractRunPlan(readFileSync(0, 'utf8'))));"
+    )
+    out = subprocess.run(
+        ["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, input=artifact, capture_output=True, text=True, check=True
+    )
+    assert json.loads(out.stdout) == plan

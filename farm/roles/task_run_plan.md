@@ -7,8 +7,8 @@ The plan states:
 - the exact commands, in the order they run;
 - the working directory, relative to the repository root;
 - the environment each command needs;
-- a dry run: the command or flag that previews the run, and the output you
-  expect it to print;
+- a rehearsal, under `rehearsal` and never in `commands`: the `--dry-run`
+  command that previews the run, and one expected line per `proof` command;
 - the output you expect from the real run, and how to tell it succeeded;
 - a time budget for the whole run, in minutes.
 
@@ -23,15 +23,16 @@ password anywhere in the reply — a reply that carries one is rejected.
 Respond with ONLY a JSON object (no prose, no fences):
 {
   "summary": "<past tense, <=200 chars: how many commands, where, and the budget>",
-  "artifact_md": "<markdown: '## Commands' (numbered, in order), '## Working directory', '## Environment', '## Dry run' (command and expected output), '## Expected output', '## Proof' (each metric line and what proves it), '## Time budget'>",
+  "artifact_md": "<markdown: '## Commands' (numbered, in order), '## Working directory', '## Environment', '## Rehearsal' (dry run, limit, read-only env, one expected sample per proof command), '## Expected output', '## Proof' (each metric line and what proves it), '## Time budget'>",
   "run_plan": {
     "cwd": "<working directory, relative to the repository root>",
     "commands": ["<first command>", "<second command>"],
     "budget_minutes": <whole minutes, at least 1>,
     "env": {"<NAME>": "$<NAME>"},
     "reports": ["<optional: a file the run writes as its result>"],
-    "requires": [{"tool": "<a tool the commands call>"}, {"path": "<a file or folder they read, relative to the repo root>"}, {"env": "<NAME>"}, {"file": "/etc/horizon/<a host config file they read>"}],
+    "requires": [{"tool": "<a tool the commands call>"}, {"path": "<a file or folder they read, relative to the repo root>"}, {"env": "<NAME>"}, {"file": "/etc/horizon/<a host config file they read>"}, {"file": "/etc/horizon/<a host file the run writes>", "access": "w"}, {"service": {"name": "postgresql", "version_cmd": "psql --version", "expect": "psql (PostgreSQL) 16"}}, {"precondition": {"kind": "row_exists", "check": "<a read-only command or query>"}}],
     "proof": [{"line": 1, "command": 2}, {"line": 2, "report": "<a path in reports>#<field>"}, {"line": 3, "manual": "<what the owner checks, and where>"}],
+    "rehearsal": {"dry_run": "./backfill.sh --dry-run", "limit": 50, "ro_env": ["RO_<NAME>"], "samples": [{"command": 2, "expect": "<the one line you expect command 2's dry run to print>"}]},
     "runner": "<optional: omit it and the `runner` line in your input decides; set \"host\" or \"container\" only to override it>"
   }
 }
@@ -102,6 +103,32 @@ names as set in Execute's environment, files with `test -r` as the job's
 user — and each `env` name and `/etc/horizon/...` path the commands use.
 Anything missing comes back to you, named, to fix the plan. A path that is
 absolute, has a `..` or resolves outside the checkout is rejected.
+
+`requires` may also name what the run depends on beyond files and tools:
+- a service, as `{"service": {"name": "<name>", "version_cmd": "<command>",
+  "expect": "<the line it prints>"}}`;
+- a state that must hold first, as `{"precondition": {"kind": "<kind>",
+  "check": "<command or query>"}}`. The kind is one of `lock_free`,
+  `no_deploy_running`, `row_exists`, `account_exists` or `artifact_exists`;
+- `"access": "w"` beside a `file` the run writes. Leave it out, or write
+  `"r"`, for a file it only reads.
+
+A `check` and a `version_cmd` only read: no `>`, `rm`, `sudo`, `tee`, `mv`,
+`cp`, `kill`, `git push` or SQL write. The farm refuses obvious write shapes,
+but that check is best-effort. Write read-only commands either way. Nothing
+here runs them at Run plan.
+
+`rehearsal` holds the dry run, apart from the live run:
+- `dry_run`: the `--dry-run` command. Put it here, never in `commands`;
+- `limit`: optional, the most rows or items a rehearsal touches;
+- `ro_env`: optional, the read-only variable names a rehearsal or a `check`
+  uses. Each is a new name, never a name in `env` or one its values name;
+- `samples`: one `{"command": <k>, "expect": "<line>"}` per command a
+  `proof` entry names. `expect` is the one line you expect, at most 200
+  characters. A `proof` command with no sample fails the step, naming it.
+
+A plan, a sample and a `check` hold names, paths and read-only commands
+only. Never a secret value, file contents or a live row.
 
 Horizon dependencies already guarantee a blocker has merged or closed
 before this Task runs. Do not add a `gh` command, or a `gh` tool, to check

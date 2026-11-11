@@ -41,6 +41,11 @@ still naming only a variable or a file, never a value or a file's content:
 - every `$NAME` a command expands must be declared in `requires.env`, set by
   the plan, or in STANDARD_VARS (undeclared_names). Only here, at Run plan:
   run_plan.validate() does not scan, so a plan approved before still runs.
+
+HO-835: only PROBED_KINDS entries reach the probe. A `service` or
+`precondition` entry is skipped here — its `version_cmd` or `check` is never
+run or passed to the probe. A `file` with `access` is probed with `test -r`,
+whatever its access.
 """
 
 import os
@@ -113,6 +118,10 @@ PROBE_ENV_FILES = (
 )
 ENV_MARKER = "--env"
 FILES_MARKER = "--files"
+
+# HO-835: the `requires` kinds this check probes. Every other kind (`service`,
+# `precondition`) is skipped, never run.
+PROBED_KINDS = ("tool", "path", "env", "file")
 
 
 class Unavailable(Exception):
@@ -382,7 +391,7 @@ def check(
     # block references and literal config-file paths its commands name —
     # only once farmd said what Execute's env and user are, so a task it did
     # not stamp is checked as before.
-    entries = [dict(entry) for entry in requires]
+    entries = [dict(entry) for entry in requires if any(kind in entry for kind in PROBED_KINDS)]
     listed_env, listed_files = set(_env_entries(block)), {e["file"] for e in requires if "file" in e}
     if job_env_names is not None:
         for name in _env_ref_names(block):
