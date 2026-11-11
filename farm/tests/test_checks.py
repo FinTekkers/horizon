@@ -75,6 +75,8 @@ def test_scratch_workspace_without_a_venv_gets_the_running_farm_interpreter(tmp_
     """A pre-merge/base-check scratch worktree has no farm/.venv: the
     server tests' resolver must still find a farm venv interpreter, via
     the escape hatch, instead of failing loud."""
+    # Hermetic: a farm check run in a venv-less worktree exports its own.
+    monkeypatch.delenv("FARM_TEST_PYTHON", raising=False)
     monkeypatch.setenv("FARM_CHECK_CMD", 'printf %s "$FARM_TEST_PYTHON" > probe.txt')
     assert "passed" in run_checks(tmp_path, log=lambda *_: None)
     assert (tmp_path / "probe.txt").read_text() == sys.executable
@@ -84,6 +86,8 @@ def test_workspace_with_a_venv_gets_no_override(tmp_path, monkeypatch):
     venv_python = tmp_path / "farm" / ".venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)
     venv_python.touch()
+    # Hermetic: a farm check run in a venv-less worktree exports its own.
+    monkeypatch.delenv("FARM_TEST_PYTHON", raising=False)
     monkeypatch.setenv("FARM_CHECK_CMD", 'printf %s "$FARM_TEST_PYTHON" > probe.txt')
     assert "passed" in run_checks(tmp_path, log=lambda *_: None)
     assert (tmp_path / "probe.txt").read_text() == ""
