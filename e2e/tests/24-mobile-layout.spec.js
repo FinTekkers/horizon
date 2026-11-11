@@ -66,6 +66,9 @@ async function checkBottomNav(page) {
   await expect(nav(page)).toBeVisible()
   // Same number as the desktop button (still in the DOM, just hidden), and non-zero.
   const navBadge = nav(page).locator('.pending-btn__badge')
+  // The badge shows 0 until the item stream lands; under load that can be
+  // after this point, so wait for the loaded count before reading it.
+  await expect(desktopBadge).not.toHaveText('0', { timeout: 10_000 })
   const desktopCount = await desktopBadge.textContent()
   expect(Number(desktopCount)).toBeGreaterThan(0)
   await expect(navBadge).toHaveText(desktopCount)
