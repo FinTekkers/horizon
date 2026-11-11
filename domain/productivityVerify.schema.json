@@ -1,0 +1,77 @@
+{
+  "title": "Horizon Verify verdict report",
+  "description": "HO-841: the 200 response of GET /api/admin/productivity/verify. The first `n` Tasks closed strictly after `since` (from its 00:00:00 UTC), in close order, each with its newest Verify & report outcome and, when Execute failed, its cause. One file feeds the route's serializer, the published OpenAPI spec and the contract test. IDs, times and enums only: no summary, log line or evidence text. Every object lists all its keys in required and forbids extras.",
+  "type": "object",
+  "required": ["since", "n", "project", "returned", "tasks", "totals", "prereqShare", "firstPassYield"],
+  "additionalProperties": false,
+  "properties": {
+    "since": { "description": "The requested start day, YYYY-MM-DD, echoed back. Tasks closed at or before its 00:00:00 UTC are not counted.", "type": "string", "minLength": 10 },
+    "n": { "description": "The requested number of Tasks, echoed back.", "type": "integer", "minimum": 1 },
+    "project": { "description": "The requested project id, or 'all', echoed back.", "type": "string", "minLength": 1 },
+    "returned": { "description": "How many Tasks are listed: n, or fewer when fewer have closed since.", "type": "integer", "minimum": 0 },
+    "tasks": {
+      "description": "The cohort, in close order; Tasks closed at the same second are ordered by id.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "closedAt", "verdict", "executeCause"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "closedAt": { "description": "The Task's close, as stored (UTC, 'YYYY-MM-DD HH:MM:SS').", "type": "string", "minLength": 1 },
+          "verdict": {
+            "description": "The Task's newest done Verify & report outcome. A run from before HO-841 stored as 'fail' reads 'work_failed'. null when no Verify run recorded a verdict.",
+            "type": ["string", "null"],
+            "enum": ["pass", "work_failed", "done_proof_incomplete", null]
+          },
+          "executeCause": {
+            "description": "Why Execute failed: 'prereq' for a missing tool, secret, file or precondition the plan could have checked; 'unforeseeable' for anything else. Only on a 'work_failed' verdict whose Execute run failed; null otherwise, and on every run from before HO-841.",
+            "type": ["string", "null"],
+            "enum": ["prereq", "unforeseeable", null]
+          }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "required": ["verdicts", "executeCauses"],
+      "additionalProperties": false,
+      "properties": {
+        "verdicts": {
+          "description": "Tasks per verdict; 'none' counts Tasks with no recorded Verify verdict.",
+          "type": "object",
+          "required": ["pass", "work_failed", "done_proof_incomplete", "none"],
+          "additionalProperties": false,
+          "properties": {
+            "pass": { "type": "integer", "minimum": 0 },
+            "work_failed": { "type": "integer", "minimum": 0 },
+            "done_proof_incomplete": { "type": "integer", "minimum": 0 },
+            "none": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "executeCauses": {
+          "description": "Tasks per Execute cause. A 'work_failed' Task with no cause is in neither.",
+          "type": "object",
+          "required": ["prereq", "unforeseeable"],
+          "additionalProperties": false,
+          "properties": {
+            "prereq": { "type": "integer", "minimum": 0 },
+            "unforeseeable": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "prereqShare": {
+      "description": "prereq / (prereq + unforeseeable), to 4 places: the share of caused Execute failures that were unmet prerequisites. null when no Task in the cohort has a cause.",
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "firstPassYield": {
+      "description": "rework().firstPassYield over exactly the listed Tasks: the share closed with no send-back and no failed automated review, to 4 places, 0 for an empty cohort. Task cohort only — not the Productivity dashboard's figure, which covers every item kind closed in a time window, so the two can differ.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  }
+}

@@ -304,6 +304,53 @@ def test_verify_and_report_passes_its_verdict_through_and_run_plan_does_not(monk
     assert "verdict" not in result["artifacts"]
 
 
+# ---- HO-841: three Verify verdicts and an Execute cause ----
+
+
+def test_the_verify_role_names_three_verdicts_and_both_execute_causes():
+    """Metrics 2 and 3: a typo here would turn every reply into work_failed."""
+    verify = (REPO_ROOT / "farm" / "roles" / "task_verify.md").read_text()
+    for value in ("`pass`", "`work_failed`", "`done_proof_incomplete`", "`prereq`", "`unforeseeable`"):
+        assert value in verify, value
+    assert "`verdict.execute_cause`" in verify
+    assert "otherwise `fail`" not in verify
+    assert 'set verdict to "work_failed"' in verify
+    assert 'set verdict to "fail"' not in verify
+    assert "never\nre-run a command" in verify
+
+
+def test_verify_passes_its_execute_cause_through_unchanged(monkeypatch):
+    verdict = {
+        "verdict": "work_failed",
+        "execute_cause": "prereq",
+        "summary": "Command 1 exited 127: `psql` is not installed.",
+    }
+    stub_agent(monkeypatch, [reply_for(step_agent.VERIFY_REPORT_LABEL, verdict=verdict)])
+    result = step_agent.execute(make_task(step_agent.VERIFY_REPORT_LABEL))
+    assert result["artifacts"]["verdict"] == verdict
+
+
+def test_a_literal_secret_in_the_verify_summary_is_rejected_and_a_reference_and_path_pass(monkeypatch, capsys):
+    """Guardrail 4: cause evidence names a secret by reference and a file by path."""
+    leaked = {"verdict": "work_failed", "execute_cause": "prereq", "summary": f"GITHUB_TOKEN={FAKE_TOKEN} was rejected"}
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.VERIFY_REPORT_LABEL, verdict=leaked)])
+    with pytest.raises(AgentError) as exc:
+        step_agent.execute(make_task(step_agent.VERIFY_REPORT_LABEL))
+    assert len(calls) == 2
+    assert FAKE_TOKEN not in str(exc.value)
+    captured = capsys.readouterr()
+    assert FAKE_TOKEN not in captured.out + captured.err
+
+    named = {
+        "verdict": "work_failed",
+        "execute_cause": "prereq",
+        "summary": "$GITHUB_TOKEN was unset.\n`infra/host/backfill.env` was missing.",
+    }
+    stub_agent(monkeypatch, [reply_for(step_agent.VERIFY_REPORT_LABEL, verdict=named)])
+    result = step_agent.execute(make_task(step_agent.VERIFY_REPORT_LABEL))
+    assert result["artifacts"]["verdict"] == named
+
+
 # ---- metric 5: the Run plan block ----
 
 

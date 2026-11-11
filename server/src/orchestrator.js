@@ -86,6 +86,7 @@ import {
   approvedPlanCheck,
   defaultRunnerFor,
   latestArtifact,
+  latestExecuteJobView,
   activeJobRun,
   nextStepAttempt,
   missingPlanSections,
@@ -105,6 +106,7 @@ import { snapshotSubsteps } from './substeps.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
+import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, executeFailed } from './verifyOutcome.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
   FARM_URL,
@@ -3154,15 +3156,34 @@ export function validateDeployVerdict(v) {
 // Review & close still decides. So a missing or malformed verdict is not a
 // failed run, unlike Review and Deploy: it is stored as `fail`, because a run
 // that cannot say it passed has not shown that it did.
+//
+// HO-841: Verify has its own value set (verifyOutcome.js), never the shared
+// VERDICT_VALUES above. The outcome is `pass`, `work_failed` or
+// `done_proof_incomplete`; the coarse `verdict` is `pass` for a pass and
+// `fail` for either failing outcome, so the Tracker and event rows read as
+// before. A missing or malformed verdict, or a legacy `fail` reply, is
+// `work_failed`. `executeFailed` comes from Execute's stored job view only
+// (verifyOutcome.executeFailed) — Verify never re-runs a command:
+// - `done_proof_incomplete` needs a clean Execute record (false); otherwise
+//   its commands did not all pass, and it is `work_failed`;
+// - a cause is kept only when Execute failed (true): a valid one as given,
+//   any other as `unforeseeable`. A pass, an Execute that did not fail, and
+//   no Execute record (null) all store none.
 const VERIFY_SUMMARY_MAX_LINES = 3
 const VERIFY_SUMMARY_MAX_LINE_CHARS = 200
 const VERIFY_NO_VERDICT_SUMMARY = 'No parseable verdict was returned.'
 const VERIFY_NO_SUMMARY = 'No summary was returned.'
+const VERIFY_LEGACY_FAIL = 'fail'
 
-export function normalizeVerifyVerdict(raw, fallbackText) {
-  if (!raw || typeof raw !== 'object' || !VERDICT_VALUES.has(raw.verdict)) {
-    return { verdict: 'fail', summary: VERIFY_NO_VERDICT_SUMMARY }
-  }
+export function normalizeVerifyVerdict(raw, fallbackText, { executeFailed = null } = {}) {
+  const given = raw && typeof raw === 'object' ? raw.verdict : undefined
+  const known = VERIFY_VERDICT_VALUES.has(given) || given === VERIFY_LEGACY_FAIL
+  let outcome = !known || given === VERIFY_LEGACY_FAIL ? 'work_failed' : given
+  if (outcome === 'done_proof_incomplete' && executeFailed !== false) outcome = 'work_failed'
+  const executeCause =
+    outcome === 'work_failed' && executeFailed === true ? (EXECUTE_CAUSES.has(raw?.execute_cause) ? raw.execute_cause : 'unforeseeable') : null
+  const verdict = outcome === 'pass' ? 'pass' : 'fail'
+  if (!known) return { verdict, outcome, executeCause, summary: VERIFY_NO_VERDICT_SUMMARY }
   const source = typeof raw.summary === 'string' ? raw.summary : typeof fallbackText === 'string' ? fallbackText : ''
   const lines = source
     .split(/\r?\n/)
@@ -3170,7 +3191,7 @@ export function normalizeVerifyVerdict(raw, fallbackText) {
     .filter(Boolean)
     .slice(0, VERIFY_SUMMARY_MAX_LINES)
     .map((line) => line.slice(0, VERIFY_SUMMARY_MAX_LINE_CHARS))
-  return { verdict: raw.verdict, summary: lines.length > 0 ? lines.join('\n') : VERIFY_NO_SUMMARY }
+  return { verdict, outcome, executeCause, summary: lines.length > 0 ? lines.join('\n') : VERIFY_NO_SUMMARY }
 }
 
 // A failing deploy verdict has no analogous "retry loop" the way code review
@@ -3478,7 +3499,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   if (run.step_index === VERIFY_REPORT_STEP_INDEX) {
     const jobArtifact = latestArtifact(id, EXECUTE_STEP_INDEX)
     if (jobArtifact) artifactMd = artifactMd ? `${artifactMd}\n\n---\n\n${jobArtifact}` : jobArtifact
-    verify = normalizeVerifyVerdict(artifacts?.verdict, text)
+    // HO-841: Execute's stored view only — nothing re-runs.
+    verify = normalizeVerifyVerdict(artifacts?.verdict, text, {
+      executeFailed: executeFailed(parseJobView(latestExecuteJobView(id, runId))),
+    })
   }
 
   if (run.step_index === IMPLEMENT_STEP_INDEX) {
@@ -3494,7 +3518,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(
     text,
     artifactMd,
@@ -3505,6 +3529,8 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     finalView && JSON.stringify(finalView),
     verify?.verdict ?? null,
     verify?.summary ?? null,
+    verify?.outcome ?? null,
+    verify?.executeCause ?? null,
     runId,
   )
   addEvent(id, {
@@ -4082,11 +4108,13 @@ async function runMockStep(id, stepIndex, runId) {
 
   // A mock implement is never a scoped fix: its review must be full.
   if (stepIndex === IMPLEMENT_STEP_INDEX) settleFixPass(id, { scope_json: null }, null)
-  // HZ-429: the same verdict record the farm path writes.
-  const verify = stepIndex === VERIFY_REPORT_STEP_INDEX ? normalizeVerifyVerdict(verdict, summary) : null
+  // HZ-429: the same verdict record the farm path writes. HO-841: a mock run
+  // has no Execute job record, so it stores no cause and never
+  // `done_proof_incomplete`.
+  const verify = stepIndex === VERIFY_REPORT_STEP_INDEX ? normalizeVerifyVerdict(verdict, summary, { executeFailed: null }) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, ended_at = datetime('now') WHERE id = ?",
-  ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, runId)
+    "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, ended_at = datetime('now') WHERE id = ?",
+  ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, verify?.outcome ?? null, verify?.executeCause ?? null, runId)
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
   writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
   addEvent(id, {

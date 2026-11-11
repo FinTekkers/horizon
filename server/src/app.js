@@ -89,7 +89,14 @@ import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import { buildLinkContext, codeRefUrl, parseCodeRef, splitItemIds } from '../../domain/js/codeRefs.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
-import { PRODUCTIVITY_QUERY_SCHEMA, PRODUCTIVITY_RESPONSE_SCHEMA, productivityReport } from './productivity.js'
+import {
+  PRODUCTIVITY_QUERY_SCHEMA,
+  PRODUCTIVITY_RESPONSE_SCHEMA,
+  PRODUCTIVITY_VERIFY_QUERY_SCHEMA,
+  PRODUCTIVITY_VERIFY_RESPONSE_SCHEMA,
+  productivityReport,
+  verifyVerdictReport,
+} from './productivity.js'
 import { RULE_MAX_CHARS, NEEDS_MAX_CHARS } from './ruleBlock.js'
 import {
   API_SECURITY,
@@ -3850,6 +3857,27 @@ export function buildApp({
       if (!requireHumanSession(request, reply)) return
       if (!requireAdmin(request, reply)) return
       return productivityReport(request.query)
+    },
+  )
+
+  // HO-841: Verify verdicts and Execute causes for the first N Tasks closed
+  // after a day, beside firstPassYield over the same Tasks. Same guards as the
+  // dashboard. The response is IDs, times and enums only
+  // (domain/productivityVerify.schema.json) — no summary or evidence text.
+  fastify.get(
+    '/api/admin/productivity/verify',
+    {
+      config: { scope: 'owner' },
+      schema: {
+        querystring: PRODUCTIVITY_VERIFY_QUERY_SCHEMA,
+        response: { 200: PRODUCTIVITY_VERIFY_RESPONSE_SCHEMA, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT },
+        security: SESSION_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!requireHumanSession(request, reply)) return
+      if (!requireAdmin(request, reply)) return
+      return verifyVerdictReport(request.query)
     },
   )
 
