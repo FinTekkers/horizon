@@ -17,10 +17,11 @@
 // time-sensitive "Merging" checks come first in each phase.
 
 import { execFileSync } from 'node:child_process'
+import { createHmac } from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, verifySharedSession } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertGateAction, setGatePinDirect } from '../fixtures/seed.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -33,6 +34,7 @@ const PR = 621
 const ID = 'AIF-1'
 const TITLE = 'E2E fixture — Accept the code while its checks run'
 const MERGING = `Merging: running checks on main + PR #${PR}`
+const WEBHOOK_SECRET = process.env.HORIZON_E2E_GITHUB_WEBHOOK_SECRET
 
 const git = (cwd, ...args) =>
   execFileSync('git', ['-c', 'user.email=e2e@example.com', '-c', 'user.name=E2E', ...args], {
@@ -41,6 +43,7 @@ const git = (cwd, ...args) =>
   }).trim()
 
 // main: a passing test. The PR: the same test, now sleeping, then failing.
+// HO-822's PR (horizon/aif-3) sleeps far longer, so only a cancel ends it.
 function buildRepoHub() {
   const fixture = join(FARM_HOME, 'fixture-accept-in-flight')
   const seed = join(fixture, 'seed')
@@ -62,10 +65,17 @@ function buildRepoHub() {
   )
   git(seed, 'commit', '-q', '-am', 'PR: a slow red test')
   const headSha = git(seed, 'rev-parse', 'HEAD')
+  git(seed, 'checkout', '-q', '-b', 'horizon/aif-3', baseSha)
+  writeFileSync(
+    join(seed, 'test.js'),
+    "setTimeout(() => { console.log('not ok 1 - never cancelled'); process.exit(1) }, 120000)\n",
+  )
+  git(seed, 'commit', '-q', '-am', 'PR: a test that outlives the merge')
+  const slowHeadSha = git(seed, 'rev-parse', 'HEAD')
   execFileSync('git', ['clone', '-q', '--bare', seed, origin])
   mkdirSync(join(FARM_HOME, 'workspaces'), { recursive: true })
   execFileSync('git', ['clone', '-q', origin, hub])
-  return { baseSha, headSha }
+  return { baseSha, headSha, slowHeadSha }
 }
 
 let shas
@@ -215,4 +225,112 @@ test('a pre-merge run queued for a capacity slot shows what it waits for, 1 ahea
   await expect(gate.locator('.btn-gate-approve')).toBeDisabled()
   await page.reload()
   await expect(gate.getByText(QUEUED)).toBeVisible({ timeout: 10_000 })
+})
+
+// HO-822: the owner clicks Accept on the Board card, then merges the PR on
+// GitHub while its pre-merge check is still running. GitHub's "merged"
+// webhook — signed, through the real route — stops that check: the Accept
+// request answers 200 { ok: true, superseded: true }, the card leaves
+// "Merging", no error shows, and the item reaches "Review the work & close",
+// which approves at once and closes the item. A reload keeps all of it: it is
+// the server's state. The kill itself is proven in
+// server/test/premerge-pr-merged-live.test.mjs; this is the owner's path.
+test('a PR merged on GitHub while Accept runs its checks stops them; the Accept answers, and the next gate approves at once, across a reload', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000)
+  expect(WEBHOOK_SECRET, 'playwright.config.js must give the e2e server a webhook secret').toBeTruthy()
+  const id = 'AIF-3'
+  const pr = PR + 2
+  const mergedTitle = 'E2E fixture — PR merged on GitHub while Accept runs'
+  const db = openDb(DB_PATH)
+  try {
+    insertItem(db, {
+      id,
+      title: mergedTitle,
+      priority: 'High',
+      cursor: ACCEPT_GATE_INDEX,
+      repo: REPO,
+      pr,
+      pr_url: `https://github.com/${REPO}/pull/${pr}`,
+    })
+  } finally {
+    db.close()
+  }
+  const canned = await request.post('/api/test/github-pr', {
+    data: { pr: { repo: REPO, pr, headSha: shas.slowHeadSha, headRef: 'horizon/aif-3', baseRef: 'main', baseSha: shas.baseSha } },
+  })
+  expect(canned.ok()).toBeTruthy()
+  // The shared session may be locked (beforeAll's setGatePinDirect) or already
+  // verified by the test above: verify it here, so no PIN dialog either way.
+  await verifySharedSession(GATE_PIN)
+
+  await page.goto('/')
+  const card = page.locator('.card', { hasText: mergedTitle })
+  const cardApprove = card.locator('.btn-approve')
+  const cardStatus = card.locator('.gate-action-status')
+  await expect(cardApprove).toBeVisible({ timeout: 10_000 })
+
+  const acceptAnswer = page.waitForResponse(
+    (res) => res.request().method() === 'POST' && res.url().endsWith(`/api/items/${id}/move`),
+    { timeout: 30_000 },
+  )
+  await cardApprove.click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  await page.locator('.composer__submit').click()
+  await expect(cardStatus).toContainText('Merging:', { timeout: 15_000 })
+
+  // The owner merges on GitHub. GitHub tells Horizon with a signed webhook.
+  const body = JSON.stringify({
+    action: 'closed',
+    repository: { full_name: REPO },
+    pull_request: { number: pr, merged: true, state: 'closed' },
+  })
+  const signature = 'sha256=' + createHmac('sha256', WEBHOOK_SECRET).update(body).digest('hex')
+  const merged = await request.post('/api/webhooks/github', {
+    data: body,
+    headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request', 'x-hub-signature-256': signature },
+  })
+  expect(merged.status()).toBe(204)
+
+  // The waiting Accept answers now — not when the 120 s test would end.
+  const answer = await acceptAnswer
+  expect(answer.status()).toBe(200)
+  // The /move route also names the move that happened: GitHub's, not this one.
+  const answered = await answer.json()
+  expect(answered).toMatchObject({ ok: true, superseded: true })
+  expect(answered.move).toMatchObject({ who: 'GitHub', fromKey: 'change.accept-code' })
+  await expect(card.getByText('Merging:')).toHaveCount(0)
+  await expect(page.getByRole('alert')).toHaveCount(0)
+
+  // The item page: Accept is done, nothing is "Merging", and the next gate is
+  // the owner's to approve — before and after a reload.
+  await page.goto(`/${id.toLowerCase()}`)
+  const nextGate = page.locator('.step-card--awaiting', { hasText: 'Review the work & close' })
+  const nextApprove = nextGate.locator('.btn-gate-approve')
+  async function expectNextGateOpen() {
+    await expect(nextApprove).toBeEnabled({ timeout: 15_000 })
+    await expect(page.getByText(/Merging:/)).toHaveCount(0)
+  }
+  await expectNextGateOpen()
+  await page.reload()
+  await expectNextGateOpen()
+
+  // Approving it closes the item and returns to the Board (HZ-62).
+  await nextApprove.click()
+  await expect(page.locator('.composer__sub')).toContainText('Review the work & close')
+  await page.locator('.composer__submit').click()
+  await expect(page).toHaveURL(/\/$/, { timeout: 10_000 })
+
+  // GitHub merged it; Horizon never merged it a second time.
+  const eventsDb = openDb(DB_PATH)
+  let texts
+  try {
+    texts = eventsDb.prepare('SELECT text FROM event WHERE item_id = ?').all(id).map((e) => e.text)
+  } finally {
+    eventsDb.close()
+  }
+  expect(texts.filter((t) => t === `PR #${pr} was merged on GitHub — code accepted`)).toHaveLength(1)
+  expect(texts.filter((t) => t.includes(`merged PR #${pr}`))).toHaveLength(0)
 })
