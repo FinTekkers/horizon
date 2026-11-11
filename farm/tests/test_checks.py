@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -68,6 +69,31 @@ def test_check_cmd_override_wins(tmp_path, monkeypatch):
     monkeypatch.setenv("FARM_CHECK_CMD", "true")
     assert detect_check_commands(tmp_path) == [["sh", "-c", "true"]]
     assert "passed" in run_checks(tmp_path, log=lambda *_: None)
+
+
+def test_scratch_workspace_without_a_venv_gets_the_running_farm_interpreter(tmp_path, monkeypatch):
+    """A pre-merge/base-check scratch worktree has no farm/.venv: the
+    server tests' resolver must still find a farm venv interpreter, via
+    the escape hatch, instead of failing loud."""
+    monkeypatch.setenv("FARM_CHECK_CMD", 'printf %s "$FARM_TEST_PYTHON" > probe.txt')
+    assert "passed" in run_checks(tmp_path, log=lambda *_: None)
+    assert (tmp_path / "probe.txt").read_text() == sys.executable
+
+
+def test_workspace_with_a_venv_gets_no_override(tmp_path, monkeypatch):
+    venv_python = tmp_path / "farm" / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.touch()
+    monkeypatch.setenv("FARM_CHECK_CMD", 'printf %s "$FARM_TEST_PYTHON" > probe.txt')
+    assert "passed" in run_checks(tmp_path, log=lambda *_: None)
+    assert (tmp_path / "probe.txt").read_text() == ""
+
+
+def test_an_inherited_farm_test_python_is_not_overridden(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_TEST_PYTHON", "/custom/python")
+    monkeypatch.setenv("FARM_CHECK_CMD", 'printf %s "$FARM_TEST_PYTHON" > probe.txt')
+    assert "passed" in run_checks(tmp_path, log=lambda *_: None)
+    assert (tmp_path / "probe.txt").read_text() == "/custom/python"
 
 
 def test_failing_checks_raise_with_output_tail(tmp_path, monkeypatch):
