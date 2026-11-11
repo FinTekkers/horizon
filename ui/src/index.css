@@ -739,7 +739,15 @@ button { font-family: var(--font-sans); }
   padding: 15px 16px; cursor: pointer;
   transition: transform 0.12s, box-shadow 0.12s;
 }
-.card:hover { transform: translateY(-2px); box-shadow: 0 16px 32px 0 rgba(var(--shadow-rgb), 0.13); }
+/* HZ-825: lift only where a pointer really hovers. A tapped card stays in
+   :hover on touch, and the transform made it a stacking context that trapped
+   its ⋯ menu under the bottom tab bar. */
+@media (hover: hover) {
+  .card:hover { transform: translateY(-2px); box-shadow: 0 16px 32px 0 rgba(var(--shadow-rgb), 0.13); }
+}
+/* HZ-825: the card holding an open ⋯ menu sits above .bottomnav (25), still
+   under .drawer (40) and .composer (60). */
+.card:has(.step-menu__list) { position: relative; z-index: 26; }
 .card--awaiting { border: 1.5px solid var(--warning-border-soft); }
 .card__meta { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
 .card__dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -968,6 +976,8 @@ button { font-family: var(--font-sans); }
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 18px 40px rgba(var(--shadow-rgb), 0.18);
 }
+/* HZ-825: opens upward when it would run under the phone's bottom tab bar. */
+.step-menu__list--up { top: auto; bottom: calc(100% + 6px); }
 .step-menu__item {
   border: none; background: none; cursor: pointer; text-align: left; border-radius: 8px;
   padding: 9px 12px; font: 600 13px var(--font-sans); color: var(--deep);

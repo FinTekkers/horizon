@@ -1,5 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { approveTarget, menuActions } from '../domain/stepActions'
+
+// HZ-825: open the menu upward when, opened downward, it would run past
+// `limit` (the top of the phone's bottom tab bar) — but only when there is
+// more room above the toggle than below it, so a short screen never pushes it
+// off the top.
+export function menuOpensUp({ toggleTop, toggleBottom, menuHeight, limit, gap = 6 }) {
+  return toggleBottom + gap + menuHeight > limit && toggleTop > limit - toggleBottom
+}
 
 // HZ-711: the same actions on the item page, a board card and the Approvals
 // drawer — Approve, and under ⋯ Return to…, Retry and Abandon — each only
@@ -11,12 +19,27 @@ import { approveTarget, menuActions } from '../domain/stepActions'
 // merge (HZ-360), as the gate card hides it.
 export default function StepActionMenu({ item, onApprove, onMove, onAbandon, approveDisabled = false, approveHidden = false, className = '' }) {
   const [open, setOpen] = useState(false)
+  const [up, setUp] = useState(false)
   const rootRef = useRef(null)
   const toggleRef = useRef(null)
   const menuRef = useRef(null)
   const actions = menuActions(item)
   const approve = approveHidden ? null : actions.find((a) => a.id === 'approve')
   const more = actions.filter((a) => a.id !== 'approve')
+
+  // Measured before paint, so an upward menu never flashes downward first.
+  // Only a showing bottom tab bar flips it: desktop menus open downward as
+  // before.
+  useLayoutEffect(() => {
+    if (!open || !toggleRef.current || !menuRef.current) return undefined
+    // HZ-825: coupled to App's phone tab bar (BottomNav, `.bottomnav`).
+    const nav = document.querySelector('.bottomnav')?.getBoundingClientRect()
+    if (nav && nav.height > 0) {
+      const t = toggleRef.current.getBoundingClientRect()
+      setUp(menuOpensUp({ toggleTop: t.top, toggleBottom: t.bottom, menuHeight: menuRef.current.offsetHeight, limit: nav.top }))
+    }
+    return () => setUp(false)
+  }, [open])
 
   useEffect(() => {
     if (!open) return undefined
@@ -85,7 +108,7 @@ export default function StepActionMenu({ item, onApprove, onMove, onAbandon, app
             ⋯
           </button>
           {open && (
-            <div className="step-menu__list" role="menu" id={menuId} aria-label={`Actions for ${item.id}`} ref={menuRef} onKeyDown={onMenuKeyDown}>
+            <div className={`step-menu__list${up ? ' step-menu__list--up' : ''}`} role="menu" id={menuId} aria-label={`Actions for ${item.id}`} ref={menuRef} onKeyDown={onMenuKeyDown}>
               {more.map((action) => (
                 <button
                   key={action.id}
