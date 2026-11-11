@@ -55,6 +55,7 @@ const config = await import('../src/config.js')
 const store = await import('../src/store.js')
 const auth = await import('../src/auth.js')
 const premerge = await import('../src/premerge.js')
+const github = await import('../src/github.js')
 
 store.purgeDemoItems()
 store.registerAgentRunner({ kick: () => {}, cancel: () => {} })
@@ -75,6 +76,8 @@ const BASE = 'b'.repeat(40)
 const mergeCalls = []
 // PR number -> a promise its GET /pulls/:n waits on (the Check 1 case).
 const prReadGates = new Map()
+// PRs GitHub reports merged on GET /pulls/:n (the poller case).
+const mergedOnGithub = new Set()
 globalThis.fetch = async (url, options = {}) => {
   const u = new URL(url)
   const method = options.method || 'GET'
@@ -83,7 +86,8 @@ globalThis.fetch = async (url, options = {}) => {
   if (method === 'GET' && pull) {
     const gate = prReadGates.get(Number(pull[1]))
     if (gate) await gate
-    return json(200, { head: { sha: HEAD, ref: 'horizon/t-merged' }, base: { ref: 'main' } })
+    const merged = mergedOnGithub.has(Number(pull[1]))
+    return json(200, { head: { sha: HEAD, ref: 'horizon/t-merged' }, base: { ref: 'main' }, merged, state: merged ? 'closed' : 'open' })
   }
   if (method === 'GET' && u.pathname.endsWith('/git/ref/heads%2Fmain')) return json(200, { object: { sha: BASE } })
   if (method === 'PUT' && u.pathname.endsWith('/merge')) {
@@ -370,6 +374,73 @@ test('metric 4: a passing result that lands after the merge never merges or logs
   assert.equal(texts.filter((t) => t === `PR #${a.pr} was merged on GitHub — code accepted`).length, 1)
   assert.equal(texts.filter((t) => t.startsWith(`merged PR #${a.pr} (squash)`)).length, 0)
   assert.ok(texts.filter((t) => t === `stopped the pre-merge check — PR #${a.pr} was merged on GitHub`).length <= 1)
+  assert.equal(row(a.id).state, 'superseded')
+  assert.equal(row(a.id).reason, 'PR merged on GitHub')
+})
+
+test('metric 1 (poller): a merge the GitHub poll finds stops a queued run just as the webhook does', async () => {
+  const a = acceptItem()
+  const holder = await holdSlot(farmHome, 0)
+  const mergesBefore = mergeCalls.length
+  try {
+    const pending = approve(a.id)
+    await showsDetail(a.id, queued(0))
+    const waiter = await findRun(a.id)
+
+    mergedOnGithub.add(a.pr)
+    const t0 = Date.now()
+    await github.pollOnce()
+    const res = await pending
+    assertSuperseded(a.id, res, Date.now() - t0)
+    await waitFor(() => !alive(waiter.pid), { what: "the cancelled run's waiter to be gone" })
+  } finally {
+    mergedOnGithub.delete(a.pr)
+    await holder.release()
+  }
+  assert.equal(ran(a.id), false, 'the cancelled run never started its checks')
+  assert.equal(mergeCalls.length, mergesBefore, 'nothing merged')
+  assert.equal(eventTexts(a.id).filter((t) => t === `PR #${a.pr} was merged on GitHub — code accepted`).length, 1)
+})
+
+test('metric 4: a failing result that lands after the merge writes no event, flake or test result', async () => {
+  const a = acceptItem()
+  const realSpawn = premerge.runner.spawn
+  let called
+  const spawnCalled = new Promise((resolve) => (called = resolve))
+  let finish
+  premerge.runner.spawn = () => {
+    called()
+    return new Promise((resolve) => (finish = resolve))
+  }
+  const mergesBefore = mergeCalls.length
+  let res
+  try {
+    const pending = approve(a.id)
+    await spawnCalled
+    const hook = await prWebhook(a.pr, { merged: true })
+    assert.equal(hook.statusCode, 204, hook.body)
+    assert.equal(row(a.id).state, 'superseded')
+    const late = {
+      ok: false,
+      reason: 'checks_failed',
+      failing_check: 'unit',
+      tail: '1 failed',
+      head_sha: HEAD,
+      base_sha: BASE,
+      flakes: [{ test: 'late flake', command: 'sh -c npm test', first_output: 'not ok 1 - late flake', rerun_output: 'ok 1 - late flake' }],
+      test_runs: [{ check_run: 'cr-late', tree_sha: 'd'.repeat(40), tests: [{ test: 'late flake', status: 'pass', command: 'sh -c npm test' }] }],
+    }
+    finish({ code: 1, stdout: `${JSON.stringify(late)}\n`, stderr: '', timedOut: false })
+    res = await pending
+  } finally {
+    premerge.runner.spawn = realSpawn
+  }
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().superseded, true)
+  assert.equal(mergeCalls.length, mergesBefore, 'the GitHub merge was never called')
+  assert.equal(eventTexts(a.id).some((t) => t.startsWith(`PR #${a.pr} is not merged`)), false, 'no "not merged" event')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM check_flake WHERE item_id = ?').get(a.id).n, 0, 'no flake row')
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM test_result WHERE item_id = ?').get(a.id).n, 0, 'no test-run row')
   assert.equal(row(a.id).state, 'superseded')
   assert.equal(row(a.id).reason, 'PR merged on GitHub')
 })

@@ -1399,11 +1399,18 @@ export async function pollRepo(repo, log) {
 
 // HZ-822: called with (itemId, prNumber) when GitHub reports the item's PR
 // merged — by the webhook or the poll — so app.js stops that item's pre-merge
-// check. A listener, like setMainHeadListener below. Null until app.js sets it.
+// check. A listener, like setMainHeadListener below. Null until app.js sets it;
+// each buildApp replaces it, and its close clears it.
 let prMergedListener = null
 
 export function setPrMergedListener(fn) {
   prMergedListener = fn
+}
+
+// Drops `fn` only if it is still the listener, so an older app closing never
+// unsets a newer one's.
+export function clearPrMergedListener(fn) {
+  if (prMergedListener === fn) prMergedListener = null
 }
 
 export function handlePrStateChange(repoFullName, prNumber, { merged, state }, log) {

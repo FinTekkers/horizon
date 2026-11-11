@@ -1751,7 +1751,9 @@ export function buildApp({
   // marked superseded first (its token rotated, so the run's late writes match
   // nothing and the gate's lock is free at once), then the run's own recorded
   // process group is stopped — only when a row for exactly that PR moved.
-  github.setPrMergedListener((itemId, pr) => {
+  // One listener per process: a later buildApp replaces it, and a closed app
+  // drops its own, so a stale app never hears a merge.
+  const onPrMerged = (itemId, pr) => {
     if (!store.supersedePremerge(itemId, pr)) return
     store.addEvent(itemId, {
       who: 'Horizon',
@@ -1762,7 +1764,9 @@ export function buildApp({
     premerge
       .interruptRun(itemId, { cause: 'pr_merged', pr, graceMs: 1000 })
       .catch((err) => fastify.log.warn(`could not stop pre-merge for ${itemId}: ${err.message}`))
-  })
+  }
+  github.setPrMergedListener(onPrMerged)
+  fastify.addHook('onClose', async () => github.clearPrMergedListener(onPrMerged))
 
   // HZ-183: test-merge the PR head into the current base tip and run the
   // repo's checks there (server/src/premerge.js -> farm/premerge.py) before
@@ -1861,6 +1865,10 @@ export function buildApp({
       // a crash blocks — fail closed, as for every other inconclusive result.
       result = { ok: false, reason: 'crash', detail: err.message, head_sha: head.sha, base_sha: baseSha }
     }
+    // HZ-822: stopped for, or finished after, a merge on GitHub — no verdict
+    // to act on, no "not merged" event for a PR that is, and none of the
+    // abandoned run's flakes or test results.
+    if (result.reason === 'superseded' || store.premergeSuperseded(id, token)) return { superseded: true }
     // HZ-327: the run's flakes and per-test results, whatever its outcome —
     // recorded here because premerge.js stays database-free, and taken off the
     // result, which nothing below reads them from.
@@ -1868,9 +1876,6 @@ export function buildApp({
     checkFlakes.recordFlakes({ itemId: id, source: 'premerge', flakes })
     testResults.recordTestRuns({ itemId: id, source: 'premerge', testRuns })
     result = report
-    // HZ-822: stopped for, or finished after, a merge on GitHub — no verdict
-    // to act on, and no "not merged" event for a PR that is.
-    if (result.reason === 'superseded' || store.premergeSuperseded(id, token)) return { superseded: true }
     if (!result.ok) {
       const error =
         result.reason === 'checks_failed'
