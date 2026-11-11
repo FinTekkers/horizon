@@ -209,6 +209,7 @@ const READ_CASES = {
   // 503 farm_health_warming: no farm-health loop runs in a test.
   'GET /api/admin/farm-health': { expect: '404', url: '/api/admin/farm-health', owner: 503 },
   'GET /api/admin/productivity': { expect: '404', url: '/api/admin/productivity', owner: 200 },
+  'GET /api/admin/productivity/verify': { expect: '404', url: '/api/admin/productivity/verify?since=2026-10-01', owner: 200 },
   'GET /api/admin/test-history': { expect: '404', url: `/api/admin/test-history?repo=${REPO_A}`, owner: 200 },
   'GET /api/definitions': { expect: '404', url: '/api/definitions', owner: 200 },
   'GET /api/definitions/:kind/:name': { expect: '404', url: `/api/definitions/${ROLE.kind}/${ROLE.name}`, owner: 200 },
