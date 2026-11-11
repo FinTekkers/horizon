@@ -12,12 +12,14 @@ budget by waiting 600s would be unrunnable inside the very check suite it
 protects.
 """
 
+import fcntl
 import json
 import os
 import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
@@ -358,9 +360,16 @@ def test_nested_acquisition_is_a_no_op(monkeypatch):
     nothing would bound it."""
     monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
     monkeypatch.setenv(check_slots.IN_CHECKS_ENV, "1")
-    with check_slots.check_slot() as outer, check_slots.check_slot() as inner:
-        assert outer.mode == inner.mode == "nested"
-        assert outer.waited_s == 0.0
+    # HO-823 guardrail 3: a run already queued for a slot does not hold a
+    # nested run back either.
+    queued, handle = _plant_queued_marker("r-queued", since=time.time() - 1)
+    try:
+        assert check_slots._ahead_of(queued) == 0
+        with check_slots.check_slot(poll_s=5) as outer, check_slots.check_slot(poll_s=5) as inner:
+            assert outer.mode == inner.mode == "nested"
+            assert outer.waited_s == inner.waited_s == 0.0
+    finally:
+        handle.close()
 
 
 def test_a_run_that_waits_past_the_ceiling_proceeds_unthrottled_and_loudly(tmp_path, monkeypatch):
@@ -584,13 +593,19 @@ def test_farm_status_gives_each_slot_waiter_its_reason(tmp_path):
 # Takes a slot as a labelled run, names a check in the record, writes
 # "<run_id> <mode> <slot> <time>" to `out`, then holds until `release` exists.
 # A release file rather than a timer, so "after one run releases" is a fact the
-# test causes, not a sleep that a loaded host can outrun.
+# test causes, not a sleep that a loaded host can outrun. HO-823: two optional
+# trailing args set the poll interval and freeze time.time() in the child (so
+# two waiters get the same `since`).
 SIGNALLED_HOLDER = textwrap.dedent(
     """
     import os, sys, time
     from farm import check_slots
     out, release, run_id, item_id, caller, label = sys.argv[1:7]
-    with check_slots.check_slot(run_id=run_id, item_id=item_id, caller=caller, poll_s=0.05) as slot:
+    poll_s = float(sys.argv[7]) if len(sys.argv) > 7 else 0.05
+    if len(sys.argv) > 8:
+        fixed_since = float(sys.argv[8])
+        time.time = lambda: fixed_since
+    with check_slots.check_slot(run_id=run_id, item_id=item_id, caller=caller, poll_s=poll_s) as slot:
         if label:
             slot.set_label(label)
         with open(out, "a") as fh:
@@ -602,10 +617,15 @@ SIGNALLED_HOLDER = textwrap.dedent(
 )
 
 
-def _signalled_holder(out, release, run_id, item_id, caller, label=""):
+def _signalled_holder(out, release, run_id, item_id, caller, label="", poll_s=None, fixed_since=None):
     env = {**os.environ, "PYTHONPATH": REPO_ROOT}
+    extra = []
+    if poll_s is not None or fixed_since is not None:
+        extra.append(str(0.05 if poll_s is None else poll_s))
+    if fixed_since is not None:
+        extra.append(repr(float(fixed_since)))
     return subprocess.Popen(
-        [sys.executable, "-c", SIGNALLED_HOLDER, str(out), str(release), run_id, item_id, caller, label],
+        [sys.executable, "-c", SIGNALLED_HOLDER, str(out), str(release), run_id, item_id, caller, label, *extra],
         cwd=REPO_ROOT,
         env=env,
         stdout=subprocess.PIPE,
@@ -836,3 +856,349 @@ def test_reading_holders_never_takes_a_lock(tmp_path, monkeypatch):
     listed = check_slots.holders()
     assert [h["run_id"] for h in listed] == ["r-a"]
     assert calls == []
+
+
+# ---- HO-823: capacity-slot waiters are served first come, first served ----
+
+# The agreed tolerance on metric 2's POLL_S x (1 + POLL_JITTER) bound: room for
+# the holder to see its release file and exit, and for the scheduler to wake
+# the waiter. The bound itself is the waiter's longest possible poll.
+SCHEDULER_MARGIN_S = 0.5
+
+
+def _plant_queued_marker(run_id, since, locked=True):
+    """A slot-waiting marker for this process, as a queued run writes one.
+    Locked on its own open file, which conflicts with any other open file
+    even within this process. Returns (path, handle or None)."""
+    path = check_slots._marker_path(os.getpid(), run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "run_id": run_id,
+                "item_id": "HZ-9",
+                "caller": "step_agent",
+                "waiting_on": "slot",
+                "since": since,
+            }
+        )
+    )
+    if not locked:
+        return path, None
+    handle = open(path)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return path, handle
+
+
+def _hold_slot(index):
+    """Holds a slot the way another farm process would: an flock on its own
+    open file."""
+    directory = check_slots.slot_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = open(directory / f"slot-{index}", "a")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return handle
+
+
+def _granted(out, holders=("h1", "h2", "h")):
+    """Waiter run ids in the order their grant lines were written."""
+    return [line.split()[0] for line in _lines(out) if line.split()[0] not in holders]
+
+
+def _stop_all(release, procs):
+    for path in release.values():
+        path.write_text("")
+    for p in procs.values():
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait(timeout=30)
+
+
+def _queue_behind(out, release, procs, waiters):
+    """Start each (name, poll_s) waiter in turn, each only once the one before
+    is queued, so their `since` values are strictly ordered."""
+    sinces = []
+    for name, poll_s in waiters:
+        procs[name] = _signalled_holder(out, release[name], name, f"HZ-{name}", "step_agent", poll_s=poll_s)
+        path = check_slots._marker_path(procs[name].pid, name)
+        assert _poll(lambda: path.exists() and name in {w["run_id"] for w in check_slots.waiting_runs()}), (
+            f"{name} never queued"
+        )
+        sinces.append(json.loads(path.read_text())["since"])
+    assert sinces == sorted(sinces) and len(set(sinces)) == len(sinces), sinces
+
+
+def _three_queued_behind_two_holders(tmp_path, monkeypatch):
+    """Limit 2, both slots held; A, B and C queue in that order. C polls six
+    times faster than A and B, so on a polled flock it would usually win."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    out = tmp_path / "granted.txt"
+    release = {name: tmp_path / f"release-{name}" for name in ("h1", "h2", "A", "B", "C")}
+    procs = {name: _signalled_holder(out, release[name], name, f"HZ-{name}", "step_agent") for name in ("h1", "h2")}
+    assert _wait_for_lines(out, 2), "the holders should take both slots straight away"
+    _queue_behind(out, release, procs, [("A", 0.3), ("B", 0.3), ("C", 0.05)])
+    return out, release, procs
+
+
+def test_freed_slots_go_to_waiters_in_the_order_they_queued(tmp_path, monkeypatch):
+    """HO-823 metric 1: three releases go to A, then B, then C, even though C
+    polls faster. Each release is caused only once the grant before it has
+    been seen, so the order is the limiter's, not the test's timing."""
+    out, release, procs = _three_queued_behind_two_holders(tmp_path, monkeypatch)
+    try:
+        # Guardrail 1: the waiting marker keeps exactly its six fields.
+        a_marker = check_slots._marker_path(procs["A"].pid, "A")
+        assert set(json.loads(a_marker.read_text())) == {"pid", "run_id", "item_id", "caller", "waiting_on", "since"}
+
+        release["h1"].write_text("")
+        assert _poll(lambda: _granted(out)), "nobody took the freed slot"
+        assert _poll(lambda: not a_marker.exists())
+        assert _granted(out) == ["A"], "a run that queued later took the first freed slot"
+
+        release["h2"].write_text("")
+        assert _poll(lambda: len(_granted(out)) >= 2)
+        assert _granted(out) == ["A", "B"], "C jumped ahead of B"
+
+        release["A"].write_text("")
+        assert _poll(lambda: len(_granted(out)) >= 3)
+        assert _granted(out) == ["A", "B", "C"]
+    finally:
+        _stop_all(release, procs)
+    assert {line.split()[1] for line in _lines(out)} == {"held"}
+
+
+def test_the_waiter_granted_is_the_one_whose_ahead_was_zero(tmp_path, monkeypatch):
+    """HO-823 metric 3: `_ahead_of` reads 0, 1 and 2 for A, B and C, and each
+    grant goes to the waiter whose last reading was 0. A reading is taken
+    only once the previous winner's marker is gone (it drops it as it takes
+    the slot), so the readings never race the grant."""
+    out, release, procs = _three_queued_behind_two_holders(tmp_path, monkeypatch)
+
+    def marker(name):
+        return check_slots._marker_path(procs[name].pid, name)
+
+    def readings(names):
+        return {name: check_slots._ahead_of(marker(name)) for name in names}
+
+    try:
+        assert readings("ABC") == {"A": 0, "B": 1, "C": 2}
+        for count, (freed, waiting) in enumerate([("h1", "ABC"), ("h2", "BC"), ("A", "C")], start=1):
+            last = readings(waiting)
+            assert sorted(last.values()) == list(range(len(waiting))), last
+            release[freed].write_text("")
+            assert _poll(lambda: len(_granted(out)) >= count), f"no grant after {freed} released"
+            winner = _granted(out)[-1]
+            assert last[winner] == 0, f"{winner} was granted while its last reading was {last[winner]} ahead"
+            assert _poll(lambda: not marker(winner).exists())
+        assert _granted(out) == ["A", "B", "C"]
+    finally:
+        _stop_all(release, procs)
+
+
+def test_a_dead_waiter_is_skipped_and_its_marker_removed(tmp_path, monkeypatch):
+    """HO-823 metric 2: A, B and C are queued and A is SIGKILLed. The freed
+    slot goes to B within one of B's polls — not to C, which polls faster —
+    and A's marker file is removed."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    out = tmp_path / "granted.txt"
+    release = {name: tmp_path / f"release-{name}" for name in ("h", "A", "B", "C")}
+    procs = {"h": _signalled_holder(out, release["h"], "h", "HZ-h", "step_agent")}
+    try:
+        assert _wait_for_lines(out, 1)
+        _queue_behind(out, release, procs, [("A", 0.05), ("B", check_slots.POLL_S), ("C", 0.05)])
+        a_marker = check_slots._marker_path(procs["A"].pid, "A")
+        procs["A"].send_signal(signal.SIGKILL)
+        # Reaped, so its pid is truly gone rather than a zombie.
+        procs["A"].wait(timeout=30)
+
+        released_at = time.time()
+        release["h"].write_text("")
+        assert _poll(lambda: _granted(out)), "nobody took the freed slot"
+        first = _lines(out)[1].split()
+        assert first[0] == "B", f"the freed slot went to {first[0]}, not the longest live waiter"
+        bound = check_slots.POLL_S * (1 + check_slots.POLL_JITTER) + SCHEDULER_MARGIN_S
+        assert float(first[3]) - released_at <= bound
+        assert _granted(out) == ["B"], "C was granted alongside B"
+        assert _poll(lambda: not a_marker.exists()), "the dead waiter's marker was left behind"
+    finally:
+        _stop_all(release, procs)
+
+
+def test_waiters_with_equal_since_are_granted_in_marker_file_name_order(tmp_path, monkeypatch):
+    """HO-823 metric 4: a tie on `since` is broken by marker file name, and
+    `_ahead_of` agrees. The children's clocks are frozen a few seconds back,
+    inside MARKER_MAX_AGE_S, so their grant stamps are equal too: the order is
+    read from the grant lines, one release at a time."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    out = tmp_path / "granted.txt"
+    release = {name: tmp_path / f"release-{name}" for name in ("h", "X", "Y")}
+    fixed_since = time.time() - 5
+    procs = {"h": _signalled_holder(out, release["h"], "h", "HZ-h", "step_agent")}
+    try:
+        assert _wait_for_lines(out, 1)
+        for name in ("X", "Y"):
+            procs[name] = _signalled_holder(
+                out, release[name], name, f"HZ-{name}", "step_agent", poll_s=0.05, fixed_since=fixed_since
+            )
+            assert _poll(lambda: check_slots._marker_path(procs[name].pid, name).exists())
+        markers = {name: check_slots._marker_path(procs[name].pid, name) for name in ("X", "Y")}
+        assert {json.loads(markers[n].read_text())["since"] for n in markers} == {fixed_since}
+        # File names start with the pid, so the order is read, not assumed.
+        expected = sorted(markers, key=lambda name: markers[name].name)
+        assert [check_slots._ahead_of(markers[name]) for name in expected] == [0, 1]
+
+        release["h"].write_text("")
+        assert _poll(lambda: _granted(out))
+        assert _granted(out) == expected[:1]
+        assert _poll(lambda: not markers[expected[0]].exists())
+        assert check_slots._ahead_of(markers[expected[1]]) == 0
+        release[expected[0]].write_text("")
+        assert _poll(lambda: len(_granted(out)) >= 2)
+        assert _granted(out) == expected
+    finally:
+        _stop_all(release, procs)
+
+
+@pytest.mark.parametrize("case", ["live-pid-no-lock", "locked-but-older-than-the-age-cutoff"])
+def test_a_marker_with_a_live_pid_but_no_lock_does_not_hold_up_the_queue(monkeypatch, case):
+    """HO-823 guardrail 2. An unlocked marker whose pid is alive (a reused
+    pid, or a pre-HO-823 build) and a locked one older than MARKER_MAX_AGE_S
+    both hold no place in the queue: a newcomer takes the free slot on its
+    first try. A 5s poll means any deferral would show in waited_s."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    if case == "live-pid-no-lock":
+        path, handle = _plant_queued_marker("r-ghost", since=time.time() - 10, locked=False)
+        # By pid alone it looks live: status still lists it.
+        assert [w["run_id"] for w in check_slots.waiting_runs()] == ["r-ghost"]
+    else:
+        path, handle = _plant_queued_marker("r-ancient", since=time.time() - check_slots.MARKER_MAX_AGE_S - 1)
+        assert check_slots._marker_held(path)
+    try:
+        with check_slots.check_slot(run_id="r-new", poll_s=5) as slot:
+            assert slot.mode == "held"
+            assert slot.waited_s < 1, "the newcomer queued behind a marker that holds no place"
+        if case != "live-pid-no-lock":
+            assert not path.exists(), "a marker past the age cutoff should be pruned"
+    finally:
+        if handle is not None:
+            handle.close()
+
+
+def _in_process_waiter(run_id, policy, cancel=None):
+    """A waiter on a thread of this process, as farmd's conflict resolver
+    waits. Each needs its own run_id: two in one process without one would
+    share one marker path."""
+    assert run_id, "an in-process waiter must pass a run_id"
+    result = {"done": threading.Event()}
+
+    def go():
+        try:
+            with check_slots.check_slot(run_id=run_id, poll_s=0.05, policy=policy, cancel=cancel) as slot:
+                result["outcome"] = slot.mode
+        except (check_slots.WaitCancelled, check_slots.SlotWaitExpired) as exc:
+            result["outcome"] = type(exc).__name__
+        finally:
+            result["done"].set()
+
+    threading.Thread(target=go, daemon=True).start()
+    return result
+
+
+@pytest.mark.parametrize(
+    "exit_by, policy, outcome",
+    [
+        ("cancel", check_slots.SlotPolicy(wait_ceiling_s=30), "WaitCancelled"),
+        ("ceiling", check_slots.SlotPolicy(wait_ceiling_s=3, fail_open=False), "SlotWaitExpired"),
+        ("ceiling", check_slots.SlotPolicy(wait_ceiling_s=3), "fail-open"),
+    ],
+)
+def test_a_waiter_that_leaves_inside_a_long_lived_process_frees_its_place(monkeypatch, exit_by, policy, outcome):
+    """HO-823 guardrail 2, inside farmd: the process never exits, so the
+    kernel never frees a lock it leaks. Every way out of the wait must drop
+    the marker and its lock, and the next waiter must move up and be
+    granted."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    holder = _hold_slot(0)
+    cancel = threading.Event()
+    first_marker = check_slots._marker_path(os.getpid(), "w1")
+    second_marker = check_slots._marker_path(os.getpid(), "w2")
+    try:
+        first = _in_process_waiter("w1", policy, cancel=cancel)
+        assert _poll(lambda: check_slots._ahead_of(first_marker) == 0)
+        second = _in_process_waiter("w2", check_slots.SlotPolicy(wait_ceiling_s=30))
+        assert _poll(lambda: check_slots._ahead_of(second_marker) == 1)
+
+        if exit_by == "cancel":
+            cancel.set()
+        assert first["done"].wait(10)
+        assert first["outcome"] == outcome
+        assert not first_marker.exists()
+        assert not check_slots._marker_held(first_marker)
+        assert list(first_marker.parent.glob("*.json.tmp")) == []
+        assert check_slots._ahead_of(second_marker) == 0
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+    assert second["done"].wait(10)
+    assert second["outcome"] == "held"
+
+
+def test_a_run_whose_marker_cannot_be_written_still_gets_a_slot(monkeypatch):
+    """HO-823 guardrail 4: with no marker a run has no place in the queue,
+    so it polls freely — even behind a live queued run that never tries —
+    and gets the free slot well inside its ceiling."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    monkeypatch.setenv("FARM_CHECK_SLOT_WAIT_MAX_S", "5")
+    path, handle = _plant_queued_marker("r-head", since=time.time() - 1)
+    monkeypatch.setattr(check_slots, "_write_marker", lambda *a, **k: None)
+    try:
+        with check_slots.check_slot(run_id="r-unmarked", poll_s=0.05) as slot:
+            assert slot.mode == "held"
+            assert slot.waited_s < 5
+            assert slot.timed_out is False
+    finally:
+        handle.close()
+
+
+def test_a_failed_marker_rewrite_keeps_the_previous_marker_open_and_locked(monkeypatch):
+    """HO-823 guardrail 4: when the memory-to-slot rewrite fails, the caller
+    keeps its previous marker (`... or marker`), so that marker must still
+    be locked — closing it early would drop the run out of the queue."""
+    previous = check_slots._write_marker("r-keep", "HZ-1", "step_agent", waiting_on="memory")
+    assert previous is not None and check_slots._marker_held(previous.path)
+
+    def refuse(src, dst):
+        raise OSError("refused")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    assert check_slots._write_marker("r-keep", "HZ-1", "step_agent", waiting_on="slot", previous=previous) is None
+    monkeypatch.undo()
+    try:
+        assert not previous.handle.closed
+        assert check_slots._marker_held(previous.path)
+        assert json.loads(previous.path.read_text())["waiting_on"] == "memory"
+        assert list(previous.path.parent.glob("*.json.tmp")) == []
+    finally:
+        check_slots._drop_marker(previous)
+    assert not previous.path.exists()
+    assert previous.handle.closed
+
+
+def test_a_stale_temp_marker_is_deleted_and_a_fresh_one_kept(tmp_path):
+    """HO-823: a writer killed mid-write leaves `<name>.json.tmp`, and no later
+    run reuses its pid-based name. One older than MARKER_MAX_AGE_S goes on the
+    next read; a fresh one may still be about to be renamed, so it stays."""
+    waiting = check_slots.slot_dir() / "waiting"
+    waiting.mkdir(parents=True)
+    old = waiting / "999999-r-old.json.tmp"
+    old.write_text("{}")
+    long_ago = time.time() - check_slots.MARKER_MAX_AGE_S - 60
+    os.utime(old, (long_ago, long_ago))
+    fresh = waiting / "999998-r-fresh.json.tmp"
+    fresh.write_text("{}")
+    assert check_slots.waiting_runs() == []
+    assert not old.exists()
+    assert fresh.exists()
