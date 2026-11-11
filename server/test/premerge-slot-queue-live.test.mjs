@@ -7,10 +7,10 @@
 // a PREMERGE_PYTHON shim waiting in the real farm/check_slots.py with
 // farm/premerge.py's own slot_policy(), real flocks in a temp FARM_HOME.
 //
-// Polling flock is not FIFO, so the order of grants is fixed by slot, not by
-// luck: the two older runs use a limit-2 shim and the newest a limit-1 shim.
-// With both slots held, freeing slot 1 can only grant an older run; slot 0 is
-// freed last, for the newest.
+// Since HZ-823 grants follow queue order (only the run 0 ahead tries a slot),
+// and the slots pin it down as well: the two older runs use a limit-2 shim
+// and the newest a limit-1 shim. With both slots held, freeing slot 1 can only
+// grant an older run; slot 0 is freed last, for the newest.
 
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'

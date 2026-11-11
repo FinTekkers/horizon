@@ -836,3 +836,330 @@ def test_reading_holders_never_takes_a_lock(tmp_path, monkeypatch):
     listed = check_slots.holders()
     assert [h["run_id"] for h in listed] == ["r-a"]
     assert calls == []
+
+
+# ---- HZ-823: freed slots go to the run that has waited longest ----
+
+# Waits for `go` (whose text, if any, replaces poll_s), then queues for a slot
+# with report_ahead on. Appends
+# "ahead <run_id> <n> <time>" each time its count changes and
+# "granted <run_id> <time>" once it holds a slot, then holds until `release`
+# exists. `go` and `release` are files the test writes, so every step here is
+# something the test causes rather than a sleep a loaded host can outrun.
+ORDERED_WAITER = textwrap.dedent(
+    """
+    import os, sys, time
+    from farm import check_slots
+    out, run_id, poll_s, release, go = sys.argv[1:6]
+    deadline = time.monotonic() + 60
+    while not os.path.exists(go) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    with open(go) as fh:
+        poll_s = fh.read().strip() or poll_s
+    def say(event):
+        if event.get("check_slot") == "queued" and "ahead" in event:
+            with open(out, "a") as fh:
+                fh.write(f"ahead {run_id} {event['ahead']} {time.time()}\\n")
+    policy = check_slots.SlotPolicy(report_ahead=True)
+    with check_slots.check_slot(run_id=run_id, poll_s=float(poll_s), on_event=say, policy=policy) as slot:
+        with open(out, "a") as fh:
+            fh.write(f"granted {run_id} {time.time()} {slot.mode}\\n")
+        deadline = time.monotonic() + 60
+        while not os.path.exists(release) and time.monotonic() < deadline:
+            time.sleep(0.02)
+    """
+)
+
+
+class _Queue:
+    """Two signalled holders on both slots, plus ORDERED_WAITER runs, all
+    released (and reaped) by close()."""
+
+    def __init__(self, tmp_path):
+        self.tmp = tmp_path
+        self.out = tmp_path / "queue.txt"
+        self.procs: dict[str, subprocess.Popen] = {}
+        self.files: list = []
+        self.held = tmp_path / "held.txt"
+        self.holders = []
+        for n in (0, 1):
+            release = self._file(f"release-h{n}")
+            self.holders.append(_signalled_holder(self.held, release, f"h{n}", "HZ-1", "step_agent"))
+        assert _wait_for_lines(self.held, 2), "the two holders should take both slots"
+
+    def _file(self, name):
+        path = self.tmp / name
+        self.files.append(path)
+        return path
+
+    def release_holder(self, n):
+        (self.tmp / f"release-h{n}").write_text("")
+
+    def spawn(self, run_id, poll_s, go_now=True):
+        go = self._file(f"go-{run_id}")
+        self.procs[run_id] = subprocess.Popen(
+            [sys.executable, "-c", ORDERED_WAITER, str(self.out), run_id, str(poll_s)]
+            + [str(self._file(f"release-{run_id}")), str(go)],
+            cwd=REPO_ROOT,
+            env={**os.environ, "PYTHONPATH": REPO_ROOT},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if go_now:
+            go.write_text("")
+        return self.procs[run_id]
+
+    def go(self, run_id, poll_s=""):
+        (self.tmp / f"go-{run_id}").write_text(str(poll_s))
+
+    def release(self, run_id):
+        (self.tmp / f"release-{run_id}").write_text("")
+
+    def marker(self, run_id):
+        return check_slots._marker_path(self.procs[run_id].pid, run_id)
+
+    def rows(self, kind):
+        return [line.split() for line in _lines(self.out) if line.startswith(kind + " ")]
+
+    def granted(self):
+        return [row[1] for row in self.rows("granted")]
+
+    def last_ahead(self, run_id):
+        counts = [int(row[2]) for row in self.rows("ahead") if row[1] == run_id]
+        return counts[-1] if counts else None
+
+    def wait_ahead(self, run_id, n):
+        assert _poll(lambda: self.last_ahead(run_id) == n), f"{run_id} never read {n} ahead: {_lines(self.out)}"
+
+    def wait_granted(self, count):
+        assert _poll(lambda: len(self.granted()) >= count), f"expected {count} grants: {_lines(self.out)}"
+        return self.granted()
+
+    def close(self):
+        for path in self.files:
+            path.write_text("")
+        for proc in [*self.holders, *self.procs.values()]:
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+
+
+@pytest.fixture
+def queue(tmp_path, monkeypatch):
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    q = _Queue(tmp_path)
+    yield q
+    q.close()
+
+
+def _queue_abc(queue, polls=(0.2, 0.2, 0.02)):
+    """A, B and C queue in that order, each once the one before reads its count."""
+    for n, (run_id, poll_s) in enumerate(zip("ABC", polls)):
+        queue.spawn(run_id, poll_s)
+        queue.wait_ahead(run_id, n)
+
+
+def test_freed_slots_go_to_waiters_in_the_order_they_queued(queue):
+    """HZ-823 metric 1: C polls ten times as often as A and B, so under a
+    polling flock it would usually win each release. It must still go last."""
+    _queue_abc(queue)
+    queue.release_holder(0)
+    assert queue.wait_granted(1) == ["A"]
+    queue.release_holder(1)
+    assert queue.wait_granted(2) == ["A", "B"]
+    queue.release("A")
+    assert queue.wait_granted(3) == ["A", "B", "C"]
+
+
+def test_a_newcomer_does_not_take_a_free_slot_from_a_queued_run(queue):
+    """HZ-823: N arrives just as a slot frees and polls fast, while A, at the
+    head of the queue, polls only every 3s. A still gets the slot; N joins the
+    queue behind it and reads 0 ahead once A is granted."""
+    queue.spawn("A", 3)
+    queue.wait_ahead("A", 0)
+    queue.spawn("N", 0.02, go_now=False)
+    queue.release_holder(0)
+    queue.go("N")
+    assert queue.wait_granted(1) == ["A"]
+    queue.wait_ahead("N", 0)
+    assert [row[2] for row in queue.rows("ahead") if row[1] == "N"][0] == "1", "N skipped the queue"
+    assert queue.granted() == ["A"], "N took a slot while the other was still held"
+    queue.release_holder(1)
+    assert queue.wait_granted(2) == ["A", "N"]
+
+
+def _sleeper():
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+
+
+@pytest.mark.parametrize("head", ["dead-pid", "over-age", "stale-heartbeat"])
+def test_a_dead_or_stale_head_is_skipped_within_one_poll(queue, head):
+    """HZ-823 metric 2 and guardrail 2: the head of the queue has died (a real
+    waiter, SIGKILLed while queued), is older than MARKER_MAX_AGE_S, or is a
+    live pid that stopped touching its marker — a frozen run, or a dead
+    waiter's recycled pid. None of them holds up B, polling once a second."""
+    sleeper = None
+    try:
+        if head == "dead-pid":
+            queue.spawn("A", 0.2)
+            queue.wait_ahead("A", 0)
+            marker = queue.marker("A")
+        else:
+            sleeper = _sleeper()
+            marker = check_slots._marker_path(sleeper.pid, "A")
+        queue.spawn("B", 1.0)
+        queue.wait_ahead("B", 1 if head == "dead-pid" else 0)
+        queue.spawn("C", 0.02)
+        queue.wait_ahead("C", 2 if head == "dead-pid" else 1)
+        now = time.time()
+        if head == "dead-pid":
+            queue.procs["A"].send_signal(signal.SIGKILL)
+            queue.procs["A"].wait(timeout=10)
+        else:
+            since = now - check_slots.MARKER_MAX_AGE_S - 1 if head == "over-age" else now - 120
+            _plant_waiter(sleeper.pid, "A", "slot", since=since)
+            if head == "stale-heartbeat":
+                stale = now - check_slots.MARKER_HEARTBEAT_S - 30
+                os.utime(marker, (stale, stale))
+
+        released = time.time()
+        queue.release_holder(0)
+        assert queue.wait_granted(1) == ["B"]
+        granted_at = float(queue.rows("granted")[0][2])
+        assert granted_at - released <= 2.5, f"B waited {granted_at - released:.2f}s behind a {head} head"
+        assert not marker.exists(), f"the {head} head's marker was not pruned"
+    finally:
+        if sleeper is not None:
+            sleeper.kill()
+            sleeper.wait(timeout=10)
+
+
+def test_the_run_granted_is_always_the_one_that_reported_0_ahead(queue):
+    """HZ-823 metric 3: the marker and the grant agree at every step. Before
+    each release the parent's _ahead_of() and each waiter's own last `ahead`
+    line agree, and the run then granted is the one that read 0."""
+    _queue_abc(queue)
+    for released, remaining in ((0, "ABC"), (1, "BC"), ("A", "C")):
+        for n, run_id in enumerate(remaining):
+            queue.wait_ahead(run_id, n)
+            assert check_slots._ahead_of(queue.marker(run_id)) == n
+        count = len(queue.granted()) + 1
+        if released in (0, 1):
+            queue.release_holder(released)
+        else:
+            queue.release(released)
+        grants = queue.wait_granted(count)
+        assert queue.last_ahead(grants[-1]) == 0
+        assert grants[-1] == remaining[0]
+    assert queue.granted() == ["A", "B", "C"]
+
+
+def test_a_since_tie_is_granted_in_marker_file_name_order(queue):
+    """HZ-823 metric 4: with the same `since`, the marker file name breaks the
+    tie, for _ahead_of and the grant alike. The run whose name sorts later
+    queues first and polls fastest, so neither arrival nor luck picks the
+    run the file names put first."""
+    queue.spawn("X", 0.05, go_now=False)
+    queue.spawn("Y", 0.05, go_now=False)
+    by_name = sorted(("X", "Y"), key=lambda run_id: queue.marker(run_id).name)
+    first, second = by_name[1], by_name[0]
+    queue.go(first, 0.02)
+    queue.wait_ahead(first, 0)
+    queue.go(second, 0.3)
+    queue.wait_ahead(second, 1)
+    arrival = [first, second]
+    assert arrival != by_name
+
+    since = time.time()
+    for run_id in arrival:
+        path = queue.marker(run_id)
+        data = json.loads(path.read_text())
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({**data, "since": since}))
+        os.replace(tmp, path)
+    queue.wait_ahead(by_name[0], 0)
+    queue.wait_ahead(by_name[1], 1)
+    assert [check_slots._ahead_of(queue.marker(run_id)) for run_id in by_name] == [0, 1]
+
+    queue.release_holder(0)
+    assert queue.wait_granted(1) == by_name[:1]
+    queue.release_holder(1)
+    assert queue.wait_granted(2) == by_name
+
+
+def test_a_sigkilled_holder_hands_its_slot_to_the_head_not_a_faster_poller(queue):
+    """HZ-823 guardrail 2 with metric 1: the kernel frees a killed holder's
+    slot, and the head of the queue gets it even though B polls fifteen times
+    as often."""
+    queue.spawn("A", 0.3)
+    queue.wait_ahead("A", 0)
+    queue.spawn("B", 0.02)
+    queue.wait_ahead("B", 1)
+    queue.holders[0].send_signal(signal.SIGKILL)
+    queue.holders[0].wait(timeout=10)
+    assert queue.wait_granted(1) == ["A"]
+    queue.wait_ahead("B", 0)
+    assert queue.granted() == ["A"]
+    queue.release_holder(1)
+    assert queue.wait_granted(2) == ["A", "B"]
+
+
+def _plant_waiter(pid, run_id, waiting_on, since=None):
+    path = check_slots._marker_path(pid, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"pid": pid, "run_id": run_id, "item_id": "HZ-9", "caller": "step_agent", "waiting_on": waiting_on}
+    path.write_text(json.dumps({**record, "since": time.time() if since is None else since}))
+    return path
+
+
+def test_a_memory_waiter_does_not_keep_a_newcomer_from_a_free_slot(monkeypatch):
+    """HZ-823 guardrail 1: a run waiting on memory is not in the slot queue,
+    so a newcomer with a free slot takes it at once and never queues."""
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "2")
+    _plant_waiter(os.getpid(), "r-mem", "memory", since=time.time() - 30)
+    events = []
+    policy = check_slots.SlotPolicy(report_ahead=True)
+    with check_slots.check_slot(run_id="r-new", on_event=events.append, policy=policy) as slot:
+        assert slot.mode == "held"
+    assert events == []
+
+
+def test_a_run_whose_marker_cannot_be_written_still_gets_a_slot(monkeypatch):
+    """HZ-823 guardrail 4: a live run that never polls sits at the head of the
+    queue, and this run's own marker cannot be written. It has no place in the
+    queue to wait for, so it polls the slots as before and gets the freed one
+    well inside its ceiling."""
+    import fcntl
+    import threading
+
+    monkeypatch.setenv("FARM_MAX_CONCURRENT_CHECKS", "1")
+    monkeypatch.setenv("FARM_CHECK_SLOT_WAIT_MAX_S", "30")
+    monkeypatch.setattr(check_slots, "_write_marker", lambda *a, **k: None)
+    sleeper = _sleeper()
+    directory = check_slots.slot_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = open(directory / "slot-0", "a")
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    result, logged = {}, []
+    try:
+        _plant_waiter(sleeper.pid, "r-head", "slot", since=time.time() - 30)
+
+        def run():
+            with check_slots.check_slot(log=logged.append, run_id="r-unmarked", poll_s=0.05) as slot:
+                result["mode"], result["waited_s"] = slot.mode, slot.waited_s
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        assert _poll(lambda: any("other runs are queued" in line for line in logged)), logged
+        assert result == {}
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        worker.join(timeout=10)
+    finally:
+        handle.close()
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+    assert result["mode"] == "held"
+    assert result["waited_s"] < 30

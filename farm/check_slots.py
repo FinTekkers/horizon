@@ -75,6 +75,19 @@ SlotPolicy. Its slot wait never fails open (SlotWaitExpired at its own
 ceiling instead), its queued events say how many runs started waiting before
 it (`ahead`), and run_checks() starts its check budget once the slot is held.
 With no policy, every path here is exactly as before.
+
+HZ-823 grants slots first come, first served. A polling flock is not FIFO —
+whoever polls first after a release wins — so on its own it let later runs
+overtake one whose marker read "0 ahead". The flock is still the lock, but
+the waiting markers now decide who may try it: only the run that _ahead_of()
+counts as 0 ahead polls the slots, and a run arriving while others queue
+joins the queue instead of trying a slot that has just freed. Each waiter
+touches its marker every poll, and _live_markers() drops one that is not
+touched for MARKER_HEARTBEAT_S, as well as one whose pid is dead or that is
+older than MARKER_MAX_AGE_S — so a crashed, frozen or pid-recycled waiter
+never holds up the queue. A run whose own marker could not be written, or
+was pruned, polls the slots as before, so a marker failure never stops a
+check from running.
 """
 
 import contextlib
@@ -127,10 +140,10 @@ WORST_QUEUE_DEPTH = 2  # at cap 6 / limit 2 the 6th arrival has two waves ahead 
 # them (`Unthrottled` column) precisely so the finding is visible.
 DEFAULT_WAIT_CEILING_S = 1200.0
 POLL_S = 1.0
-# A polling flock is not FIFO, so a run can in principle be starved by luckier
-# neighbours. Jitter spreads the retries instead of locking several waiters
-# into the same rhythm; slot_wait_s in the metrics is how starvation would be
-# detected, and the ceiling above is what bounds it.
+# HZ-823: the flock is the lock, but only the run at the head of the marker
+# queue tries it (see the module docstring), so grants follow queue order
+# however fast each waiter polls. Jitter now only spreads the waiters' scans
+# of waiting/ instead of locking them into the same rhythm.
 POLL_JITTER = 0.5
 # A waiting marker whose writer died between the liveness check and the unlink
 # would otherwise be reported forever. Belt as well as braces alongside the
@@ -140,6 +153,11 @@ POLL_JITTER = 0.5
 # setting past 60 min means raising this too, or a long waiter drops out of
 # Farm health and out of the other waiters' `ahead` counts.
 MARKER_MAX_AGE_S = 3600.0
+# HZ-823: a waiter touches its marker on every poll (at most POLL_S x 1.5
+# apart), so one untouched for this long belongs to a process that is frozen,
+# or to a dead waiter whose pid was recycled. Either would otherwise sit at
+# the head of the queue, never take the slot, and hold up every run behind it.
+MARKER_HEARTBEAT_S = 60.0
 # HZ-574: a holder record not rewritten for this long is hidden (not deleted:
 # its pid is alive and may still hold the lock). The age is measured from the
 # last write, and run_checks() rewrites the record at every command boundary
@@ -379,11 +397,12 @@ def _marker_path(pid: int, run_id) -> Path:
 
 
 def _write_marker(run_id, item_id, caller: str, waiting_on: str = "slot") -> Path | None:
-    """Display only — nothing reads this to decide whether a run may start.
-    /farm/status lists it, and farmd's /runs/status reads `waiting_on` to name
-    the wait ("slot" or "memory", HZ-571) as a run's queued reason. A failure
-    to write it must never stop a check from running. Rewritten in place when
-    the wait moves between memory and a slot."""
+    """/farm/status lists this, and farmd's /runs/status reads `waiting_on` to
+    name the wait ("slot" or "memory", HZ-571) as a run's queued reason.
+    HZ-823: the slot waiters' markers are also the queue — their order decides
+    which run may try a slot (_may_try_slot). A failure to write it must never
+    stop a check from running: that run polls the slots as before. Rewritten
+    in place when the wait moves between memory and a slot."""
     path = _marker_path(os.getpid(), run_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -409,6 +428,16 @@ def _clear_marker(path: Path | None) -> None:
         return
     with contextlib.suppress(OSError):
         path.unlink(missing_ok=True)
+
+
+def _touch_marker(path: Path | None) -> None:
+    """HZ-823: the waiter's heartbeat (see MARKER_HEARTBEAT_S). Only the
+    mtime changes, never the JSON. A marker already pruned stays gone: its
+    run then polls the slots as a run with no marker does."""
+    if path is None:
+        return
+    with contextlib.suppress(OSError):
+        os.utime(path)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -447,8 +476,9 @@ def waiting_runs() -> list[dict]:
 
 def _live_markers(now: float) -> list[tuple[Path, dict]]:
     """(path, data) for every live waiting marker, pruning stale ones (see
-    waiting_runs()). A marker written before HZ-571 has no waiting_on: it
-    waited on a slot, and `data` says so."""
+    waiting_runs()): a dead pid, a `since` older than MARKER_MAX_AGE_S, or
+    (HZ-823) no heartbeat for MARKER_HEARTBEAT_S. A marker written before
+    HZ-571 has no waiting_on: it waited on a slot, and `data` says so."""
     out: list[tuple[Path, dict]] = []
     try:
         entries = sorted(_waiting_dir().glob("*.json"))
@@ -457,11 +487,17 @@ def _live_markers(now: float) -> list[tuple[Path, dict]]:
     for path in entries:
         try:
             data = json.loads(path.read_text())
+            touched = path.stat().st_mtime
         except (OSError, json.JSONDecodeError):
             continue
         pid = data.get("pid")
         since = float(data.get("since") or 0)
-        stale = not isinstance(pid, int) or not _pid_alive(pid) or (now - since) > MARKER_MAX_AGE_S
+        stale = (
+            not isinstance(pid, int)
+            or not _pid_alive(pid)
+            or (now - since) > MARKER_MAX_AGE_S
+            or (now - touched) > MARKER_HEARTBEAT_S
+        )
         if stale:
             _clear_marker(path)
             continue
@@ -477,8 +513,8 @@ def _ahead_of(marker: Path | None) -> int | None:
     Order is the marker's `since`, then its file name for a tie. A run that
     waited on memory first gets a fresh `since` when it moves to the slot
     wait (_write_marker rewrites it), so it queues behind runs already
-    waiting for a slot. Polling flock is not FIFO, so this counts runs that
-    started waiting earlier; it does not promise who is granted next."""
+    waiting for a slot. HZ-823: check_slot() lets only the run with 0 ahead
+    try a slot, so this count is also the order slots are granted in."""
     if marker is None:
         return None
     live = _live_markers(time.time())
@@ -493,6 +529,26 @@ def _ahead_of(marker: Path | None) -> int | None:
         and data.get("waiting_on") == "slot"
         and (float(data.get("since") or 0), path.name) < key
     )
+
+
+def _slot_queue_has_others(marker: Path | None) -> bool:
+    """HZ-823: True when a live run other than `marker`'s is waiting for a
+    slot. Memory waiters do not count: they are not in the slot queue."""
+    return any(path != marker and data.get("waiting_on") == "slot" for path, data in _live_markers(time.time()))
+
+
+def _may_try_slot(marker: Path | None, waiting_on: str | None) -> bool:
+    """HZ-823: may this run try the slots on this poll? A run not yet in the
+    slot queue (a newcomer, or one back from the memory wait) only when
+    nobody is queued; otherwise it joins the queue. A queued run only when it
+    is the head — _ahead_of() is 0. A queued run with no marker of its own
+    (not written, or pruned) polls freely, as before HZ-823, so it is never
+    stuck behind a queue it is not in."""
+    if waiting_on != "slot":
+        return not _slot_queue_has_others(marker)
+    if marker is None:
+        return True
+    return _ahead_of(marker) in (0, None)
 
 
 def _holders_dir() -> Path:
@@ -822,6 +878,8 @@ def check_slot(
     try:
         while True:
             short = memory.short()
+            # HZ-823: False when this poll left the slots to the head of the queue.
+            tried = True
             if short is None:
                 if unthrottled is not None:
                     waited = time.monotonic() - started
@@ -831,9 +889,11 @@ def check_slot(
                         _emit(on_event, "granted", mode=unthrottled)
                     yield SlotHold(mode=unthrottled, waited_s=waited if announced else 0.0, limit=limit)
                     return
-                handle, index = _try_slots(directory, limit)
-                if handle is not None:
-                    break
+                tried = _may_try_slot(marker, waiting_on)
+                if tried:
+                    handle, index = _try_slots(directory, limit)
+                    if handle is not None:
+                        break
             waited = time.monotonic() - started
             if 0 < ceiling <= waited:
                 if short is not None:
@@ -864,7 +924,8 @@ def check_slot(
                 announced = True
                 marker = _write_marker(run_id, item_id, caller, waiting_on=now_on) or marker
                 if now_on == "slot":
-                    log(f"check_slots: all {limit} capacity slots busy — {wait_message(caller) or f'waiting for one ({caller})'}")
+                    state = f"all {limit} capacity slots busy" if tried else "other runs are queued for a capacity slot"
+                    log(f"check_slots: {state} — {wait_message(caller) or f'waiting for one ({caller})'}")
                     if policy.report_ahead:
                         shown_ahead = _ahead_of(marker)
                         _emit(on_event, "queued", **({} if shown_ahead is None else {"ahead": shown_ahead}))
@@ -877,6 +938,7 @@ def check_slot(
                     _emit(on_event, "queued", ahead=ahead)
             if short is not None:
                 memory.announce(short)
+            _touch_marker(marker)
             pause = poll_s * (1 + random.random() * POLL_JITTER)
             if cancel is None:
                 time.sleep(pause)
