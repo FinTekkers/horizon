@@ -1990,6 +1990,17 @@ def _run_checks_unguarded(
         run_started = time.monotonic()
         record[SCREENSHOTS_SLOT] = screenshots
         env = {**_check_env(), **(child_env or {})}
+        # A scratch worktree (pre-merge, base check) has no farm/.venv, so
+        # the server tests' interpreter resolver fails loud there. Point
+        # it at this process's own venv interpreter through its escape
+        # hatch, only when the workspace has no venv of its own and no
+        # value was already set: a workspace venv still wins.
+        if (
+            "FARM_TEST_PYTHON" not in env
+            and _venv_bin_dir() is not None
+            and not (Path(ws) / "farm" / ".venv" / "bin" / "python").exists()
+        ):
+            env["FARM_TEST_PYTHON"] = sys.executable
         if only_slot is not None:
             record["targeted_tests"] = len(env.get(FAILED_TESTS_ENV, "").splitlines())
         # HZ-569: every process the commands start carries this run's tag and

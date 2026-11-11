@@ -913,6 +913,64 @@ Tested by `infra/host/test/horizon-farm-service.test.sh` (the unit and
 `run.sh`) and `farm/tests/test_farmd_systemd_start.py` (farmd's output and
 the tmux server's argv).
 
+## 2n. Repo checks on a new host: E2E prerequisites
+
+The farm runs each repo's checks (Admin → repo → Install, Test, Lint, E2E)
+on this host, in the item's workspace, at "Specialist agent implements", on
+fix rounds, on conflict resolution and at pre-merge. Horizon's own E2E
+command is `npm run test:e2e`. The suite isolates itself: a private temp
+DB, temp farm home and its own ports (`e2e/playwright.config.js`). It never
+touches the live data, but it does need the host set up as below. Nothing
+installs any of this; a new host needs each step once by hand.
+
+1. **Node and npx.** Node 22 (this host: v22.23.2) on the `ubuntu` user's
+   PATH, as the farm runs as `ubuntu` (`horizon-farm.service`).
+2. **Chromium's system libraries.** `test:e2e` downloads Playwright's
+   Chromium itself (into `~/.cache/ms-playwright`), but not the shared
+   libraries it links against. Without them every E2E run fails at browser
+   launch. Install them once:
+
+   ```bash
+   cd /opt/horizon && npm --prefix e2e install --no-audit --no-fund
+   sudo "$(command -v npx)" --prefix e2e playwright install-deps chromium
+   ```
+
+3. **The test-login env file**, `/etc/horizon/horizon-e2e.env`, owned
+   `root:ubuntu`, mode `640`. It holds one line, `SCREENSHOT_LOGIN_KEY=`
+   followed by a random 32-character key (e.g. `openssl rand -hex 16`).
+   - The farm sends it to the Test and E2E commands and to logged-in
+     screenshots, never to Install or Lint, and redacts it from output.
+   - A test server with `HORIZON_TEST_HOOKS=1` accepts it as the admin
+     user (`server/src/testEnvLogin.js`).
+   - Never put the key in `/etc/horizon/server.env`. Production ignores the
+     header anyway, as it runs without test hooks.
+   - A missing or unreadable file fails the check, naming the path, and
+     nothing runs.
+4. **The repo settings** (Admin → the repo; stored in `project_repo`, so a
+   restored DB keeps them):
+   - **E2E:** `npm run test:e2e --silent`
+   - **Test credentials env file:** `/etc/horizon/horizon-e2e.env`
+
+   Leave E2E blank and the farm falls back to detecting `test:e2e` in
+   `package.json`, and that fallback **silently skips** E2E when Chromium is
+   not downloaded (`farm/checks.py`, the `test:e2e` detection). So set the
+   command explicitly, and a broken setup fails loudly instead.
+
+### Verify
+
+```bash
+cd /opt/horizon && sudo -u ubuntu nice npm run test:e2e --silent
+```
+
+It runs the whole suite (several minutes, and heavy: run it at a quiet
+time). Then check that the next item's "Specialist agent implements" output
+names the `e2e` slot as passed.
+
+Only the "fails on main" check (`farm/base_check.py`) re-runs a single
+failing test line, never the whole suite. Nothing runs E2E on `main`
+after a merge; the deploy runs only the smoke check (`e2e/smoke/check.mjs`,
+see "Deep verification beyond the health check").
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must
