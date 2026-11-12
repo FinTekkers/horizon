@@ -97,6 +97,28 @@ def test_a_clean_run_passes(tmp_path):
     assert list(fake_tmp.iterdir()) == []
 
 
+def test_the_harness_control_file_in_the_sandbox_is_not_a_leak(tmp_path):
+    body = """
+    Path(tempfile.gettempdir(), "artillery_cli_control.26042.json").write_text("ARTCTL\\n")
+    """
+    result, _ = _run_guarded_suite(tmp_path, body)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LEAKED" not in result.stdout
+    assert "FAILED" not in result.stdout
+
+
+def test_the_harness_control_file_does_not_hide_a_real_leak(tmp_path):
+    body = _leak_body(tmp_path) + """
+    Path(tempfile.gettempdir(), "artillery_cli_control.26042.json").write_text("ARTCTL\\n")
+    """
+    result, _ = _run_guarded_suite(tmp_path, body)
+    leaked = (tmp_path / "leaked-path").read_text()
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"LEAKED temp entry (created by this run, left in place): {leaked}" in result.stdout
+    assert "artillery_cli_control" not in result.stdout
+    assert "this run left 1 entries" in result.stdout
+
+
 def test_another_runs_sandbox_is_never_a_leak(tmp_path):
     other = tmp_path / "tmp" / "horizon-run-99999-x"
     body = f"""
