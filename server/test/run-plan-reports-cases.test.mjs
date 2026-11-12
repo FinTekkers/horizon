@@ -7,7 +7,16 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { circularProofs, effectiveRunner, extractRunPlan, unprovenLines, unprovenReason } from '../../domain/js/runPlan.js'
+import {
+  RUN_PLAN_CONTRACT,
+  circularProofs,
+  effectiveRunner,
+  extractRunPlan,
+  runPlanError,
+  unprovenLines,
+  unprovenReason,
+  writeShape,
+} from '../../domain/js/runPlan.js'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const cases = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/run-plan-cases.json'), 'utf8'))
@@ -53,6 +62,81 @@ for (const c of cases.requires) {
     const block = extractRunPlan(artifactOf(c.block))
     if (c.valid) assert.deepEqual(block, c.block)
     else assert.equal(block, null)
+  })
+}
+
+// HO-835: the v2 `requires` cases carry the exact reason run_plan.validate()
+// raises (farm/tests/test_job_reports.py is the Python half), so both
+// bindings refuse in the same words and never echo a value.
+const SENTINEL_835 = 'hz835-sentinel'
+
+for (const c of cases.requires.filter((c) => c.reason !== undefined)) {
+  test(`requires v2 reason: ${c.case}`, () => {
+    const reason = runPlanError(c.block)
+    assert.equal(reason, c.reason)
+    assert.ok(!reason.includes(SENTINEL_835))
+  })
+}
+
+test('the write-shape cases trip every contract shape and include read-only checks', () => {
+  const tripped = new Set(cases.write_shapes.map((c) => c.shape))
+  for (const shape of RUN_PLAN_CONTRACT.writeShapes) assert.ok(tripped.has(shape.name), shape.name)
+  assert.ok(tripped.has(null))
+})
+
+for (const c of cases.write_shapes) {
+  test(`write shape: ${c.case}`, () => {
+    assert.equal(writeShape(c.check), c.shape)
+    const block = { cwd: '.', commands: ['echo hi'], budget_minutes: 1, requires: [{ precondition: { kind: 'row_exists', check: c.check } }] }
+    const reason = runPlanError(block)
+    if (c.shape === null) return assert.deepEqual(extractRunPlan(artifactOf(block)), block)
+    assert.equal(reason, `run_plan 'requires' precondition check must be read-only, but it has a write shape (${c.shape})`)
+    assert.ok(!reason.includes(c.check))
+    assert.equal(extractRunPlan(artifactOf(block)), null)
+  })
+}
+
+// HO-835: the same fixture's `rehearsal` cases (farm/tests/test_job_reports.py
+// is the Python half): the error names the bad field, word for word.
+test('the rehearsal fixture has a full block and a bad case for every field', () => {
+  assert.ok(cases.rehearsal.some((c) => c.valid && Object.keys(c.block.rehearsal).length === RUN_PLAN_CONTRACT.rehearsalKeys.length))
+  const named = cases.rehearsal.filter((c) => !c.valid).map((c) => c.reason).join(' ')
+  for (const field of ['dry_run', 'limit', 'ro_env', 'samples', 'unknown field']) assert.ok(named.includes(field), field)
+})
+
+for (const c of cases.rehearsal) {
+  test(`rehearsal: ${c.case}`, () => {
+    const block = extractRunPlan(artifactOf(c.block))
+    if (c.valid) {
+      assert.deepEqual(block, c.block)
+      return assert.equal(runPlanError(c.block), null)
+    }
+    assert.equal(block, null)
+    const reason = runPlanError(c.block)
+    assert.equal(reason, c.reason)
+    assert.ok(!reason.includes(SENTINEL_835))
+  })
+}
+
+// HO-835 metric 4: the stored plans, none with a `rehearsal`, still read on
+// the card's path exactly as stored (farm/tests/test_job_reports.py is the
+// Python half). The fixture files are never edited.
+const replays = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/fixtures/run-plan-replays.json'), 'utf8'))
+const storedPlans = {
+  ...Object.fromEntries(
+    ['hz514', 'hz532', 'hz533', 'hz700-a5'].map((name) => [
+      name,
+      JSON.parse(readFileSync(path.join(REPO_ROOT, `farm/tests/fixtures/run_plans/${name}.json`), 'utf8')),
+    ]),
+  ),
+  'MDI-56': replays['MDI-56'].run_plan,
+}
+
+for (const [name, stored] of Object.entries(storedPlans)) {
+  test(`stored v1 plan ${name} still reads unchanged`, () => {
+    assert.equal(stored.rehearsal, undefined)
+    assert.equal(runPlanError(stored), null)
+    assert.deepEqual(extractRunPlan(artifactOf(stored)), stored)
   })
 }
 

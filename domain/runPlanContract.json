@@ -1,0 +1,39 @@
+{
+  "$comment": "HO-835: the one declaration of a Task run plan's v2 contract rules — `requires` `service` and `precondition` entries, a `file` entry's `access`, and the top-level `rehearsal` block — plus every reason text they fail with. Read by domain/py/run_plan.py (the farm's validate() and unrehearsed()) and domain/js/runPlan.js (runPlanError(), the Approve the run card), so both bindings give the same words. A reason's `{slot}` is filled by each binding with a name, an index or a shape name, never a value from the plan. Each `writeShapes` pattern compiles in both Python `re` and JS `RegExp`; `ignoreCase` maps to re.I and the `i` flag; `unquotedOnly` tests the command with its quoted spans removed. The write-shape check is best-effort: it refuses obvious writes and cannot prove a command read-only. Nothing here ever runs a command.",
+  "preconditionKinds": ["lock_free", "no_deploy_running", "row_exists", "account_exists", "artifact_exists"],
+  "fileAccess": ["r", "w"],
+  "serviceName": "^[A-Za-z0-9][A-Za-z0-9._+-]*$",
+  "rehearsalKeys": ["dry_run", "limit", "ro_env", "samples"],
+  "maxSampleLength": 200,
+  "writeShapes": [
+    { "name": "redirect", "pattern": "(?<![-=>])>{1,2}(?![=&>])(?!\\s*/dev/null\\b)", "ignoreCase": false, "unquotedOnly": true },
+    { "name": "tee", "pattern": "(?:^|[\\s;&|(`])tee(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "rm", "pattern": "(?:^|[\\s;&|(`])rm(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "sudo", "pattern": "(?:^|[\\s;&|(`])sudo(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "mv", "pattern": "(?:^|[\\s;&|(`])mv(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "cp", "pattern": "(?:^|[\\s;&|(`])cp(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "chmod", "pattern": "(?:^|[\\s;&|(`])(?:chmod|chown)(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "kill", "pattern": "(?:^|[\\s;&|(`])(?:kill|pkill|killall)(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "git-push", "pattern": "\\bgit(?:\\s+-[Cc]\\s+\\S+)*\\s+push\\b", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "systemctl", "pattern": "\\bsystemctl\\s+(?:--?\\S+\\s+)*(?:start|stop|restart|reload|enable|disable|kill|mask)\\b", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "curl-write", "pattern": "\\bcurl\\b[^;&|]*?\\s(?:(?:-X|--request)[\\s=]*['\"]?(?:POST|PUT|PATCH|DELETE)\\b|(?:-d|-F|-T|--data[A-Za-z-]*|--form|--upload-file)(?=[\\s=@'\"]|$))", "ignoreCase": false, "unquotedOnly": false },
+    { "name": "sql-write", "pattern": "\\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE)\\b", "ignoreCase": true, "unquotedOnly": false }
+  ],
+  "reasons": {
+    "access": "run_plan 'requires' access must be 'r' or 'w', and only beside a 'file'",
+    "service": "run_plan 'requires' service must be {\"name\", \"version_cmd\", \"expect\"} and nothing else: a name like postgresql, a one-line version_cmd and a one-line expect",
+    "precondition": "run_plan 'requires' precondition must be {\"kind\", \"check\"} and nothing else: kind one of {kinds}, and a one-line check",
+    "writeShape": "run_plan 'requires' {field} must be read-only, but it has a write shape ({shape})",
+    "rehearsal": "run_plan 'rehearsal' must be an object",
+    "rehearsalUnknown": "run_plan 'rehearsal' has unknown field(s): {fields}",
+    "dryRun": "run_plan 'rehearsal.dry_run' must be a one-line, non-blank command",
+    "limit": "run_plan 'rehearsal.limit' must be a whole number, at least 1",
+    "roEnv": "run_plan 'rehearsal.ro_env' must be a list of distinct variable names like RO_DB_URL, with no `$`",
+    "roEnvLive": "run_plan 'rehearsal.ro_env' name {name} is a live 'env' name; a read-only name must be a different one",
+    "samples": "run_plan 'rehearsal.samples' must be a list of {\"command\": <k>, \"expect\": \"<one expected line>\"} objects",
+    "samplesCommand": "run_plan 'rehearsal.samples' command must be a 1-based index into 'commands'",
+    "samplesDoubled": "run_plan 'rehearsal.samples' names command {n} more than once",
+    "samplesExpect": "run_plan 'rehearsal.samples' expect must be one non-blank line of at most {max} characters",
+    "unrehearsed": "rehearsal.samples has no entry for proof {commands}"
+  }
+}

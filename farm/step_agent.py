@@ -2033,7 +2033,9 @@ def _task_reply_validator(label: str, metric: str | None = None):
     retry; a second bad reply fails the step. The message and the log name
     the field or the secret's shape, never the value. HZ-503: the block's
     `proof` must name each line of the item's `metric` exactly once; the
-    reason names every missing, doubled or out-of-range line. HZ-770:
+    reason names every missing, doubled or out-of-range line. HO-835: each
+    `proof` command needs a `rehearsal.samples` entry; the reason names each
+    command index without one, never its text. HZ-770:
     Impact review's `circular_proofs` must name metric lines with a reason,
     and Verify & report's `metric_check` must report every metric line with
     its proof and result, or as manual; the reason names each line that falls
@@ -2052,6 +2054,10 @@ def _task_reply_validator(label: str, metric: str | None = None):
             try:
                 block = run_plan.validate(parsed.get("run_plan"))
                 gaps = run_plan.unproven(block, metric)
+                if gaps:
+                    raise ValueError(gaps)
+                # HO-835: each `proof` command needs one rehearsal sample.
+                gaps = run_plan.unrehearsed(block)
                 if gaps:
                     raise ValueError(gaps)
                 texts.append(run_plan.render(block))

@@ -8,9 +8,12 @@
 // missing or malformed block is not an error here — it reads as null, and the
 // card says the plan was not found. The full contract is
 // domain/runPlan.schema.json; only the fields a reader relies on are checked.
+// HO-835: runPlanError() says why a parsed block fails; a v2 reason is the
+// same text run_plan.validate() raises, from domain/runPlanContract.json.
 
 import { criteriaLines } from './fields.js'
 import dbChangesRules from '../dbChanges.json' with { type: 'json' }
+import runPlanContract from '../runPlanContract.json' with { type: 'json' }
 import taskMediaRules from '../taskMedia.json' with { type: 'json' }
 
 const FENCED = /```json run-plan\n([\s\S]*?)\n```/g
@@ -25,21 +28,38 @@ export function extractRunPlan(artifact) {
   } catch {
     return null
   }
-  if (!block || typeof block !== 'object' || Array.isArray(block)) return null
+  return runPlanError(block) === null ? block : null
+}
+
+const invalid = (field) => `run_plan '${field}' is not valid`
+
+// Why a parsed block is not a run plan the card can show, or null when it
+// is. The first problem wins. A v1 field reads `run_plan '<field>' is not
+// valid`; a v2 one (HO-835) names its field in run_plan.validate()'s words.
+// Never the value a field holds.
+export function runPlanError(block) {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) return 'run_plan must be a JSON object'
   const { cwd, commands, budget_minutes: budgetMinutes } = block
-  if (typeof cwd !== 'string' || !cwd.trim()) return null
-  if (!Array.isArray(commands) || commands.length === 0) return null
-  if (!commands.every((c) => typeof c === 'string' && c.trim())) return null
-  if (!Number.isInteger(budgetMinutes) || budgetMinutes < 1) return null
-  if (block.reports !== undefined && !validReports(block.reports)) return null
-  if (block.requires !== undefined && !validRequires(block.requires)) return null
-  if (block.proof !== undefined && !validProof(block.proof, commands.length, block.reports ?? [])) return null
-  if (block.db_changes !== undefined && !validDbChanges(block.db_changes, block.env)) return null
-  if (block.outputs !== undefined && !validOutputs(block.outputs)) return null
+  if (typeof cwd !== 'string' || !cwd.trim()) return invalid('cwd')
+  if (!Array.isArray(commands) || commands.length === 0) return invalid('commands')
+  if (!commands.every((c) => typeof c === 'string' && c.trim())) return invalid('commands')
+  if (!Number.isInteger(budgetMinutes) || budgetMinutes < 1) return invalid('budget_minutes')
+  if (block.reports !== undefined && !validReports(block.reports)) return invalid('reports')
+  if (block.requires !== undefined) {
+    const reason = requiresError(block.requires)
+    if (reason) return reason
+  }
+  if (block.proof !== undefined && !validProof(block.proof, commands.length, block.reports ?? [])) return invalid('proof')
+  if (block.rehearsal !== undefined) {
+    const reason = rehearsalError(block.rehearsal, block.env, commands.length)
+    if (reason) return reason
+  }
+  if (block.db_changes !== undefined && !validDbChanges(block.db_changes, block.env)) return invalid('db_changes')
+  if (block.outputs !== undefined && !validOutputs(block.outputs)) return invalid('outputs')
   // HZ-416: optional; absent leaves it to effectiveRunner(). Unknown values
   // read as no plan, the same as any other malformed block.
-  if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return null
-  return block
+  if (block.runner !== undefined && block.runner !== 'container' && block.runner !== 'host') return invalid('runner')
+  return null
 }
 
 // HZ-491: where Execute runs a plan. The plan's own `runner` wins; with none,
@@ -65,21 +85,135 @@ const TOOL_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]*$/
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 const CONTROL = /[\x00-\x1f\x7f]/
 
-function validRequires(requires) {
-  if (!Array.isArray(requires)) return false
-  return requires.every((entry) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+function requiresError(requires) {
+  if (!Array.isArray(requires)) return invalid('requires')
+  for (const original of requires) {
+    if (!original || typeof original !== 'object' || Array.isArray(original)) return invalid('requires')
+    let entry = original
+    if (Object.hasOwn(entry, 'access')) {
+      // HO-835: only a `file` may say whether the run reads or writes it.
+      const keys = Object.keys(entry)
+      if (keys.length !== 2 || !Object.hasOwn(entry, 'file') || !oneOf(entry.access, CONTRACT.fileAccess)) return contractReason('access')
+      entry = { file: entry.file }
+    }
     const keys = Object.keys(entry)
-    if (keys.length !== 1) return false
+    if (keys.length !== 1) return invalid('requires')
     const [key] = keys
     const value = entry[key]
-    if (typeof value !== 'string' || !value) return false
-    if (key === 'tool') return TOOL_NAME.test(value)
-    if (key === 'path') return value.trim() !== '' && !value.startsWith('/') && !value.split('/').includes('..') && !CONTROL.test(value)
-    if (key === 'env') return ENV_NAME.test(value)
-    if (key === 'file') return value.startsWith('/') && !CONTROL.test(value)
-    return false
-  })
+    if (key === 'service') {
+      const reason = serviceError(value)
+      if (reason) return reason
+      continue
+    }
+    if (key === 'precondition') {
+      const reason = preconditionError(value)
+      if (reason) return reason
+      continue
+    }
+    if (typeof value !== 'string' || !value) return invalid('requires')
+    let valid = false
+    if (key === 'tool') valid = TOOL_NAME.test(value)
+    if (key === 'path') valid = value.trim() !== '' && !value.startsWith('/') && !value.split('/').includes('..') && !CONTROL.test(value)
+    if (key === 'env') valid = ENV_NAME.test(value)
+    if (key === 'file') valid = value.startsWith('/') && !CONTROL.test(value)
+    if (!valid) return invalid('requires')
+  }
+  return null
+}
+
+// HO-835: the v2 contract — `service` and `precondition` entries in
+// `requires`, a `file`'s `access`, and the top-level `rehearsal` block. The
+// same rule as run_plan.validate()'s, word for word; the rules and reason
+// texts are domain/runPlanContract.json, shared with the farm. Shape only:
+// no `check`, `version_cmd`, `dry_run` or sample is ever run here.
+export const RUN_PLAN_CONTRACT = runPlanContract
+const CONTRACT = runPlanContract
+const SERVICE_NAME = new RegExp(CONTRACT.serviceName)
+const WRITE_SHAPES = CONTRACT.writeShapes.map((shape) => ({
+  name: shape.name,
+  pattern: new RegExp(shape.pattern, shape.ignoreCase ? 'i' : ''),
+  unquotedOnly: shape.unquotedOnly,
+}))
+const QUOTED = /'[^']*'|"(?:[^"\\]|\\.)*"/g
+const SLOT = /\{(\w+)\}/g
+
+function contractReason(key, slots = {}) {
+  return CONTRACT.reasons[key].replace(SLOT, (_, name) => String(slots[name]))
+}
+
+const oneOf = (value, allowed) => typeof value === 'string' && allowed.includes(value)
+// Non-blank text on one line, with no control character.
+const line = (value) => text(value) && !CONTROL.test(value)
+const exactKeys = (value, wanted) =>
+  value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === wanted.length && wanted.every((k) => Object.hasOwn(value, k))
+
+// The NAME of the first write shape a command has, or null — never the
+// command text. Best-effort: null does not prove a command read-only.
+export function writeShape(command) {
+  const unquoted = command.replace(QUOTED, ' ')
+  const hit = WRITE_SHAPES.find((shape) => shape.pattern.test(shape.unquotedOnly ? unquoted : command))
+  return hit ? hit.name : null
+}
+
+function readOnlyError(command, field) {
+  const shape = writeShape(command)
+  return shape ? contractReason('writeShape', { field, shape }) : null
+}
+
+function serviceError(value) {
+  if (!exactKeys(value, ['name', 'version_cmd', 'expect'])) return contractReason('service')
+  if (typeof value.name !== 'string' || !SERVICE_NAME.test(value.name) || !line(value.version_cmd) || !line(value.expect)) {
+    return contractReason('service')
+  }
+  return readOnlyError(value.version_cmd, 'service version_cmd')
+}
+
+function preconditionError(value) {
+  if (!exactKeys(value, ['kind', 'check']) || !oneOf(value.kind, CONTRACT.preconditionKinds) || !line(value.check)) {
+    return contractReason('precondition', { kinds: CONTRACT.preconditionKinds.join(', ') })
+  }
+  return readOnlyError(value.check, 'precondition check')
+}
+
+// Each `env` key, and each `$NAME` an `env` value names.
+function liveEnvNames(env) {
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return new Set()
+  const refs = Object.values(env).filter((v) => typeof v === 'string' && ENV_REFERENCE.test(v)).map((v) => v.slice(1))
+  return new Set([...Object.keys(env), ...refs])
+}
+
+function rehearsalError(rehearsal, env, commandCount) {
+  if (!rehearsal || typeof rehearsal !== 'object' || Array.isArray(rehearsal)) return contractReason('rehearsal')
+  const unknown = Object.keys(rehearsal).filter((key) => !CONTRACT.rehearsalKeys.includes(key)).sort()
+  if (unknown.length) return contractReason('rehearsalUnknown', { fields: unknown.join(', ') })
+  if (Object.hasOwn(rehearsal, 'dry_run') && !line(rehearsal.dry_run)) return contractReason('dryRun')
+  if (Object.hasOwn(rehearsal, 'limit') && !whole(rehearsal.limit)) return contractReason('limit')
+  if (Object.hasOwn(rehearsal, 'ro_env')) {
+    const roEnv = rehearsal.ro_env
+    if (!Array.isArray(roEnv) || !roEnv.every((name) => typeof name === 'string' && ENV_NAME.test(name)) || new Set(roEnv).size !== roEnv.length) {
+      return contractReason('roEnv')
+    }
+    const live = liveEnvNames(env)
+    const clash = roEnv.find((name) => live.has(name))
+    if (clash !== undefined) return contractReason('roEnvLive', { name: clash })
+  }
+  if (Object.hasOwn(rehearsal, 'samples')) return samplesError(rehearsal.samples, commandCount)
+  return null
+}
+
+function samplesError(samples, commandCount) {
+  if (!Array.isArray(samples)) return contractReason('samples')
+  const seen = new Set()
+  for (const sample of samples) {
+    if (!exactKeys(sample, ['command', 'expect'])) return contractReason('samples')
+    if (!whole(sample.command) || sample.command > commandCount) return contractReason('samplesCommand')
+    if (!line(sample.expect) || sample.expect.length > CONTRACT.maxSampleLength) {
+      return contractReason('samplesExpect', { max: CONTRACT.maxSampleLength })
+    }
+    if (seen.has(sample.command)) return contractReason('samplesDoubled', { n: sample.command })
+    seen.add(sample.command)
+  }
+  return null
 }
 
 // HZ-814: the same rule as run_plan.validate()'s `db_changes` check —

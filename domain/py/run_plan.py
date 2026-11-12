@@ -104,6 +104,8 @@ def validate(block: object) -> dict:
             raise ValueError(REPORTS_PARENT)
     _check_requires(block.get("requires", []))
     _check_proof(block.get("proof", []), len(commands), reports)
+    if "rehearsal" in block:
+        _check_rehearsal(block["rehearsal"], env, len(commands))
     if "db_changes" in block:
         _check_db_changes(block["db_changes"], env)
     if "outputs" in block:
@@ -126,8 +128,8 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 # symlinks) and allows only its config roots, so `..` passes the shape.
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 REQUIRES_SHAPE = (
-    "run_plan 'requires' must be a list of {\"tool\": ...}, {\"path\": ...}, {\"env\": ...} or {\"file\": ...} "
-    "objects, one key each"
+    "run_plan 'requires' must be a list of {\"tool\": ...}, {\"path\": ...}, {\"env\": ...}, {\"file\": ...}, "
+    "{\"service\": {...}} or {\"precondition\": {...}} objects, one key each ('access' may sit beside 'file')"
 )
 REQUIRES_TOOL = "run_plan 'requires' tool names must be letters, digits and . _ + -, not starting with -"
 REQUIRES_PATH = "run_plan 'requires' paths must be relative to the repo root, with no '..' and no control characters"
@@ -139,9 +141,22 @@ def _check_requires(requires: object) -> None:
     if not isinstance(requires, list):
         raise ValueError(REQUIRES_SHAPE)
     for entry in requires:
-        if not isinstance(entry, dict) or len(entry) != 1:
+        if not isinstance(entry, dict):
+            raise ValueError(REQUIRES_SHAPE)
+        if "access" in entry:
+            # HO-835: only a `file` may say whether the run reads or writes it.
+            if set(entry) != {"file", "access"} or not _one_of(entry["access"], CONTRACT["fileAccess"]):
+                raise ValueError(_reason("access"))
+            entry = {"file": entry["file"]}
+        if len(entry) != 1:
             raise ValueError(REQUIRES_SHAPE)
         ((key, value),) = entry.items()
+        if key == "service":
+            _check_service(value)
+            continue
+        if key == "precondition":
+            _check_precondition(value)
+            continue
         if key not in ("tool", "path", "env", "file") or not isinstance(value, str) or not value:
             raise ValueError(REQUIRES_SHAPE)
         if key == "tool" and not TOOL_NAME.fullmatch(value):
@@ -154,6 +169,141 @@ def _check_requires(requires: object) -> None:
             raise ValueError(REQUIRES_ENV)
         if key == "file" and (not os.path.isabs(value) or _CONTROL.search(value)):
             raise ValueError(REQUIRES_FILE)
+
+
+# HO-835: the v2 contract — `service` and `precondition` entries in
+# `requires`, a `file`'s `access`, and the top-level `rehearsal` block. Its
+# rules and reason texts are declared once in domain/runPlanContract.json;
+# domain/js/runPlan.js runPlanError() is the same rule, word for word. Shape
+# only: no `check`, `version_cmd`, `dry_run` or sample is ever run here.
+CONTRACT: dict = json.loads((Path(__file__).resolve().parent.parent / "runPlanContract.json").read_text())
+SERVICE_NAME = re.compile(CONTRACT["serviceName"])
+WRITE_SHAPES: tuple[tuple[str, re.Pattern, bool], ...] = tuple(
+    (shape["name"], re.compile(shape["pattern"], re.I if shape["ignoreCase"] else 0), shape["unquotedOnly"])
+    for shape in CONTRACT["writeShapes"]
+)
+_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+_SLOT = re.compile(r"\{(\w+)\}")
+
+
+def _reason(key: str, **slots: object) -> str:
+    return _SLOT.sub(lambda m: str(slots[m.group(1)]), CONTRACT["reasons"][key])
+
+
+def _one_of(value: object, allowed: list) -> bool:
+    # `True == 1` in Python: only a string may match a string value.
+    return isinstance(value, str) and value in allowed
+
+
+def _line(value: object) -> bool:
+    """Non-blank text on one line, with no control character."""
+    return _text(value) and not _CONTROL.search(value)
+
+
+def write_shape(command: str) -> str | None:
+    """The NAME of the first write shape `command` has, or None — never the
+    command text. Best-effort: None does not prove a command read-only."""
+    unquoted = _QUOTED.sub(" ", command)
+    for name, pattern, unquoted_only in WRITE_SHAPES:
+        if pattern.search(unquoted if unquoted_only else command):
+            return name
+    return None
+
+
+def _check_read_only(command: str, field: str) -> None:
+    shape = write_shape(command)
+    if shape:
+        raise ValueError(_reason("writeShape", field=field, shape=shape))
+
+
+def _check_service(value: object) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"name", "version_cmd", "expect"}
+        or not isinstance(value["name"], str)
+        or not SERVICE_NAME.fullmatch(value["name"])
+        or not _line(value["version_cmd"])
+        or not _line(value["expect"])
+    ):
+        raise ValueError(_reason("service"))
+    _check_read_only(value["version_cmd"], "service version_cmd")
+
+
+def _check_precondition(value: object) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"kind", "check"}
+        or not _one_of(value["kind"], CONTRACT["preconditionKinds"])
+        or not _line(value["check"])
+    ):
+        raise ValueError(_reason("precondition", kinds=", ".join(CONTRACT["preconditionKinds"])))
+    _check_read_only(value["check"], "precondition check")
+
+
+def _live_env_names(env: dict) -> set[str]:
+    """Each `env` key, and each `$NAME` an `env` value names."""
+    names = set(env)
+    names.update(value[1:] for value in env.values() if isinstance(value, str) and ENV_REFERENCE.match(value))
+    return names
+
+
+def _check_rehearsal(rehearsal: object, env: dict, command_count: int) -> None:
+    if not isinstance(rehearsal, dict):
+        raise ValueError(_reason("rehearsal"))
+    unknown = sorted(set(rehearsal) - set(CONTRACT["rehearsalKeys"]))
+    if unknown:
+        raise ValueError(_reason("rehearsalUnknown", fields=", ".join(unknown)))
+    if "dry_run" in rehearsal and not _line(rehearsal["dry_run"]):
+        raise ValueError(_reason("dryRun"))
+    if "limit" in rehearsal and not _whole(rehearsal["limit"]):
+        raise ValueError(_reason("limit"))
+    if "ro_env" in rehearsal:
+        ro_env = rehearsal["ro_env"]
+        if (
+            not isinstance(ro_env, list)
+            or not all(isinstance(name, str) and ENV_NAME.fullmatch(name) for name in ro_env)
+            or len(set(ro_env)) != len(ro_env)
+        ):
+            raise ValueError(_reason("roEnv"))
+        live = _live_env_names(env)
+        for name in ro_env:
+            if name in live:
+                raise ValueError(_reason("roEnvLive", name=name))
+    if "samples" in rehearsal:
+        _check_samples(rehearsal["samples"], command_count)
+
+
+def _check_samples(samples: object, command_count: int) -> None:
+    if not isinstance(samples, list):
+        raise ValueError(_reason("samples"))
+    seen: set[int] = set()
+    for sample in samples:
+        if not isinstance(sample, dict) or set(sample) != {"command", "expect"}:
+            raise ValueError(_reason("samples"))
+        command = sample["command"]
+        if not (_whole(command) and command <= command_count):
+            raise ValueError(_reason("samplesCommand"))
+        expect = sample["expect"]
+        if not _line(expect) or len(expect) > CONTRACT["maxSampleLength"]:
+            raise ValueError(_reason("samplesExpect", max=CONTRACT["maxSampleLength"]))
+        if command in seen:
+            raise ValueError(_reason("samplesDoubled", n=command))
+        seen.add(command)
+
+
+def unrehearsed(block: dict) -> str | None:
+    """HO-835: why a validated block's `rehearsal.samples` does not cover
+    its `proof` commands — naming each proof command index with no sample,
+    never the command's text — or None when every one has a sample. Only
+    when a Run plan reply is written (farm/step_agent.py), like unproven():
+    a plan stored before the rehearsal block still passes validate()."""
+    proved = sorted({entry["command"] for entry in block.get("proof", []) if "command" in entry})
+    sampled = {sample["command"] for sample in block.get("rehearsal", {}).get("samples", [])}
+    missing = [n for n in proved if n not in sampled]
+    if not missing:
+        return None
+    commands = ("command " if len(missing) == 1 else "commands ") + ", ".join(map(str, missing))
+    return _reason("unrehearsed", commands=commands)
 
 
 # HZ-814: the tables a run changes, counted read-only before and after

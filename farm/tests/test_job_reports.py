@@ -202,6 +202,85 @@ def test_shared_requires_cases(case):
             run_plan.validate(dict(case["block"]))
 
 
+# ---- HO-835: the v2 contract, the same rule and words as domain/js/runPlan.js ----
+
+SENTINEL_835 = "hz835-sentinel"
+V2_REQUIRES = [c for c in CASES["requires"] if "reason" in c]
+
+
+def test_the_v2_requires_cases_cover_service_every_precondition_kind_and_bad_access():
+    """Metric 1: the shared cases the rule turns on, so dropping one fails here."""
+    valid = [entry for c in CASES["requires"] if c["valid"] for entry in c["block"].get("requires", [])]
+    assert any("service" in entry for entry in valid)
+    assert {e["precondition"]["kind"] for e in valid if "precondition" in e} == set(run_plan.CONTRACT["preconditionKinds"])
+    assert any(e.get("access") == "w" and "file" in e for e in valid)
+    bad_access = [c["block"]["requires"][0].get("access") for c in V2_REQUIRES if c["reason"] == run_plan._reason("access")]
+    for value in ("x", "rw", "R", "", True):
+        assert value in bad_access
+
+
+@pytest.mark.parametrize("case", V2_REQUIRES, ids=lambda c: c["case"])
+def test_v2_requires_cases_give_the_exact_reason_and_never_a_value(case):
+    with pytest.raises(ValueError) as raised:
+        run_plan.validate(dict(case["block"]))
+    assert str(raised.value) == case["reason"]
+    assert "access" in str(raised.value) or "service" in str(raised.value) or "precondition" in str(raised.value)
+    assert SENTINEL_835 not in str(raised.value)
+
+
+def _precondition_block(check: str) -> dict:
+    return {"cwd": ".", "commands": ["echo hi"], "budget_minutes": 1, "requires": [{"precondition": {"kind": "row_exists", "check": check}}]}
+
+
+def test_the_write_shape_cases_trip_every_shape_and_pass_quoted_and_dev_null_redirects():
+    tripped = {c["shape"] for c in CASES["write_shapes"]}
+    assert {shape["name"] for shape in run_plan.CONTRACT["writeShapes"]} <= tripped
+    assert None in tripped
+
+
+@pytest.mark.parametrize("case", CASES["write_shapes"], ids=lambda c: c["case"])
+def test_shared_write_shape_cases(case):
+    assert run_plan.write_shape(case["check"]) == case["shape"]
+    block = _precondition_block(case["check"])
+    if case["shape"] is None:
+        assert run_plan.validate(dict(block)) == block
+    else:
+        with pytest.raises(ValueError) as raised:
+            run_plan.validate(dict(block))
+        assert str(raised.value) == run_plan._reason("writeShape", field="precondition check", shape=case["shape"])
+        assert case["check"] not in str(raised.value)
+
+
+def test_the_rehearsal_fixture_has_a_full_block_and_every_invalid_field():
+    assert any(c["valid"] and set(c["block"]["rehearsal"]) == set(run_plan.CONTRACT["rehearsalKeys"]) for c in CASES["rehearsal"])
+    named = " ".join(c["reason"] for c in CASES["rehearsal"] if not c["valid"])
+    for field in ("dry_run", "limit", "ro_env", "samples", "unknown field"):
+        assert field in named
+    limits = [c["block"]["rehearsal"].get("limit") for c in CASES["rehearsal"] if "'rehearsal.limit'" in c.get("reason", "")]
+    for value in (True, 1.5, "50", 0):
+        assert any(type(v) is type(value) and v == value for v in limits)
+
+
+@pytest.mark.parametrize("case", CASES["rehearsal"], ids=lambda c: c["case"])
+def test_shared_rehearsal_cases(case):
+    if case["valid"]:
+        assert run_plan.validate(dict(case["block"])) == case["block"]
+    else:
+        with pytest.raises(ValueError) as raised:
+            run_plan.validate(dict(case["block"]))
+        assert str(raised.value) == case["reason"]
+        assert SENTINEL_835 not in str(raised.value)
+
+
+def test_the_schema_declares_the_v2_fields_as_the_contract_does():
+    schema = json.loads((REPO_ROOT / "domain/runPlan.schema.json").read_text())
+    items = schema["properties"]["requires"]["items"]["properties"]
+    assert items["precondition"]["properties"]["kind"]["enum"] == run_plan.CONTRACT["preconditionKinds"]
+    assert items["access"]["enum"] == run_plan.CONTRACT["fileAccess"]
+    assert list(schema["properties"]["rehearsal"]["properties"]) == run_plan.CONTRACT["rehearsalKeys"]
+    assert "rehearsal" in run_plan.FIELDS and "rehearsal" not in schema["required"]
+
+
 # ---- HZ-814: the same `db_changes` rule as domain/js/runPlan.js ----
 
 
@@ -329,6 +408,22 @@ def test_mdi56_replay_names_uncovered_lines():
     assert reason is not None
     for line in (3, 4, 5):
         assert re.search(rf"\blines (?:\d+, )*{line}\b", reason), reason
+
+
+STORED_PLANS = REPO_ROOT / "farm/tests/fixtures/run_plans"
+
+
+@pytest.mark.parametrize("name", ["hz514", "hz532", "hz533", "hz700-a5", "MDI-56"])
+def test_each_stored_v1_plan_still_validates_unchanged(name):
+    """HO-835 metric 4: v2 fields are optional, so the stored plans — none
+    with a `rehearsal` — validate exactly as stored. JS half:
+    server/test/run-plan-reports-cases.test.mjs."""
+    text = (STORED_PLANS / f"{name}.json").read_text() if name.startswith("hz") else None
+    stored = json.loads(text) if text else REPLAYS[name]["run_plan"]
+    copy = json.loads(json.dumps(stored))
+    assert "rehearsal" not in stored
+    assert run_plan.validate(copy) == stored
+    assert copy == stored
 
 
 # ---- HZ-770 guardrail: no repo-specific logic in the rules ----

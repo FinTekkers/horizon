@@ -398,7 +398,12 @@ def proof_task() -> dict:
 
 
 def proof_plan(*lines) -> dict:
-    return {**VALID_PLAN, "proof": [{"line": n, "command": 1} for n in lines]}
+    # HO-835: a `proof` command needs a rehearsal sample to pass the step.
+    return {
+        **VALID_PLAN,
+        "proof": [{"line": n, "command": 1} for n in lines],
+        "rehearsal": {"samples": [{"command": 1, "expect": "would update 12 rows"}]},
+    }
 
 
 @pytest.mark.parametrize(
@@ -424,6 +429,86 @@ def test_a_plan_proving_every_line_once_finishes_with_its_proof(monkeypatch):
     assert len(calls) == 1
     assert result["summary"] == f"did {step_agent.RUN_PLAN_LABEL}"
     assert run_plan.extract(result["artifacts"]["artifact_md"])["proof"] == plan["proof"]
+
+
+# ---- HO-835: each proof command has a rehearsal sample ----
+
+SAMPLED_COMMANDS = ["./backfill.sh --limit 50", "./count.sh --table accounts"]
+
+
+def sampled_plan(*samples) -> dict:
+    return {
+        **VALID_PLAN,
+        "commands": SAMPLED_COMMANDS,
+        "proof": [{"line": 1, "command": 1}, {"line": 2, "command": 2}, {"line": 3, "manual": "the owner opens the report"}],
+        "rehearsal": {"dry_run": "./backfill.sh --dry-run", "samples": [{"command": k, "expect": f"command {k} would pass"} for k in samples]},
+    }
+
+
+def test_a_proof_command_with_no_sample_fails_naming_its_index_never_its_text(monkeypatch):
+    """Metric 3: through the real Run plan check, not unrehearsed() alone."""
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, run_plan=sampled_plan(1))])
+    with pytest.raises(AgentError, match="invalid run plan") as raised:
+        step_agent.execute(proof_task())
+    assert len(calls) == 2
+    reason = str(raised.value)
+    assert reason == "invalid run plan: rehearsal.samples has no entry for proof command 2"
+    assert "proof command 2" in calls[1]["prompt"]
+    for text in (reason, calls[1]["prompt"].split("rehearsal.samples")[-1]):
+        assert SAMPLED_COMMANDS[1] not in text and "count.sh" not in text
+
+
+def test_a_plan_whose_missing_sample_is_added_on_the_retry_passes(monkeypatch):
+    plan = sampled_plan(1, 2)
+    calls = stub_agent(
+        monkeypatch,
+        [reply_for(step_agent.RUN_PLAN_LABEL, run_plan=sampled_plan(1)), reply_for(step_agent.RUN_PLAN_LABEL, run_plan=plan)],
+    )
+    result = step_agent.execute(proof_task())
+    assert len(calls) == 2
+    assert run_plan.extract(result["artifacts"]["artifact_md"]) == plan
+
+
+def test_a_new_plan_with_no_command_proof_needs_no_rehearsal(monkeypatch):
+    """Guardrail 1: the rehearsal block stays optional for a plan written now."""
+    plan = {
+        **VALID_PLAN,
+        "reports": ["/tmp/backfill.json"],
+        "proof": [{"line": 1, "report": "/tmp/backfill.json#rows"}, {"line": 2, "manual": "the owner checks the log"}, {"line": 3, "report": "/tmp/backfill.json#batches"}],
+    }
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, run_plan=plan)])
+    result = step_agent.execute(proof_task())
+    assert len(calls) == 1
+    assert run_plan.extract(result["artifacts"]["artifact_md"]) == plan
+
+
+def test_unrehearsed_names_every_unsampled_proof_command_once():
+    block = {**sampled_plan(), "proof": [{"line": 1, "command": 2}, {"line": 2, "command": 1}, {"line": 3, "command": 2}]}
+    assert run_plan.unrehearsed(block) == "rehearsal.samples has no entry for proof commands 1, 2"
+    assert run_plan.unrehearsed({k: v for k, v in block.items() if k != "rehearsal"}) == (
+        "rehearsal.samples has no entry for proof commands 1, 2"
+    )
+    assert run_plan.unrehearsed(sampled_plan(1, 2)) is None
+
+
+# ---- HO-835 metric 5: the role puts the dry run under `rehearsal` ----
+
+# Lines 15-17 of farm/roles/task_run_plan.md, copied from HEAD before HO-835.
+READ_ONLY_RULE = """You have read-only access. Never run a script or command, against live
+systems or anywhere else — not even the dry run. Describe the dry run's
+expected output; never execute it."""
+
+
+def test_the_run_plan_role_asks_for_the_dry_run_under_rehearsal_and_keeps_the_read_only_rule():
+    prompt = (REPO_ROOT / "farm" / "roles" / "task_run_plan.md").read_text()
+    (format_line,) = [line for line in prompt.splitlines() if line.lstrip().startswith('"artifact_md":')]
+    assert "'## Rehearsal'" in format_line
+    assert "## Dry run" not in format_line
+    rehearsal = json.loads(re.search(r'^\s*"rehearsal": (\{.*\}),$', prompt, re.M).group(1))
+    assert "--dry-run" in rehearsal["dry_run"]
+    commands = json.loads(re.search(r'^\s*"commands": (\[.*\]),$', prompt, re.M).group(1))
+    assert not any("--dry-run" in command for command in commands)
+    assert "\n".join(prompt.splitlines()[14:17]) == READ_ONLY_RULE
 
 
 def test_impact_review_follows_run_plan_for_a_task():
@@ -562,8 +647,17 @@ def test_the_schema_alone_accepts_a_literal_env_value_and_the_binding_rejects_it
         {"run_plan": {**VALID_PLAN, "commands": [f'curl -H "Authorization: token {FAKE_TOKEN}" https://api.github.com']}},
         {"summary": f"used {FAKE_TOKEN}"},
         {"artifact_md": f"## Environment\nexport GITHUB_TOKEN={FAKE_TOKEN}"},
+        # HO-835: the rehearsal and a precondition check are scanned too.
+        {"run_plan": {**VALID_PLAN, "rehearsal": {"samples": [{"command": 2, "expect": f"used {FAKE_TOKEN}"}]}}},
+        {"run_plan": {**VALID_PLAN, "rehearsal": {"dry_run": f"./backfill.sh --dry-run --token {FAKE_TOKEN}"}}},
+        {
+            "run_plan": {
+                **VALID_PLAN,
+                "requires": [{"precondition": {"kind": "account_exists", "check": f'curl -fsS -H "Authorization: token {FAKE_TOKEN}" https://api.github.com/user'}}],
+            }
+        },
     ],
-    ids=["in commands", "in the summary", "in the artifact"],
+    ids=["in commands", "in the summary", "in the artifact", "in a rehearsal sample", "in the dry run", "in a precondition check"],
 )
 def test_a_literal_token_fails_the_step_and_is_never_logged(monkeypatch, capsys, overrides):
     calls = stub_agent(monkeypatch, [reply_for(step_agent.RUN_PLAN_LABEL, **overrides)])
