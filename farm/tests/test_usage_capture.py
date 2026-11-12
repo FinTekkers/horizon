@@ -52,7 +52,12 @@ def cli(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         lane.argv.append(cmd)
-        lane.prompts.append(cmd[cmd.index("-p") + 1])
+        # The subprocess runner sends the prompt on stdin, not in argv.
+        prompt = kwargs.get("input")
+        if prompt is None:
+            i = cmd.index("-p") if "-p" in cmd else -1
+            prompt = cmd[i + 1] if 0 <= i < len(cmd) - 1 and cmd[i + 1] != "--output-format" else ""
+        lane.prompts.append(prompt)
         nxt = lane.turns.pop(0)
         if nxt["effect"]:
             nxt["effect"](Path(kwargs.get("cwd") or "."))
