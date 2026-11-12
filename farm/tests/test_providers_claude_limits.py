@@ -68,6 +68,29 @@ def test_a_limit_reached_message_with_an_iso_reset_is_parsed():
     assert claude._usage_limit("5-hour limit reached ∙ resets 3pm").reset_at is None
 
 
+def test_a_prompt_over_the_single_argument_limit_goes_on_stdin(monkeypatch):
+    """A review prompt over MAX_ARG_STRLEN (128 KiB) must reach `claude`
+    on stdin, never as one argv string — argv delivery fails the whole
+    run before the model starts, with E2BIG."""
+    monkeypatch.setenv("FARM_RUNNER", "subprocess")
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        seen["input"] = kw.get("input")
+        return _completed(json.dumps({"result": "ok", "session_id": "s1"}), returncode=0)
+
+    monkeypatch.setattr(claude.subprocess, "run", fake_run)
+    prompt = "x" * 150_000
+
+    result = claude.run(prompt)
+
+    assert result["result"] == "ok"
+    assert seen["input"] == prompt
+    assert prompt not in seen["cmd"]
+    assert all(len(str(arg)) < 131072 for arg in seen["cmd"])
+
+
 def test_any_other_error_is_unchanged(subprocess_runner):
     subprocess_runner(_completed(stderr="model not found"))
 
