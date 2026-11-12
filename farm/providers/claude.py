@@ -7,7 +7,8 @@ run's log file that the UI tails). Session continuity still comes from
 `resume=<session_id>`; scripts stay in control of the flow.
 
 Rollback lever: FARM_RUNNER=subprocess restores the old silent
-`claude -p --output-format json` subprocess path unchanged. This is
+`claude -p --output-format json` subprocess path, with the prompt on stdin.
+This is
 independent of FARM_PROVIDER (farm/agent_runner.py) — it only chooses how
 *this* provider talks to `claude`, not which provider runs.
 
@@ -412,7 +413,10 @@ def _run_subprocess(
     # --strict-mcp-config: farm agents must NOT inherit the human's personal
     # MCP servers (WhatsApp etc.) from the global Claude config — least
     # privilege, faster startup, no personal tools in agent context.
-    cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns), "--strict-mcp-config"]
+    # The prompt goes on stdin, not in argv: one argv string is capped at
+    # 128 KiB (MAX_ARG_STRLEN), and review prompts exceed it. `claude -p`
+    # with no prompt argument reads the prompt from stdin.
+    cmd = [CLAUDE_BIN, "-p", "--output-format", "json", "--max-turns", str(max_turns), "--strict-mcp-config"]
     if session_id:
         cmd += ["--resume", session_id]
     if append_system:
@@ -432,6 +436,7 @@ def _run_subprocess(
         # so this holds even in the concierge, the one session granted one.
         proc = subprocess.run(
             cmd,
+            input=prompt,
             capture_output=True,
             text=True,
             timeout=timeout_s,
