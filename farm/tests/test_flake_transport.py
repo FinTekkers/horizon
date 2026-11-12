@@ -82,6 +82,15 @@ def inline_background(monkeypatch):
     monkeypatch.setattr(farmd, "_in_background", lambda fn, *args: fn(*args))
 
 
+@pytest.fixture(autouse=True)
+def private_outbox(monkeypatch, tmp_path):
+    """A lost test-runs post leaves its spool file behind. In the shared
+    outbox, farmd's import-time retry loop would keep posting it to the stub
+    server long after this test, printing into whichever later test is
+    capturing stdout. Here the file stays in this test's own directory."""
+    monkeypatch.setattr(farmd, "TEST_RUNS_OUTBOX", tmp_path / "test-runs-outbox")
+
+
 class Posts:
     def __init__(self):
         self.calls = []
