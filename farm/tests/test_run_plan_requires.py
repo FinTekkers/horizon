@@ -852,10 +852,21 @@ def test_a_gap_carries_only_the_host_never_userinfo_query_or_a_header():
         ("./run.sh 2>&1 | /usr/bin/tee log > out.txt", []),
         ("(( i++ )); [[ x == y && z ]] && bash --norc -c 'jq .'", [("tool", "bash"), ("tool", "jq")]),
         ("function f { wc; }; f", [("tool", "wc")]),
+        ("$(foo)", [("tool", "foo")]),
+        ("echo a; $(foo)", [("tool", "foo")]),
+        ("`date`", [("tool", "date")]),
+        ("$(cat x) | jq .", [("tool", "cat"), ("tool", "jq")]),
     ],
 )
 def test_scanner_edges(command, expected):
     assert [(kind, name) for kind, name, _ in gaps_of(command)] == expected
+
+
+@pytest.mark.parametrize("command", ["`date`", "$(foo) | bar", "echo a; $(foo)"])
+def test_a_command_led_by_a_substitution_implies_no_file_and_does_not_raise(command):
+    """A simple command that is only a substitution still has a span, so
+    _implied_files (Run plan's `requires` check) never fails on it."""
+    assert run_plan_requires._implied_files({"commands": [command]}) == []
 
 
 def test_a_wrapper_with_a_positional_word_reads_past_it():

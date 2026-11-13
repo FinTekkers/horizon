@@ -417,7 +417,7 @@ _SUBSTITUTION = _Word("$", False, True, 0, 0)
 
 
 def _tokens(command: str) -> list[tuple]:
-    """The command as ("w", _Word), ("op", text), ("redir",), ("open",) and
+    """The command as ("w", _Word), ("op", text), ("redir",), ("open", at) and
     ("close",) tokens. Quotes join a word; `$(`, `<(`, `>(` and backticks open
     a nested list; heredoc bodies and comments are skipped (_heredoc_start and
     _heredoc_bodies, as the `$NAME` scan does)."""
@@ -477,12 +477,12 @@ def _tokens(command: str) -> list[tuple]:
             elif command.startswith("$(", i) and not command.startswith("$((", i):
                 flush(i, dynamic=True)
                 stack.append(["n", 0])
-                out.append(("open",))
+                out.append(("open", i))
                 i += 2
             elif c == "`":
                 flush(i, dynamic=True)
                 stack.append(["b", 0])
-                out.append(("open",))
+                out.append(("open", i))
                 i += 1
             elif c == "$":
                 i = dollar(i)
@@ -511,7 +511,7 @@ def _tokens(command: str) -> list[tuple]:
             else:
                 flush(i, dynamic=True)
                 stack.append(["b", 0])
-                out.append(("open",))
+                out.append(("open", i))
             i += 1
         elif command.startswith("$((", i):
             end = command.find("))", i + 3)
@@ -521,7 +521,7 @@ def _tokens(command: str) -> list[tuple]:
         elif command.startswith("$(", i) or command.startswith("<(", i) or command.startswith(">(", i):
             flush(i, dynamic=True)
             stack.append(["n", 0])
-            out.append(("open",))
+            out.append(("open", i))
             i += 2
         elif c == "$" and i + 1 < n:
             i = dollar(i)
@@ -655,6 +655,8 @@ def _simple_commands(command: str) -> tuple[list[_Simple], set[str]]:
         elif tok[0] == "open":
             if not simple.words:
                 simple.words.append(_SUBSTITUTION)
+                if simple.start is None:  # the substitution's text starts the command
+                    simple.start = simple.end = tok[1]
             level[2] = False  # a substitution is the redirection's target
             levels.append([_Simple(), [], False, False])
         elif tok[0] == "close":
