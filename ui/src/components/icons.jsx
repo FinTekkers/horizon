@@ -160,3 +160,16 @@ export function CircleXIcon({ size = 14, label = null }) {
     </svg>
   )
 }
+
+// HO-848: a Verify & report that finished the work but not its proof — a
+// circle with "!", beside CircleXIcon's work-failed X. Same a11y props.
+export function CircleAlertIcon({ size = 14, label = null }) {
+  const a11y = label ? { 'aria-hidden': undefined, role: 'img', 'aria-label': label } : {}
+  return (
+    <svg {...iconProps(size, 2.4)} {...a11y}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 7v6" />
+      <path d="M12 17h.01" />
+    </svg>
+  )
+}

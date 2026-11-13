@@ -69,6 +69,14 @@ export const ADMIN_SECTIONS = [
     label: 'Flaky tests',
     keywords: ['flaky', 'flake', 'rerun', 'tests'],
   },
+  // HO-848: HO-841's Verify outcomes and Execute causes for a Task cohort.
+  {
+    key: 'verify',
+    ownerOnly: true,
+    group: 'Delivery',
+    label: 'Verify report',
+    keywords: ['verify', 'verdict', 'prereq', 'first pass yield', 'proof incomplete', 'execute cause'],
+  },
   {
     key: 'github',
     ownerOnly: true,

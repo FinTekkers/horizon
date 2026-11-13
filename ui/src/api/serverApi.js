@@ -1083,6 +1083,14 @@ export function getProductivity({ range = '14d', project = 'all' } = {}) {
   return getJson(`/admin/productivity?${qs}`)
 }
 
+// HO-848: HO-841's Verify report, read-only and owner only — the first `n`
+// (1-500) Tasks closed after `since` (YYYY-MM-DD), across all projects. The
+// response follows domain/productivityVerify.schema.json.
+export function getVerifyReport({ since, n = 50 }) {
+  const qs = new URLSearchParams({ since, n: String(n) })
+  return getJson(`/admin/productivity/verify?${qs}`)
+}
+
 // HZ-563: Farm health — admins only, read-only. Rejects with the server's
 // error code: admin_required (403), farm_health_warming (503) before the
 // server's first reading, or HTTP <status>.

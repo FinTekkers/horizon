@@ -646,6 +646,24 @@ export async function getProductivity({ range = '14d', project = 'all' } = {}) {
   return { ...structuredClone(PRODUCTIVITY_FIXTURE), range, project }
 }
 
+// HO-848: a fixed Verify report in the shape GET /api/admin/productivity/verify
+// returns (domain/productivityVerify.schema.json), echoing since and n.
+export async function getVerifyReport({ since, n = 50 }) {
+  return {
+    since,
+    n,
+    project: 'all',
+    returned: 20,
+    tasks: [{ id: 'HO-830', closedAt: '2026-11-02 09:14:00', verdict: 'work_failed', executeCause: 'prereq' }],
+    totals: {
+      verdicts: { pass: 14, work_failed: 4, done_proof_incomplete: 1, none: 1 },
+      executeCauses: { prereq: 1, unforeseeable: 3 },
+    },
+    prereqShare: 0.25,
+    firstPassYield: 0.7,
+  }
+}
+
 // HZ-563: a fixed amber Farm health reading, the shape GET /api/admin/farm-health returns.
 export async function getFarmHealth() {
   const now = Date.now()
