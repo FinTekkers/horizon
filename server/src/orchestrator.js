@@ -118,6 +118,7 @@ import {
   FARM_STEP_TIMEOUT_MS,
   DEPLOY_WAIT_MS,
   FARM_QUEUE_TIMEOUT_MS,
+  FARM_PREFLIGHT_TIMEOUT_MS,
   FARM_CHECKS_PAUSE_MAX_MS,
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
@@ -2139,8 +2140,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       .join('; ')
     return failFarmRun(runId, `required input incomplete: ${detail}`, REASON.REQUIRED_INPUT_INCOMPLETE)
   }
-  if (await refuseUnapprovedRun(runId, id, stepIndex)) return
-  if (!runStillActive(runId)) return
+  // HO-838: only Execute awaits — its prerequisite re-check is a farm call.
+  // Every other step still dispatches in the same tick, as before. A Stop
+  // during the re-check leaves the run inactive, so nothing is dispatched.
+  if (stepIndex === EXECUTE_STEP_INDEX) {
+    if (await refuseUnapprovedRun(runId, id, stepIndex)) return
+    if (!runStillActive(runId)) return
+  }
   if (step.runsIn === 'job') return dispatchJob(id, stepIndex, runId, attempt)
 
   // HZ-801: each stored input carries the full URL of its artifact page, so
@@ -2438,7 +2444,6 @@ export function jobRequest(id) {
 // cannot drift apart.
 function dispatchJob(id, stepIndex, runId, attempt) {
   const step = STEPS[stepIndex]
-  const item = getItem(id)
   const req = jobRequest(id)
   if (!req.plan_artifact || !req.approved_hash || !req.runner) {
     return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
@@ -3882,8 +3887,7 @@ export function failFarmRun(runId, error, reason = null, jobView = null, limit =
   return { ok: true }
 }
 
-// HO-838: re-check timeout and name caps — same shape as farm/preflight.py.
-const PREFLIGHT_TIMEOUT_MS = 30_000
+// HO-838: name caps — same as farm/preflight.py DRIFT_NAMES_MAX / DRIFT_NAME_MAX.
 const DRIFT_NAMES_MAX = 20
 const DRIFT_NAME_MAX = 120
 
@@ -3904,7 +3908,7 @@ export async function refuseOnPrereqDrift(runId, id) {
   }
   let data
   try {
-    data = await farmFetch('/preflight', body, { timeoutMs: PREFLIGHT_TIMEOUT_MS })
+    data = await farmFetch('/preflight', body, { timeoutMs: FARM_PREFLIGHT_TIMEOUT_MS })
   } catch (err) {
     const reason = String(err?.message ?? err).slice(0, 200)
     const text = `prerequisite re-check could not run: ${reason} — dispatch refused`

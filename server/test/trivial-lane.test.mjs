@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-trivial-lane-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -27,6 +28,8 @@ const issueBodies = new Map()
 const githubWrites = []
 const farmCalls = []
 globalThis.fetch = async (url, opts = {}) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   const u = String(url)
   const method = opts.method || 'GET'
   if (u.startsWith('https://api.github.com/')) {
@@ -39,7 +42,6 @@ globalThis.fetch = async (url, opts = {}) => {
     return { ok: false, status: 500, json: async () => ({ message: 'stub' }) }
   }
   farmCalls.push({ url: u, body: opts.body ? JSON.parse(opts.body) : null })
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

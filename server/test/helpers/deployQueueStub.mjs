@@ -25,7 +25,6 @@ export function deployQueueStub({ mainSha = shaOf(0xa0), releases = [] } = {}) {
     const body = opts.body ? JSON.parse(opts.body) : null
     if (u.hostname !== 'api.github.com') {
       stub.dispatches.push({ path: u.pathname, body })
-      if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
       return json(200, {})
     }
     stub.requests.push({ method, path: u.pathname })

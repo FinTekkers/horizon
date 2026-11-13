@@ -21,7 +21,6 @@ for (const key of ['GITHUB_WEBHOOK_SECRET', 'GITHUB_TOKEN', 'WA_APPROVAL_SECRET'
 const farmCalls = []
 globalThis.fetch = async (url) => {
   const u = String(url)
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight')) || (typeof path !== 'undefined' && String(path).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   if (u.startsWith('http://farm.test')) farmCalls.push(u)
   if (u.startsWith('https://api.github.com/')) return { ok: false, status: 500, headers: new Headers(), json: async () => ({}) }
   return { ok: true, status: 200, headers: new Headers(), json: async () => ({ ok: true }), text: async () => '{"ok":true}' }

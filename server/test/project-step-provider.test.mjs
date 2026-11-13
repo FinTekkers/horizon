@@ -47,7 +47,6 @@ globalThis.fetch = async (url, opts = {}) => {
   const reply = (status, data) => ({ ok: status < 300, status, json: async () => data })
   if (String(url).startsWith('http://farm.test')) {
     dispatches.push({ url: String(url), body: opts.body ? JSON.parse(opts.body) : null })
-    if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
     if (String(url).includes('/runs/status')) return reply(200, { states: {} })
     if (String(url).endsWith('/farm/status')) return reply(200, { status: 'running' })
     return reply(200, {})

@@ -278,9 +278,8 @@ def render(result: dict) -> str:
 
 
 # HO-838: a dispatch re-check's refusal. The first line names the failed
-# checks; one line per unmet item follows. server/src/checkHeadline.js
-# PREREQ_DRIFT_HEADLINE and orchestrator.js prereqDriftText write the same
-# shape for the server's own gate.
+# checks; one line per unmet item follows. server/src/orchestrator.js
+# refuseOnPrereqDrift writes the same shape for the server's own gate.
 DRIFT_HEADLINE = "prerequisites changed since approval"
 DRIFT_NAMES_MAX = 20
 DRIFT_NAME_MAX = 120

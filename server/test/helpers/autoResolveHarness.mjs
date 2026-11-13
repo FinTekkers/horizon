@@ -59,7 +59,6 @@ export async function setupAutoResolve(name, { webhookSecret = WEBHOOK_SECRET } 
 
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url)
-    if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight')) || (typeof path !== 'undefined' && String(path).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
     if (u.startsWith('http://farm.test')) {
       if (!u.endsWith('/conflicts/resolve')) return replyOk({ ok: true })
       const call = { body: opts.body ? JSON.parse(opts.body) : null }

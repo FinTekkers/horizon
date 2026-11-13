@@ -12,6 +12,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-task-job-media-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -29,6 +30,8 @@ const mediaCalls = []
 let farmDown = false
 let hangingBody = null
 globalThis.fetch = async (url, opts = {}) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   const href = new URL(String(url))
   const media = /^\/media\/([^/]+)\/([^/]+)$/.exec(href.pathname)
   if (!media) return { ok: true, status: 200, json: async () => ({}) }

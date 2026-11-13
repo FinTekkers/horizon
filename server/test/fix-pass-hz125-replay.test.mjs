@@ -26,7 +26,6 @@ const expected = fixture('dispatch.json')
 const tasks = []
 globalThis.fetch = async (url, init) => {
   if (String(url).endsWith('/steps/run')) tasks.push(JSON.parse(init.body))
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 after(() => orchestrator.cancel('HZ-125R'))

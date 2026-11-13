@@ -42,7 +42,6 @@ globalThis.fetch = async (url, opts) => {
   const u = String(url)
   calls.push({ url: u, body: opts?.body ? JSON.parse(opts.body) : null, headers: opts?.headers || {} })
   if (u.startsWith('https://api.github.com/')) return { ok: false, status: 500, json: async () => ({ message: 'boom' }) }
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 orchestrator.init({ info: () => {}, warn: () => {} })

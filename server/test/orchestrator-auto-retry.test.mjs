@@ -225,8 +225,7 @@ test('a real dispatch failure (farm unreachable) auto-recovers through dispatchT
       runCalls++
       if (runCalls === 1) throw new Error('connect ECONNREFUSED')
     }
-    if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
-  return { ok: true, json: async () => ({}) }
+    return { ok: true, json: async () => ({}) }
   }
   try {
     orchestrator.kick('AR-8')

@@ -30,6 +30,8 @@ for (const [reason, label] of [
   [REASON.TIMEOUT, 'Timed out'],
   [REASON.UNREACHABLE, 'Farm unreachable'],
   [REASON.TURN_CAP, 'Ran out of turns'],
+  // HO-838: Execute's dispatch re-check found the host changed since approval.
+  [REASON.PREREQ_DRIFT, 'Run refused: host changed since approval'],
 ]) {
   test(`a ${reason} pause resolves its own distinct label`, () => {
     const result = pauseReason(pausedWith(reason, 'something went wrong'))

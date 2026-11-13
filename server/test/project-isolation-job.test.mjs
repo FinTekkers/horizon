@@ -12,6 +12,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-project-isolation-job-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -20,8 +21,9 @@ for (const key of ['GITHUB_WEBHOOK_SECRET', 'FARM_STEP_INDEXES', 'WA_POLL_ENABLE
 
 const dispatches = []
 globalThis.fetch = async (url, opts) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   dispatches.push({ url: String(url), body: opts?.body ? JSON.parse(opts.body) : null })
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, status: 200, json: async () => ({}) }
 }
 

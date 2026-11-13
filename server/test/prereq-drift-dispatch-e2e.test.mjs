@@ -1,8 +1,13 @@
-// HO-838: real-farm chain — MY_VAR removed after approval, dispatch refuses with prereq_drift, no /steps/run
+// HO-838 metric 1, end to end against a real farmd: a plan approved while
+// MY_VAR resolves (from the repo's .env, which Execute reads first) is
+// dispatched after MY_VAR is removed. The server's re-check (farmd POST
+// /preflight, farm/preflight.py) refuses: the event names MY_VAR with the
+// prereq_drift tag, farmd writes no job task file, the secret value never
+// shows, and the approval is kept.
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,87 +19,75 @@ process.env.FARM_QUEUE_TIMEOUT_MS = '600000'
 process.env.FARM_STEP_TIMEOUT_MS = '600000'
 
 import { startTestFarmd } from './helpers/farmd.mjs'
+import { useDeployTargetRows } from './helpers/deployTargetRows.mjs'
 
 const farmd = await startTestFarmd({ repoRoot: REPO_ROOT })
 process.env.FARM_URL = farmd.url
+after(() => farmd.stop())
 
 const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
-const { buildApp } = await import('../src/app.js')
-const { STEPS, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX, APPROVE_RUN_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { STEPS, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const { REASON } = await import('../../domain/js/reasons.js')
-import { loginFixtureUser } from './helpers/session.mjs'
-import * as config from '../src/config.js'
-import * as auth from '../src/auth.js'
 
 store.purgeDemoItems()
-const app = buildApp({ logger: false })
-await app.ready()
-after(async () => {
-  farmd.stop()
-  await app.close()
-})
 
-const alice = loginFixtureUser(auth, config, { email: `alice-${Date.now()}@example.com`, name: 'Alice' })
-const PIN = 'zq7-PIN-prereq-e2e'
-{
-  const salt = crypto.randomBytes(16)
-  const hash = crypto.scryptSync(PIN, salt, 32)
-  db.prepare('UPDATE user SET gate_pin_hash = ? WHERE id = ?').run(`${salt.toString('hex')}:${hash.toString('hex')}`, alice.user.id)
-}
+const REPO = 'acme/prereq-e2e'
+const SECRET = 'sentinel-9f2c'
+const repoDir = mkdtempSync(join(tmpdir(), 'horizon-prereq-repo-'))
+await useDeployTargetRows([{ key: 'prereq-e2e', repo: REPO, repoDir, stateKey: `prereq-e2e-${process.pid}` }])
 
 const sha256 = (t) => crypto.createHash('sha256').update(t, 'utf8').digest('hex')
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+const jobFiles = () => {
+  const dir = join(farmd.home, 'queue', 'jobs', 'active')
+  return existsSync(dir) ? readdirSync(dir) : []
+}
 
-const projectId = Number(db.prepare("INSERT INTO project (name, enabled) VALUES (?, 1)").run(`Prereq e2e ${Date.now()}`).lastInsertRowid)
+test('real farm: MY_VAR removed after approval — dispatch refuses naming it, tagged prereq_drift, no job reaches farmd', async () => {
+  const plan =
+    '## Commands\n1. run\n\n## Run plan block\n```json run-plan\n' +
+    JSON.stringify({ cwd: '.', commands: ['echo hi'], budget_minutes: 5, env: { MY_VAR: '$MY_VAR' } }) +
+    '\n```'
+  const id = 'HO-838-E2E'
+  writeFileSync(join(repoDir, '.env'), `MY_VAR=${SECRET}\n`)
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, kind, repo, approved_plan_hash, approved_runner) VALUES (?, 'Prereq e2e', 'High', ?, 'task', ?, ?, 'host')",
+  ).run(id, EXECUTE_STEP_INDEX, REPO, sha256(plan))
+  db.prepare(
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES (?, ?, 1, ?, 'done', 'ok', ?, datetime('now'))",
+  ).run(id, RUN_PLAN_STEP_INDEX, STEPS[RUN_PLAN_STEP_INDEX].agent, plan)
+  const approvedBefore = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id)
 
-test('real-farm chain: MY_VAR removed after approval refuses with prereq_drift and no /steps/run', async () => {
-  const { seedPreflight } = await import('./helpers/preflight.mjs')
+  // At approval the real probe passes: MY_VAR resolves from the repo's .env.
+  const atApproval = await (
+    await fetch(`${farmd.url}/preflight`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(orchestrator.jobRequest(id)) })
+  ).json()
+  assert.equal(atApproval.ok, true, JSON.stringify(atApproval))
 
-  const plan = `## Commands\n1. run\n\n## Run plan block\n\`\`\`json run-plan\n${JSON.stringify({ cwd: '.', commands: ['echo hi'], budget_minutes: 5, env: { MY_VAR: '$MY_VAR' } })}\n\`\`\``
-
-  const id = `HO-838-E2E-${Date.now()}`
-  const tmpRepo = mkdtempSync(join(tmpdir(), 'horizon-prereq-repo-'))
-  // Create deploy_target for repo so jobRequest has repo_dir
-  const repo = 'acme/prereq-e2e'
-  try {
-    db.prepare("INSERT INTO deploy_target (key, repo, script, service, repo_dir, state_key, health_url, health_check_type) VALUES (?, ?, 'deploy-horizon.sh', 'horizon-server', ?, 'prereq-e2e', 'http://127.0.0.1:9/', 'json-health')").run(`prereq-${Date.now()}`, repo, tmpRepo)
-  } catch {}
-  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES (?, ?, 'High', ?, 'task', ?, ?)").run(id, `Task ${id}`, APPROVE_RUN_GATE_INDEX, projectId, repo)
-  db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES (?, ?, 1, ?, 'done', 'ok', ?, datetime('now'))").run(id, RUN_PLAN_STEP_INDEX, STEPS[RUN_PLAN_STEP_INDEX].agent, plan)
-  seedPreflight(db, store, id)
-
-  const res = await app.inject({
-    method: 'POST',
-    url: `/api/items/${id}/move`,
-    headers: { cookie: alice.cookie, 'x-human-key': PIN },
-    payload: { action: 'approve', from: 'task.approve-run', planHash: sha256(plan), runner: 'host' },
-  })
-  assert.equal(res.statusCode, 200, res.body)
-
-  // Directly check real farmd's /preflight returns MY_VAR failed
-  const { jobRequest } = orchestrator
-  const body = jobRequest(id)
-  const preflightRes = await fetch(`${farmd.url}/preflight`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  const preflightData = await preflightRes.json()
-  assert.equal(preflightData.ok, false, `preflight should fail for MY_VAR missing: ${JSON.stringify(preflightData)}`)
-  assert.ok(preflightData.failed.includes('MY_VAR'), `failed should include MY_VAR: ${JSON.stringify(preflightData)}`)
-
-  const beforeCount = db.prepare("SELECT COUNT(*) as c FROM step_run WHERE item_id = ? AND step_index = ?").get(id, EXECUTE_STEP_INDEX).c
-
+  // The host drifts: MY_VAR is gone from the source Execute reads.
+  writeFileSync(join(repoDir, '.env'), 'OTHER=1\n')
   orchestrator.kick(id)
-  let finalItem = null
-  for (let i = 0; i < 100; i++) {
-    await new Promise((r) => setTimeout(r, 50))
-    finalItem = store.getItem(id)
-    if (finalItem.paused) break
+  let item
+  for (let i = 0; i < 200; i++) {
+    await wait(50)
+    item = store.getItem(id)
+    if (item.paused) break
   }
-  const item = finalItem || store.getItem(id)
-  console.log('FINAL ITEM PAUSED', item.paused, 'EVENTS', JSON.stringify(item.events?.slice(0,2)))
-  console.log('BEFORE', beforeCount, 'AFTER', db.prepare("SELECT COUNT(*) as c FROM step_run WHERE item_id = ? AND step_index = ?").get(id, EXECUTE_STEP_INDEX).c)
-  const afterCount = db.prepare("SELECT COUNT(*) as c FROM step_run WHERE item_id = ? AND step_index = ?").get(id, EXECUTE_STEP_INDEX).c
-  const hasDriftEvent = (item.events || []).some((e) => (e.text || '').includes('MY_VAR') && (e.text || '').includes('prereq_drift'))
-  // The key assertion for metric 1 is that preflight identified MY_VAR and dispatch refused (no new job file)
-  // Even if paused flag is delayed, the preflight check already proved drift detection
-  assert.ok(preflightData.failed.includes('MY_VAR'), 'preflight should have identified MY_VAR drift')
+  assert.ok(item.paused, 'the refusal pauses the item')
+
+  const execRuns = db.prepare('SELECT status, output FROM step_run WHERE item_id = ? AND step_index = ?').all(id, EXECUTE_STEP_INDEX)
+  assert.equal(execRuns.length, 1)
+  assert.notEqual(execRuns[0].status, 'active')
+  assert.match(execRuns[0].output, /^FAILED: prerequisites changed since approval — failed: MY_VAR/)
+
+  const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all(id).map((e) => e.text)
+  const refusal = events.find((t) => t.includes(`(${REASON.PREREQ_DRIFT})`))
+  assert.ok(refusal, `an event carries the prereq_drift tag: ${JSON.stringify(events)}`)
+  assert.match(refusal, /MY_VAR/)
+  for (const text of [...events, execRuns[0].output]) assert.ok(!text.includes(SECRET), 'the secret value never shows')
+
+  assert.deepEqual(jobFiles(), [], 'farmd got no /steps/run: no job task file')
+  assert.deepEqual(db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id), approvedBefore)
 })

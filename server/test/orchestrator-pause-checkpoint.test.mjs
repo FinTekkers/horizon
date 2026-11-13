@@ -42,7 +42,6 @@ globalThis.fetch = async (url, opts = {}) => {
     return cancelReply ? cancelReply(body, opts) : reply({ ok: true, removed: true, killed: null })
   }
   if (url.endsWith('/steps/run')) dispatches.push(JSON.parse(opts.body))
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return reply({ ok: true })
 }
 

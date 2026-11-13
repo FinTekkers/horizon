@@ -41,7 +41,6 @@ store.registerAgentRunner({ kick: orchestrator.kick, cancel: orchestrator.cancel
 const outbound = []
 globalThis.fetch = async (url, opts = {}) => {
   outbound.push(`${url} ${JSON.stringify(opts.headers ?? {})} ${typeof opts.body === 'string' ? opts.body : ''}`)
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

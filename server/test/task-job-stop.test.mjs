@@ -10,6 +10,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-task-job-stop-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -22,11 +23,10 @@ const calls = []
 let stopAnswer = null
 const LOG_PAGES = ['$ scripts/a.sh\nkey=[redacted]\n', 'exit 0\n']
 globalThis.fetch = async (url, opts) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   const href = String(url)
   calls.push({ url: href, body: opts?.body ? JSON.parse(opts.body) : null })
-  if (href.includes('/preflight')) {
-    return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
-  }
   if (href.endsWith('/jobs/stop')) {
     if (stopAnswer instanceof Error) throw stopAnswer
     return { ok: true, status: 200, json: async () => stopAnswer ?? {} }

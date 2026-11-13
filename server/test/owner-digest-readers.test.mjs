@@ -22,7 +22,6 @@ for (const key of ['GITHUB_WEBHOOK_SECRET', 'FARM_STEP_INDEXES']) delete process
 const dispatches = []
 globalThis.fetch = async (url, opts) => {
   dispatches.push({ url: String(url), body: opts?.body ? JSON.parse(opts.body) : null })
-  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, status: 200, json: async () => ({}) }
 }
 

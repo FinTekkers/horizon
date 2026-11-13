@@ -63,7 +63,6 @@ globalThis.fetch = async (url, opts) => {
   const reply = (status, data) => ({ ok: status < 300, status, json: async () => data })
   if (path === '/farm/status') return reply(200, { status: 'running' })
   if (path === '/runs/alive') return reply(200, { alive: Object.fromEntries((body.run_ids || []).map((id) => [id, true])) })
-  if (path === '/preflight') return reply(200, { ok: true, failed: [], unmet: [], elapsed_ms: 0 })
   return reply(200, { ok: true })
 }
 

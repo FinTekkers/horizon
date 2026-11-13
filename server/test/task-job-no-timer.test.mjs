@@ -10,6 +10,7 @@ import crypto from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-task-job-notimer-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -23,7 +24,7 @@ const { STEPS, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX } = await import('../../d
 
 store.purgeDemoItems()
 
-globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) })
+globalThis.fetch = async (url) => preflightPass(url) ?? { ok: true, status: 200, json: async () => ({}) }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const sha256 = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex')
