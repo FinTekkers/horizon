@@ -202,7 +202,7 @@
       "maxTurns": 40,
       "timeoutS": 1140
     },
-    { "key": "task.review-close", "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task", "sendBackTo": "task.verify-report" },
+    { "key": "task.review-close", "phase": 3, "kind": "gate", "gate": "required", "label": "Review & close", "itemKind": "task", "sendBackTo": "task.verify-report", "acceptWithExceptions": true },
     { "key": "plan.define-question", "phase": 0, "kind": "agent", "agent": "PM", "label": "Define the question", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
     { "key": "plan.set-guardrails", "phase": 0, "kind": "agent", "agent": "Architect", "label": "Set guardrails", "runsIn": "pm", "itemKind": "plan", "providerOverrideEligible": true },
     { "key": "plan.approve-prioritize", "phase": 0, "kind": "gate", "gate": "required", "label": "Approve & prioritize", "itemKind": "plan", "sendBackTo": "plan.define-question" },

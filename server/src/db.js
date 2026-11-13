@@ -703,6 +703,15 @@ for (const sql of [
     // column already exists
   }
 }
+// HO-844: the metric lines a `done_proof_incomplete` Verify run named as
+// lacking proof, a JSON array of 1-based line numbers (verifyOutcome.js
+// cleanOpenLines). NULL on every other run, and on a done_proof_incomplete run
+// that named none: gateExceptions.js then treats every metric line as open.
+try {
+  db.exec('ALTER TABLE step_run ADD COLUMN verify_open_lines TEXT')
+} catch {
+  // column already exists
+}
 // HZ-422: usage limits. A run that hit one (usage_limit_hit) is `cancelled` like
 // a deploy stop and keeps its attempt; the run that replaced it on the next
 // chain model names the one it fell back from and when that lifts. An item
@@ -1754,6 +1763,37 @@ db.exec(`
     BEGIN SELECT RAISE(ABORT, 'rule_version is append-only'); END;
   CREATE TRIGGER IF NOT EXISTS rule_version_no_delete BEFORE DELETE ON rule_version
     BEGIN SELECT RAISE(ABORT, 'rule_version is append-only'); END;
+`)
+
+// HO-844: Accept with exceptions at a Task's Review & close
+// (server/src/gateExceptions.js). One row per open metric line, under the
+// approving gate_decision row, written in its transaction. metric_line is the
+// line's text as it read then, so a later metric edit cannot change the
+// record. Append-only: the triggers refuse every UPDATE, and every DELETE
+// except a purge's (accountPurge.applyDeletes lists the item ids it removes
+// in purge_release for the length of its own transaction). Reopening or
+// re-closing the item never touches these rows.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gate_exception (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id          TEXT    NOT NULL REFERENCES work_item(id),
+    gate_decision_id INTEGER NOT NULL REFERENCES gate_decision(id),
+    line_id          TEXT    NOT NULL,
+    metric_line      TEXT    NOT NULL,
+    reason           TEXT    NOT NULL CHECK (length(trim(reason)) > 0),
+    decided_by       TEXT    NOT NULL,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (gate_decision_id, line_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_gate_exception_item ON gate_exception(item_id, gate_decision_id);
+  CREATE TABLE IF NOT EXISTS purge_release (
+    item_id TEXT PRIMARY KEY
+  );
+  CREATE TRIGGER IF NOT EXISTS gate_exception_no_update BEFORE UPDATE ON gate_exception
+    BEGIN SELECT RAISE(ABORT, 'gate_exception is append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS gate_exception_no_delete BEFORE DELETE ON gate_exception
+    WHEN NOT EXISTS (SELECT 1 FROM purge_release WHERE item_id = OLD.item_id)
+    BEGIN SELECT RAISE(ABORT, 'gate_exception is append-only'); END;
 `)
 
 // HZ-448: a Plan's item drafts (server/src/planDraft.js), one row per saved

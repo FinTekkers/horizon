@@ -89,6 +89,8 @@ import { PLAN_DRAFT_SCHEMA } from '../../domain/js/planDraft.js'
 import { buildLinkContext, codeRefUrl, parseCodeRef, splitItemIds } from '../../domain/js/codeRefs.js'
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
+import { OPEN_LINES_MAX } from './verifyOutcome.js'
+import { REASON_MAX_CHARS, checkAccept as checkExceptionAccept, exceptionKind } from './gateExceptions.js'
 import {
   PRODUCTIVITY_QUERY_SCHEMA,
   PRODUCTIVITY_RESPONSE_SCHEMA,
@@ -3014,6 +3016,73 @@ export function buildApp({
       // stream would upsert it, and for a return or retry the attempt starting.
       const restart = action === 'return' || action === 'retry'
       return reply.send({ ...result, ...actionState(id, { restart }), ok: true, move: store.lastMove(id) })
+    },
+  )
+
+  // HO-844: Accept with exceptions at a Task's Review & close, offered while
+  // the item's stored Verify outcome is done_proof_incomplete (the item's
+  // `acceptWithExceptions`). A browser session with the gate PIN only. The
+  // body is the step the page showed, the open lines' hash it showed, and one
+  // { lineId, reason } per open line — never a verdict or a list of lines:
+  // gateExceptions.checkAccept reads both from the server. Every refusal is
+  // answered before performGateApproval, so it writes nothing and the item
+  // stays open; then the approve runs the path every approve runs (the
+  // issue close, store.approveGate), which re-checks and writes the
+  // exceptions in its own transaction.
+  const exceptionEntry = {
+    type: 'object',
+    required: ['lineId', 'reason'],
+    // propertyNames, not additionalProperties: false — Fastify's ajv would
+    // strip an extra key silently; this makes it a 400.
+    propertyNames: { enum: ['lineId', 'reason'] },
+    properties: {
+      lineId: { type: 'string', minLength: 1, maxLength: 40 },
+      reason: { type: 'string', minLength: 1, maxLength: REASON_MAX_CHARS },
+    },
+  }
+  fastify.post(
+    '/api/items/:id/gate/accept-with-exceptions',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['from', 'linesHash', 'exceptions'],
+          propertyNames: { enum: ['from', 'linesHash', 'exceptions'] },
+          properties: {
+            from: { type: 'string', minLength: 1, maxLength: 80 },
+            linesHash: { type: 'string', minLength: 1, maxLength: 128 },
+            exceptions: { type: 'array', minItems: 1, maxItems: OPEN_LINES_MAX, items: exceptionEntry },
+          },
+        },
+        response: {
+          200: { ...OK_OBJECT, description: '`{ ok, closed, move, item }` — the item closed, with its `exceptions`.' },
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          403: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+        },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      const proof = humanAuthorized(request, reply)
+      if (!proof) return
+      const { id } = request.params
+      const { from, linesHash, exceptions } = request.body
+      const item = store.getItem(id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (!exceptionKind(item)) return reply.code(409).send({ error: 'not_task_item' })
+      if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
+      const checked = checkExceptionAccept(item, { exceptions, linesHash })
+      if (checked.error) return reply.code(checked.status).send({ error: checked.error })
+      const result = await gateActions.approve(id, item.cursor, '', actorOf(request), { proof, exceptions: { exceptions, linesHash } })
+      if (result.status) return reply.code(result.status).send(gateFailureBody(result))
+      if (result.error) return send(reply, result)
+      return reply.send({ ...result, ...actionState(id), ok: true, move: store.lastMove(id) })
     },
   )
 

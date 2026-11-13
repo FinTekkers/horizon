@@ -238,8 +238,11 @@ test('item responses carry no token or cost keys', async () => {
 })
 
 // ---- guardrail 4: HZ-549's contract is unchanged ----
+// HO-844 added the required summary.closedOutcomes object (its approved plan:
+// closes accepted with exceptions are their own bucket), so the pin is that
+// file's bytes now; nothing else in the contract moved.
 
-test('domain/productivity.schema.json is byte-identical to HZ-549’s (454bb71)', () => {
+test('domain/productivity.schema.json is byte-identical to HZ-549’s (454bb71) plus HO-844’s closedOutcomes', () => {
   const bytes = readFileSync(path.join(REPO_ROOT, 'domain/productivity.schema.json'))
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), '88a26d7a6be2952979f8fae49114c75ded9283499ec65e7866de6be3ae8c746a')
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), '18689e2d544d45e6aa10a4374cc7197c15ef8efc63bd79208d84929896c978ff')
 })

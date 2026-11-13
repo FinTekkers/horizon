@@ -725,6 +725,13 @@
       { "case": "an index past the end of the table is not", "index": 9999, "expect": false }
     ],
     "humanOnlyGateIndexes": [{ "case": "the approve-the-run and approve-and-file gates", "expectLabels": ["Approve the run", "Approve & file"] }],
+    "acceptsWithExceptions": [
+      { "case": "the task's review-and-close gate accepts with exceptions", "key": "task.review-close", "expect": true },
+      { "case": "the plan's review-and-close gate does not", "key": "plan.review-close", "expect": false },
+      { "case": "a change gate does not", "key": "change.accept-code", "expect": false },
+      { "case": "an agent step does not", "key": "task.verify-report", "expect": false },
+      { "case": "an index past the end of the table does not", "index": 9999, "expect": false }
+    ],
 
     "assertLifecycleShape": [{ "case": "driven by shared.validation", "drivenBy": "shared.validation" }],
 
@@ -822,6 +829,7 @@
     ],
 
     "IMPLEMENT_ITEM_KIND": [{ "case": "the kind that owns the implement step", "expect": "change" }],
+    "ACCEPT_WITH_EXCEPTIONS_ITEM_KIND": [{ "case": "the kind that owns the gate flagged acceptWithExceptions (HO-844)", "expect": "task" }],
 
     "holdingBlockers": [
       { "case": "a change item before implement is held by nothing", "item": { "cursor": 7 }, "blockers": [{ "id": "B", "cursor": 13 }], "expectIds": [] },

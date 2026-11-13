@@ -169,6 +169,13 @@ test('js/isHumanOnlyGate: only a gate steps.json marks humanOnly', () => {
   }
 })
 
+test('js/acceptsWithExceptions: only a Task gate steps.json marks acceptWithExceptions (HO-844)', () => {
+  for (const c of js.acceptsWithExceptions) {
+    const index = c.key ? binding.stepIndexOf(c.key) : c.index
+    assert.equal(binding.acceptsWithExceptions(index), c.expect, c.case)
+  }
+})
+
 test('js/humanOnlyGateIndexes', () => {
   for (const c of js.humanOnlyGateIndexes) {
     assert.deepEqual(
@@ -259,6 +266,10 @@ for (const name of ['isBlocked', 'isBlockedByAbandoned', 'isImplementBlocked']) 
     for (const c of js[name]) assert.equal(binding[name](c.blockers), c.expect, c.case)
   })
 }
+
+test('js/ACCEPT_WITH_EXCEPTIONS_ITEM_KIND', () => {
+  for (const c of js.ACCEPT_WITH_EXCEPTIONS_ITEM_KIND) assert.equal(binding.ACCEPT_WITH_EXCEPTIONS_ITEM_KIND, c.expect, c.case)
+})
 
 test('js/IMPLEMENT_ITEM_KIND', () => {
   for (const c of js.IMPLEMENT_ITEM_KIND) assert.equal(binding.IMPLEMENT_ITEM_KIND, c.expect, c.case)

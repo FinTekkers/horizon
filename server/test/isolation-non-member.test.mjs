@@ -305,6 +305,13 @@ const WRITE_CASES = {
   // HZ-710: 409 stale_step — the owner names a step the item is not at.
   'POST /api/items/:id/move': { expect: '404', url: `${ITEM}/move`, body: { action: 'retry', from: 'iso.not-here' }, owner: 409 },
   'POST /api/items/:id/resolve-conflicts': { expect: '404', url: `${ITEM}/resolve-conflicts`, owner: 409 },
+  // HO-844: 409 not_task_item — the seeded item is a Change.
+  'POST /api/items/:id/gate/accept-with-exceptions': {
+    expect: '404',
+    url: `${ITEM}/gate/accept-with-exceptions`,
+    body: { from: 'iso.not-here', linesHash: 'iso', exceptions: [{ lineId: '1', reason: 'iso reason' }] },
+    owner: 409,
+  },
   'POST /api/items/:id/screenshots/approve': { expect: '404', url: `${ITEM}/screenshots/approve`, body: { commit: SHOT_COMMIT, all: true }, owner: 200 },
   // HZ-712: the retired move routes are 410 stubs, still member:item — the
   // guard's 404 for a non-member, the stub's 410 route_retired for the owner.

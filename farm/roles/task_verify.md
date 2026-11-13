@@ -53,6 +53,10 @@ judged for each line.
 - `work_failed`: the work itself fell short.
 - `done_proof_incomplete`: every Execute command finished with exit 0, but
   at least one metric line's named proof is missing.
+  Then also set `verdict.open_lines` to the numbers of the metric lines whose
+  proof is missing, as the metric numbers them, such as `[2, 3]`. The owner
+  may close the Task with a reason for each of those lines. Leave
+  `verdict.open_lines` out on any other verdict.
 Execute failed when its job did not finish, or any command did not finish
 with exit 0. Then the verdict is `work_failed`, never
 `done_proof_incomplete`, and you also set `verdict.execute_cause`:

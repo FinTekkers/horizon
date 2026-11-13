@@ -67,6 +67,7 @@ export const {
   getRestartSent,
   resolveConflicts,
   forwardToAccept,
+  acceptWithExceptions,
   setPaused,
   releaseRuleBlock,
   releaseUsageWait,

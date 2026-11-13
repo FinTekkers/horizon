@@ -703,6 +703,7 @@ function AuthenticatedApp({ user, onLogout }) {
           resolving={isResolving(selected)}
           gateBusy={isGateBusy(selected)}
           onForwardToAccept={(id) => api.forwardToAccept(id)}
+          onAcceptWithExceptions={(id, exceptions, linesHash) => api.acceptWithExceptions(id, exceptions, linesHash)}
           onTogglePause={api.setPaused}
           onSetPersona={api.setPersona}
           onSetStepProvider={api.setStepProvider}
