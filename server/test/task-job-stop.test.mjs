@@ -24,6 +24,9 @@ const LOG_PAGES = ['$ scripts/a.sh\nkey=[redacted]\n', 'exit 0\n']
 globalThis.fetch = async (url, opts) => {
   const href = String(url)
   calls.push({ url: href, body: opts?.body ? JSON.parse(opts.body) : null })
+  if (href.includes('/preflight')) {
+    return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
+  }
   if (href.endsWith('/jobs/stop')) {
     if (stopAnswer instanceof Error) throw stopAnswer
     return { ok: true, status: 200, json: async () => stopAnswer ?? {} }

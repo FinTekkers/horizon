@@ -21,6 +21,7 @@ const farmRefusals = {}
 globalThis.fetch = async (url, opts) => {
   const body = opts?.body ? JSON.parse(opts.body) : null
   dispatches.push({ url: String(url), body })
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   const refusal = String(url).includes('/steps/run') && Object.hasOwn(farmRefusals, body?.item?.id ?? '') && farmRefusals[body.item.id]
   if (refusal) return { ok: false, status: 400, json: async () => refusal }
   return { ok: true, status: 200, json: async () => ({}) }

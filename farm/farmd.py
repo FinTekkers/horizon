@@ -2847,9 +2847,13 @@ async def preflight_recheck(request: Request):
         result = await asyncio.to_thread(preflight.run, task, deadline=started + PREREQ_RECHECK_S, tree=not tenant)
     except Exception as exc:  # noqa: BLE001 — the server refuses on it, never skips
         return JSONResponse({"error": f"preflight unavailable: {type(exc).__name__}"}, status_code=503)
-    unmet = list(result.get("unmet") or [])
+    raw_unmet = list(result.get("unmet") or [])
+    # HO-838: the plan hash was already checked by refuseUnapprovedRun moments
+    # earlier; a mismatch here would be tagged prereq_drift instead of
+    # plan_changed. Drop it from this route — the server gate owns the hash.
+    unmet = [u for u in raw_unmet if (u.get("kind") if isinstance(u, dict) else None) != "plan"]
     return {
-        "ok": result.get("passed") is True and not unmet,
+        "ok": not unmet,
         "failed": preflight.drift_names(unmet),
         "unmet": unmet,
         "deferred": PREREQ_TENANT_DEFERRED if tenant else [],

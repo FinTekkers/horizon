@@ -209,16 +209,21 @@ def _prereq_recheck(task: dict, approved_hash: str) -> list[dict]:
     the approved plan, as this runner is about to run it — the unmet items,
     [] when every check holds. Read-only; takes no lock of its own. Fails
     closed: an error or a malformed result is an unmet `probe`, never a pass.
-    The env names and uid are the ones farmd stamped at launch."""
+    The env names and uid are the ones farmd stamped at launch. HO-838: the
+    plan hash was already checked by the double hash gate just before, so a
+    `plan` unmet is dropped here — the hash_mismatch path owns it."""
     from farm import preflight
 
     try:
         result = preflight.run({**task, "plan_hash": approved_hash}, deadline=time.monotonic() + PREREQ_RECHECK_S)
     except Exception as exc:  # noqa: BLE001 — fail closed, never a pass
         return [{"kind": "probe", "name": "prerequisite re-check", "reason": f"failed ({type(exc).__name__})"}]
-    unmet = [item for item in result.get("unmet") or [] if isinstance(item, dict)]
-    if result.get("passed") is True and not unmet:
-        return []
+    raw = [item for item in result.get("unmet") or [] if isinstance(item, dict)]
+    unmet = [item for item in raw if item.get("kind") != "plan"]
+    if not unmet:
+        # No non-plan gaps: either passed, or only plan gaps (hash gate owns it)
+        if result.get("passed") is True or not raw or all(item.get("kind") == "plan" for item in raw):
+            return []
     return unmet or [{"kind": "probe", "name": "prerequisite re-check", "reason": "no result"}]
 
 

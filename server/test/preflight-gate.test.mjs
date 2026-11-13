@@ -29,6 +29,7 @@ globalThis.fetch = async (url, opts) => {
   const body = opts?.body ? JSON.parse(opts.body) : null
   dispatches.push({ url: String(url), body })
   if (String(url).includes('/runs/status')) return { ok: true, json: async () => ({ states: {} }) }
+  if (String(url).includes('/preflight')) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 
@@ -415,11 +416,11 @@ test('guardrail 4: a secret value set on the runner never reaches the stored res
 
 // ==== Execute's own refusals stay as the backstop ====
 
-test("Execute's refuseUnapprovedRun still refuses an unapproved item, whatever Preflight says", () => {
+test("Execute's refuseUnapprovedRun still refuses an unapproved item, whatever Preflight says", async () => {
   const id = seedTask('PF-BACKSTOP', { cursor: EXECUTE_STEP_INDEX })
   seedPreflight(db, store, id)
   const runId = Number(
     db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 1, 'DevOps', 'active')").run(id, EXECUTE_STEP_INDEX).lastInsertRowid,
   )
-  assert.equal(orchestrator.refuseUnapprovedRun(runId, id, EXECUTE_STEP_INDEX).error, 'plan_not_approved')
+  assert.equal((await orchestrator.refuseUnapprovedRun(runId, id, EXECUTE_STEP_INDEX)).error, 'plan_not_approved')
 })

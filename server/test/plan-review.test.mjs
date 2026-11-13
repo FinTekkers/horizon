@@ -26,6 +26,7 @@ for (const key of ['FARM_URL', 'GITHUB_WEBHOOK_SECRET', 'GITHUB_TOKEN', 'FARM_ST
 const calls = []
 globalThis.fetch = async (url, opts) => {
   calls.push({ url: String(url), method: opts?.method ?? 'GET' })
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

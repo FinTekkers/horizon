@@ -405,6 +405,12 @@ def _task_file(tmp_path, run_id, item_id, artifact, repo_dir):
                 "runner": server_runner(artifact),
                 "repo_dir": str(repo_dir),
                 "container_image": FAKE_IMAGE,
+                # HO-838: what the runner's prerequisite re-check needs from farmd.
+                "job_env_names": [],
+                "job_uid": __import__("os").geteuid(),
+                "jobs_enabled": True,
+                "deploy_lock_held": False,
+                "service_tags": {},
             }
         )
     )
@@ -1027,21 +1033,24 @@ def run_clone(tmp_path, artifact, clone, task_clone_flag=True):
 
 
 def _main_task_file(tmp_path, item_id, artifact, clone, **extra):
+    base = {
+        "run_id": 9440,
+        "item": {"id": item_id},
+        "plan_artifact": artifact,
+        "approved_hash": task_job.plan_hash_of(artifact),
+        "runner": server_runner(artifact),
+        "repo_dir": str(clone),
+        "container_image": FAKE_IMAGE,
+        # HO-838: what the runner's prerequisite re-check needs from farmd.
+        "job_env_names": [],
+        "job_uid": __import__("os").geteuid(),
+        "jobs_enabled": True,
+        "deploy_lock_held": False,
+        "service_tags": {},
+    }
+    base.update(extra)
     path = tmp_path / f"{item_id}.task.json"
-    path.write_text(
-        json.dumps(
-            {
-                "run_id": 9440,
-                "item": {"id": item_id},
-                "plan_artifact": artifact,
-                "approved_hash": task_job.plan_hash_of(artifact),
-                "runner": server_runner(artifact),
-                "repo_dir": str(clone),
-                "container_image": FAKE_IMAGE,
-                **extra,
-            }
-        )
-    )
+    path.write_text(json.dumps(base))
     return path
 
 

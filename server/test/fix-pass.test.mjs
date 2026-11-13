@@ -21,6 +21,7 @@ store.purgeDemoItems()
 const dispatches = []
 globalThis.fetch = async (url, init) => {
   dispatches.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : undefined })
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

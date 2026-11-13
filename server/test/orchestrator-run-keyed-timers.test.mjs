@@ -63,6 +63,7 @@ globalThis.fetch = async (url, opts) => {
     }
     return { ok: false, status: 404, json: async () => ({}) }
   }
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

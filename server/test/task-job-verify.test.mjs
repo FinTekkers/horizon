@@ -26,6 +26,9 @@ const dispatches = []
 globalThis.fetch = async (url, opts) => {
   const u = String(url)
   dispatches.push({ url: u, body: opts?.body ? JSON.parse(opts.body) : null })
+  if (u.includes('/preflight')) {
+    return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
+  }
   if (u.includes('/jobs/') && u.includes('/log')) {
     return { ok: true, status: 200, json: async () => ({ content: REDACTED_LOG, next_offset: REDACTED_LOG.length, active: true }) }
   }

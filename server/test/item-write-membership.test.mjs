@@ -48,6 +48,7 @@ const farmCalls = []
 let issueNumber = 700
 globalThis.fetch = async (url, opts) => {
   const u = String(url)
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight')) || (typeof path !== 'undefined' && String(path).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   const reply = (status, data) => ({ ok: status < 300, status, json: async () => data })
   const ok = (data) => reply(200, data)
   if (u.startsWith('https://api.github.com/')) {

@@ -18,6 +18,7 @@ process.env.FARM_URL = 'http://farm.test'
 const farmCalls = []
 globalThis.fetch = async (url) => {
   farmCalls.push(new URL(String(url)).pathname)
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, status: 200, json: async () => ({}) }
 }
 

@@ -100,7 +100,8 @@ test('dispatching the Deploy step publishes the release and sends it along to th
   globalThis.fetch = async (url, opts) => {
     const u = String(url)
     if (u.includes('api.github.com') && u.includes('/contents/')) {
-      return { ok: true, json: async () => ({}) } // workflow file already present
+      if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
+  return { ok: true, json: async () => ({}) } // workflow file already present
     }
     if (u.includes('api.github.com') && u.includes('/releases/tags/')) {
       return { ok: false, status: 404 } // tag is free
@@ -112,7 +113,8 @@ test('dispatching the Deploy step publishes the release and sends it along to th
       }
     }
     dispatched.push({ url: u, body: opts?.body ? JSON.parse(opts.body) : null })
-    return { ok: true, json: async () => ({}) }
+    if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
+  return { ok: true, json: async () => ({}) }
   }
 
   insertItem.run('DEP-REAL', 'Real deploy dispatch', 'Medium', DEPLOY_STEP_INDEX, 'acme/demo', 7)
@@ -135,7 +137,8 @@ test('a release-publish failure pauses the item and never hands the step to the 
   globalThis.fetch = async (url, opts) => {
     const u = String(url)
     if (u.includes('api.github.com') && u.includes('/contents/')) {
-      return { ok: true, json: async () => ({}) }
+      if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
+  return { ok: true, json: async () => ({}) }
     }
     if (u.includes('api.github.com') && u.includes('/releases/tags/')) {
       return { ok: false, status: 404 }
@@ -144,7 +147,8 @@ test('a release-publish failure pauses the item and never hands the step to the 
       return { ok: false, status: 403 } // token lacks Contents write, e.g.
     }
     dispatched.push({ url: u })
-    return { ok: true, json: async () => ({}) }
+    if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
+  return { ok: true, json: async () => ({}) }
   }
 
   insertItem.run('DEP-PUBFAIL', 'Release publish fails', 'Medium', DEPLOY_STEP_INDEX, 'acme/demo', 8)

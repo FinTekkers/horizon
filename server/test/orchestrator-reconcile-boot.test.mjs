@@ -37,6 +37,7 @@ store.purgeDemoItems()
 
 globalThis.fetch = async (url) => {
   if (String(url).includes('/runs/alive')) return { ok: true, json: async () => ({ alive: {} }) } // nothing the farm knows about
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

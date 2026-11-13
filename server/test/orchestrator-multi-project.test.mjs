@@ -39,6 +39,7 @@ await app.ready()
 const calls = []
 globalThis.fetch = async (url, opts) => {
   const path = new URL(String(url)).pathname
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight')) || (typeof path !== 'undefined' && String(path).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   const body = opts?.body ? JSON.parse(opts.body) : null
   calls.push({ path, body })
   const reply = (status, data) => ({ ok: status < 300, status, json: async () => data })

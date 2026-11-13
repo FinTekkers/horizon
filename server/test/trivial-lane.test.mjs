@@ -39,6 +39,7 @@ globalThis.fetch = async (url, opts = {}) => {
     return { ok: false, status: 500, json: async () => ({ message: 'stub' }) }
   }
   farmCalls.push({ url: u, body: opts.body ? JSON.parse(opts.body) : null })
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

@@ -22,6 +22,7 @@ store.purgeDemoItems()
 let fetchCalled = false
 globalThis.fetch = async () => {
   fetchCalled = true
+  if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

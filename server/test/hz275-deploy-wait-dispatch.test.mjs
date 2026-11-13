@@ -45,7 +45,8 @@ function captureDispatches() {
     }
     if (u.includes('api.github.com')) return { ok: true, status: 200, json: async () => ({}) }
     dispatched.push({ url: u, body: opts?.body ? JSON.parse(opts.body) : null })
-    return { ok: true, json: async () => ({}) }
+    if (String(url).includes('/preflight') || (typeof u !== 'undefined' && String(u).includes('/preflight'))) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
+  return { ok: true, json: async () => ({}) }
   }
   return dispatched
 }
