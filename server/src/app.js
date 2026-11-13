@@ -90,7 +90,7 @@ import { buildLinkContext, codeRefUrl, parseCodeRef, splitItemIds } from '../../
 import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
 import { OPEN_LINES_MAX } from './verifyOutcome.js'
-import { REASON_MAX_CHARS, checkAccept as checkExceptionAccept } from './gateExceptions.js'
+import { REASON_MAX_CHARS, checkAccept as checkExceptionAccept, exceptionKind } from './gateExceptions.js'
 import {
   PRODUCTIVITY_QUERY_SCHEMA,
   PRODUCTIVITY_RESPONSE_SCHEMA,
@@ -3075,7 +3075,7 @@ export function buildApp({
       const { from, linesHash, exceptions } = request.body
       const item = store.getItem(id)
       if (!item) return reply.code(404).send({ error: 'not_found' })
-      if (itemKindOf(item) !== 'task') return reply.code(409).send({ error: 'not_task_item' })
+      if (!exceptionKind(item)) return reply.code(409).send({ error: 'not_task_item' })
       if (from !== moveKeyOf(item)) return reply.code(409).send({ error: 'stale_step' })
       const checked = checkExceptionAccept(item, { exceptions, linesHash })
       if (checked.error) return reply.code(checked.status).send({ error: checked.error })

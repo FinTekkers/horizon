@@ -267,6 +267,10 @@ for (const name of ['isBlocked', 'isBlockedByAbandoned', 'isImplementBlocked']) 
   })
 }
 
+test('js/ACCEPT_WITH_EXCEPTIONS_ITEM_KIND', () => {
+  for (const c of js.ACCEPT_WITH_EXCEPTIONS_ITEM_KIND) assert.equal(binding.ACCEPT_WITH_EXCEPTIONS_ITEM_KIND, c.expect, c.case)
+})
+
 test('js/IMPLEMENT_ITEM_KIND', () => {
   for (const c of js.IMPLEMENT_ITEM_KIND) assert.equal(binding.IMPLEMENT_ITEM_KIND, c.expect, c.case)
 })

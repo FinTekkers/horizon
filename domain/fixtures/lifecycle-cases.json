@@ -829,6 +829,7 @@
     ],
 
     "IMPLEMENT_ITEM_KIND": [{ "case": "the kind that owns the implement step", "expect": "change" }],
+    "ACCEPT_WITH_EXCEPTIONS_ITEM_KIND": [{ "case": "the kind that owns the gate flagged acceptWithExceptions (HO-844)", "expect": "task" }],
 
     "holdingBlockers": [
       { "case": "a change item before implement is held by nothing", "item": { "cursor": 7 }, "blockers": [{ "id": "B", "cursor": 13 }], "expectIds": [] },

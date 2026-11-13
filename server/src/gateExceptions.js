@@ -21,7 +21,14 @@
 import { createHash } from 'node:crypto'
 import { db } from './db.js'
 import { criteriaLines } from '../../domain/js/fields.js'
-import { VERIFY_REPORT_STEP_INDEX, acceptsWithExceptions, isAbandoned, isClosed, itemKindOf } from '../../domain/js/lifecycle.js'
+import {
+  ACCEPT_WITH_EXCEPTIONS_ITEM_KIND,
+  VERIFY_REPORT_STEP_INDEX,
+  acceptsWithExceptions,
+  isAbandoned,
+  isClosed,
+  itemKindOf,
+} from '../../domain/js/lifecycle.js'
 import { readOpenLines, readVerifyOutcome } from './verifyOutcome.js'
 
 export const REASON_MAX_CHARS = 2000
@@ -54,7 +61,7 @@ export function hashOpenLines(openLines) {
 // { openLines: [{ id, text }], linesHash } when `row` (a work_item row) may be
 // accepted with exceptions now, else a refusal { error, status }.
 export function acceptState(row) {
-  if (itemKindOf(row) !== 'task') return refuse('not_task_item')
+  if (itemKindOf(row) !== ACCEPT_WITH_EXCEPTIONS_ITEM_KIND) return refuse('not_task_item')
   if (isClosed(row) || isAbandoned(row) || !acceptsWithExceptions(row.cursor)) return refuse('not_at_gate')
   const run = selectLatestVerify.get(row.id, VERIFY_REPORT_STEP_INDEX)
   if (readVerifyOutcome(run) !== 'done_proof_incomplete') return refuse('verdict_not_incomplete')
@@ -64,6 +71,11 @@ export function acceptState(row) {
   const numbers = named.length > 0 ? named : lines.map((_, i) => i + 1)
   const openLines = numbers.map((n) => ({ id: String(n), text: lines[n - 1] }))
   return { openLines, linesHash: hashOpenLines(openLines) }
+}
+
+// Whether `row`'s kind is the one Accept with exceptions applies to (Tasks).
+export function exceptionKind(row) {
+  return itemKindOf(row) === ACCEPT_WITH_EXCEPTIONS_ITEM_KIND
 }
 
 // The item view's offer, or null. The cursor is checked first, so the many

@@ -56,7 +56,7 @@ import { RUN_USER_RE, TOKEN_REF_RE, isolationFields, isolationRefusal, tenantRun
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { readVerifyOutcome } from './verifyOutcome.js'
-import { checkAccept, insertExceptions, listExceptions, offerFor as exceptionOffer } from './gateExceptions.js'
+import { checkAccept, exceptionKind, insertExceptions, listExceptions, offerFor as exceptionOffer } from './gateExceptions.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
@@ -2471,7 +2471,7 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
 // offers it, { exceptions: [...] } once any were recorded; neither on any
 // other item, so their payload is unchanged.
 function gateExceptionFields(row) {
-  if (itemKindOf(row) !== 'task') return {}
+  if (!exceptionKind(row)) return {}
   const offer = exceptionOffer(row)
   const exceptions = listExceptions(row.id)
   return { ...(offer ? { acceptWithExceptions: offer } : {}), ...(exceptions.length > 0 ? { exceptions } : {}) }

@@ -160,13 +160,16 @@ function assertStepKeys(steps, source) {
   }
 }
 
-// HO-844: Accept with exceptions closes a Task on a done_proof_incomplete
-// Verify outcome, so only a Task gate may offer it.
+// HO-844: Accept with exceptions qualifies a Verify outcome of a job run, so
+// only a gate that follows a job-lane step of its own item kind may offer it
+// — read from the table, not from a kind name.
 function assertAcceptWithExceptions(steps, source) {
   for (const [i, step] of steps.entries()) {
     if (step.acceptWithExceptions === undefined) continue
-    if (step.kind !== 'gate' || (step.itemKind ?? 'change') !== 'task') {
-      throw new Error(`${source}: steps[${i}] ("${step.label}") declares acceptWithExceptions, but only a Task gate may`)
+    const kind = stepKindOf(step)
+    const afterJob = steps.slice(0, i).some((s) => s.runsIn === 'job' && stepKindOf(s) === kind)
+    if (step.kind !== 'gate' || !afterJob) {
+      throw new Error(`${source}: steps[${i}] ("${step.label}") declares acceptWithExceptions, but only a gate after its kind's job step may`)
     }
   }
 }
@@ -440,6 +443,9 @@ export const FILE_ITEMS_STEP_INDEX = keyIndex('plan.file-items')
 export const REVIEW_CLOSE_GATE_INDEX = keyIndex('plan.review-close')
 // HZ-814: a Task's last gate, whose card links the run's database changes.
 export const TASK_REVIEW_CLOSE_GATE_INDEX = keyIndex('task.review-close')
+// HO-844: the kind whose items may be accepted with exceptions — the kind
+// that owns the last Task gate, which steps.json flags for it.
+export const ACCEPT_WITH_EXCEPTIONS_ITEM_KIND = stepKindOf(STEPS[TASK_REVIEW_CLOSE_GATE_INDEX])
 // HZ-462: the Plan step whose artifact carries the Inventory block
 // (domain/js/planInventory.js), rendered as tables on the item page.
 export const PLAN_INVENTORY_STEP_INDEX = keyIndex('plan.inventory')
@@ -457,11 +463,12 @@ export function isHumanOnlyGate(index) {
   return STEPS[index]?.kind === 'gate' && STEPS[index].humanOnly === true
 }
 
-// HO-844: a Task gate steps.json marks `acceptWithExceptions` may also close
-// with named exceptions (server/src/gateExceptions.js decides when).
+// HO-844: a gate steps.json marks `acceptWithExceptions` may also close with
+// named exceptions (server/src/gateExceptions.js decides when). Load time
+// holds it to a gate after a job step: a Task's.
 export function acceptsWithExceptions(index) {
   const step = STEPS[index]
-  return step?.kind === 'gate' && step.acceptWithExceptions === true && step.itemKind === 'task'
+  return step?.kind === 'gate' && step.acceptWithExceptions === true
 }
 
 export function humanOnlyGateIndexes(steps = STEPS) {
