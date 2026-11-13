@@ -112,8 +112,9 @@ const doneRun = (itemId, stepIndex, artifact) =>
 // record — or none for the Run plan when `plan` is null. HO-837: and a
 // Preflight that passed for that plan, as the step before the gate leaves.
 // The view without it, for the shape pins below; its own tests are
-// preflight-gate.test.mjs.
-const planView = ({ preflight, ...rest }) => rest
+// preflight-gate.test.mjs. HO-839: and without its rehearsal, whose own
+// tests are task-rehearsal-sendback.test.mjs.
+const planView = ({ preflight, rehearsal, ...rest }) => rest
 function seedTask(id, { plan = PLAN, repo = null } = {}) {
   db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES (?, ?, 'High', ?, 'task', ?, ?)").run(
     id,

@@ -155,6 +155,13 @@ def _user_flags() -> list:
     return ["--userns=keep-id", "--user", f"{os.getuid()}:{os.getgid()}"]
 
 
+def _sandbox_flags() -> list:
+    """The flags every container this module starts shares: the farm user
+    mapped to itself and a read-only image filesystem with no automatic
+    tmpfs. One list, so the job, probe and rehearsal builders cannot drift."""
+    return [*_user_flags(), "--read-only", "--read-only-tmpfs=false"]
+
+
 def _repo_mount(repo_dir: str) -> list:
     """The checkout, read-only, at its own host path."""
     return ["-v", f"{repo_dir}:{repo_dir}:ro"]
@@ -172,9 +179,7 @@ def probe_argv(*, image: str, repo_dir: str, workdir: str, script: str, args: li
         "run",
         "--rm",
         "--network=none",
-        *_user_flags(),
-        "--read-only",
-        "--read-only-tmpfs=false",
+        *_sandbox_flags(),
         *_repo_mount(repo_dir),
         "--env",
         f"HOME={TMP_MOUNT}",
@@ -216,9 +221,7 @@ def build_run_argv(
         "--label",
         owner_label(),
         "--network=host",
-        *_user_flags(),
-        "--read-only",
-        "--read-only-tmpfs=false",
+        *_sandbox_flags(),
         "--cpus",
         cpus or DEFAULT_CPUS,
         "--memory",
@@ -252,6 +255,88 @@ def build_run_argv(
     for env_name in env_names or []:
         argv += ["--env", str(env_name)]
     argv += [image, "sleep", "infinity"]
+    return argv
+
+
+# HO-839: a rehearsal container's name prefix — never NAME_PREFIX, so the
+# job reaper never takes one for a job's. `--rm` and `--timeout` remove one a
+# killed step left behind.
+REHEARSAL_PREFIX = "farm-rehearsal-"
+# The rehearsal's only writable place: a size-capped tmpfs, gone with it.
+REHEARSAL_TMPFS = f"{TMP_MOUNT}:rw,size=256m,mode=1777"
+# HO-839: host tool dirs a `host`-runner plan's rehearsal sees, read-only, at
+# their own paths. A symlink (a merged-/usr host's /bin) is skipped: the
+# image's own symlink reaches the mounted target.
+HOST_TOOL_DIRS = ("/usr", "/bin", "/lib", "/lib64", "/opt")
+# HO-839: every session a rehearsal opens refuses writes, whatever the driver
+# (libpq reads PGOPTIONS). The read-only role behind `ro_env` is the guard
+# that holds; this and the row counts back it up.
+READ_ONLY_PGOPTIONS = "-c default_transaction_read_only=on"
+
+
+def host_tool_mounts(venv_dir: str | None = None) -> list:
+    """`-v <dir>:<dir>:ro` for each HOST_TOOL_DIRS dir that is a real
+    directory here, plus the repo's venv when it is one."""
+    argv = []
+    for directory in [*HOST_TOOL_DIRS, *([venv_dir] if venv_dir else [])]:
+        if os.path.isdir(directory) and not os.path.islink(directory):
+            argv += ["-v", f"{directory}:{directory}:ro"]
+    return argv
+
+
+def rehearsal_argv(
+    *,
+    image: str,
+    name: str,
+    repo_dir: str | None,
+    workdir: str,
+    mask_file: str | None,
+    ro_env_names: list,
+    host_tools: list,
+    pg_socket_dir: str | None,
+    limit: int | None = None,
+    timeout_s: int,
+) -> list:
+    """HO-839: the `podman run -d` argv of a rehearsal sandbox. No network,
+    a read-only image, the checkout (when given) read-only with each `.env`
+    masked by `mask_file`, `host_tools` (host_tool_mounts) read-only, the
+    Postgres socket dir read-only only when there is an `ro_env` name, and a
+    size-capped tmpfs /tmp as the only writable place. No state, log or
+    scratch mount, no Podman socket, no privilege. Only `ro_env_names` are
+    passed, as `--env NAME`: the value comes from the podman client's env,
+    never argv, and a live `env` name is never one of them (the contract
+    refuses the overlap). `--rm` and `--timeout` remove the container even
+    when the step that started it is killed."""
+    argv = [
+        podman_bin(),
+        "run",
+        "-d",
+        "--rm",
+        f"--timeout={int(timeout_s)}",
+        "--name",
+        name,
+        "--label",
+        owner_label(),
+        "--network=none",
+        *_sandbox_flags(),
+        f"--tmpfs={REHEARSAL_TMPFS}",
+    ]
+    if repo_dir:
+        argv += _repo_mount(repo_dir)
+        env_files = checkout_env_files(repo_dir)
+        if env_files and not mask_file:
+            raise Unavailable("the checkout's .env could not be hidden (no mask file)")
+        for env_file in env_files:
+            argv += ["-v", f"{mask_file}:{env_file}:ro"]
+    argv += list(host_tools or [])
+    if pg_socket_dir and ro_env_names:
+        argv += ["-v", f"{pg_socket_dir}:{pg_socket_dir}:ro"]
+    argv += ["--env", f"HOME={TMP_MOUNT}", "--env", f"PGOPTIONS={READ_ONLY_PGOPTIONS}"]
+    if limit is not None:
+        argv += ["--env", f"REHEARSAL_LIMIT={int(limit)}"]
+    for env_name in ro_env_names or []:
+        argv += ["--env", str(env_name)]
+    argv += ["-w", workdir, image, "sleep", "infinity"]
     return argv
 
 

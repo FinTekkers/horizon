@@ -1,10 +1,26 @@
 {
-  "$comment": "HO-835: the one declaration of a Task run plan's v2 contract rules — `requires` `service` and `precondition` entries, a `file` entry's `access`, and the top-level `rehearsal` block — plus every reason text they fail with. Read by domain/py/run_plan.py (the farm's validate() and unrehearsed()) and domain/js/runPlan.js (runPlanError(), the Approve the run card), so both bindings give the same words. A reason's `{slot}` is filled by each binding with a name, an index or a shape name, never a value from the plan. Each `writeShapes` pattern compiles in both Python `re` and JS `RegExp`; `ignoreCase` maps to re.I and the `i` flag; `unquotedOnly` tests the command with its quoted spans removed. The write-shape check is best-effort: it refuses obvious writes and cannot prove a command read-only. Nothing here ever runs a command.",
+  "$comment": "HO-835: the one declaration of a Task run plan's v2 contract rules — `requires` `service` and `precondition` entries, a `file` entry's `access`, and the top-level `rehearsal` block — plus every reason text they fail with. HO-839: `rehearsalCapS`, `rehearsalScopes` and `rehearsalReasons` are what a rehearsal of that block may take and say: farm/rehearsal.py emits only these reason ids and server/src/orchestrator.js stores only these, so the two cannot drift. Ids only, never copy. Read by domain/py/run_plan.py (the farm's validate() and unrehearsed()) and domain/js/runPlan.js (runPlanError(), the Approve the run card), so both bindings give the same words. A reason's `{slot}` is filled by each binding with a name, an index or a shape name, never a value from the plan. Each `writeShapes` pattern compiles in both Python `re` and JS `RegExp`; `ignoreCase` maps to re.I and the `i` flag; `unquotedOnly` tests the command with its quoted spans removed. The write-shape check is best-effort: it refuses obvious writes and cannot prove a command read-only. Nothing here ever runs a command.",
   "preconditionKinds": ["lock_free", "no_deploy_running", "row_exists", "account_exists", "artifact_exists"],
   "fileAccess": ["r", "w"],
   "serviceName": "^[A-Za-z0-9][A-Za-z0-9._+-]*$",
   "rehearsalKeys": ["dry_run", "limit", "ro_env", "samples"],
   "maxSampleLength": 200,
+  "rehearsalCapS": 210,
+  "rehearsalScopes": ["full", "samples"],
+  "rehearsalReasons": [
+    "rehearsal_missing",
+    "rehearsal_dry_run_failed",
+    "rehearsal_parser_failed",
+    "rehearsal_sample_mismatch",
+    "rehearsal_write_refused",
+    "rehearsal_checkout_write_refused",
+    "rehearsal_idempotency_write",
+    "rehearsal_writable_role",
+    "rehearsal_role_unverified",
+    "rehearsal_rows_changed",
+    "rehearsal_checkout_dirty",
+    "rehearsal_timeout"
+  ],
   "writeShapes": [
     { "name": "redirect", "pattern": "(?<![-=>])>{1,2}(?![=&>])(?!\\s*/dev/null\\b)", "ignoreCase": false, "unquotedOnly": true },
     { "name": "tee", "pattern": "(?:^|[\\s;&|(`])tee(?=$|[\\s;&|)`])", "ignoreCase": false, "unquotedOnly": false },

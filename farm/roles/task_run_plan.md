@@ -37,23 +37,22 @@ Respond with ONLY a JSON object (no prose, no fences):
   }
 }
 
-`run_plan` is checked before the step can finish. `cwd`, a non-empty
-`commands` list and `budget_minutes` are required. A missing field, an
-empty list or a literal `env` value fails the step.
+In `run_plan`, a missing `cwd`, `budget_minutes` or non-empty `commands`
+list, or a literal `env` value, fails the step.
 
 `cwd` is relative to the repo root: `"."` is the root itself, `"sub"` a
 folder inside it. Execute runs the commands inside this repo's deployed
 checkout. An absolute path or a `..` in `cwd` fails the step.
 
 `reports` is optional. List each file the run writes as its result,
-relative to `cwd` or under `/tmp`. Verify & report reads
-them beside the log. A command's `--report <path>` is found without it.
+relative to `cwd` or under `/tmp`. A command's `--report <path>` is found
+without it.
 
 If the run changes a Postgres database, add `"db_changes": {"connection":
 "$<an env value>", "tables": ["schema.table"]}`. Execute counts those rows
 before and after, read-only, from the host.
 
-To show videos or images on the Task, add `"outputs": [{"path": "<file>",
+To show videos or images, add `"outputs": [{"path": "<file>",
 "kind": "video"}]` (or `"image"`).
 
 `proof` names what proves each metric line. Give one entry per metric
@@ -108,7 +107,9 @@ A `check` or `version_cmd` only reads.
 `rehearsal`: `dry_run`, optional `limit`, `ro_env` (new read-only names,
 never `env` names) and `samples`, one `{"command": <k>, "expect": "<one
 line>"}` per `proof` command, or the step fails. Names and read-only
-commands only: never a secret, file contents or a live row.
+commands only: never a secret, file contents or a live row. Rehearsed
+offline, read-only: a failure or write sends it back. `ro_env` DSN:
+`host=/var/run/postgresql`, a SELECT-only role.
 
 Horizon dependencies already guarantee a blocker has merged or closed
 before this Task runs. Do not add a `gh` command, or a `gh` tool, to check

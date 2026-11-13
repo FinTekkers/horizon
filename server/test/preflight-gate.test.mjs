@@ -140,10 +140,14 @@ function farmPreflight(body, { jobEnvNames = [], env = {} } = {}) {
   return JSON.parse(out.trim().split('\n').at(-1))
 }
 
-async function completePreflight(runId, preflight) {
+// HO-839: the farm's Preflight result carries the plan's rehearsal once
+// preflight passed — clean here, as for a plan that rehearses clean.
+const CLEAN_REHEARSAL = { clean: true, reason: null, scope: 'full', seconds: 3, plan_hash: null, failures: [] }
+
+async function completePreflight(runId, preflight, rehearsal = preflight?.passed ? CLEAN_REHEARSAL : undefined) {
   const res = await orchestrator.completeFarmRun(runId, {
     summary: 'preflight ran',
-    artifacts: { artifact_md: '## Preflight', ...(preflight === undefined ? {} : { preflight }) },
+    artifacts: { artifact_md: '## Preflight', ...(preflight === undefined ? {} : { preflight }), ...(rehearsal === undefined ? {} : { rehearsal }) },
     step_key: 'task.preflight',
   })
   assert.equal(res.ok, true, JSON.stringify(res))

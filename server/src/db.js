@@ -724,6 +724,16 @@ for (const column of ['plan_hash TEXT', 'preflight_json TEXT']) {
     // column already exists
   }
 }
+// HO-839: the rehearsal a passing Preflight run asked for — {clean, reason,
+// scope, seconds, failures: [{what, reason, exit}]}, reason ids and labels
+// only, never output or a value. Bound to the run's plan_hash above. NULL on
+// every other run, on a Preflight that found unmet items, and on every row
+// from before (an item at Approve the run then has no clean rehearsal).
+try {
+  db.exec('ALTER TABLE step_run ADD COLUMN rehearsal_json TEXT')
+} catch {
+  // column already exists
+}
 // HZ-422: usage limits. A run that hit one (usage_limit_hit) is `cancelled` like
 // a deploy stop and keeps its attempt; the run that replaced it on the next
 // chain model names the one it fell back from and when that lifts. An item

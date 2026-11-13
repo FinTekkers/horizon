@@ -1,0 +1,42 @@
+{
+  "$comment": "HO-839 replay set: a container-runner report. The dry run and the proof run python3 from the pinned image. Rehearses clean.",
+  "files": {
+    "report.py": "import json, sys\nif '--dry-run' in sys.argv:\n    print('would write 12 rows to /tmp/report.json')\n    sys.exit(0)\nsys.exit('the real report is not part of the rehearsal')\n",
+    "fixtures/expected.json": "{\"rows\": 12}\n"
+  },
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "python3 report.py --out /tmp/report.json",
+      "python3 -c \"import json; print(json.load(open('fixtures/expected.json'))['rows'])\""
+    ],
+    "budget_minutes": 5,
+    "runner": "container",
+    "requires": [
+      {
+        "tool": "python3"
+      },
+      {
+        "path": "report.py"
+      },
+      {
+        "path": "fixtures/expected.json"
+      }
+    ],
+    "proof": [
+      {
+        "line": 1,
+        "command": 2
+      }
+    ],
+    "rehearsal": {
+      "dry_run": "python3 report.py --dry-run",
+      "samples": [
+        {
+          "command": 2,
+          "expect": "12"
+        }
+      ]
+    }
+  }
+}
