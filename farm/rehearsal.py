@@ -172,6 +172,7 @@ def _porcelain(repo_dir: str) -> str | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            errors="replace",
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
