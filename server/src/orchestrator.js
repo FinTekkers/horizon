@@ -106,7 +106,7 @@ import { snapshotSubsteps } from './substeps.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
-import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, executeFailed } from './verifyOutcome.js'
+import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, cleanOpenLines, executeFailed } from './verifyOutcome.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
 import {
   FARM_URL,
@@ -3169,6 +3169,11 @@ export function validateDeployVerdict(v) {
 // - a cause is kept only when Execute failed (true): a valid one as given,
 //   any other as `unforeseeable`. A pass, an Execute that did not fail, and
 //   no Execute record (null) all store none.
+//
+// HO-844: a `done_proof_incomplete` outcome also keeps the metric lines its
+// reply named as lacking proof (`verdict.open_lines`, cleanOpenLines) as
+// `openLines`, the lines Accept with exceptions asks a reason for. It is
+// absent on every other outcome, and when the reply named none usable.
 const VERIFY_SUMMARY_MAX_LINES = 3
 const VERIFY_SUMMARY_MAX_LINE_CHARS = 200
 const VERIFY_NO_VERDICT_SUMMARY = 'No parseable verdict was returned.'
@@ -3183,6 +3188,8 @@ export function normalizeVerifyVerdict(raw, fallbackText, { executeFailed = null
   const executeCause =
     outcome === 'work_failed' && executeFailed === true ? (EXECUTE_CAUSES.has(raw?.execute_cause) ? raw.execute_cause : 'unforeseeable') : null
   const verdict = outcome === 'pass' ? 'pass' : 'fail'
+  const openLines = outcome === 'done_proof_incomplete' ? cleanOpenLines(raw.open_lines) : null
+  const lineFields = openLines ? { openLines } : {}
   if (!known) return { verdict, outcome, executeCause, summary: VERIFY_NO_VERDICT_SUMMARY }
   const source = typeof raw.summary === 'string' ? raw.summary : typeof fallbackText === 'string' ? fallbackText : ''
   const lines = source
@@ -3191,7 +3198,7 @@ export function normalizeVerifyVerdict(raw, fallbackText, { executeFailed = null
     .filter(Boolean)
     .slice(0, VERIFY_SUMMARY_MAX_LINES)
     .map((line) => line.slice(0, VERIFY_SUMMARY_MAX_LINE_CHARS))
-  return { verdict, outcome, executeCause, summary: lines.length > 0 ? lines.join('\n') : VERIFY_NO_SUMMARY }
+  return { verdict, outcome, executeCause, ...lineFields, summary: lines.length > 0 ? lines.join('\n') : VERIFY_NO_SUMMARY }
 }
 
 // A failing deploy verdict has no analogous "retry loop" the way code review
@@ -3518,7 +3525,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, ended_at = datetime('now') WHERE id = ?",
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, verify_open_lines = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(
     text,
     artifactMd,
@@ -3531,6 +3538,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     verify?.summary ?? null,
     verify?.outcome ?? null,
     verify?.executeCause ?? null,
+    verify?.openLines ? JSON.stringify(verify.openLines) : null,
     runId,
   )
   addEvent(id, {

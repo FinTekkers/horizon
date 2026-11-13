@@ -54,6 +54,7 @@ import PlanItemsTable from './PlanItemsTable'
 import FiledAutopilotSelect from './FiledAutopilotSelect'
 import ScreenshotPanel from './ScreenshotPanel'
 import StepActionMenu from './StepActionMenu'
+import AcceptWithExceptionsButton, { ExceptionsList } from './AcceptWithExceptions'
 import { BackIcon, LinkIcon, PrIcon, CircleXIcon, PlanIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
@@ -353,7 +354,7 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -616,6 +617,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               linkContext={linkContextFor(stepOutputs?.[FILE_ITEMS_STEP_INDEX]?.sourceShas ?? null)}
             />
           )}
+          {/* HO-844: what the Task was accepted with — kept once closed. */}
+          {index === TASK_REVIEW_CLOSE_GATE_INDEX && item.exceptions?.length > 0 && <ExceptionsList exceptions={item.exceptions} />}
           {status === 'awaiting' && index === ACCEPT_GATE_INDEX && item.forwardedReview && (
             <ForwardedReview forwarded={item.forwardedReview} linkContext={linkContextFor(null)} />
           )}
@@ -694,6 +697,11 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   >
                     Approve with comments
                   </button>
+                  {/* HO-844: only while the server offers it — a Task at
+                      Review & close whose Verify found missing proof. */}
+                  {index === TASK_REVIEW_CLOSE_GATE_INDEX && item.acceptWithExceptions && onAcceptWithExceptions && (
+                    <AcceptWithExceptionsButton item={item} onSubmit={onAcceptWithExceptions} disabled={gateBusy} />
+                  )}
                   {canReturn && (
                     <button
                       className="btn-gate-reject"
@@ -1159,7 +1167,7 @@ function FarmUnreachableBanner({ onOpenFarmHealth }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions = null, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1406,6 +1414,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                       resolving={resolving}
                       gateBusy={gateBusy}
                       onForwardToAccept={onForwardToAccept}
+                      onAcceptWithExceptions={onAcceptWithExceptions}
                       onSetPersona={onSetPersona}
                       onSetStepProvider={onSetStepProvider}
                       filedAutopilot={filedAutopilot}

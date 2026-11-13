@@ -34,3 +34,27 @@ export function readVerifyOutcome(row) {
   if (row.verdict === 'fail') return 'work_failed'
   return row.verdict === 'pass' ? 'pass' : null
 }
+
+// HO-844: the metric lines a `done_proof_incomplete` reply named as lacking
+// proof (`verdict.open_lines`), as sorted, distinct 1-based line numbers, or
+// null when it named none usable. Only whole numbers 1..OPEN_LINE_MAX count,
+// at most OPEN_LINES_MAX of them; whether each is a line of the item's metric
+// is gateExceptions.js's check, when the gate reads it.
+export const OPEN_LINE_MAX = 999
+export const OPEN_LINES_MAX = 50
+
+export function cleanOpenLines(value) {
+  if (!Array.isArray(value)) return null
+  const lines = [...new Set(value.filter((n) => Number.isInteger(n) && n >= 1 && n <= OPEN_LINE_MAX))].sort((a, b) => a - b)
+  return lines.length > 0 ? lines.slice(0, OPEN_LINES_MAX) : null
+}
+
+// HO-844: a step_run row's stored open lines (verify_open_lines), or null.
+export function readOpenLines(row) {
+  if (typeof row?.verify_open_lines !== 'string') return null
+  try {
+    return cleanOpenLines(JSON.parse(row.verify_open_lines))
+  } catch {
+    return null
+  }
+}

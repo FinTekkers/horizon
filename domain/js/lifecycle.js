@@ -114,6 +114,7 @@ export function assertLifecycleShape(data, source = 'domain/steps.json') {
   }
 
   assertStepKeys(steps, source)
+  assertAcceptWithExceptions(steps, source)
   assertLanes(data.lanes, steps, kinds, source)
   return data
 }
@@ -155,6 +156,17 @@ function assertStepKeys(steps, source) {
       throw new Error(
         `${source}: steps[${i}] ("${step.label}") sends back to "${step.sendBackTo}", which is not an earlier agent step of its item kind`,
       )
+    }
+  }
+}
+
+// HO-844: Accept with exceptions closes a Task on a done_proof_incomplete
+// Verify outcome, so only a Task gate may offer it.
+function assertAcceptWithExceptions(steps, source) {
+  for (const [i, step] of steps.entries()) {
+    if (step.acceptWithExceptions === undefined) continue
+    if (step.kind !== 'gate' || (step.itemKind ?? 'change') !== 'task') {
+      throw new Error(`${source}: steps[${i}] ("${step.label}") declares acceptWithExceptions, but only a Task gate may`)
     }
   }
 }
@@ -443,6 +455,13 @@ export function isServerStep(index) {
 // gate PIN — server/src/store.js approveGate enforces it for every caller.
 export function isHumanOnlyGate(index) {
   return STEPS[index]?.kind === 'gate' && STEPS[index].humanOnly === true
+}
+
+// HO-844: a Task gate steps.json marks `acceptWithExceptions` may also close
+// with named exceptions (server/src/gateExceptions.js decides when).
+export function acceptsWithExceptions(index) {
+  const step = STEPS[index]
+  return step?.kind === 'gate' && step.acceptWithExceptions === true && step.itemKind === 'task'
 }
 
 export function humanOnlyGateIndexes(steps = STEPS) {

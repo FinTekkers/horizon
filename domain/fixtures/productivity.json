@@ -5,7 +5,7 @@
   "from": "2026-10-08",
   "to": "2026-10-22",
   "projects": [{ "id": "fintekkers", "name": "Fintekkers" }, { "id": "horizon", "name": "Horizon" }, { "id": "shoreward", "name": "Shoreward" }],
-  "summary": { "closed": 319, "steps": 3434, "modelCoverage": 0.65, "cost": null, "costPerItem": null },
+  "summary": { "closed": 319, "closedOutcomes": { "pass": 316, "acceptedWithExceptions": 3 }, "steps": 3434, "modelCoverage": 0.65, "cost": null, "costPerItem": null },
   "closedPerDay": [
     {
       "date": "2026-10-08",

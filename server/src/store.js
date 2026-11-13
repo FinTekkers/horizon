@@ -56,6 +56,7 @@ import { RUN_USER_RE, TOKEN_REF_RE, isolationFields, isolationRefusal, tenantRun
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
 import { readVerifyOutcome } from './verifyOutcome.js'
+import { checkAccept, insertExceptions, listExceptions, offerFor as exceptionOffer } from './gateExceptions.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
@@ -2455,11 +2456,25 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...substepFields(row, overlay),
     // HZ-541: only on an item whose first gate approves golden cases.
     ...goldenCasesFields(row),
+    // HO-844: only on a Task — at Review & close on a done_proof_incomplete
+    // Verify outcome, the lines Accept with exceptions asks a reason for; and
+    // once accepted so, every exception. Absent otherwise.
+    ...gateExceptionFields(row),
     // HZ-799: every step POST /api/items/:id/move { stepKey } takes it to now.
     // HZ-711: with what every surface's Approve, Return to…, Retry and
     // Abandon need to name them (moveItem.js movesView).
     moves: movesView(row, itemMoveTargets(row, activeRun), { enabled: !disabledProject(row) }),
   }
+}
+
+// HO-844: { acceptWithExceptions: { openLines, linesHash } } while the gate
+// offers it, { exceptions: [...] } once any were recorded; neither on any
+// other item, so their payload is unchanged.
+function gateExceptionFields(row) {
+  if (itemKindOf(row) !== 'task') return {}
+  const offer = exceptionOffer(row)
+  const exceptions = listExceptions(row.id)
+  return { ...(offer ? { acceptWithExceptions: offer } : {}), ...(exceptions.length > 0 ? { exceptions } : {}) }
 }
 
 // HZ-799: moveItem.js moveTargets for this row, with the state it does not
@@ -2701,7 +2716,7 @@ export function approveGate(
   stepIndex,
   notes,
   actor = 'You',
-  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null } = {},
+  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null, exceptions = null } = {},
 ) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
@@ -2722,6 +2737,26 @@ export function approveGate(
       notify()
       return { error: 'human_pin_required' }
     }
+  }
+  // HO-844: Accept with exceptions — { exceptions: [{ lineId, reason }],
+  // linesHash } — needs the gate PIN's proof whatever the gate, so Autopilot,
+  // WhatsApp and a token never pass it, and is checked against the item's own
+  // stored Verify run (gateExceptions.checkAccept).
+  let excepted = null
+  if (exceptions != null) {
+    if (!isHumanProof(proof)) {
+      addEvent(id, {
+        who: actor,
+        text: `could not accept “${STEPS[stepIndex].label}” with exceptions: it needs a human with the gate PIN — the gate stays open`,
+        color: '#9C333E',
+        initials: '✕',
+      })
+      notify()
+      return { error: 'human_pin_required' }
+    }
+    const checked = checkAccept(it, exceptions)
+    if (checked.error) return checked
+    excepted = checked.rows
   }
   if (stepIndex === APPROVE_RUN_GATE_INDEX) {
     const plan = currentRunPlan(id)
@@ -2778,9 +2813,12 @@ export function approveGate(
       fields: approvedHash ? { approved_plan_hash: approvedHash, approved_runner: approvedRunner } : {},
     })
     if (move.error) return move
-    db.prepare(
-      'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed)
+    const decision = db
+      .prepare(
+        'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed)
+    if (excepted) insertExceptions(id, Number(decision.lastInsertRowid), excepted, actor)
     if (golden?.set) approveGoldenCases(id, golden.set, actor)
     if (trimmed) {
       // Approval notes are direction for whoever runs next — queue as feedback
@@ -2800,6 +2838,15 @@ export function approveGate(
     color: '#5E4380',
     initials: '✓',
   })
+  if (excepted) {
+    const lines = excepted.map((row) => row.lineId)
+    addEvent(id, {
+      who: actor,
+      text: `accepted with ${excepted.length} exception${excepted.length === 1 ? '' : 's'}: metric line${lines.length === 1 ? '' : 's'} ${lines.join(', ')}`,
+      color: '#5E4380',
+      initials: '✓',
+    })
+  }
   notify()
   agentRunner.kick(id)
   const closed = isClosed(getItem(id))

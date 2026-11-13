@@ -481,6 +481,37 @@ export async function forwardToAccept(id) {
   return { error: 'review_not_rejected' }
 }
 
+// HO-844: mirrors serverApi.acceptWithExceptions — refused unless the item's
+// own offer lists exactly these lines, each with a non-blank reason; then the
+// item closes with them as its exceptions.
+export async function acceptWithExceptions(id, exceptions, linesHash) {
+  const it = items.find((x) => x.id === id)
+  if (!it) throw new Error('not_found')
+  const offer = it.acceptWithExceptions
+  if (!offer || isClosed(it)) throw Object.assign(new Error('not_at_gate'), { status: 409 })
+  if (linesHash !== offer.linesHash) throw Object.assign(new Error('open_lines_changed'), { status: 409 })
+  const byId = new Map(exceptions.map((e) => [e.lineId, e.reason]))
+  if (byId.size !== exceptions.length || exceptions.length !== offer.openLines.length || offer.openLines.some((l) => !byId.has(l.id))) {
+    throw Object.assign(new Error('exceptions_mismatch'), { status: 400 })
+  }
+  if (exceptions.some((e) => typeof e.reason !== 'string' || !e.reason.trim())) throw Object.assign(new Error('reason_blank'), { status: 400 })
+  const createdAt = new Date().toISOString().slice(0, 19).replace('T', ' ')
+  const recorded = offer.openLines.map((line, i) => ({
+    id: i + 1,
+    decisionId: 1,
+    lineId: line.id,
+    metricLine: line.text,
+    reason: byId.get(line.id).trim(),
+    decidedBy: 'You',
+    createdAt,
+  }))
+  clearTimeout(timers[id])
+  update(id, (x) => ({ ...x, cursor: x.cursor + 1, acceptWithExceptions: undefined, exceptions: recorded }))
+  pushEvent(id, { who: 'You', text: `accepted with ${recorded.length} exception${recorded.length === 1 ? '' : 's'}`, color: '#5E4380', initials: '✓' })
+  const item = items.find((x) => x.id === id)
+  return { ok: true, closed: isClosed(item), item }
+}
+
 // Mirrors serverApi.setPaused: the explicit state, {ok, paused, item} back, and a
 // rejection the button can show.
 // HZ-544: the mock has no GitHub issue to label; it flips the item's copy.

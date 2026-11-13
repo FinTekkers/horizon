@@ -149,14 +149,24 @@ export function planDeletes(seeds, refs = references(), { label = 'account purge
 // Carries out a planDeletes plan: clears the nullified columns, then deletes
 // table by table. Opens no transaction, so call it inside one. Throws when a
 // delete removes fewer rows than planned.
+//
+// HO-844: the purged work items are listed in purge_release while the deletes
+// run, so append-only rows under them (gate_exception) may go with them; the
+// list is emptied again before returning, inside the caller's transaction.
 export function applyDeletes({ remove, clear, order }, { label = 'account purge' } = {}) {
   for (const { table, from, rowids } of clear) {
     db.prepare(`UPDATE ${quote(table)} SET ${quote(from)} = NULL WHERE rowid ${IN_JSON}`).run(JSON.stringify(rowids))
   }
-  for (const table of order) {
-    const rowids = [...remove.get(table)]
-    const deleted = db.prepare(`DELETE FROM ${quote(table)} WHERE rowid ${IN_JSON}`).run(JSON.stringify(rowids)).changes
-    if (deleted !== rowids.length) throw new Error(`${label}: ${table} deleted ${deleted} of ${rowids.length}`)
+  const items = JSON.stringify([...(remove.get('work_item') ?? [])])
+  db.prepare(`INSERT OR IGNORE INTO purge_release (item_id) SELECT id FROM work_item WHERE rowid ${IN_JSON}`).run(items)
+  try {
+    for (const table of order) {
+      const rowids = [...remove.get(table)]
+      const deleted = db.prepare(`DELETE FROM ${quote(table)} WHERE rowid ${IN_JSON}`).run(JSON.stringify(rowids)).changes
+      if (deleted !== rowids.length) throw new Error(`${label}: ${table} deleted ${deleted} of ${rowids.length}`)
+    }
+  } finally {
+    db.prepare('DELETE FROM purge_release').run()
   }
 }
 

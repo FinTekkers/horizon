@@ -29,10 +29,20 @@
     },
     "summary": {
       "type": "object",
-      "required": ["closed", "steps", "modelCoverage", "cost", "costPerItem"],
+      "required": ["closed", "closedOutcomes", "steps", "modelCoverage", "cost", "costPerItem"],
       "additionalProperties": false,
       "properties": {
         "closed": { "description": "Items closed in the window.", "type": "integer", "minimum": 0 },
+        "closedOutcomes": {
+          "description": "HO-844: the window's closes split two ways. acceptedWithExceptions counts items whose counted close was a Review & close accepted with exceptions; pass counts every other close. The two add up to closed.",
+          "type": "object",
+          "required": ["pass", "acceptedWithExceptions"],
+          "additionalProperties": false,
+          "properties": {
+            "pass": { "description": "Closes with no exceptions.", "type": "integer", "minimum": 0 },
+            "acceptedWithExceptions": { "description": "Closes accepted with exceptions.", "type": "integer", "minimum": 0 }
+          }
+        },
         "steps": { "description": "Step runs in the window.", "type": "integer", "minimum": 0 },
         "modelCoverage": { "description": "Share of step runs with a recorded model, 0 to 1.", "type": "number", "minimum": 0, "maximum": 1 },
         "cost": { "description": "Total token cost in USD. null = not captured.", "type": ["null", "number"], "minimum": 0 },

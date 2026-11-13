@@ -53,6 +53,31 @@ export function insertItem(
   }
 }
 
+// HO-844: a done Verify & report run holding a stored outcome, as HO-841's
+// completeFarmRun writes it: the coarse verdict (pass, else fail), the
+// three-way verify_outcome and, for done_proof_incomplete, the metric line
+// numbers it named as lacking proof. Returns the run id.
+export function insertVerifyOutcome(db, { itemId, stepIndex, outcome, openLines = null, attempt = 1, startedAt, endedAt = startedAt }) {
+  const runId = insertStepRun(db, {
+    itemId,
+    stepIndex,
+    attempt,
+    agent: 'QA',
+    output: `Verify outcome: ${outcome}`,
+    artifact: `## Verdict\n**${outcome}**`,
+    startedAt,
+    endedAt,
+    verdict: outcome === 'pass' ? 'pass' : 'fail',
+    verdictSummary: `Verify outcome: ${outcome}`,
+  })
+  db.prepare('UPDATE step_run SET verify_outcome = ?, verify_open_lines = ? WHERE id = ?').run(
+    outcome,
+    openLines ? JSON.stringify(openLines) : null,
+    runId,
+  )
+  return runId
+}
+
 // HZ-208: a project row with no repositories, written directly so no repo is
 // connected (connecting one purges the demo items other specs rely on).
 // Returns the new id.

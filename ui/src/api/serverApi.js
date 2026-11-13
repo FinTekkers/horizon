@@ -921,6 +921,24 @@ export async function forwardToAccept(id) {
   return res ? await res.json().catch(() => ({ ok: false })) : { ok: false }
 }
 
+// HO-844: Accept with exceptions at a Task's Review & close — one
+// { lineId, reason } per open line the item's `acceptWithExceptions` listed,
+// with that offer's linesHash and the step this tab shows. Rejects like
+// moveItem: Error('pin_needed'), Error('network'), else Error(<error code>)
+// with `status` (409 open_lines_changed: the open lines changed since). The
+// answer's item, closed with its exceptions, is applied at once.
+export async function acceptWithExceptions(id, exceptions, linesHash) {
+  const item = items.find((it) => it.id === id)
+  if (!item) throw new Error('not_found')
+  const data = await gateAction(`/items/${encodeURIComponent(id)}/gate/accept-with-exceptions`, {
+    from: item.currentStepKey ?? stepKeyAt(item.cursor),
+    linesHash,
+    exceptions,
+  })
+  if (data.item) applyActionItem(data.item)
+  return data
+}
+
 // HZ-385: sends the state the button shows, never a flip of this tab's cached
 // item, which a dead stream can leave stale. postJson so a 404 or 409 rejects
 // and the button shows it. The answer's item (HZ-389), or else its `paused`,

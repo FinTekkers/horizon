@@ -153,6 +153,7 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/job/resume': {},
   'POST /api/items/:id/resolve-conflicts': {},
   'POST /api/items/:id/move': { payload: { action: 'retry', from: 'change.implement' } },
+  'POST /api/items/:id/gate/accept-with-exceptions': { payload: { from: 'task.review-close', linesHash: 'h', exceptions: [{ lineId: '1', reason: 'r' }] } },
   'POST /api/items/:id/feedback': { payload: { message: 'hello' } },
   'POST /api/items/:id/pause': { payload: { paused: true } },
   'POST /api/items/:id/usage-wait/release': { payload: {} },
@@ -200,7 +201,7 @@ test('metric 1: a non-member gets exactly 404 on every member:item route; nothin
     .filter((r) => r.scope === 'member:item' && r.method !== 'GET' && r.method !== 'HEAD')
     .map((r) => `${r.method} ${r.url}`)
   assert.deepEqual(routes.sort(), Object.keys(MEMBER_ITEM_ROUTES).sort())
-  assert.equal(routes.length, 21)
+  assert.equal(routes.length, 22)
 
   const overlapBefore = overlapCalls
   const before = snapshot()

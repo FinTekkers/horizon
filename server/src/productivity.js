@@ -8,7 +8,8 @@
 // HZ-550: productivityReport() aggregates Horizon's own DB — step_run (model,
 // tokens, cost, durations, checks_ms), event (GitHub closes, failed reviews,
 // failed steps), gate_decision (closes at a kind's last gate, approvals,
-// send-backs, waits) and test_result (failed check runs). Read-only, server
+// send-backs, waits), gate_exception (HO-844: closes accepted with
+// exceptions) and test_result (failed check runs). Read-only, server
 // side only, a handful of indexed queries per request. Every cost and token
 // figure is null when no run in it was captured (stepUsage.js) — never 0.
 // domain/fixtures/productivity.json stays the design's figures for the
@@ -20,6 +21,7 @@ import { hasNoProject } from './membership.js'
 import { msOf as parseSqlTime } from './sqlTime.js'
 import { REASON } from '../../domain/js/reasons.js'
 import { EXECUTE_CAUSES, readVerifyOutcome } from './verifyOutcome.js'
+import { exceptionCloseIds } from './gateExceptions.js'
 import {
   DEPLOY_STEP_INDEX,
   ITEM_KINDS,
@@ -307,6 +309,8 @@ export function productivityReport({ range, project }, { now = Date.now() } = {}
   const approvals = selectApprovals.all(bounds)
 
   const { closed, gateWait } = closedItems(closes, approvals.map((a) => a.item_id))
+  // HO-844: a close accepted with exceptions is its own bucket, never a pass.
+  const excepted = exceptionCloseIds(closes).size
 
   const agentRuns = runs.filter((run) => run.agent)
   const count = (groups) => groups.reduce((sum, run) => sum + run.n, 0)
@@ -323,6 +327,7 @@ export function productivityReport({ range, project }, { now = Date.now() } = {}
     projects,
     summary: {
       closed: closed.length,
+      closedOutcomes: { pass: closed.length - excepted, acceptedWithExceptions: excepted },
       steps: count(runs),
       // Of the runs that could name a model: a run with no agent has none.
       modelCoverage: agentCount ? round(count(agentRuns.filter((run) => run.model != null)) / agentCount, 4) : 0,

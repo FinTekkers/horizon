@@ -169,6 +169,13 @@ test('js/isHumanOnlyGate: only a gate steps.json marks humanOnly', () => {
   }
 })
 
+test('js/acceptsWithExceptions: only a Task gate steps.json marks acceptWithExceptions (HO-844)', () => {
+  for (const c of js.acceptsWithExceptions) {
+    const index = c.key ? binding.stepIndexOf(c.key) : c.index
+    assert.equal(binding.acceptsWithExceptions(index), c.expect, c.case)
+  }
+})
+
 test('js/humanOnlyGateIndexes', () => {
   for (const c of js.humanOnlyGateIndexes) {
     assert.deepEqual(

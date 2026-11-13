@@ -184,7 +184,15 @@ test('the seeded report validates against HZ-549’s schema and says it is live'
 
 test('summary: 3 closed, 9 runs, 7 of 8 agent runs with a model, the captured cost and the median item cost', () => {
   // X1 is abandoned and O1 closed before the window.
-  assert.deepEqual(report.summary, { closed: 3, steps: 9, modelCoverage: 0.875, cost: 2.21875, costPerItem: 1.0625 })
+  // HO-844: none of the 3 was accepted with exceptions, so all 3 are a pass.
+  assert.deepEqual(report.summary, {
+    closed: 3,
+    closedOutcomes: { pass: 3, acceptedWithExceptions: 0 },
+    steps: 9,
+    modelCoverage: 0.875,
+    cost: 2.21875,
+    costPerItem: 1.0625,
+  })
 })
 
 test('closed per day by project', () => {
