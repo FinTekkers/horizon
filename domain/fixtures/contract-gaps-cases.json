@@ -1,0 +1,37 @@
+{
+  "$comment": "HO-836: one run plan block and the `contract_gaps` Impact review reports for it. farm/tests/test_run_plan_requires.py asserts farm/run_plan_requires.py contract_gaps() returns `gaps` for `plan`, exactly; server/test/task-impact-contract-gaps.test.mjs seeds `plan` as the Run plan artifact and posts `gaps` as the Impact review result, so what the farm sends is what the server reads. `declared` adds a requires entry for every gap, after which the scan finds none. Names and command indexes only: no command text ever rides in a gap.",
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "./load.sh --dry-run",
+      "cat out/prices.csv | jq -r '.rows'",
+      "cd out && psql -X -tAc 'SELECT count(*) FROM prices'",
+      "curl -fsS -H 'Authorization: Bearer $VENDOR_TOKEN' https://u:p@api.example.com/v1/prices?token=abc",
+      "echo done; true"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      { "tool": "curl" },
+      { "path": "load.sh" }
+    ],
+    "proof": [
+      { "line": 1, "command": 2 },
+      { "line": 2, "command": 3 },
+      { "line": 3, "command": 4 },
+      { "line": 4, "manual": "the owner checks the curve" },
+      { "line": 5, "manual": "the owner spot-checks five prices" }
+    ]
+  },
+  "gaps": [
+    { "kind": "tool", "name": "cat", "command": 2 },
+    { "kind": "tool", "name": "jq", "command": 2 },
+    { "kind": "tool", "name": "psql", "command": 3 },
+    { "kind": "service", "name": "api.example.com", "command": 4 }
+  ],
+  "declared": [
+    { "tool": "cat" },
+    { "tool": "jq" },
+    { "tool": "psql" },
+    { "service": { "name": "api.example.com", "version_cmd": "curl -fsS -o /dev/null -w '%{http_code}' https://api.example.com/health", "expect": "200" } }
+  ]
+}

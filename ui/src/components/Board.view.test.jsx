@@ -201,7 +201,10 @@ test('the selections, sort direction and narrowed board survive a reload of stor
 })
 
 test('the Hiding summary counts the narrowing alongside Stale and Closed, and an item caught by both counts once', () => {
-  const staleAt = new Date(Date.now() - 45 * 86_400_000).toISOString()
+  // The fixture's last_activity_at is relative to the fixed NOW, so pin the
+  // clock there too: on the real clock every item turns stale 30 days on.
+  vi.useFakeTimers({ now: NOW })
+  const staleAt = new Date(NOW - 45 * 86_400_000).toISOString()
   const items = [
     item('KEEP', { priority: PRIORITY.HIGH }),
     item('OFF-PRIORITY'),

@@ -2176,6 +2176,33 @@ def _prior_inventory(task: dict, scope: list[str]) -> dict:
     raise AgentError("Design needs the Inventory artifact, and the task carries none")
 
 
+def _prior_run_plan(task: dict) -> dict:
+    """HO-836: the validated Run plan block among the prior artifacts."""
+    for artifact in reversed(task.get("artifacts") or []):
+        if artifact.get("label") == RUN_PLAN_LABEL:
+            try:
+                return run_plan.extract(artifact.get("content", ""))
+            except ValueError as exc:
+                raise AgentError(f"Impact review needs the Run plan block: {exc}") from None
+    raise AgentError("Impact review needs the Run plan artifact, and the task carries none")
+
+
+def _impact_contract_gaps(kind: str, label: str, task: dict) -> list[dict] | None:
+    """HO-836: Impact review's contract audit — each tool or host the prior
+    run plan's commands reach that its `requires` does not declare
+    (run_plan_requires.contract_gaps), or None for every other step. Read
+    before any agent call, so a missing Run plan block fails the step
+    without spending a run. The scan decides, never the agent. The log
+    names only each gap's kind, name and command index. The kind is matched
+    by its table, never by name."""
+    if STEP_CONFIGS.get(kind) is not TASK_STEP_CONFIG or label != IMPACT_REVIEW_LABEL:
+        return None
+    gaps = run_plan_requires.contract_gaps(_prior_run_plan(task))
+    if gaps:
+        log(f"{label}: {len(gaps)} contract gap{'' if len(gaps) == 1 else 's'} ({run_plan_requires.describe_gaps(gaps)})")
+    return gaps
+
+
 def _plan_reply_validator(label: str, task: dict, scope: list[str]):
     """The reply check a Plan step runs inside the retry envelope, extended
     by label. HZ-448: Draft items' `plan_draft` block must satisfy
@@ -3773,6 +3800,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # its run log scrubbed. Its errors are scrubbed too, and the copy is
     # always removed.
     bundle, out_of_scope, scope = None, [], []
+    contract_gaps = _impact_contract_gaps(kind, label, task)
     try:
         with contextlib.ExitStack() as stack:
             if bundle_step:
@@ -3905,6 +3933,11 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # beside its verdict.
     if label == IMPACT_REVIEW_LABEL and parsed.get("circular_proofs"):
         result.setdefault("artifacts", {})["circular_proofs"] = parsed["circular_proofs"]
+    # HO-836: the contract audit's gaps ride beside them, from the scan
+    # alone — a `contract_gaps` key in the reply is dropped. The server sends
+    # the plan back naming each gap, under the same cap.
+    if contract_gaps:
+        result.setdefault("artifacts", {})["contract_gaps"] = contract_gaps
     if label == VERIFY_REPORT_LABEL and isinstance(parsed.get("metric_check"), list):
         result.setdefault("artifacts", {})["metric_check"] = parsed["metric_check"]
     # HZ-448: the validated drafts ride through; the server re-checks them,
