@@ -687,6 +687,22 @@ for (const sql of [
     // column already exists
   }
 }
+// HO-841: a Task Verify run's three-way outcome, and why Execute failed when
+// it did (server/src/verifyOutcome.js). `verdict` above keeps pass/fail, so
+// Review, Deploy, the event row and the Tracker read as before. A cause is
+// only ever stored beside `work_failed`. NULL on every earlier row — no
+// backfill: verifyOutcome.readVerifyOutcome reads an old `fail` as
+// `work_failed` without rewriting it.
+for (const sql of [
+  "ALTER TABLE step_run ADD COLUMN verify_outcome TEXT CHECK (verify_outcome IN ('pass','work_failed','done_proof_incomplete'))",
+  "ALTER TABLE step_run ADD COLUMN execute_cause TEXT CHECK (execute_cause IS NULL OR (execute_cause IN ('prereq','unforeseeable') AND verify_outcome = 'work_failed'))",
+]) {
+  try {
+    db.exec(sql)
+  } catch {
+    // column already exists
+  }
+}
 // HZ-422: usage limits. A run that hit one (usage_limit_hit) is `cancelled` like
 // a deploy stop and keeps its attempt; the run that replaced it on the next
 // chain model names the one it fell back from and when that lifts. An item

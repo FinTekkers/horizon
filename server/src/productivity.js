@@ -19,10 +19,12 @@ import { db } from './db.js'
 import { hasNoProject } from './membership.js'
 import { msOf as parseSqlTime } from './sqlTime.js'
 import { REASON } from '../../domain/js/reasons.js'
+import { EXECUTE_CAUSES, readVerifyOutcome } from './verifyOutcome.js'
 import {
   DEPLOY_STEP_INDEX,
   ITEM_KINDS,
   STEPS,
+  VERIFY_REPORT_STEP_INDEX,
   awaitingGate,
   endIndex,
   firstStepIndex,
@@ -47,6 +49,23 @@ export const PRODUCTIVITY_QUERY_SCHEMA = {
     // Any project id is echoed, not looked up: an id with no project row gets
     // an empty report, not a 404.
     project: { type: 'string', minLength: 1, maxLength: 64, default: 'all' },
+  },
+}
+
+// HO-841: GET /api/admin/productivity/verify. `since` is a day (UTC); the
+// report lists the first `n` Tasks closed strictly after its 00:00:00.
+export const PRODUCTIVITY_VERIFY_RESPONSE_SCHEMA = readDomainJson('productivityVerify.schema.json')
+
+export const PRODUCTIVITY_VERIFY_MAX_N = 500
+
+export const PRODUCTIVITY_VERIFY_QUERY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['since'],
+  properties: {
+    since: { type: 'string', format: 'date' },
+    n: { type: 'integer', minimum: 1, maximum: PRODUCTIVITY_VERIFY_MAX_N, default: 50 },
+    project: PRODUCTIVITY_QUERY_SCHEMA.properties.project,
   },
 }
 
@@ -86,6 +105,8 @@ function msOf(sql) {
   return parseSqlTime(sql)
 }
 const dayOf = (sql) => sql.slice(0, 10)
+// Code-unit order, so stored datetime text sorts by time.
+const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const round = (value, places) => Math.round(value * 10 ** places) / 10 ** places
 const minutes = (ms) => round(ms / 60_000, 1)
 
@@ -212,6 +233,28 @@ const selectAtGates = db.prepare(`
   SELECT w.id, w.kind, w.cursor, w.abandoned_at, w.project_id FROM work_item w
    WHERE w.cursor IN (SELECT value FROM json_each(@gates)) AND ${IN_PROJECTS}`)
 
+// HO-841: a Task's latest close after `since` (exclusive), by the same two
+// close events as selectCloses, with no upper bound. The report keeps only
+// Tasks still closed and not abandoned, as the dashboard does.
+const selectTaskClosesAfter = db.prepare(`
+  SELECT c.item_id, MAX(c.at) AS closed_at, w.kind, w.cursor, w.repo, w.project_id, w.abandoned_at
+    FROM (
+      SELECT item_id, created_at AS at FROM gate_decision
+       WHERE decision = 'approved' AND step_index = @lastGate AND created_at > @since
+      UNION ALL
+      SELECT item_id, created_at AS at FROM event
+       WHERE who = 'GitHub' AND text LIKE 'closed issue #%' AND created_at > @since
+    ) c JOIN work_item w ON w.id = c.item_id
+   WHERE w.kind = 'task' AND ${IN_PROJECTS}
+   GROUP BY c.item_id`)
+
+// HO-841: each item's done Verify & report runs, oldest first — the last one
+// per item is its verdict.
+const selectVerifyRuns = db.prepare(`
+  SELECT item_id, verdict, verify_outcome, execute_cause FROM step_run
+   WHERE ${IN_ITEMS} AND step_index = @verify AND substep_id IS NULL AND status = 'done'
+   ORDER BY id`)
+
 const SCOPE_REASONS = [REASON.READ_ONLY_VIOLATED, REASON.JOB_CWD_REFUSED].map((reason) => `agent step failed (${reason})`)
 
 // ---- the model x step matrix rows ----
@@ -263,15 +306,7 @@ export function productivityReport({ range, project }, { now = Date.now() } = {}
     .filter((row) => isClosed(row) && !isAbandoned(row))
   const approvals = selectApprovals.all(bounds)
 
-  const itemIds = JSON.stringify([...new Set([...closes.map((c) => c.item_id), ...approvals.map((a) => a.item_id)])])
-  const runsByItem = groupBy(selectItemRuns.all({ items: itemIds }), 'item_id')
-  const decisionsByItem = groupBy(selectItemDecisions.all({ items: itemIds }), 'item_id')
-  const reviewFails = new Map(selectReviewFails.all({ items: itemIds }).map((row) => [row.item_id, row.n]))
-  const gateWait = gateWaitFor(runsByItem, decisionsByItem)
-
-  const closed = closes.map((row) =>
-    closedItem(row, runsByItem.get(row.item_id) ?? [], decisionsByItem.get(row.item_id) ?? [], reviewFails, gateWait),
-  )
+  const { closed, gateWait } = closedItems(closes, approvals.map((a) => a.item_id))
 
   const agentRuns = runs.filter((run) => run.agent)
   const count = (groups) => groups.reduce((sum, run) => sum + run.n, 0)
@@ -303,6 +338,66 @@ export function productivityReport({ range, project }, { now = Date.now() } = {}
     failures: failures(win, runs, bounds),
     approvals: { gates: approvalGates(win, approvals, gateWait, ids) },
   }
+}
+
+// HO-841: the first `n` Tasks closed strictly after `since` (YYYY-MM-DD,
+// from its 00:00:00 UTC), in close order (ties by id), each with its newest
+// Verify outcome and Execute cause; the outcome and cause totals; the share
+// of caused Execute failures that were `prereq`; and rework's firstPassYield
+// over exactly these Tasks. Read-only. IDs, times and enums only — no
+// summary or evidence text leaves through it.
+export function verifyVerdictReport({ since, n = 50, project = 'all' }) {
+  const projects = projectsFor(project)
+  const ids = JSON.stringify(projects.map((p) => Number(p.id)))
+  const cohort = selectTaskClosesAfter
+    .all({ since: `${since} 00:00:00`, lastGate: endIndex('task') - 1, ids })
+    .filter((row) => isClosed(row) && !isAbandoned(row))
+    .sort((a, b) => compareText(a.closed_at, b.closed_at) || compareText(a.item_id, b.item_id))
+    .slice(0, n)
+
+  const items = JSON.stringify(cohort.map((row) => row.item_id))
+  const latest = new Map()
+  for (const row of selectVerifyRuns.all({ items, verify: VERIFY_REPORT_STEP_INDEX })) latest.set(row.item_id, row)
+
+  const verdicts = { pass: 0, work_failed: 0, done_proof_incomplete: 0, none: 0 }
+  const executeCauses = { prereq: 0, unforeseeable: 0 }
+  const tasks = cohort.map((row) => {
+    const run = latest.get(row.item_id)
+    const verdict = readVerifyOutcome(run)
+    const executeCause = verdict === 'work_failed' && EXECUTE_CAUSES.has(run.execute_cause) ? run.execute_cause : null
+    verdicts[verdict ?? 'none'] += 1
+    if (executeCause) executeCauses[executeCause] += 1
+    return { id: row.item_id, closedAt: row.closed_at, verdict, executeCause }
+  })
+  const caused = executeCauses.prereq + executeCauses.unforeseeable
+  const { closed } = closedItems(cohort)
+
+  return {
+    since,
+    n,
+    project,
+    returned: tasks.length,
+    tasks,
+    totals: { verdicts, executeCauses },
+    prereqShare: caused ? round(executeCauses.prereq / caused, 4) : null,
+    firstPassYield: rework(closed).firstPassYield,
+  }
+}
+
+// HO-841: each close's closedItem — its runs, gate decisions and review
+// fails — and the gate-wait lookup over those items plus `otherIds`. Shared
+// by productivityReport and verifyVerdictReport, so both read rework the
+// same way.
+function closedItems(closes, otherIds = []) {
+  const itemIds = JSON.stringify([...new Set([...closes.map((c) => c.item_id), ...otherIds])])
+  const runsByItem = groupBy(selectItemRuns.all({ items: itemIds }), 'item_id')
+  const decisionsByItem = groupBy(selectItemDecisions.all({ items: itemIds }), 'item_id')
+  const reviewFails = new Map(selectReviewFails.all({ items: itemIds }).map((row) => [row.item_id, row.n]))
+  const gateWait = gateWaitFor(runsByItem, decisionsByItem)
+  const closed = closes.map((row) =>
+    closedItem(row, runsByItem.get(row.item_id) ?? [], decisionsByItem.get(row.item_id) ?? [], reviewFails, gateWait),
+  )
+  return { closed, gateWait }
 }
 
 function groupBy(rows, key) {

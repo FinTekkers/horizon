@@ -55,6 +55,7 @@ import { ensureUnlinkedProject, hasNoProject, unlinkedProjectId } from './member
 import { RUN_USER_RE, TOKEN_REF_RE, isolationFields, isolationRefusal, tenantRunUser, tenantTokenRef } from './projectIsolation.js'
 import { parseRuleBlock } from './ruleBlock.js'
 import { fallbackNoteText, usageWaitText } from './usageLimits.js'
+import { readVerifyOutcome } from './verifyOutcome.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
@@ -1181,7 +1182,7 @@ const selectEvents = db.prepare(
   'SELECT who, text, detail, verdict, color, initials, created_at FROM event WHERE item_id = ? ORDER BY id DESC LIMIT 20',
 )
 const selectOutputs = db.prepare(
-  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, fallback_from, fallback_reset_at, source_shas, started_at, ended_at FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' ORDER BY id",
+  "SELECT step_index, attempt, output, artifact, provider, model, verdict, verdict_summary, verify_outcome, execute_cause, fallback_from, fallback_reset_at, source_shas, started_at, ended_at FROM step_run WHERE item_id = ? AND substep_id IS NULL AND status = 'done' ORDER BY id",
 )
 // Counts done+artifact rows only (a strict subset of the done rows above —
 // some steps mark done without ever setting an artifact), so the board can
@@ -1195,6 +1196,20 @@ const selectJobView = db.prepare(
   `SELECT r.job_view FROM step_run r JOIN work_item w ON w.id = r.item_id
     WHERE r.item_id = ? AND r.step_index = ? AND r.substep_id IS NULL AND w.cursor >= r.step_index ORDER BY r.id DESC LIMIT 1`,
 )
+
+// HO-841: the job view of an item's newest Execute run before Verify run
+// `beforeRunId`, in any status — a cancelled or failed run's view is the one
+// that says why Execute failed. Kept beside selectJobView, which serves the
+// Execute card: unlike it, this reads no cursor, since the Verify run being
+// finalized is past Execute by definition. The raw stored JSON, or null.
+const selectExecuteJobViewBefore = db.prepare(
+  `SELECT job_view FROM step_run
+    WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND id < ? ORDER BY id DESC LIMIT 1`,
+)
+
+export function latestExecuteJobView(itemId, beforeRunId) {
+  return selectExecuteJobViewBefore.get(itemId, EXECUTE_STEP_INDEX, beforeRunId)?.job_view ?? null
+}
 
 function stepOutputs(itemId) {
   const map = {}
@@ -1232,6 +1247,12 @@ function stepOutputs(itemId) {
     // link at that commit. Absent when none was recorded (every earlier run).
     const sourceShas = parseSourceShas(row.source_shas)
     if (sourceShas) map[row.step_index].sourceShas = sourceShas
+    // HO-841: Verify's outcome ('pass'|'work_failed'|'done_proof_incomplete')
+    // and, when Execute failed, its cause ('prereq'|'unforeseeable' or null).
+    // An old `fail` row reads as `work_failed`; `verdict` stays as stored.
+    // Absent on a run with no verdict (every other step, pre-HZ-429 runs).
+    const verifyOutcome = readVerifyOutcome(row)
+    if (verifyOutcome) Object.assign(map[row.step_index], { verifyOutcome, executeCause: row.execute_cause ?? null })
   }
   // HZ-407: the Execute card's job view, from the newest Execute run in any
   // status — live while it runs, the final view once it stopped or finished.

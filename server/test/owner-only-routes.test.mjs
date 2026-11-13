@@ -57,6 +57,7 @@ const OWNER_ONLY = {
   'GET /api/admin/farm-health': { expect: 503, error: 'farm_health_warming' },
   'GET /api/admin/check-flakes': { expect: 200 },
   'GET /api/admin/productivity': { expect: 200 },
+  'GET /api/admin/productivity/verify': { url: '/api/admin/productivity/verify?since=2026-10-01&n=3', expect: 200 },
   'GET /api/admin/test-history': { url: '/api/admin/test-history?repo=acme/probe', expect: 200 },
   'POST /api/admin/deploy-targets/:key/dry-run': {
     url: '/api/admin/deploy-targets/no-such-target/dry-run',
@@ -97,10 +98,10 @@ function send(name, who) {
   })
 }
 
-test('the owner-only list is exact: 10 admin routes, 3 global definitions routes, 2 sync routes, all scoped owner', () => {
+test('the owner-only list is exact: 11 admin routes, 3 global definitions routes, 2 sync routes, all scoped owner', () => {
   const names = routes.map((r) => `${r.method} ${r.url}`)
   assert.deepEqual(names.sort(), Object.keys(OWNER_ONLY).sort())
-  assert.equal(routes.filter((r) => r.url.startsWith('/api/admin/')).length, 10)
+  assert.equal(routes.filter((r) => r.url.startsWith('/api/admin/')).length, 11)
   assert.equal(routes.filter((r) => r.url.startsWith('/api/definitions')).length, 3)
   assert.equal(routes.filter((r) => r.url.startsWith('/api/sync/')).length, 2)
   for (const r of routes) assert.equal(r.scope, 'owner', `${r.method} ${r.url}`)

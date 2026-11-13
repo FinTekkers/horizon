@@ -51,6 +51,11 @@ RUN_TMP = tempfile.mkdtemp(prefix=f"horizon-run-{os.getpid()}-", dir=_REAL_TMP)
 os.environ["TMPDIR"] = RUN_TMP
 tempfile.tempdir = RUN_TMP
 TEST_FARM_HOME = tempfile.mkdtemp(prefix="horizon-farm-test-")
+# The host's instrumented CLIs (/usr/local/bin/git, sl, hg) cache their
+# tracing control file as $TMPDIR/artillery_cli_control.<uid>.json unless this
+# names another path. Pointed into TEST_FARM_HOME, removed at session end, so
+# a host tool's cache is not reported as this run's leak.
+os.environ["ARTILLERY_CONTROL_CACHE_PATH"] = os.path.join(TEST_FARM_HOME, "artillery_cli_control.json")
 # HZ-716: tmux session names are shared across a whole tmux server, and the
 # host's default server is where the live farm's sessions live. From here on
 # every tmux this process or its children start — module and session fixtures

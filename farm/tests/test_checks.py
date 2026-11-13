@@ -83,6 +83,9 @@ def test_scratch_workspace_without_a_venv_gets_the_running_farm_interpreter(tmp_
 
 
 def test_workspace_with_a_venv_gets_no_override(tmp_path, monkeypatch):
+    # The premise is that no value was already set. A farm check run in a
+    # venv-less workspace exports one to this whole suite, so clear it.
+    monkeypatch.delenv("FARM_TEST_PYTHON", raising=False)
     venv_python = tmp_path / "farm" / ".venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)
     venv_python.touch()
