@@ -4,7 +4,7 @@
 // POSTs; the server sends what changed after every mutation (HZ-318: a full
 // `snapshot` event on connect, then `delta` events at most once a second).
 
-import { ACCEPT_GATE_INDEX, APPROVE_FILE_GATE_INDEX, stepKeyAt } from '../../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, APPROVE_FILE_GATE_INDEX, APPROVE_RUN_GATE_INDEX, EXECUTE_STEP_INDEX, stepKeyAt } from '../../../domain/js/lifecycle.js'
 
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
@@ -864,6 +864,11 @@ export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}
     // HZ-541: the golden-cases set this tab showed at the first gate.
     ...(item.goldenCases?.hash && !item.goldenCases.approved && item.cursor === item.goldenCases.gateIndex ? { goldenHash: item.goldenCases.hash } : {}),
     ...(item.cursor === APPROVE_FILE_GATE_INDEX ? { filedAutopilot } : {}),
+    // HO-843: a one-command patch this card shows is approved for that
+    // command only — its index and hash, so a newer patch is not approved unseen.
+    ...(item.cursor === APPROVE_RUN_GATE_INDEX && item.runPlan?.commandPatch
+      ? { commandIndex: item.runPlan.commandPatch.index, commandHash: item.runPlan.commandPatch.commandHash }
+      : {}),
   }
   // HZ-711: an approve is a move too, from the gate by its permanent key.
   const res = await gatePost(`/items/${id}/move`, { action: 'approve', from: item.currentStepKey ?? stepKeyAt(item.cursor), ...body })
@@ -996,6 +1001,30 @@ export async function stopJob(id) {
 
 export function resumeJob(id) {
   return postJson(`/items/${id}/job/resume`, {})
+}
+
+// HO-843: the owner's patch of one command (0-based `index`) of a Task's run
+// plan — the approved plan at Execute, the shown one at Approve the run. The
+// item goes back to Run plan. Rejects with Error(<error code>), plus `shapes`
+// (secret shape names only) for literal_secret.
+export async function patchRunPlan(id, { index, command }) {
+  const item = items.find((it) => it.id === id)
+  if (!item) throw new Error('not_found')
+  const planHash = item.cursor === EXECUTE_STEP_INDEX ? item.approvedPlanHash : item.runPlan?.hash
+  const res = await fetch(`${API_BASE}/items/${encodeURIComponent(id)}/run-plan/patch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: item.currentStepKey ?? stepKeyAt(item.cursor), planHash: planHash ?? '', index, command }),
+  }).catch(() => null)
+  if (!res) throw new Error('network')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    if (Array.isArray(data.shapes)) err.shapes = data.shapes
+    throw err
+  }
+  if (data.item) applyActionItem(data.item, data.restart)
+  return data
 }
 
 // HZ-310: drops one edge. postJson (not the fire-and-forget post) so a 404 or

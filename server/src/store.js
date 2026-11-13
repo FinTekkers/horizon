@@ -45,7 +45,7 @@ import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/j
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
-import { effectiveRunner, extractRunPlan, unprovenLines } from '../../domain/js/runPlan.js'
+import { effectiveRunner, extractRunPlan, literalSecrets, replaceRunPlan, runPlanFrameText, unprovenLines } from '../../domain/js/runPlan.js'
 import { isHumanProof } from './humanProof.js'
 import { PERSONAS, isPersona, personaDisplay, personaLabel, personasFromRow } from './personas.js'
 import { priorityFromLabels } from './priorityLabels.js'
@@ -63,7 +63,7 @@ import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
-import { moveItem, moveTargets, movesView, planMove } from './moveItem.js'
+import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 
 const listeners = new Set()
 
@@ -1408,6 +1408,8 @@ function runPlanView(itemId, metric) {
     preflight: preflightView(preflightState(itemId, plan)),
     // HO-839: its rehearsal, for this plan only (null when there is none).
     rehearsal: rehearsalView(itemId, plan),
+    // HO-843: the one-command patch this approval re-approves, or null.
+    commandPatch: commandPatchOf(itemId, plan),
   }
 }
 
@@ -1416,13 +1418,15 @@ function runPlanView(itemId, metric) {
 // HZ-491: the approval also binds the effective runner — an image pinned or
 // cleared since then changes it, and Execute refuses until re-approval. A
 // row approved before the runner was stored has none, and must be re-approved.
+// HO-843: an approval with per-command hashes also binds each command — one
+// left unapproved (null) by an owner patch, or any that differs, is refused.
 export function approvedPlanCheck(itemId) {
-  const row = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(itemId)
+  const row = db.prepare('SELECT approved_plan_hash, approved_runner, approved_command_hashes_json FROM work_item WHERE id = ?').get(itemId)
   const approvedHash = row?.approved_plan_hash
   if (!approvedHash) return { error: 'plan_not_approved' }
   const plan = currentRunPlan(itemId)
   const currentHash = plan?.hash ?? null
-  if (currentHash !== approvedHash || plan.runner !== row.approved_runner) {
+  if (currentHash !== approvedHash || plan.runner !== row.approved_runner || !commandHashesApproved(row.approved_command_hashes_json, plan.block)) {
     return {
       error: REASON.PLAN_CHANGED_SINCE_APPROVAL,
       approvedHash,
@@ -1432,6 +1436,236 @@ export function approvedPlanCheck(itemId) {
     }
   }
   return { ok: true, hash: approvedHash, runner: plan.runner }
+}
+
+// ---- per-command approval (HO-843) ----
+// Approve the run stores, beside the whole-artifact hash, one hash per command
+// and a frame hash over everything else. An owner patch of exactly one
+// command of a Task's approved plan (patchRunPlan) clears only that command's
+// hash; the PIN re-approval of that command (approveGate) writes it back. Any
+// other patch, a plan approved without per-command hashes, or any doubt
+// clears every approval, and the plan needs full approval.
+const sha256Hex = (text) => createHash('sha256').update(text, 'utf8').digest('hex')
+const HASH_HEX = /^[0-9a-f]{64}$/
+
+// The sha256 hex of each command's UTF-8 text, in order — byte-identical to
+// farm/task_job.py command_hash_of().
+export function commandHashesOf(block) {
+  return block.commands.map((command) => sha256Hex(command))
+}
+
+// sha256 of the artifact's prose outside the block plus every block key but
+// `commands` (domain/js/runPlan.js runPlanFrameText).
+export function frameHashOf(artifact, block) {
+  return sha256Hex(runPlanFrameText(artifact, block))
+}
+
+// The stored per-command hashes: an array of 64-hex strings or nulls, else
+// null (absent, or anything malformed — read as "no per-command approval").
+function parseCommandHashes(json) {
+  if (json == null) return null
+  let parsed
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return null
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null
+  return parsed.every((h) => h === null || (typeof h === 'string' && HASH_HEX.test(h))) ? parsed : null
+}
+
+// True when no per-command hashes are stored (an approval from before them),
+// or every stored one is approved and matches the plan's command.
+function commandHashesApproved(json, block) {
+  if (json == null) return true
+  const stored = parseCommandHashes(json)
+  if (!stored || !block || stored.length !== block.commands.length) return false
+  const current = commandHashesOf(block)
+  return stored.every((h, i) => h !== null && h === current[i])
+}
+
+function parseCommandPatch(json) {
+  if (json == null) return null
+  try {
+    const parsed = JSON.parse(json)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+const selectCommandApproval = db.prepare(
+  'SELECT approved_command_hashes_json, approved_frame_hash, command_patch_json FROM work_item WHERE id = ?',
+)
+
+// The owner patch in flight, as stored, or null.
+export function commandPatchState(itemId) {
+  return parseCommandPatch(selectCommandApproval.get(itemId)?.command_patch_json)
+}
+
+// HO-843: the one-command patch waiting for its PIN re-approval —
+// {index, count, before, after, commandHash} — only when ALL of these hold:
+// the patch is a one-command patch whose Run plan check passed; the plan on
+// record is byte for byte the patched one; its frame hash is the approved
+// one; and the stored hashes have exactly the plan's length, with only the
+// patched command's null and every other equal to its command's hash.
+// Otherwise null, and Approve the run needs full approval.
+export function commandPatchOf(itemId, plan = currentRunPlan(itemId)) {
+  const row = selectCommandApproval.get(itemId)
+  const patch = parseCommandPatch(row?.command_patch_json)
+  if (!patch || patch.mode !== 'command' || patch.checked !== true || !plan) return null
+  if (plan.hash !== patch.patchedHash) return null
+  const artifact = latestArtifact(itemId, RUN_PLAN_STEP_INDEX)
+  if (!row.approved_frame_hash || frameHashOf(artifact, plan.block) !== row.approved_frame_hash) return null
+  const stored = parseCommandHashes(row.approved_command_hashes_json)
+  const k = patch.index
+  if (!stored || stored.length !== plan.block.commands.length || !Number.isInteger(k) || k < 0 || k >= stored.length) return null
+  const current = commandHashesOf(plan.block)
+  if (stored[k] !== null || !stored.every((h, i) => i === k || h === current[i])) return null
+  return { index: k, count: stored.length, before: String(patch.before ?? ''), after: plan.block.commands[k], commandHash: current[k] }
+}
+
+// HO-843: Run plan finished while an owner patch waited for its check. The
+// farm (or the demo mock) must hand back the patched artifact byte for byte:
+// then the patch is marked checked and goes on to Impact review and
+// Preflight. { ok } (also when no patch waits), or { error } when the artifact
+// came back changed — the caller fails the run.
+export function settleCommandPatch(itemId, artifact) {
+  const patch = commandPatchState(itemId)
+  if (!patch || patch.checked === true) return { ok: true }
+  if (typeof artifact !== 'string' || sha256Hex(artifact) !== patch.patchedHash) return { error: 'patched_plan_changed' }
+  db.prepare("UPDATE work_item SET command_patch_json = ?, updated_at = datetime('now') WHERE id = ?").run(
+    JSON.stringify({ ...patch, checked: true }),
+    itemId,
+  )
+  return { ok: true }
+}
+
+// HO-843: an owner patch that failed its check, or a plan sent back to Run
+// plan while one waited: every per-command approval and the patch go, so the
+// next plan needs full approval. True when there was a patch to drop.
+export function dropCommandPatch(itemId) {
+  const row = selectCommandApproval.get(itemId)
+  if (!row || (row.command_patch_json == null && row.approved_command_hashes_json == null)) return false
+  db.prepare(
+    "UPDATE work_item SET approved_command_hashes_json = NULL, approved_frame_hash = NULL, command_patch_json = NULL, updated_at = datetime('now') WHERE id = ?",
+  ).run(itemId)
+  return row.command_patch_json != null
+}
+
+// HO-843: the newest Approve the run approval's command index — set only for
+// a per-command re-approval, so Execute may carry the passed commands before
+// it (farm/task_job.py). Null after a full approval.
+export function approvedCommandIndex(itemId) {
+  const row = db
+    .prepare("SELECT command_index FROM gate_decision WHERE item_id = ? AND step_index = ? AND decision = 'approved' ORDER BY id DESC LIMIT 1")
+    .get(itemId, APPROVE_RUN_GATE_INDEX)
+  return Number.isInteger(row?.command_index) ? row.command_index : null
+}
+
+// What dispatchJob sends the farm: the approved per-command hashes when the
+// approval stored them (else nothing), and the carry marker only after a
+// per-command approval.
+export function approvedCommandFields(itemId) {
+  const stored = parseCommandHashes(selectCommandApproval.get(itemId)?.approved_command_hashes_json)
+  if (!stored) return {}
+  const k = approvedCommandIndex(itemId)
+  return { approved_command_hashes: stored, ...(k === null ? {} : { carry_through: k }) }
+}
+
+const COMMAND_MAX_CHARS = 2000
+const PATCH_STEP_INDEXES = new Set([EXECUTE_STEP_INDEX, APPROVE_RUN_GATE_INDEX])
+
+// HO-843: the owner's patch of one command of a Task's run plan — at Execute
+// with no job running (on the approved plan), or at Approve the run (on the
+// plan the card showed). `planHash` is that plan's hash; `index` is 0-based.
+// The patched plan goes back to Run plan, where the farm re-checks it with no
+// agent (its `requires`), then Impact review and Preflight run, and Approve
+// the run asks for the PIN again.
+//
+// mode 'command': exactly one command differs from the stored per-command
+// hashes, and the frame is unchanged — only that command's hash is cleared.
+// mode 'full': anything else (a plan approved without per-command hashes, a
+// second command patched before approval) — every hash is cleared.
+// Returns { ok, mode, commandIndex, patchedHash } or { error, ... }. Never
+// stores or logs anything for a command that looks like a literal secret.
+export function patchRunPlan(id, { from, planHash, index, command } = {}, actor = 'You') {
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
+  if (!approvesRunPlan(itemKindOf(it))) return { error: 'not_a_task' }
+  if (from !== moveKeyOf(it)) return { error: 'stale_step' }
+  if (isClosed(it) || isAbandoned(it) || !PATCH_STEP_INDEXES.has(it.cursor) || selectActiveRun.get(id)) return { error: 'not_patchable' }
+  const plan = currentRunPlan(id)
+  const artifact = latestArtifact(id, RUN_PLAN_STEP_INDEX)
+  if (!plan || typeof artifact !== 'string') return { error: 'not_patchable' }
+  const row = db.prepare('SELECT approved_plan_hash, approved_command_hashes_json, approved_frame_hash FROM work_item WHERE id = ?').get(id)
+  if (it.cursor === EXECUTE_STEP_INDEX) {
+    if (!row.approved_plan_hash) return { error: 'not_patchable' }
+    if (planHash !== row.approved_plan_hash || approvedPlanCheck(id).error) return { error: 'run_plan_changed' }
+  } else if (planHash !== plan.hash) {
+    return { error: 'run_plan_changed' }
+  }
+  const count = plan.block.commands.length
+  if (!Number.isInteger(index) || index < 0 || index >= count) return { error: 'bad_patch' }
+  if (typeof command !== 'string' || !command.trim() || command.length > COMMAND_MAX_CHARS || /[\x00-\x1f\x7f]/.test(command)) {
+    return { error: 'bad_patch' }
+  }
+  const before = plan.block.commands[index]
+  if (command === before) return { error: 'no_change' }
+  const shapes = literalSecrets(command)
+  if (shapes.length) {
+    addEvent(id, {
+      who: actor,
+      text: `could not patch command ${index + 1} of ${count}: it looks like a literal secret (${shapes.join(', ')}) — name secrets only as references like $GITHUB_TOKEN`,
+      color: '#9C333E',
+      initials: '✕',
+    })
+    notify()
+    return { error: 'literal_secret', shapes }
+  }
+  const block = { ...plan.block, commands: plan.block.commands.map((c, i) => (i === index ? command : c)) }
+  const patched = replaceRunPlan(artifact, block)
+  const reread = extractRunPlan(patched)
+  if (!reread || JSON.stringify(reread) !== JSON.stringify(block)) return { error: 'bad_patch' }
+  const patchedHash = sha256Hex(patched)
+
+  const stored = parseCommandHashes(row.approved_command_hashes_json)
+  const newHashes = commandHashesOf(block)
+  const differing = stored && stored.length === count ? newHashes.filter((h, i) => stored[i] !== h).length : -1
+  const one = differing === 1 && row.approved_frame_hash != null && frameHashOf(patched, block) === row.approved_frame_hash
+  const mode = one ? 'command' : 'full'
+  const fields = one
+    ? {
+        approved_command_hashes_json: JSON.stringify(stored.map((h, i) => (i === index ? null : h))),
+        approved_frame_hash: row.approved_frame_hash,
+      }
+    : { approved_command_hashes_json: null, approved_frame_hash: null }
+  fields.command_patch_json = JSON.stringify({
+    mode,
+    index: one ? index : null,
+    before: one ? before : null,
+    after: one ? command : null,
+    artifact: patched,
+    baseHash: plan.hash,
+    patchedHash,
+    checked: false,
+  })
+  const note = one ? `patched command ${index + 1} of ${count}` : `patched command ${index + 1} of ${count} — the plan needs full approval`
+  agentRunner.cancel(id, 'superseded')
+  const moved = moveItem(id, { action: 'return', toKey: stepKeyAt(RUN_PLAN_STEP_INDEX), who: actor, note, fields, keepCommandHashes: true })
+  if (moved.error) return moved
+  addEvent(id, {
+    who: actor,
+    text: one
+      ? `patched command ${index + 1} of ${count} of the run plan — Run plan re-checks it, then Approve the run asks for the PIN for that command only`
+      : `patched command ${index + 1} of ${count} of the run plan — Run plan re-checks it, then the whole plan needs approval again`,
+    color: '#DFA200',
+    initials: 'YOU',
+  })
+  notify()
+  agentRunner.kick(id)
+  return { ok: true, mode, commandIndex: one ? index : null, patchedHash }
 }
 
 // ---- Preflight (HO-837) ----
@@ -2842,7 +3076,7 @@ export function approveGate(
   stepIndex,
   notes,
   actor = 'You',
-  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null, exceptions = null } = {},
+  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null, exceptions = null, commandIndex = null, commandHash = null } = {},
 ) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
@@ -2852,6 +3086,10 @@ export function approveGate(
 
   let approvedHash = null
   let approvedRunner = null
+  // HO-843: what the approval stores per command, and the one command a
+  // per-command re-approval approves (null on a full approval).
+  let approvedCommands = null
+  let approvedCommand = null
   if (isHumanOnlyGate(stepIndex)) {
     if (!isHumanProof(proof)) {
       addEvent(id, {
@@ -2924,6 +3162,31 @@ export function approveGate(
       notify()
       return rehearsed
     }
+    // HO-843: a one-command patch waiting here is re-approved for that
+    // command only, and only with the command and hashes the card showed.
+    // Without a waiting patch the whole plan is approved, and every command
+    // hash and the frame hash are stored with it.
+    const pending = commandPatchOf(id, plan)
+    if (pending) {
+      if (commandIndex == null) {
+        addEvent(id, {
+          who: actor,
+          text: `could not approve “${STEPS[stepIndex].label}”: command ${pending.index + 1} of ${pending.count} was patched — approve it from its card, which shows the change — the gate stays open`,
+          color: '#9C333E',
+          initials: '✕',
+        })
+        notify()
+        return { error: 'command_patch_pending' }
+      }
+      if (commandIndex !== pending.index || commandHash !== pending.commandHash || planHash !== plan.hash) return { error: 'run_plan_changed' }
+      const row = selectCommandApproval.get(id)
+      const stored = parseCommandHashes(row.approved_command_hashes_json)
+      approvedCommands = { hashes: stored.map((h, i) => (i === pending.index ? pending.commandHash : h)), frame: row.approved_frame_hash }
+      approvedCommand = { index: pending.index, count: pending.count, hash: pending.commandHash }
+    } else {
+      if (commandIndex != null || commandHash != null) return { error: 'run_plan_changed' }
+      approvedCommands = { hashes: commandHashesOf(plan.block), frame: frameHashOf(latestArtifact(id, RUN_PLAN_STEP_INDEX), plan.block) }
+    }
     approvedHash = plan.hash
     approvedRunner = plan.runner
   }
@@ -2969,14 +3232,22 @@ export function approveGate(
       who: actor,
       note: trimmed,
       proof,
-      fields: approvedHash ? { approved_plan_hash: approvedHash, approved_runner: approvedRunner } : {},
+      fields: approvedHash
+        ? {
+            approved_plan_hash: approvedHash,
+            approved_runner: approvedRunner,
+            approved_command_hashes_json: JSON.stringify(approvedCommands.hashes),
+            approved_frame_hash: approvedCommands.frame,
+            command_patch_json: null,
+          }
+        : {},
     })
     if (move.error) return move
     const decision = db
       .prepare(
-        'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by, plan_hash, filed_autopilot, command_index, command_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed)
+      .run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed, approvedCommand?.index ?? null, approvedCommand?.hash ?? null)
     if (excepted) insertExceptions(id, Number(decision.lastInsertRowid), excepted, actor)
     if (golden?.set) approveGoldenCases(id, golden.set, actor)
     if (trimmed) {
@@ -2993,7 +3264,7 @@ export function approveGate(
   if (moved.error) return moved
   addEvent(id, {
     who: actor,
-    text: `approved: ${STEPS[stepIndex].label.toLowerCase()}${trimmed ? ' — ' + trimmed : ''}`,
+    text: `approved: ${STEPS[stepIndex].label.toLowerCase()}${approvedCommand ? ` — command ${approvedCommand.index + 1} of ${approvedCommand.count}` : ''}${trimmed ? ' — ' + trimmed : ''}`,
     color: '#5E4380',
     initials: '✓',
   })

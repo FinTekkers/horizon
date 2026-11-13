@@ -63,6 +63,90 @@ def plan_hash_of(artifact_md: str) -> str:
     return hashlib.sha256((artifact_md or "").encode("utf8")).hexdigest()
 
 
+def command_hash_of(command: str) -> str:
+    """HO-843: sha256 hex of one command's UTF-8 text, byte-identical to
+    server/src/store.js commandHashesOf(). Approve the run stores one per
+    command; Execute runs nothing unless every command's hash is approved."""
+    return hashlib.sha256((command or "").encode("utf8")).hexdigest()
+
+
+def frame_hash_of(block: dict) -> str:
+    """HO-843: sha256 of every block key but `commands`, as sorted-key JSON —
+    the cwd, env, requires, runner field and the rest the commands ran
+    under. Farm-side only: stored in the job state and compared on the next
+    start, so a passed command is never carried across a changed frame."""
+    frame = {key: value for key, value in block.items() if key != "commands"}
+    return hashlib.sha256(json.dumps(frame, sort_keys=True, separators=(",", ":")).encode("utf8")).hexdigest()
+
+
+def _command_hashes_approved(commands: list, approved: list | None) -> bool:
+    """HO-843: the second hash check's per-command half. True when the
+    server sent no per-command hashes (an approval from before them — the
+    whole-artifact hash still binds every command), else only when there is
+    exactly one approved hash per command and each equals that command's. A
+    null (unapproved) entry never matches."""
+    if approved is None:
+        return True
+    if not isinstance(approved, list) or len(approved) != len(commands):
+        return False
+    return all(isinstance(h, str) and h == command_hash_of(c) for c, h in zip(commands, approved))
+
+
+def _passed(entry) -> bool:
+    return isinstance(entry, dict) and entry.get("status") == "done" and entry.get("exit_code") == 0 and isinstance(entry.get("command"), str)
+
+
+def _carried_commands(
+    prior: dict | None,
+    commands: list,
+    *,
+    approved_hash: str,
+    approved_command_hashes: list | None,
+    carry_through: int | None,
+    frame_hash: str,
+    runner: str | None,
+    clone_head,
+) -> tuple[dict[int, dict], str | None]:
+    """The commands a start may skip as already passed, by index, and why:
+    ("same", ...) for a Resume of the same approved plan — today's rule,
+    each passed command at the same position — or ("command", ...) after a
+    per-command re-approval (HO-843).
+
+    A per-command carry needs the server's `carry_through` k (sent only
+    after a per-command approval) and the approved per-command hashes; the
+    prior run's frame hash and runner equal to this start's; and, for a task
+    clone, its HEAD unmoved (`clone_head`, a callable, is read only then).
+    It carries entry i < k only while entry i passed, ran exactly
+    commands[i], and its stored hash equals both this command's hash and
+    the approved one — position and hash, never text alone. It stops at the
+    first entry that fails, so nothing at or after the patched command, nor
+    after any gap, is skipped. A state from before the hashes carries none."""
+    if not prior or not isinstance(prior.get("commands"), list):
+        return {}, None
+    entries = prior["commands"]
+    if prior.get("approved_hash") == approved_hash:
+        same = {i: entries[i] for i in range(min(len(entries), len(commands))) if _passed(entries[i]) and entries[i]["command"] == commands[i]}
+        return same, ("same" if same else None)
+    if not isinstance(carry_through, int) or isinstance(carry_through, bool) or carry_through < 1:
+        return {}, None
+    if not isinstance(approved_command_hashes, list) or len(approved_command_hashes) != len(commands):
+        return {}, None
+    if prior.get("frame_hash") != frame_hash or prior.get("runner") != runner:
+        return {}, None
+    if clone_head is not None:
+        head = clone_head()
+        if not head or head == "unknown" or prior.get("clone_head") != head:
+            return {}, None
+    carried: dict[int, dict] = {}
+    for i in range(min(carry_through, len(commands), len(entries))):
+        entry = entries[i]
+        current = command_hash_of(commands[i])
+        if not (_passed(entry) and entry["command"] == commands[i] and entry.get("hash") == current == approved_command_hashes[i]):
+            break
+        carried[i] = entry
+    return carried, ("command" if carried else None)
+
+
 def load_state(path: Path) -> dict | None:
     try:
         return json.loads(Path(path).read_text())
@@ -233,6 +317,8 @@ def _run_job(
     memory_limit: str | None = None,
     first_line: str | None = None,
     media_roots: tuple = (),
+    approved_command_hashes: list | None = None,
+    carry_through: int | None = None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -281,7 +367,17 @@ def _run_job(
     start's output, before the env line — a tenant job's `running as` line.
 
     HZ-815: `media_roots`, config.MEDIA_OUTPUT_ROOTS for a farm host run, are
-    the dirs besides the checkout a plan's `outputs` may be copied from."""
+    the dirs besides the checkout a plan's `outputs` may be copied from.
+
+    HO-843: `approved_command_hashes`, when the server sends them, are the
+    approved hash of each command: the second hash check runs zero commands
+    unless every command's hash matches. `carry_through` k, sent only after a
+    per-command re-approval of command k, lets a start skip the passed
+    commands before k (_carried_commands) and run from k. Each state entry
+    records its command's `hash`; the state records the plan's frame hash,
+    the runner and, for a task clone, its HEAD. A hash_mismatch rewrites the
+    state with every command pending, so it carries nothing afterwards —
+    that loses the passed prefix, and fails safe."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -310,24 +406,13 @@ def _run_job(
     if refusal:
         raise ValueError(refusal)
 
-    # Resume: keep passed commands done, retry everything else.
     prior = load_state(state_path)
-    prior_done: dict[str, dict] = {}
-    # Only a prior run of this same approved plan counts: after a re-approval
-    # every command runs again.
-    if prior and prior.get("approved_hash") == approved_hash and isinstance(prior.get("commands"), list):
-        for entry in prior["commands"]:
-            if (
-                isinstance(entry, dict)
-                and entry.get("status") == "done"
-                and entry.get("exit_code") == 0
-                and isinstance(entry.get("command"), str)
-            ):
-                prior_done[entry["command"]] = entry
+    frame_hash = frame_hash_of(block)
 
     # Double hash gate: the server refused pre-dispatch already; a plan edited
-    # between dispatch and exec still runs zero commands here.
-    if plan_hash_of(plan_artifact or "") != approved_hash:
+    # between dispatch and exec still runs zero commands here. HO-843: so does
+    # any command whose hash is not approved.
+    if plan_hash_of(plan_artifact or "") != approved_hash or not _command_hashes_approved(commands, approved_command_hashes):
         state = {
             "run_id": run_id,
             "item_id": item_id,
@@ -347,6 +432,36 @@ def _run_job(
             log.write(redact("the run plan changed since it was approved — zero commands run\n", secrets))
             log.flush()
         return state["summary"]
+
+    # Resume: keep passed commands done, retry everything else. Only a prior
+    # run of this same approved plan counts — after a re-approval every
+    # command runs again — except after a per-command re-approval (HO-843).
+    # The task clone must pass the HZ-415 guard before git reads its HEAD.
+    def clone_head():
+        try:
+            run_plan.resolve_cwd(repo_dir, ".", forbid=str(HORIZON_ROOT))
+        except run_plan.CwdRefused:
+            return None
+        return task_clone_mod.head(repo_dir)
+
+    prior_done, carry = _carried_commands(
+        prior,
+        commands,
+        approved_hash=approved_hash,
+        approved_command_hashes=approved_command_hashes,
+        carry_through=carry_through,
+        frame_hash=frame_hash,
+        runner=runner,
+        clone_head=clone_head if task_clone else None,
+    )
+    if carry == "command":
+        # HO-843: and only in the same resolved cwd the passed commands ran in.
+        try:
+            carried_cwd, _ = job_start_checks.resolve_dirs(repo_dir, plan_cwd, runner=runner, venv_dir=venv_dir, forbid=str(HORIZON_ROOT))
+        except run_plan.CwdRefused:
+            carried_cwd = None
+        if any(entry.get("cwd") != carried_cwd for entry in prior_done.values()):
+            prior_done, carry = {}, None
 
     # HZ-440: a Resume of the same plan after a pass runs the rest of the
     # commands on the commit the earlier ones ran on.
@@ -376,10 +491,10 @@ def _run_job(
             "budget_s": budget_s,
             "approved_hash": approved_hash,
             "commands": [
-                dict(prior_done[c])
-                if c in prior_done
+                dict(prior_done[i])
+                if i in prior_done
                 else {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
-                for c in commands
+                for i, c in enumerate(commands)
             ],
             "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
         }
@@ -437,10 +552,10 @@ def _run_job(
                 "budget_s": budget_s,
                 "approved_hash": approved_hash,
                 "commands": [
-                    dict(prior_done[c])
-                    if c in prior_done
+                    dict(prior_done[i])
+                    if i in prior_done
                     else {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
-                    for c in commands
+                    for i, c in enumerate(commands)
                 ],
                 "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
             }
@@ -474,17 +589,21 @@ def _run_job(
             # HZ-496: bash is the default; only the fallback is named.
             if shell != "bash":
                 log.write(redact(f"shell: {shell}\n", secrets))
+        head = task_clone_mod.head(repo_dir) if task_clone else None
         if task_clone:
-            log.write(redact(f"task clone HEAD: {task_clone_mod.head(repo_dir)}\n", secrets))
-    # State entries, preserving passed commands across resumes.
+            log.write(redact(f"task clone HEAD: {head}\n", secrets))
+        if carry == "command":
+            log.write(redact(f"resumed after a per-command approval: {len(prior_done)} passed command(s) kept, running from command {len(prior_done) + 1}\n", secrets))
+    # State entries, preserving passed commands across resumes. HO-843: each
+    # records its command's hash, so a later per-command carry can check it.
     entries: list[dict] = []
-    for c in commands:
-        if c in prior_done:
+    for i, c in enumerate(commands):
+        if i in prior_done:
             # HZ-434: passed in an earlier attempt and skipped in this one.
-            entries.append({**prior_done[c], "resumed": True})
+            entries.append({**prior_done[i], "hash": command_hash_of(c), "resumed": True})
         else:
             entries.append(
-                {"command": c, "cwd": cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
+                {"command": c, "cwd": cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None, "hash": command_hash_of(c)}
             )
     state = {
         "run_id": run_id,
@@ -495,9 +614,12 @@ def _run_job(
         "budget_s": budget_s,
         "approved_hash": approved_hash,
         "runner": runner,
+        "frame_hash": frame_hash,
         "log_offset": log_offset,
         "commands": entries,
     }
+    if task_clone:
+        state["clone_head"] = head
     save_state(state_path, state)
     nudge()
 
@@ -506,7 +628,9 @@ def _run_job(
     # attempt's: the run's changes are measured from before it began.
     db_block = block.get("db_changes")
     if db_block:
-        if prior and prior.get("approved_hash") == approved_hash and isinstance(prior.get("db_before"), dict):
+        # HO-843: a per-command carry keeps it too — the carried commands'
+        # changes were counted from that first snapshot.
+        if prior and (prior.get("approved_hash") == approved_hash or carry == "command") and isinstance(prior.get("db_before"), dict):
             state["db_before"] = prior["db_before"]
         else:
             _log_db_line(log_path, db_changes.counting_line(db_block["tables"], "before the run"), secrets)
@@ -937,6 +1061,9 @@ def main(argv: list[str] | None = None) -> int:
             memory_limit=task.get("memory_limit"),
             first_line=first_line,
             media_roots=() if results_dir else MEDIA_OUTPUT_ROOTS,
+            # HO-843: absent from a server before per-command approval.
+            approved_command_hashes=task.get("approved_command_hashes"),
+            carry_through=task.get("carry_through"),
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

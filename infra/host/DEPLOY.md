@@ -1488,6 +1488,33 @@ ever runs unsandboxed.
 - **Roll back**: redeploy the last good tag. The `step_run.rehearsal_json`
   column is additive, and the old code ignores it. Keep the plan field.
 
+## Patch one command with per-command re-approval (HO-843)
+
+No host setup. Approve the run now stores one hash per command
+(`work_item.approved_command_hashes_json`) and a frame hash over the rest
+of the plan (`approved_frame_hash`), beside `approved_plan_hash`. An owner
+can **Patch** the first command that did not pass on a stopped Execute
+card. The Task goes back to Run plan, where the farm re-checks the patched
+plan's `requires` with no agent and hands it back byte for byte. Impact
+review and Preflight then run as usual. **Approve the run** shows only that
+command's diff and needs the PIN. Every other command keeps its approval,
+and Execute skips the commands before it that passed, but only on the same
+frame, runner, cwd and task clone HEAD. Any other patch, or any doubt,
+clears every hash and needs full approval. A literal secret in a patched
+command is refused by shape name.
+
+- **Deploy** the server and the farm in the same release. Mixed versions
+  fail closed: an older farm's Run plan rewrites the plan, so the server
+  fails the run and full approval follows. An older server sends no
+  per-command fields, so the farm runs as before.
+- **Release note**: a plan approved before this release has no per-command
+  hashes, so patching it needs full re-approval. Nothing is backfilled.
+- **Roll back**: redeploy the last good tag. The three `work_item` columns
+  (`approved_command_hashes_json`, `approved_frame_hash`,
+  `command_patch_json`) and the two `gate_decision` columns (`command_index`,
+  `command_hash`) are additive, and the old code ignores them. A patch in
+  flight then reads as an ordinary Run plan run that needs full approval.
+
 ## Task containers: rootless Podman (HZ-416)
 
 A Task's Execute runs its approved commands in a throwaway rootless Podman

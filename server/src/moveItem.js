@@ -85,6 +85,10 @@ export const MOVE_FIELDS = Object.freeze(
   new Set([
     'approved_plan_hash',
     'approved_runner',
+    // HO-843: the per-command approval and the owner patch in flight.
+    'approved_command_hashes_json',
+    'approved_frame_hash',
+    'command_patch_json',
     'fix_pass',
     'fix_findings_json',
     'forwarded_review_run_id',
@@ -358,6 +362,9 @@ function reapprovalKeys(item, toIndex) {
     .map((step) => step.key)
 }
 
+// HO-843: what a plan-hash reset clears beside approved_plan_hash.
+export const COMMAND_APPROVAL_COLUMNS = Object.freeze(['approved_command_hashes_json', 'approved_frame_hash', 'command_patch_json'])
+
 const selectRow = db.prepare('SELECT * FROM work_item WHERE id = ?')
 const insertMove = db.prepare('INSERT INTO item_move (item_id, who, from_key, to_key, action, note) VALUES (?, ?, ?, ?, ?, ?)')
 
@@ -372,7 +379,16 @@ function badField(fields) {
 // alone. `fields` are extra columns from MOVE_FIELDS, written with the step.
 // Returns { ok, move } or a planMove refusal, plus not_found, bad_field and
 // human_pin_required.
-export function moveItem(id, { action, toKey = null, substepId = null, who, note = '', proof = null, fields = {} } = {}) {
+//
+// HO-843: a reset that clears the approved plan hash clears the per-command
+// approval and any owner patch in flight with it. `keepCommandHashes` is the
+// one exception, passed only by store.js patchRunPlan: its return to Run plan
+// writes those three columns itself (in `fields`), so a one-command patch
+// keeps every other command's approval. Any other caller clears them all.
+export function moveItem(
+  id,
+  { action, toKey = null, substepId = null, who, note = '', proof = null, fields = {}, keepCommandHashes = false } = {},
+) {
   return db.transaction(() => {
     const item = selectRow.get(id)
     if (!item) return { error: 'not_found' }
@@ -390,7 +406,10 @@ export function moveItem(id, { action, toKey = null, substepId = null, who, note
       if (isHumanProof(proof)) sets.push('rule_block_json = NULL')
     }
     if (plan.reset.clearReview) sets.push(...REVIEW_STATE_COLUMNS)
-    if (plan.reset.clearPlanHash) sets.push('approved_plan_hash = NULL', 'approved_runner = NULL')
+    if (plan.reset.clearPlanHash) {
+      sets.push('approved_plan_hash = NULL', 'approved_runner = NULL')
+      if (!keepCommandHashes) sets.push(...COMMAND_APPROVAL_COLUMNS.map((column) => `${column} = NULL`))
+    }
     if (plan.reset.clearMerged) sets.push('merged_at = NULL')
     for (const [key, value] of Object.entries(fields)) {
       sets.push(`${key} = ?`)

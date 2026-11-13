@@ -2149,6 +2149,11 @@ async def steps_run(request: Request):
         # farm applies no default, so a job naming no runner is refused.
         if job_start.runner_refusal(body.get("runner")):
             return JSONResponse({"error": "job_runner_missing"}, status_code=400)
+        # HO-843: per-command hashes, when sent, are one sha256 hex per
+        # command, and the carry marker a command index; anything else is
+        # refused before anything runs.
+        if _job_command_fields_bad(body):
+            return JSONResponse({"error": "job_command_hashes_bad"}, status_code=400)
         # HZ-772: a tenant job runs as its run user (launch_tenant_job). One
         # it cannot run that way is refused before the server hears started.
         tenant = _is_tenant(body)
@@ -2190,6 +2195,25 @@ async def steps_run(request: Request):
     # able to read this file mid-write and get truncated JSON.
     _write_task_atomic(task_path, body)
     return {"ok": True, "queued": queue}
+
+
+_HASH_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _job_command_fields_bad(body: dict) -> bool:
+    """HO-843: True when a job's `approved_command_hashes` is present but not
+    a list of 64-hex strings, or its `carry_through` is present but not a
+    whole number, or comes without the hashes."""
+    hashes = body.get("approved_command_hashes")
+    if "approved_command_hashes" in body and not (
+        isinstance(hashes, list) and hashes and all(isinstance(h, str) and _HASH_HEX.match(h) for h in hashes)
+    ):
+        return True
+    if "carry_through" in body:
+        k = body.get("carry_through")
+        if not isinstance(k, int) or isinstance(k, bool) or k < 0 or "approved_command_hashes" not in body:
+            return True
+    return False
 
 
 @app.post("/conflicts/resolve")

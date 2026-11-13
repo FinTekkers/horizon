@@ -566,6 +566,12 @@ export async function resumeJob(id) {
   throw new Error(items.some((x) => x.id === id) ? 'nothing_to_resume' : 'not_found')
 }
 
+// HO-843: mirrors serverApi.patchRunPlan. Mock items have no approved run
+// plan, so there is never one to patch — the refusal the server gives then.
+export async function patchRunPlan(id) {
+  throw new Error(items.some((x) => x.id === id) ? 'not_patchable' : 'not_found')
+}
+
 // Mirrors store.removeDependency: drop the edge on both sides, log it, and
 // re-kick the item. Mock blockedBy already lists only open blockers, so the
 // flags recompute from what remains.

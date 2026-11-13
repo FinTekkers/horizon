@@ -166,6 +166,39 @@ test('uncovered metric lines show "metric lines 3, 4 have no proof" and Approve 
   expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
 })
 
+// HO-843: after a one-command patch the card shows only that command's
+// diff — "Command 2 of 3 changed", one old line and one new line — in place
+// of the whole plan's summary, and no other command's text. Approve the run
+// still opens the same confirm (and PIN) every approval goes through.
+test('a one-command patch: the card renders only command k\'s diff, never the rest of the plan', () => {
+  const others = ['scripts/a.sh --dry-run', 'scripts/c.sh --verify']
+  const commandPatch = { index: 1, count: 3, before: 'scripts/b.sh --all', after: 'scripts/b.sh --since 2026-11-01', commandHash: 'f'.repeat(64) }
+  const { container, getByRole, getByLabelText } = render(<Harness item={{ ...taskItem, runPlan: { ...taskItem.runPlan, commandPatch } }} />)
+  const card = awaitingCard(container)
+  const diff = within(card).getByTestId('command-patch')
+  expect(within(diff).getByText('Command 2 of 3 changed')).toBeTruthy()
+  expect(getByLabelText('Old command 2').textContent).toBe('− scripts/b.sh --all')
+  expect(getByLabelText('New command 2').textContent).toBe('+ scripts/b.sh --since 2026-11-01')
+  expect(diff.querySelectorAll('.command-patch__line--removed')).toHaveLength(1)
+  expect(diff.querySelectorAll('.command-patch__line--added')).toHaveLength(1)
+  // Only k's diff: no whole-plan summary, and no other command's text.
+  expect(card.querySelector('.step-card__run-plan')).toBeNull()
+  for (const other of others) expect(card.textContent).not.toContain(other)
+  expect(card.textContent).not.toContain('commandHash')
+  expect(card.textContent).not.toContain('f'.repeat(64))
+  expect(card.textContent).toContain('Always a human · even on Autopilot')
+
+  fireEvent.click(getByRole('button', { name: 'Approve the run' }))
+  expect(getByRole('alertdialog').textContent).toContain('Approve this gate?')
+})
+
+test('with no patch waiting the card shows the whole plan\'s summary and no diff', () => {
+  const { container } = render(<Harness item={{ ...taskItem, runPlan: { ...taskItem.runPlan, commandPatch: null } }} />)
+  const card = awaitingCard(container)
+  expect(card.querySelector('[data-testid="command-patch"]')).toBeNull()
+  expect(card.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 3 commands · budget 20 min · Container')
+})
+
 test("a change item's gate card is unchanged: no human-only line, the usual button names", () => {
   const changeItem = {
     ...taskItem,

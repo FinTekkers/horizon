@@ -45,7 +45,7 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines, criteriaLines } from '../../domain/js/fields.js'
-import { DB_CHANGES_RULES, REHEARSAL_REASONS, REHEARSAL_SCOPES, TASK_MEDIA_RULES, circularProofs, contractGaps, validTableName } from '../../domain/js/runPlan.js'
+import { DB_CHANGES_RULES, REHEARSAL_REASONS, REHEARSAL_SCOPES, TASK_MEDIA_RULES, circularProofs, contractGaps, effectiveRunner, extractRunPlan, validTableName } from '../../domain/js/runPlan.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { isCommitSha } from '../../domain/js/codeRefs.js'
 import { ingestDraft } from './planDraft.js'
@@ -87,6 +87,10 @@ import {
   staleStepChoices,
   approvedPlanCheck,
   currentRunPlan,
+  commandPatchState,
+  settleCommandPatch,
+  dropCommandPatch,
+  approvedCommandFields,
   runningDeployFor,
   defaultRunnerFor,
   latestArtifact,
@@ -1203,6 +1207,14 @@ function mockRunPlanBlock(it) {
   return { cwd: '.', commands: ['echo demo'], budget_minutes: 5, proof }
 }
 
+// The mock Run plan step's reply when no owner patch waits.
+const mockRunPlan = (it) => ({
+  summary: 'planned 1 command in the repo root with a 5 minute budget (mock)',
+  artifact_md:
+    '## Commands\n1. `echo demo` (mock)\n\n## Dry run\nExpected output: `demo` — described, never executed\n\n' +
+    `## Run plan block\n\`\`\`json run-plan\n${JSON.stringify(mockRunPlanBlock(it))}\n\`\`\``,
+})
+
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
 // pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
@@ -1278,12 +1290,15 @@ export const MOCK_STEP_BEHAVIOR = {
     summary: 'assessed the task: found the scripts it needs; no new code needed (mock)',
     artifact_md: '## Scripts found\n- (mock) none — demo mode\n\n## Code needed\n**none**',
   }),
-  'Run plan': (it) => ({
-    summary: 'planned 1 command in the repo root with a 5 minute budget (mock)',
-    artifact_md:
-      '## Commands\n1. `echo demo` (mock)\n\n## Dry run\nExpected output: `demo` — described, never executed\n\n' +
-      `## Run plan block\n\`\`\`json run-plan\n${JSON.stringify(mockRunPlanBlock(it))}\n\`\`\``,
-  }),
+  // HO-843: an owner patch waiting for its check comes back byte for byte,
+  // as the farm's patch check returns it — no plan is written.
+  'Run plan': (it) => {
+    const patch = commandPatchState(it.id)
+    if (patch && patch.checked !== true && typeof patch.artifact === 'string') {
+      return { summary: 'owner patch passed the requires check (mock)', artifact_md: patch.artifact }
+    }
+    return mockRunPlan(it)
+  },
   'Impact review': () => ({
     summary: 'impact review passed — no load, rate-limit or deploy-overlap concerns (mock)',
     artifact_md: '## Verdict\n**pass** (mock)\n\n## Undo\nNothing to undo in demo mode.',
@@ -1874,7 +1889,10 @@ function sendBackToImplement(id, { feedback, fix = null, event }) {
 // HZ-770: the cursor goes back to `stepIndex` with one feedback row for that
 // step's agent. `source` tags the row, so a cap can count its own send-backs
 // and never a human's (a human's feedback is 'ui').
+// HO-843: a send-back to Run plan drops any owner patch and per-command
+// approval — the agent writes the next plan, which needs full approval.
 function sendBackTo(id, stepIndex, { feedback, fix = null, event, source = 'ui' }) {
+  if (stepIndex === RUN_PLAN_STEP_INDEX) dropCommandPatch(id)
   db.prepare('INSERT INTO feedback (item_id, target, message, source) VALUES (?, ?, ?, ?)').run(id, STEPS[stepIndex].agent, feedback, source)
   writeStepCompletion(id, stepIndex, fix ? { fix_pass: fix.pass, fix_findings_json: fix.findingsJson } : {})
   addEvent(id, event)
@@ -2324,6 +2342,12 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
     ...(stepIndex === RUN_PLAN_STEP_INDEX ? { ...jobEnvFields(item.repo), runner: defaultRunnerFor(item.repo) } : {}),
+    // HO-843: an owner patch waiting for its check — the farm re-checks this
+    // artifact's `requires` with no agent and hands it back byte for byte.
+    ...(stepIndex === RUN_PLAN_STEP_INDEX ? patchedArtifactField(id, item.repo) : {}),
+    // HO-843: and once it passed, Impact review leaves the task clone where
+    // the passed commands ran, so Execute can carry them.
+    ...(stepIndex === IMPACT_REVIEW_STEP_INDEX && commandPatchState(id)?.mode === 'command' ? { command_patch: true } : {}),
     // HZ-738: Assess and Impact review get the same checkout fields when the
     // target has a task clone, so they fast-forward it before they read
     // (never runner: only Run plan's prompt names it). Without one their
@@ -2336,6 +2360,15 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
+}
+
+// HO-843: the patched artifact a Run plan run checks, with the runner the
+// patched plan's Execute will use; {} when no owner patch waits.
+function patchedArtifactField(id, repo) {
+  const patch = commandPatchState(id)
+  if (!patch || patch.checked === true || typeof patch.artifact !== 'string') return {}
+  const block = extractRunPlan(patch.artifact)
+  return { patched_artifact: patch.artifact, ...(block ? { runner: effectiveRunner(block, defaultRunnerFor(repo) === 'container') } : {}) }
 }
 
 // HZ-245: the repo's Admin-configured check commands ride with the task, read
@@ -2506,6 +2539,9 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     ...(project ? { project: taskProject(project) } : {}),
     plan_artifact: planArtifact,
     approved_hash: approvedHash,
+    // HO-843: each approved command's hash, and after a per-command
+    // re-approval the index Execute may carry passed commands up to.
+    ...approvedCommandFields(id),
     runner,
     ...jobEnvFields(item.repo),
     ...(testEnvFile ? { test_env_file: testEnvFile } : {}),
@@ -3733,6 +3769,12 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     recordFarmCheckPass(item, artifacts, 'implement')
   }
 
+  // HO-843: an owner patch's Run plan check hands the patched artifact back
+  // byte for byte; anything else fails the run, and nothing is approved.
+  if (run.step_index === RUN_PLAN_STEP_INDEX && settleCommandPatch(id, artifactMd).error) {
+    return failFarmRun(runId, 'the patched plan came back changed — it was not approved')
+  }
+
   // HZ-770: a circular proof sends the plan back to Run plan before Approve
   // the run, naming each line, up to IMPACT_SENDBACK_CAP times; after that
   // the item goes on to the gate and a human decides. HO-836: so does a
@@ -3949,6 +3991,10 @@ export function failFarmRun(runId, error, reason = null, jobView = null, limit =
   }
 
   db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
+  // HO-843: an owner patch whose Run plan check failed is dropped with every
+  // per-command approval: the item stays at Run plan with no Approve card,
+  // and the next run writes a plan that needs full approval.
+  const droppedPatch = run.step_index === RUN_PLAN_STEP_INDEX && dropCommandPatch(id)
   // HZ-333: a resume re-queues the item rather than reusing this release.
   if (run.step_index === DEPLOY_STEP_INDEX) deployQueue.endDeployEntry(id, 'failed')
   // Mirrors the `(${reason})` tag already used for the auto-retrying event
@@ -3964,6 +4010,14 @@ export function failFarmRun(runId, error, reason = null, jobView = null, limit =
     initials: 'HZ',
     detail,
   })
+  if (droppedPatch) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: 'the patched command did not pass its check — every approval of the plan is cleared; resuming writes a new plan that needs full approval',
+      color: '#9C333E',
+      initials: 'HZ',
+    })
+  }
   notifyChange()
   emitStepEnded(id)
   return { ok: true }
@@ -4363,6 +4417,12 @@ async function runMockStep(id, stepIndex, runId) {
     // finalizeReviewStep releases the busy mutex itself before it calls kick().
     finalizeReviewStep(id, runId, summary, mockReviewArtifactMd(verdict), verdict, patch, true, null)
     return
+  }
+
+  // HO-843: an owner patch's Run plan is checked exactly as the farm path's,
+  // while the run is still active, so a changed artifact fails it.
+  if (stepIndex === RUN_PLAN_STEP_INDEX && settleCommandPatch(id, artifactMd).error) {
+    return failFarmRun(runId, 'the patched plan came back changed — it was not approved')
   }
 
   // A mock implement is never a scoped fix: its review must be full.
