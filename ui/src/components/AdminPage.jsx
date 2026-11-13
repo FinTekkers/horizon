@@ -16,6 +16,7 @@ import { NeedsAttention, attentionRows } from './admin/NeedsAttention'
 import { ProjectPage } from './admin/ProjectPage'
 import { NewProjectSection } from './admin/ProjectsSection'
 import TenantChecksSection from './admin/TenantChecksSection'
+import { VerifyReportSection } from './admin/VerifyReportSection'
 import { useRepoWebhooks } from './admin/useRepoWebhooks'
 
 // HZ-764: how long bare /admin waits for its three reads before it opens on
@@ -189,6 +190,7 @@ export default function AdminPage({
             />
           )}
           {section === 'flaky' && <FlakyTestsSection data={checkFlakes.data} error={checkFlakes.error} />}
+          {section === 'verify' && <VerifyReportSection />}
           {section === 'github' && <GitHubSection sync={sync} />}
           {section === 'account' && <AccountSection />}
           {section === 'checks' && <TenantChecksSection project={activeProject} />}

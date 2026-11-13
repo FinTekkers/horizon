@@ -102,14 +102,18 @@ export function insertStepRun(
     verdictSummary = null,
     // HZ-546: { 'owner/name': sha } the run read; null (not recorded) by default.
     sourceShas = null,
+    // HO-841: Verify's three-way outcome and Execute's cause; null (a row from
+    // before HO-841) by default.
+    verifyOutcome = null,
+    executeCause = null,
   },
 ) {
   // Returns lastInsertRowid: HZ-54's queued-work spec needs the run id to
   // attach farm state to a specific run. main's own callers ignore it.
   return db
     .prepare(
-      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at, verdict, verdict_summary, source_shas)
-       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt, @verdict, @verdictSummary, @sourceShas)`,
+      `INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, started_at, ended_at, verdict, verdict_summary, source_shas, verify_outcome, execute_cause)
+       VALUES (@itemId, @stepIndex, @attempt, @agent, @status, @output, @artifact, @startedAt, @endedAt, @verdict, @verdictSummary, @sourceShas, @verifyOutcome, @executeCause)`,
     )
     .run({
       itemId,
@@ -124,6 +128,8 @@ export function insertStepRun(
       verdict,
       verdictSummary,
       sourceShas: sourceShas && JSON.stringify(sourceShas),
+      verifyOutcome,
+      executeCause,
     }).lastInsertRowid
 }
 
