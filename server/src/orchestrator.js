@@ -26,6 +26,7 @@ import {
   requiredStepIndex,
   itemKindOf,
   kindStepIndex,
+  stepsFor,
   EXECUTE_STEP_INDEX,
   RUN_PLAN_STEP_INDEX,
   ASSESS_STEP_INDEX,
@@ -3544,9 +3545,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   // the run, naming each line, up to IMPACT_SENDBACK_CAP times; after that
   // the item goes on to the gate and a human decides. HO-836: so does a
   // contract gap, naming each with its command index, under the same cap.
-  // Only a Task is audited.
-  const impact =
-    run.step_index === IMPACT_REVIEW_STEP_INDEX && itemKindOf(item) === 'task' ? impactSendBack(id, artifacts, item.metric) : null
+  // Only a Task is audited: only an item whose own lifecycle holds the
+  // Impact review step (matched by the step table, never a kind literal).
+  const ownsImpactReview = stepsFor(itemKindOf(item)).some((step) => step.index === IMPACT_REVIEW_STEP_INDEX)
+  const impact = run.step_index === IMPACT_REVIEW_STEP_INDEX && ownsImpactReview ? impactSendBack(id, artifacts, item.metric) : null
 
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null

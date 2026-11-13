@@ -376,18 +376,19 @@ class _Wrapper:
         self.assignments, self.lookup = assignments, lookup
 
 
-_WRAPPERS = {
-    "sudo": _Wrapper("ugCDhpRrtTU", ("user", "group", "close-from", "chdir", "host", "prompt", "chroot", "role", "type", "command-timeout", "other-user"), assignments=True),
-    "env": _Wrapper("uCS", ("unset", "chdir", "split-string"), assignments=True),
-    "xargs": _Wrapper("adEILnPs", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args", "max-procs", "max-chars", "process-slot-var")),
-    "timeout": _Wrapper("ks", ("kill-after", "signal"), positional=1),
-    "nice": _Wrapper("n", ("adjustment",)),
-    "nohup": _Wrapper(),
-    "stdbuf": _Wrapper("ioe", ("input", "output", "error")),
-    "exec": _Wrapper("a"),
-    "command": _Wrapper(lookup="vV"),
-    "time": _Wrapper(),
-}
+# Keyword arguments: every wrapper's name is a Python identifier.
+_WRAPPERS = dict(
+    sudo=_Wrapper("ugCDhpRrtTU", ("user", "group", "close-from", "chdir", "host", "prompt", "chroot", "role", "type", "command-timeout", "other-user"), assignments=True),
+    env=_Wrapper("uCS", ("unset", "chdir", "split-string"), assignments=True),
+    xargs=_Wrapper("adEILnPs", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args", "max-procs", "max-chars", "process-slot-var")),
+    timeout=_Wrapper("ks", ("kill-after", "signal"), positional=1),
+    nice=_Wrapper("n", ("adjustment",)),
+    nohup=_Wrapper(),
+    stdbuf=_Wrapper("ioe", ("input", "output", "error")),
+    exec=_Wrapper("a"),
+    command=_Wrapper(lookup="vV"),
+    time=_Wrapper(),
+)
 # Shells whose `-c` script is scanned like a command. Another interpreter's
 # `-c` / `-e` code is not.
 _SHELLS = frozenset({"bash", "sh", "dash", "zsh", "ksh"})

@@ -80,9 +80,8 @@ say so in `## Proof` as a blocking finding.
 
 `requires` lists every tool and file the commands need. Fill it in for
 every plan:
-- each tool a command calls, such as `python3`, as `{"tool": "<name>"}` —
-  after `|`, `&&`, `;` or `xargs` too, `cat`, `grep` and `jq` included.
-  A shell builtin such as `cd`, `echo` or `test` needs none;
+- each tool a command calls, `jq` and `cat` too (not builtins), as
+  `{"tool": "<name>"}`;
 - each file or folder a command reads, as `{"path": "<path>"}`, relative
   to the repo root (not to `cwd`).
 - each env variable a command reads, as `{"env": "<NAME>"}`, and in `env`
@@ -94,22 +93,17 @@ Every `$NAME` a command uses must be in `requires` as `env`, set by the
 plan (`NAME=`, `for NAME in`, `read NAME`) or a standard one like `HOME`.
 
 List only what must exist before the run starts, not what an earlier
-command installs or writes. Before Impact review, the farm checks each one,
-and each `env` name and `/etc/horizon/...` path the commands use, on the
-plan's runner as Execute sees it: the same `PATH` (venv `bin/` first), env
-and job user. Anything missing comes back to you, named. A path that is
-absolute, has a `..` or resolves outside the checkout is rejected.
+command installs or writes. The farm checks each entry, and each `env` name
+and `/etc/horizon/...` path the commands use, on the plan's runner with
+Execute's `PATH` (venv `bin/` first), env and user. Gaps come back to you,
+named. An absolute path, a `..` or a path outside the checkout is rejected.
 
-`requires` may also hold `{"service": {"name", "version_cmd", "expect"}}`,
+`requires` may also hold `{"service": {"name", "version_cmd", "expect"}}`
+(one per host a command reaches, `name` the host),
 `{"precondition": {"kind", "check"}}` (kind: `lock_free`,
 `no_deploy_running`, `row_exists`, `account_exists` or `artifact_exists`),
 and `"access": "w"` beside a `file` the run writes. A `check` or
 `version_cmd` only reads; the farm's write check is best-effort.
-
-Each host a command reaches — a URL's host, or a database client's `-h` —
-needs a `service` whose `name` is that host, such as `api.example.com`, with
-no scheme or port. Impact review reads the commands and sends the plan back
-naming each tool or host `requires` does not declare, by command number.
 
 `rehearsal`: `dry_run`, optional `limit`, `ro_env` (new read-only names,
 never `env` names) and `samples`, one `{"command": <k>, "expect": "<one

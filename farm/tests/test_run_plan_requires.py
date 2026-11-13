@@ -846,7 +846,7 @@ def test_a_gap_carries_only_the_host_never_userinfo_query_or_a_header():
         ("bash -c 'jq .'; python3 -c 'import yq'", [("tool", "bash"), ("tool", "jq"), ("tool", "python3")]),
         ("echo 'jq .' \"yq\"; cat <<'EOF'\nzq .\nGET https://h.example.com/x\nEOF", [("tool", "cat"), ("service", "h.example.com")]),
         ("xargs -I {} -n 1 psql; sudo -u postgres psql", [("tool", "xargs"), ("tool", "psql"), ("tool", "sudo")]),
-        ("X=1 timeout -k 5 60 env -u A B=2 nice -n 5 make", [("tool", "timeout"), ("tool", "env"), ("tool", "nice"), ("tool", "make")]),
+        ("X=1 stdbuf -oL env -u A B=2 nice -n 5 make", [("tool", "stdbuf"), ("tool", "env"), ("tool", "nice"), ("tool", "make")]),
         ('case "$X" in a|b) jq .;; esac; for f in a b; do wc "$f"; done', [("tool", "jq"), ("tool", "wc")]),
         ('v=$(yq x) && echo "$(zq y)" `gq z` <(hq)', [("tool", "yq"), ("tool", "zq"), ("tool", "gq"), ("tool", "hq")]),
         ("./run.sh 2>&1 | /usr/bin/tee log > out.txt", []),
@@ -856,6 +856,12 @@ def test_a_gap_carries_only_the_host_never_userinfo_query_or_a_header():
 )
 def test_scanner_edges(command, expected):
     assert [(kind, name) for kind, name, _ in gaps_of(command)] == expected
+
+
+def test_a_wrapper_with_a_positional_word_reads_past_it():
+    """`timeout -k 5 60 make`: past the option, its value and the duration."""
+    command = "timeout -k 5 60 make"
+    assert [name for _, name, _ in gaps_of(command)] == [command.split()[0], "make"]
 
 
 def test_a_sudo_read_config_file_is_still_not_implied():
