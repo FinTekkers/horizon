@@ -670,7 +670,7 @@
 
     "stepsFor": [
       { "case": "change rows keep their global indices", "kind": "change", "expect": { "count": 16, "firstIndex": 0 } },
-      { "case": "task rows come after the change rows", "kind": "task", "expect": { "count": 11, "firstIndex": 16 } },
+      { "case": "task rows come after the change rows", "kind": "task", "expect": { "count": 12, "firstIndex": 16 } },
       { "case": "an unknown kind throws", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
     ],
 
@@ -682,7 +682,7 @@
 
     "endIndex": [
       { "case": "change ends after its last row", "kind": "change", "expect": 16 },
-      { "case": "task ends after its last row", "kind": "task", "expect": 27 },
+      { "case": "task ends after its last row", "kind": "task", "expect": 28 },
       { "case": "an unknown kind throws", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
     ],
 
@@ -699,6 +699,7 @@
     "DEPLOY_STEP_INDEX": [{ "case": "points at the deploy step", "expectLabel": "Deploy the changes" }],
     "RUN_PLAN_STEP_INDEX": [{ "case": "points at the task's run plan step", "expectLabel": "Run plan" }],
     "APPROVE_RUN_GATE_INDEX": [{ "case": "points at the task's approve-the-run gate", "expectLabel": "Approve the run" }],
+    "PREFLIGHT_STEP_INDEX": [{ "case": "points at the task's preflight step", "expectLabel": "Preflight" }],
     "EXECUTE_STEP_INDEX": [{ "case": "points at the task's execute step", "expectLabel": "Execute" }],
     "VERIFY_REPORT_STEP_INDEX": [{ "case": "points at the task's verify step", "expectLabel": "Verify & report" }],
     "ASSESS_STEP_INDEX": [{ "case": "points at the task's assess step", "expectLabel": "Assess" }],
@@ -749,10 +750,10 @@
       { "case": "a change item at implement is held by a filed ask until its item merges", "item": { "cursor": 11 }, "asks": [{ "id": 2, "status": "filed", "title": "B", "filed": { "id": "HZ-2", "title": "B", "cursor": 12, "kind": "change" } }], "expect": { "askId": 2, "title": "B", "filedItemId": "HZ-2" } },
       { "case": "a filed ask whose item merged holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 3, "status": "filed", "title": "C", "filed": { "id": "HZ-3", "title": "C", "cursor": 14, "kind": "change", "merged_at": "2026-11-05 00:00:00" } }], "expect": null },
       { "case": "a filed ask whose item no longer exists holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 4, "status": "filed", "title": "D", "filed": null }], "expect": null },
-      { "case": "a filed ask whose item was abandoned holds nothing", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 6, "status": "filed", "title": "F", "filed": { "id": "HZ-6", "title": "F", "cursor": 3, "kind": "change", "abandoned_at": "2026-11-05 23:52:21" } }], "expect": null },
+      { "case": "a filed ask whose item was abandoned holds nothing", "item": { "cursor": 25, "kind": "task" }, "asks": [{ "id": 6, "status": "filed", "title": "F", "filed": { "id": "HZ-6", "title": "F", "cursor": 3, "kind": "change", "abandoned_at": "2026-11-05 23:52:21" } }], "expect": null },
       { "case": "a filed ask whose item merged and was then abandoned holds nothing", "item": { "cursor": 11 }, "asks": [{ "id": 7, "status": "filed", "title": "G", "filed": { "id": "HZ-7", "title": "G", "cursor": 14, "kind": "change", "merged_at": "2026-11-05 00:00:00", "abandoned_at": "2026-11-05 01:00:00" } }], "expect": null },
-      { "case": "a task at execute is held by a filed ask while its item is open", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 8, "status": "filed", "title": "H", "filed": { "id": "HZ-8", "title": "H", "cursor": 3, "kind": "change" } }], "expect": { "askId": 8, "title": "H", "filedItemId": "HZ-8" } },
-      { "case": "a task at execute is held by an open blocking ask", "item": { "cursor": 24, "kind": "task" }, "asks": [{ "id": 5, "status": "open", "title": "E", "filed": null }], "expect": { "askId": 5, "title": "E", "filedItemId": null } }
+      { "case": "a task at execute is held by a filed ask while its item is open", "item": { "cursor": 25, "kind": "task" }, "asks": [{ "id": 8, "status": "filed", "title": "H", "filed": { "id": "HZ-8", "title": "H", "cursor": 3, "kind": "change" } }], "expect": { "askId": 8, "title": "H", "filedItemId": "HZ-8" } },
+      { "case": "a task at execute is held by an open blocking ask", "item": { "cursor": 25, "kind": "task" }, "asks": [{ "id": 5, "status": "open", "title": "E", "filed": null }], "expect": { "askId": 5, "title": "E", "filedItemId": null } }
     ],
 
     "gateStepIndexes": [
@@ -942,7 +943,7 @@
 
     "steps_for": [
       { "case": "change rows keep their global indices", "kind": "change", "expect": { "count": 16, "firstIndex": 0 } },
-      { "case": "task rows come after the change rows", "kind": "task", "expect": { "count": 11, "firstIndex": 16 } },
+      { "case": "task rows come after the change rows", "kind": "task", "expect": { "count": 12, "firstIndex": 16 } },
       { "case": "an unknown kind raises", "kind": "banana", "expect": { "throws": true, "messageContains": "banana" } }
     ],
 
@@ -972,7 +973,7 @@
 
     "FARM_VIEWS": [
       { "case": "the change view is STEPS itself", "kind": "change", "expectIsSteps": true },
-      { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Define the outcome", "How we'll verify", "Guardrails", "Assess", "Run plan", "Impact review", "Execute", "Verify & report"] }
+      { "case": "the task view holds only the task rows on a lane", "kind": "task", "expectLabels": ["Define the outcome", "How we'll verify", "Guardrails", "Assess", "Run plan", "Impact review", "Preflight", "Execute", "Verify & report"] }
     ],
 
     "LANE_KINDS": [
@@ -988,6 +989,11 @@
       { "case": "an unknown kind raises", "kind": "banana", "label": "Assess", "expect": { "throws": true, "messageContains": "banana" } }
     ],
 
+    "is_code_run": [
+      { "case": "the task's Preflight is a code-run step", "kind": "task", "label": "Preflight", "expect": true },
+      { "case": "a model step is not", "kind": "task", "label": "Run plan", "expect": false },
+      { "case": "a label the kind does not run is not, and never raises", "kind": "change", "label": "Preflight", "expect": false }
+    ],
     "entry_for_dispatch": [
       { "case": "index, kind and label agree", "kind": "task", "label": "Run plan", "indexOffset": 0, "expect": { "ok": true } },
       { "case": "the right label at the wrong index raises", "kind": "task", "label": "Run plan", "indexOffset": 1, "expect": { "throws": true, "messageContains": "Run plan" } },

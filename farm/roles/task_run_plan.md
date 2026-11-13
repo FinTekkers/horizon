@@ -101,9 +101,9 @@ named. An absolute path, a `..` or a path outside the checkout is rejected.
 `requires` may also hold `{"service": {"name", "version_cmd", "expect"}}`
 (one per host a command reaches, `name` the host),
 `{"precondition": {"kind", "check"}}` (kind: `lock_free`,
-`no_deploy_running`, `row_exists`, `account_exists` or `artifact_exists`),
-and `"access": "w"` beside a `file` the run writes. A `check` or
-`version_cmd` only reads; the farm's write check is best-effort.
+`no_deploy_running` or `artifact_exists`; Preflight reads the path a check
+names, never runs it) and `"access": "w"` beside a `file` the run writes.
+A `check` or `version_cmd` only reads.
 
 `rehearsal`: `dry_run`, optional `limit`, `ro_env` (new read-only names,
 never `env` names) and `samples`, one `{"command": <k>, "expect": "<one

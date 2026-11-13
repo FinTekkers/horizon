@@ -154,8 +154,9 @@ test('a pre-merge check failure stays on the tracker instead of opening the PR (
 // unseen. HZ-491: and the runner it showed.
 test("approving a Task prompts for the PIN and sends the shown run plan's hash and runner", async () => {
   const serverApi = await import('./serverApi')
+  const { APPROVE_RUN_GATE_INDEX } = await import('../../../domain/js/lifecycle.js')
   serverApi.subscribe(() => {})
-  seedItem({ id: 'TK-9', kind: 'task', cursor: 23, pr_url: null, runPlan: { commands: 3, budgetMinutes: 20, hash: 'plan-hash-1', runner: 'host' } })
+  seedItem({ id: 'TK-9', kind: 'task', cursor: APPROVE_RUN_GATE_INDEX, pr_url: null, runPlan: { commands: 3, budgetMinutes: 20, hash: 'plan-hash-1', runner: 'host' } })
   const requester = answerPins(serverApi, '271828')
   const fetchMock = vi
     .fn()

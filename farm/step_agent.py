@@ -60,6 +60,7 @@ from . import (
     owner_digest,
     pause,
     plan_bundle,
+    preflight,
     read_only_guard,
     review_diff,
     run_plan_requires,
@@ -309,9 +310,12 @@ def _assert_step_config_matches_table(config_labels: set[str], table_labels: set
 
 
 # HZ-383: once per item kind, each against that kind's own farm view.
+# HO-837: a code-run step (steps.is_code_run) runs fixed farm code, never a
+# role prompt, so it has no STEP_CONFIG entry and is left out on both sides.
 for _kind, _view in steps.FARM_VIEWS.items():
     _assert_step_config_matches_table(
-        set(STEP_CONFIGS.get(_kind, {})), {s["label"] for s in _view if s["runsIn"] in ("farm", "pm")}
+        set(STEP_CONFIGS.get(_kind, {})),
+        {s["label"] for s in _view if s["runsIn"] in ("farm", "pm") and not steps.is_code_run(_kind, s["label"])},
     )
 # HZ-435: a lane only re-points steps the change table already runs.
 for _lane, _overrides in LANE_STEP_CONFIGS.items():
@@ -2762,6 +2766,10 @@ def execute(task: dict) -> dict:
     so it branches off before any of that."""
     item = task["item"]
     kind, label = item_kind(item), task["step"]["label"]
+    # HO-837: a code-run step (Preflight) runs fixed farm code — no model, no
+    # worktree, no clone refresh, no handoff note, no lock.
+    if steps.is_code_run(kind, label):
+        return _execute_code_run(task)
     if _is_pm_step(label, kind):
         return _execute_pm(task)
     guard = HandoffGuard()
@@ -2780,6 +2788,21 @@ def execute(task: dict) -> dict:
         except ItemBusy:
             raise RuntimeError("workspace busy: conflict resolution still running") from None
         return _execute(task, guard)
+
+
+def _execute_code_run(task: dict) -> dict:
+    """HO-837: the Preflight step — farm/preflight.py run once, observe-only,
+    under its own cap. Never a model call: nothing here resolves a persona or
+    a provider. The result rides in `artifacts.preflight` (names and reasons
+    only, never a value) beside the rendered card text; an unmet item is a
+    finished step, never a failed one, so the gate can name it."""
+    label = task["step"]["label"]
+    if label != preflight.PREFLIGHT_LABEL:
+        raise RuntimeError(f"no code-run step is named {label!r}")
+    result = preflight.run(task, deadline=time.monotonic() + preflight.CAP_S)
+    summary = preflight.summary(result)
+    log(f"preflight: {summary}")
+    return {"summary": summary, "artifacts": {"artifact_md": preflight.render(result), "preflight": result}}
 
 
 def _owner_digest_notes(task: dict, artifact: str) -> list[str]:

@@ -16,6 +16,10 @@
 // after the task rows, pinned in PINNED_PLAN. PINNED and PINNED_TASK are
 // unchanged.
 //
+// HO-837 is the third: it inserts the task's Preflight row (a code-run step)
+// before Approve the run, so PINNED_TASK has 12 rows and every plan index
+// moves up by one. PINNED and PINNED_PLAN's labels are unchanged.
+//
 // Every other step test derives what it expects. This one does not, on purpose:
 // a table that derives its own expectations cannot catch a deliberate edit.
 
@@ -68,6 +72,7 @@ const PINNED_TASK = [
   ['Assess', 1, 'agent'],
   ['Run plan', 1, 'agent'],
   ['Impact review', 1, 'agent'],
+  ['Preflight', 1, 'agent'],
   ['Approve the run', 1, 'gate'],
   ['Execute', 2, 'agent'],
   ['Verify & report', 2, 'agent'],
@@ -91,9 +96,9 @@ const PINNED_PLAN = [
   ['Review & close', 4, 'gate'],
 ]
 
-test('the pipeline is exactly 16 change steps plus 11 task steps plus 12 plan steps', () => {
+test('the pipeline is exactly 16 change steps plus 12 task steps plus 12 plan steps', () => {
   assert.equal(PINNED.length, 16)
-  assert.equal(PINNED_TASK.length, 11)
+  assert.equal(PINNED_TASK.length, 12)
   assert.equal(PINNED_PLAN.length, 12)
   assert.equal(STEPS.length, PINNED.length + PINNED_TASK.length + PINNED_PLAN.length)
 })
@@ -123,16 +128,16 @@ test('HZ-446: the plan rows keep their order, phases and kinds, after every task
 })
 
 test('HZ-446: the plan has four human gates, and only Approve & file is human-only', () => {
-  assert.deepEqual(gateStepIndexes(STEPS, 'plan'), [29, 32, 36, 38])
+  assert.deepEqual(gateStepIndexes(STEPS, 'plan'), [30, 33, 37, 39])
   assert.deepEqual(
     gateStepIndexes(STEPS, 'plan').map((i) => STEPS[i].label),
     ['Approve & prioritize', 'Approve the design', 'Approve & file', 'Review & close'],
   )
-  assert.equal(APPROVE_FILE_GATE_INDEX, 36)
-  assert.equal(isHumanOnlyGate(36), true)
+  assert.equal(APPROVE_FILE_GATE_INDEX, 37)
+  assert.equal(isHumanOnlyGate(37), true)
   assert.deepEqual(
     humanOnlyGateIndexes().filter((i) => STEPS[i].itemKind === 'plan'),
-    [36],
+    [37],
   )
 })
 
@@ -143,7 +148,7 @@ test('HZ-446: a plan never runs a job, never mutates a workspace, and files on t
   }
   assert.deepEqual(
     stepsFor('plan').filter((s) => isServerStep(s.index)).map((s) => [s.index, s.label]),
-    [[37, 'File items']],
+    [[38, 'File items']],
   )
 })
 
@@ -182,6 +187,8 @@ test('the farm-lane steps keep their turn budgets and provider rules', () => {
     Assess: [40, 1140, false, false, true],
     'Run plan': [40, 1140, false, false, true],
     'Impact review': [40, 1140, false, false, true],
+    // HO-837: a code-run step — no model, so no turn budget; a 90 s cap.
+    Preflight: [undefined, 90, false, false, true],
     // HZ-378: Verify & report, read-only QA.
     'Verify & report': [40, 1140, false, false, true],
     // HZ-446: a Plan's read-only farm steps, provider-locked.

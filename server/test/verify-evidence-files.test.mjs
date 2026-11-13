@@ -30,9 +30,12 @@ const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { runChild, digestBody } = await import('../scripts/hz-771-prompts-before.mjs')
-const { STEPS, ASSESS_STEP_INDEX, EXECUTE_STEP_INDEX, RUN_PLAN_STEP_INDEX, VERIFY_REPORT_STEP_INDEX } = await import(
-  '../../domain/js/lifecycle.js'
-)
+const { STEPS, ASSESS_STEP_INDEX, EXECUTE_STEP_INDEX, PREFLIGHT_STEP_INDEX, RUN_PLAN_STEP_INDEX, VERIFY_REPORT_STEP_INDEX } =
+  await import('../../domain/js/lifecycle.js')
+
+// HO-837: Preflight's insertion moved Execute from 24 to 25, so its golden
+// entry moved with it. Its body differs from main's only in what the
+// position names: step.index, the seeded item's id (B-<index>) and run_id.
 
 store.purgeDemoItems()
 after(() => db.close())
@@ -177,6 +180,16 @@ test("metric 3 and guardrail 4: every other step's /steps/run body is main's, bu
   assert.equal(verify.length, 1, 'Verify was dispatched for the same seeding')
   assert.ok(!(String(VERIFY_REPORT_STEP_INDEX) in golden.steps))
   delete steps[VERIFY_REPORT_STEP_INDEX]
+
+  // HO-837: Preflight is new — a code-run dispatch with no inputs, no
+  // feedback and the plan's hash, and no counterpart on main.
+  const preflight = steps[PREFLIGHT_STEP_INDEX]
+  assert.equal(preflight.length, 1, 'Preflight was dispatched for the same seeding')
+  assert.deepEqual(preflight[0].artifacts, [])
+  assert.deepEqual(preflight[0].feedback, [])
+  assert.match(preflight[0].plan_hash, /^[0-9a-f]{64}$/)
+  assert.ok(!('evidence' in preflight[0]) && !('providerChoices' in preflight[0].item))
+  delete steps[PREFLIGHT_STEP_INDEX]
 
   assert.deepEqual(Object.keys(steps), Object.keys(golden.steps))
   for (const [index, bodies] of Object.entries(steps)) {

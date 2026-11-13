@@ -35,7 +35,7 @@ delete process.env.HORIZON_REPO
 
 const AUDITS = [
   { id: 'impl-audit', label: 'Audit the change', kind: 'audit', anchor: 11, persona: null, output: 'findings', applies: { labels: ['valuation'], repos: [], paths: [] } },
-  { id: 'exec-audit', label: 'Audit the run', kind: 'audit', anchor: 24, persona: null, output: 'findings', applies: { labels: ['valuation'], repos: [], paths: [] } },
+  { id: 'exec-audit', label: 'Audit the run', kind: 'audit', anchor: 25, persona: null, output: 'findings', applies: { labels: ['valuation'], repos: [], paths: [] } },
 ]
 if (variant !== 'nodefs') {
   mkdirSync(join(farmDir, 'projects', 'acme-capital'), { recursive: true })

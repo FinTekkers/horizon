@@ -151,9 +151,14 @@ def test_the_real_tables_change_configs_are_untouched_and_task_labels_map_to_tas
     # The agent lanes only: Execute rides the job lane (below), which has no
     # agent runner, so it is in the view but not in the step config. HZ-413:
     # steps 0-2 are the PM kind, checked apart, as they get no tools here.
-    assert {entry["label"] for entry in steps.FARM_VIEWS["task"] if entry["runsIn"] in ("farm", "pm")} == set(
-        expected
-    ) | set(TASK_PM_LABELS)
+    # HO-837: Preflight is a code-run step — fixed farm code, no role file —
+    # so it is in the farm view but not in the step config either.
+    assert {
+        entry["label"]
+        for entry in steps.FARM_VIEWS["task"]
+        if entry["runsIn"] in ("farm", "pm") and not steps.is_code_run("task", entry["label"])
+    } == set(expected) | set(TASK_PM_LABELS)
+    assert [e["label"] for e in steps.FARM_VIEWS["task"] if steps.is_code_run("task", e["label"])] == ["Preflight"]
     for label, (role_file, persona) in expected.items():
         assert step_agent._step_config("task", label) == (role_file, True, step_agent.PLANNER_TOOLS, persona)
         assert (step_agent.ROLES / role_file).read_text().strip()

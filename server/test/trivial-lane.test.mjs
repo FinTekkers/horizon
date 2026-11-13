@@ -89,6 +89,8 @@ const RUN_PLAN = kindStepIndex('Run plan', 'task')
 const APPROVE_RUN = kindStepIndex('Approve the run', 'task')
 const EXECUTE = kindStepIndex('Execute', 'task')
 const VERIFY = kindStepIndex('Verify & report', 'task')
+// HO-837: the farm's Preflight reply for the host plan below.
+const PREFLIGHT = kindStepIndex('Preflight', 'task')
 
 const COMPLETE_BODY = '## Outcome\r\nDelete two lines.\r\n\r\n## Success metric\r\n1. The list has two fewer lines.\r\n\r\n## Guardrails\r\n- Nothing else changes.\r\n'
 const NO_METRIC_BODY = '## Outcome\nDelete two lines.\n\n## Guardrails\n- Nothing else changes.\n'
@@ -136,6 +138,9 @@ const REVIEW_PASS = {
 function replyFor(stepIndex) {
   if (stepIndex === REVIEW) return { summary: 'review passed', artifacts: { verdict: REVIEW_PASS } }
   if (stepIndex === RUN_PLAN) return { summary: 'planned', artifacts: { artifact_md: RUN_PLAN_MD } }
+  if (stepIndex === PREFLIGHT) {
+    return { summary: 'preflight passed', artifacts: { artifact_md: '## Preflight\n**passed**', preflight: { passed: true, runner: 'host', run_user: 'ubuntu', unmet: [] } } }
+  }
   if (stepIndex === VERIFY) return { summary: 'verified', artifacts: { artifact_md: '## Verdict\n**pass**', verdict: { verdict: 'pass', summary: 'ok' } } }
   if (stepIndex === PLAN) return { summary: 'planned', artifacts: { artifact_md: '## Files & lines\n**1. `server/src/app.js` — EDIT.**\n- `snapshot()` changes.\n' } }
   return { summary: `did ${label(stepIndex)}`, artifacts: { artifact_md: `## ${label(stepIndex)}\ndone` } }

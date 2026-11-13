@@ -1,5 +1,5 @@
 {
-  "commit": "a414239",
+  "commit": "d54eb49",
   "steps": {
     "0": [
       {
@@ -1340,18 +1340,57 @@
         "artifact_url": "http://localhost:5173/api/items/P-22/artifacts/22"
       }
     ],
-    "24": [
+    "23": [
       {
         "run_id": 94,
         "attempt": 1,
+        "artifacts": [],
+        "feedback": [],
         "item": {
-          "id": "P-24",
+          "id": "P-23",
+          "kind": "task",
+          "lane": null,
+          "title": "Parity at Preflight",
+          "repo": null,
+          "issue": null
+        },
+        "step": {
+          "key": "task.preflight",
+          "index": 23,
+          "label": "Preflight",
+          "agent": "DevOps"
+        },
+        "project": {
+          "id": 2,
+          "name": "Acme Capital",
+          "isolation": "internal",
+          "githubTokenRef": null,
+          "runUser": null
+        },
+        "plan_artifact": "## Commands\n1. backfill\n\n## Run plan block\n```json run-plan\n{\n  \"cwd\": \"/tmp\",\n  \"commands\": [\n    \"scripts/a.sh\"\n  ],\n  \"budget_minutes\": 20\n}\n```",
+        "plan_hash": "960fde42a53e38f28e263867d87b03f87ad9c99dac0c6e1c09fbca7bf8f6e682",
+        "runner": "host",
+        "repo_dir": null,
+        "venv_dir": null,
+        "container_image": null,
+        "cpu_limit": null,
+        "memory_limit": null,
+        "deploy_running": null,
+        "service_tags": {}
+      }
+    ],
+    "25": [
+      {
+        "run_id": 102,
+        "attempt": 1,
+        "item": {
+          "id": "P-25",
           "kind": "task",
           "repo": null
         },
         "step": {
           "key": "task.execute",
-          "index": 24,
+          "index": 25,
           "label": "Execute",
           "agent": "DevOps"
         },
@@ -1372,35 +1411,40 @@
         "memory_limit": null
       }
     ],
-    "25": [
+    "26": [
       {
-        "run_id": 102,
+        "run_id": 111,
         "attempt": 1,
         "artifacts": [
           {
             "label": "Define the outcome",
             "content": "## Define the outcome\nartifact of step 16",
-            "url": "http://localhost:5173/api/items/P-25/artifacts/16"
+            "url": "http://localhost:5173/api/items/P-26/artifacts/16"
           },
           {
             "label": "How we'll verify",
             "content": "## How we'll verify\nartifact of step 17",
-            "url": "http://localhost:5173/api/items/P-25/artifacts/17"
+            "url": "http://localhost:5173/api/items/P-26/artifacts/17"
           },
           {
             "label": "Guardrails",
             "content": "## Guardrails\nartifact of step 18",
-            "url": "http://localhost:5173/api/items/P-25/artifacts/18"
+            "url": "http://localhost:5173/api/items/P-26/artifacts/18"
           },
           {
             "label": "Assess",
             "content": "## Assess\nartifact of step 20",
-            "url": "http://localhost:5173/api/items/P-25/artifacts/20"
+            "url": "http://localhost:5173/api/items/P-26/artifacts/20"
           },
           {
             "label": "Impact review",
             "content": "## Impact review\nartifact of step 22",
-            "url": "http://localhost:5173/api/items/P-25/artifacts/22"
+            "url": "http://localhost:5173/api/items/P-26/artifacts/22"
+          },
+          {
+            "label": "Preflight",
+            "content": "## Preflight\nartifact of step 23",
+            "url": "http://localhost:5173/api/items/P-26/artifacts/23"
           }
         ],
         "evidence": [
@@ -1411,12 +1455,12 @@
           },
           {
             "label": "Execute",
-            "stepIndex": 24,
-            "content": "## Execute\nartifact of step 24"
+            "stepIndex": 25,
+            "content": "## Execute\nartifact of step 25"
           }
         ],
         "item": {
-          "id": "P-25",
+          "id": "P-26",
           "kind": "task",
           "lane": null,
           "title": "Parity at Verify & report",
@@ -1435,7 +1479,7 @@
         },
         "step": {
           "key": "task.verify-report",
-          "index": 25,
+          "index": 26,
           "label": "Verify & report",
           "agent": "QA"
         },
@@ -1447,7 +1491,7 @@
           "runUser": null
         },
         "feedback": [],
-        "artifact_url": "http://localhost:5173/api/items/P-25/artifacts/25"
+        "artifact_url": "http://localhost:5173/api/items/P-26/artifacts/26"
       }
     ]
   },
@@ -1885,7 +1929,7 @@
         }
       ]
     },
-    "P-24": {
+    "P-23": {
       "substep_cursor": null,
       "runs": [
         {
@@ -1913,7 +1957,7 @@
           "substep_id": null
         },
         {
-          "step_index": 24,
+          "step_index": 23,
           "substep_id": null
         }
       ]
@@ -1946,11 +1990,52 @@
           "substep_id": null
         },
         {
-          "step_index": 24,
+          "step_index": 23,
           "substep_id": null
         },
         {
           "step_index": 25,
+          "substep_id": null
+        }
+      ]
+    },
+    "P-26": {
+      "substep_cursor": null,
+      "runs": [
+        {
+          "step_index": 16,
+          "substep_id": null
+        },
+        {
+          "step_index": 17,
+          "substep_id": null
+        },
+        {
+          "step_index": 18,
+          "substep_id": null
+        },
+        {
+          "step_index": 20,
+          "substep_id": null
+        },
+        {
+          "step_index": 21,
+          "substep_id": null
+        },
+        {
+          "step_index": 22,
+          "substep_id": null
+        },
+        {
+          "step_index": 23,
+          "substep_id": null
+        },
+        {
+          "step_index": 25,
+          "substep_id": null
+        },
+        {
+          "step_index": 26,
           "substep_id": null
         }
       ]

@@ -138,6 +138,17 @@ def ensure_image(image: str, timeout_s: int = 600) -> None:
         raise Unavailable(f"the container image could not be pulled: {image}" + (f" ({detail})" if detail else ""))
 
 
+def image_present(image: str | None) -> bool:
+    """HO-837: whether the pinned image is already in local storage — never a
+    pull. False when podman cannot answer. Preflight's container check."""
+    if not image or not available():
+        return False
+    try:
+        return _podman("image", "exists", image).returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _user_flags() -> list:
     """The farm user mapped to itself, so files read and written in the
     container have the farm user's own permissions."""

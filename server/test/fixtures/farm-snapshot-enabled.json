@@ -536,75 +536,75 @@
       "currentStepKey": "change.define-outcome",
       "steps": [
         {
-          "index": 27,
+          "index": 28,
           "key": "plan.define-question",
-          "label": "<step-label:27>",
+          "label": "<step-label:28>",
           "kind": "<step-kind:agent>"
         },
         {
-          "index": 28,
+          "index": 29,
           "key": "plan.set-guardrails",
           "label": "<step-label:2>",
           "kind": "<step-kind:agent>"
         },
         {
-          "index": 29,
+          "index": 30,
           "key": "plan.approve-prioritize",
           "label": "<step-label:19>",
           "kind": "<step-kind:gate>"
         },
         {
-          "index": 30,
-          "key": "plan.inventory",
-          "label": "<step-label:30>",
-          "kind": "<step-kind:agent>"
-        },
-        {
           "index": 31,
-          "key": "plan.design-options",
+          "key": "plan.inventory",
           "label": "<step-label:31>",
           "kind": "<step-kind:agent>"
         },
         {
           "index": 32,
-          "key": "plan.approve-design",
+          "key": "plan.design-options",
           "label": "<step-label:32>",
-          "kind": "<step-kind:gate>"
-        },
-        {
-          "index": 33,
-          "key": "plan.draft-items",
-          "label": "<step-label:33>",
           "kind": "<step-kind:agent>"
         },
         {
+          "index": 33,
+          "key": "plan.approve-design",
+          "label": "<step-label:33>",
+          "kind": "<step-kind:gate>"
+        },
+        {
           "index": 34,
-          "key": "plan.review-coverage",
+          "key": "plan.draft-items",
           "label": "<step-label:34>",
           "kind": "<step-kind:agent>"
         },
         {
           "index": 35,
-          "key": "plan.review-metrics",
+          "key": "plan.review-coverage",
           "label": "<step-label:35>",
           "kind": "<step-kind:agent>"
         },
         {
           "index": 36,
-          "key": "plan.approve-file",
+          "key": "plan.review-metrics",
           "label": "<step-label:36>",
-          "kind": "<step-kind:gate>"
-        },
-        {
-          "index": 37,
-          "key": "plan.file-items",
-          "label": "<step-label:37>",
           "kind": "<step-kind:agent>"
         },
         {
+          "index": 37,
+          "key": "plan.approve-file",
+          "label": "<step-label:37>",
+          "kind": "<step-kind:gate>"
+        },
+        {
           "index": 38,
+          "key": "plan.file-items",
+          "label": "<step-label:38>",
+          "kind": "<step-kind:agent>"
+        },
+        {
+          "index": 39,
           "key": "plan.review-close",
-          "label": "<step-label:26>",
+          "label": "<step-label:27>",
           "kind": "<step-kind:gate>"
         }
       ],
@@ -881,75 +881,75 @@
       "currentStepKey": "change.define-outcome",
       "steps": [
         {
-          "index": 27,
+          "index": 28,
           "key": "plan.define-question",
-          "label": "<step-label:27>",
+          "label": "<step-label:28>",
           "kind": "<step-kind:agent>"
         },
         {
-          "index": 28,
+          "index": 29,
           "key": "plan.set-guardrails",
           "label": "<step-label:2>",
           "kind": "<step-kind:agent>"
         },
         {
-          "index": 29,
+          "index": 30,
           "key": "plan.approve-prioritize",
           "label": "<step-label:19>",
           "kind": "<step-kind:gate>"
         },
         {
-          "index": 30,
-          "key": "plan.inventory",
-          "label": "<step-label:30>",
-          "kind": "<step-kind:agent>"
-        },
-        {
           "index": 31,
-          "key": "plan.design-options",
+          "key": "plan.inventory",
           "label": "<step-label:31>",
           "kind": "<step-kind:agent>"
         },
         {
           "index": 32,
-          "key": "plan.approve-design",
+          "key": "plan.design-options",
           "label": "<step-label:32>",
-          "kind": "<step-kind:gate>"
-        },
-        {
-          "index": 33,
-          "key": "plan.draft-items",
-          "label": "<step-label:33>",
           "kind": "<step-kind:agent>"
         },
         {
+          "index": 33,
+          "key": "plan.approve-design",
+          "label": "<step-label:33>",
+          "kind": "<step-kind:gate>"
+        },
+        {
           "index": 34,
-          "key": "plan.review-coverage",
+          "key": "plan.draft-items",
           "label": "<step-label:34>",
           "kind": "<step-kind:agent>"
         },
         {
           "index": 35,
-          "key": "plan.review-metrics",
+          "key": "plan.review-coverage",
           "label": "<step-label:35>",
           "kind": "<step-kind:agent>"
         },
         {
           "index": 36,
-          "key": "plan.approve-file",
+          "key": "plan.review-metrics",
           "label": "<step-label:36>",
-          "kind": "<step-kind:gate>"
-        },
-        {
-          "index": 37,
-          "key": "plan.file-items",
-          "label": "<step-label:37>",
           "kind": "<step-kind:agent>"
         },
         {
+          "index": 37,
+          "key": "plan.approve-file",
+          "label": "<step-label:37>",
+          "kind": "<step-kind:gate>"
+        },
+        {
           "index": 38,
+          "key": "plan.file-items",
+          "label": "<step-label:38>",
+          "kind": "<step-kind:agent>"
+        },
+        {
+          "index": 39,
           "key": "plan.review-close",
-          "label": "<step-label:26>",
+          "label": "<step-label:27>",
           "kind": "<step-kind:gate>"
         }
       ],

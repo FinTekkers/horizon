@@ -49,6 +49,7 @@ const auth = await import('../src/auth.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { buildApp } = await import('../src/app.js')
+const { seedPreflight } = await import('./helpers/preflight.mjs')
 const { STEPS, kindStepIndex, stepKeyAt, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
@@ -138,6 +139,8 @@ function seedTask() {
       "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES (?, ?, 1, ?, 'done', 'ok', ?, datetime('now'))",
     ).run(id, step, STEPS[step].agent, artifact)
   }
+  // HO-837: the Preflight before the gate passed for this plan.
+  seedPreflight(db, store, id)
   return id
 }
 const cursorOf = (id) => db.prepare('SELECT cursor FROM work_item WHERE id = ?').get(id).cursor

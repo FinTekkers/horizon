@@ -129,6 +129,10 @@
           "$comment": "HZ-384: this gate passes only for a human with the gate PIN — never Autopilot, WhatsApp or a token, whatever the project's Autopilot mode (server/src/store.js approveGate).",
           "type": "boolean"
         },
+        "codeRun": {
+          "$comment": "HO-837: a farm step that runs fixed farm code, not a model (farm/preflight.py for task.preflight). It has no persona, no provider, no input budget and no turn budget, so it declares no maxTurns; its timeoutS is the code's own cap, at most 90 s.",
+          "type": "boolean"
+        },
         "acceptWithExceptions": {
           "$comment": "HO-844: this Task gate also offers Accept with exceptions when the stored Verify outcome is done_proof_incomplete: a human with the gate PIN closes it naming each open metric line and a reason (server/src/gateExceptions.js). Only a Task gate may set it; assertLifecycleShape() checks the item kind.",
           "type": "boolean"
@@ -193,8 +197,24 @@
           }
         },
         {
-          "$comment": "Farm-lane steps carry the full budget/provider contract step_agent.py reads; the PM lane uses farm/pm_steps.py's own budget mechanism and must not declare these, except providerOverrideEligible (HZ-370: a PM step may take the owner's provider choice).",
-          "if": { "properties": { "runsIn": { "enum": ["farm"] } }, "required": ["runsIn"] },
+          "$comment": "HO-837: a code-run step is a farm step with no model: no turn budget, never a provider override, never a workspace change, and a cap of at most 90 s.",
+          "if": { "properties": { "codeRun": { "const": true } }, "required": ["codeRun"] },
+          "then": {
+            "required": ["runsIn", "timeoutS", "workspaceMutating", "providerOverrideEligible", "providerLocked"],
+            "properties": {
+              "kind": { "enum": ["agent"] },
+              "runsIn": { "enum": ["farm"] },
+              "timeoutS": { "maximum": 90 },
+              "workspaceMutating": { "const": false },
+              "providerOverrideEligible": { "const": false },
+              "providerLocked": { "const": true }
+            },
+            "not": { "anyOf": [{ "required": ["maxTurns"] }, { "required": ["requires"] }] }
+          }
+        },
+        {
+          "$comment": "Farm-lane steps carry the full budget/provider contract step_agent.py reads; the PM lane uses farm/pm_steps.py's own budget mechanism and must not declare these, except providerOverrideEligible (HZ-370: a PM step may take the owner's provider choice). HO-837: a code-run step carries no maxTurns (the rule above).",
+          "if": { "properties": { "runsIn": { "enum": ["farm"] }, "codeRun": { "const": false } }, "required": ["runsIn"] },
           "then": {
             "required": [
               "workspaceMutating",

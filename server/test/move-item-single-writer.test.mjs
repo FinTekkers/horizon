@@ -32,7 +32,8 @@ function cursorWrites(text) {
 
 // db.js's two dated pipeline-shift migrations (pipeline_v2, pipeline_v3) ran
 // once, long before this item, and renumber every row at once.
-const DATED_MIGRATIONS = ['cursor = cursor + 1 ', 'cursor = cursor + 1 ']
+// pipeline_v2_shift, pipeline_v3_review_shift and HO-837's pipeline_v4_preflight_shift.
+const DATED_MIGRATIONS = ['cursor = cursor + 1 ', 'cursor = cursor + 1 ', 'cursor = cursor + 1 ']
 
 test('the scan catches a planted write: multiline, cursor second in the SET list, no spaces around =', () => {
   const planted = [
@@ -51,7 +52,7 @@ test('the scan catches a planted write: multiline, cursor second in the SET list
   assert.equal(cursorWrites('UPDATE work_item SET paused = 1 WHERE cursor = ?').length, 0)
 })
 
-test('metric 2: only moveItem.js writes an item’s step (plus the two dated migrations)', () => {
+test('metric 2: only moveItem.js writes an item’s step (plus the three dated migrations)', () => {
   const writers = {}
   for (const file of readdirSync(SRC, { recursive: true }).filter((f) => /\.m?js$/.test(f))) {
     const writes = cursorWrites(readFileSync(join(SRC, file), 'utf8'))

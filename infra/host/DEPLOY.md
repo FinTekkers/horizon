@@ -1356,6 +1356,79 @@ already past Run plan are not re-checked.
   a `manual` proof as no plan, so its card shows "not found" and Approve is
   refused until the plan is rewritten.
 
+## Preflight before Approve the run (HO-837)
+
+No host setup. A new Task step, **Preflight** (`task.preflight`), runs
+between Impact review and **Approve the run**. It is farm code, not a model:
+it checks the run plan's prerequisites on the real runner, as the run user
+(tools, `env` names, files, cwd, login env, container image, held locks,
+upstream artifacts, a running deploy of the target). It only reads. The card
+lists each unmet item by name, and the gate refuses the PIN
+(`preflight_missing`, `preflight_unmet`, `preflight_stale`) until the newest
+Preflight passed for the plan on record. **Re-run preflight** on the card
+runs it again after a host fix. Execute keeps its own refusals as before.
+
+- **Deploy** only when no Task sits between Impact review and Execute.
+  The first boot runs `pipeline_v4_preflight_shift`: every stored step
+  position at or after Preflight (index 23) moves up by one — `cursor`,
+  `notified_step`, every `step_index` and `gate_index` column, the keys of
+  `work_item.provider_choices_json` and `project.provider_defaults_json`,
+  and each `anchor` in `work_item.substeps_json`. An item already at
+  **Approve the run** then has no Preflight, so its PIN is refused
+  (`preflight_missing`): click **Re-run preflight** on it. There is no
+  bypass.
+- A project definition file (`farm/projects/<slug>/`) whose sub-step audit
+  anchors on Execute must change `anchor` 24 to 25; the old value now fails
+  validation, and the definition is refused, not misapplied.
+- Preflight blocks a `row_exists` or `account_exists` precondition: it never
+  runs a `check`, so it cannot see one. Send the plan back to Run plan.
+- **Roll back.** The shift is one-way: run this under the deploy lock
+  (`~/.horizon/horizon/deploy.lock`) with the server stopped, then redeploy
+  the last good tag. `23` is Preflight's position. Set `HORIZON_DB` to the
+  server's database file first (2c above shows how to find it).
+
+```bash
+sqlite3 "$HORIZON_DB" <<'SQL'
+BEGIN;
+DELETE FROM step_run WHERE step_index = 23;
+UPDATE step_run SET step_index = step_index - 1 WHERE step_index >= 24;
+UPDATE gate_decision SET step_index = step_index - 1 WHERE step_index >= 24;
+UPDATE gate_notice SET step_index = step_index - 1 WHERE step_index >= 24;
+UPDATE gate_poll SET step_index = step_index - 1 WHERE step_index >= 24;
+UPDATE ask SET step_index = step_index - 1 WHERE step_index >= 24;
+UPDATE held_accept SET step_index = step_index - 1 WHERE step_index >= 24;
+UPDATE caretaker_eval SET gate_index = gate_index - 1 WHERE gate_index >= 24;
+UPDATE caretaker_action SET gate_index = gate_index - 1 WHERE gate_index >= 24;
+UPDATE caretaker_ruling SET gate_index = gate_index - 1 WHERE gate_index >= 24;
+UPDATE caretaker_ask_action SET gate_index = gate_index - 1 WHERE gate_index >= 24;
+UPDATE work_item SET cursor = cursor - 1 WHERE cursor >= 24;
+UPDATE work_item SET notified_step = notified_step - 1 WHERE notified_step >= 24;
+DELETE FROM setting WHERE key = 'pipeline_v4_preflight_shift';
+COMMIT;
+SQL
+# The JSON keys and sub-step anchors, lowered by one from 24. Standalone:
+# importing src/db.js would boot it and re-run the shift.
+cd /opt/horizon/server && node --input-type=module -e "
+import Database from 'better-sqlite3'
+const db = new Database(process.env.HORIZON_DB)
+const down = (n) => (n >= 24 ? n - 1 : n)
+const keys = (json) => JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(json)).map(([k, v]) => [/^[0-9]+$/.test(k) ? String(down(Number(k))) : k, v])))
+const anchors = (json) => JSON.stringify(JSON.parse(json).map((s) => (Number.isInteger(s?.anchor) ? { ...s, anchor: down(s.anchor) } : s)))
+db.transaction(() => {
+  for (const [table, column, fix] of [['work_item', 'provider_choices_json', keys], ['project', 'provider_defaults_json', keys], ['work_item', 'substeps_json', anchors]]) {
+    for (const row of db.prepare('SELECT rowid AS rid, ' + column + ' AS json FROM ' + table + ' WHERE ' + column + ' IS NOT NULL').all()) {
+      db.prepare('UPDATE ' + table + ' SET ' + column + ' = ? WHERE rowid = ?').run(fix(row.json), row.rid)
+    }
+  }
+})()
+"
+```
+
+  An item sitting at Preflight (23) lands on the old **Approve the run** (23)
+  and needs a fresh approval.
+  The two `step_run` columns (`plan_hash`, `preflight_json`) are additive;
+  the old code ignores them.
+
 ## Task containers: rootless Podman (HZ-416)
 
 A Task's Execute runs its approved commands in a throwaway rootless Podman

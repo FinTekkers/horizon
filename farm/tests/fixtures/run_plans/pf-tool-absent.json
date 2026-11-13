@@ -1,0 +1,23 @@
+{
+  "$comment": "HO-837: Preflight fixture \u2014 a declared tool the runner lacks. `/__TMP__` is the test's tmp dir; `task` overrides the stamped task fields.",
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "bash -c 'echo run'"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      {
+        "tool": "bash"
+      },
+      {
+        "tool": "hz837-absent-tool"
+      }
+    ]
+  },
+  "task": {},
+  "expect": {
+    "kind": "tool",
+    "name": "hz837-absent-tool"
+  }
+}

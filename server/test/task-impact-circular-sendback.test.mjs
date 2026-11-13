@@ -22,7 +22,8 @@ const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { IMPACT_SENDBACK_CAP } = await import('../src/config.js')
 const { mintHumanProof } = await import('../src/humanProof.js')
-const { STEPS, IMPACT_REVIEW_STEP_INDEX, RUN_PLAN_STEP_INDEX, APPROVE_RUN_GATE_INDEX } = await import('../../domain/js/lifecycle.js')
+const { seedPreflight } = await import('./helpers/preflight.mjs')
+const { STEPS, IMPACT_REVIEW_STEP_INDEX, RUN_PLAN_STEP_INDEX, APPROVE_RUN_GATE_INDEX, PREFLIGHT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 
 store.purgeDemoItems()
 
@@ -98,12 +99,13 @@ for (const [name, artifacts] of [
   ['an empty circular_proofs list', { artifact_md: '## Verdict\n**pass**', circular_proofs: [] }],
   ['no circular_proofs key', { artifact_md: '## Verdict\n**pass**' }],
 ]) {
-  test(`${name} advances to Approve the run as before`, async () => {
+  test(`${name} advances to Preflight, then the gate, as before`, async () => {
     const id = `T-CLEAN-${name.length}`
     seedTask(id)
     const runId = await completeImpact(id, artifacts)
     assert.equal(runStatus(runId), 'done')
-    assert.equal(cursor(id), APPROVE_RUN_GATE_INDEX)
+    // HO-837: on to Preflight, the step before the gate.
+    assert.equal(cursor(id), PREFLIGHT_STEP_INDEX)
     assert.deepEqual(feedbackRows(id), [])
   })
 }
@@ -127,7 +129,7 @@ test('the cap: flags 1 and 2 send the Task back, flag 3 goes on to the gate nami
 
   const runId = await completeImpact('T-CAP', flagged)
   assert.equal(runStatus(runId), 'done')
-  assert.equal(cursor('T-CAP'), APPROVE_RUN_GATE_INDEX, 'the third flag goes on to the gate')
+  assert.equal(cursor('T-CAP'), PREFLIGHT_STEP_INDEX, 'the third flag goes on to Preflight, then the gate')
   const sources = feedbackRows('T-CAP').map((r) => r.source)
   assert.equal(sources.filter((s) => s === orchestrator.IMPACT_SENDBACK_SOURCE).length, IMPACT_SENDBACK_CAP)
   assert.ok(sources.includes('ui'), "the human's feedback row is there, untagged")
@@ -140,6 +142,7 @@ test('a plan written before the proof map still shows on the card, with its unco
   const view = store.itemViewById('T-OLD')
   assert.equal(view.runPlan.commands, 2)
   assert.deepEqual(view.runPlan.uncoveredLines, [1, 2, 3, 4, 5])
+  seedPreflight(db, store, 'T-OLD')
   const proof = mintHumanProof({ userId: 1 })
   const res = store.approveGate('T-OLD', APPROVE_RUN_GATE_INDEX, '', 'Owner', { proof, planHash: view.runPlan.hash, runner: view.runPlan.runner })
   assert.equal(res.error, undefined, JSON.stringify(res))

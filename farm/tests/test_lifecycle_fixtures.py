@@ -277,6 +277,11 @@ def test_py_by_kind_label(case):
         assert entry[field] == value, f'{case["label"]}.{field}'
 
 
+@pytest.mark.parametrize("case", PY["is_code_run"], ids=lambda c: c["case"])
+def test_py_is_code_run(case):
+    assert steps.is_code_run(case["kind"], case["label"]) is case["expect"]
+
+
 @pytest.mark.parametrize("case", PY["entry_for_dispatch"], ids=lambda c: c["case"])
 def test_py_entry_for_dispatch(case):
     index = steps.by_kind_label("task", case["label"])["index"] + case["indexOffset"]

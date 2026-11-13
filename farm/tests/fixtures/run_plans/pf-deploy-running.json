@@ -1,0 +1,34 @@
+{
+  "$comment": "HO-837: Preflight fixture \u2014 a deploy of the repo's target running, from the server's queue and its held deploy.lock. `/__TMP__` is the test's tmp dir; `task` overrides the stamped task fields.",
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "bash -c 'echo run'"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      {
+        "tool": "bash"
+      },
+      {
+        "precondition": {
+          "kind": "no_deploy_running",
+          "check": "pgrep -f deploy-horizon.sh"
+        }
+      }
+    ]
+  },
+  "task": {
+    "deploy_running": {
+      "target": "horizon",
+      "tag": "v9.9.9",
+      "status": "deploying"
+    },
+    "deploy_state_key": "pf-target",
+    "deploy_lock_held": true
+  },
+  "expect": {
+    "kind": "deploy",
+    "name": "horizon"
+  }
+}

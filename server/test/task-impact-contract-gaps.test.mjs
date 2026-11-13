@@ -26,7 +26,7 @@ const { db } = await import('../src/db.js')
 const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { IMPACT_SENDBACK_CAP } = await import('../src/config.js')
-const { STEPS, ITEM_KINDS, stepsFor, IMPACT_REVIEW_STEP_INDEX, RUN_PLAN_STEP_INDEX, APPROVE_RUN_GATE_INDEX } = await import(
+const { STEPS, ITEM_KINDS, stepsFor, IMPACT_REVIEW_STEP_INDEX, RUN_PLAN_STEP_INDEX, APPROVE_RUN_GATE_INDEX, PREFLIGHT_STEP_INDEX } = await import(
   '../../domain/js/lifecycle.js'
 )
 
@@ -109,7 +109,8 @@ test('the cap is shared: a circular send-back then a gap send-back, and the thir
   assert.equal(cursor('T-MIXED-CAP'), RUN_PLAN_STEP_INDEX, 'the gap still sends it back')
   const runId = await completeImpact('T-MIXED-CAP', { artifact_md: 'x', contract_gaps: CASE.gaps })
   assert.equal(runStatus(runId), 'done')
-  assert.equal(cursor('T-MIXED-CAP'), APPROVE_RUN_GATE_INDEX)
+  // HO-837: on to Preflight, the step before the gate.
+  assert.equal(cursor('T-MIXED-CAP'), PREFLIGHT_STEP_INDEX)
   assert.equal(feedbackRows('T-MIXED-CAP').length, IMPACT_SENDBACK_CAP, 'no new row once the cap is reached')
 })
 
@@ -121,7 +122,7 @@ test('gap-only: two send-backs, then the third goes on to the gate with an event
   assert.equal(cursor('T-GAP-CAP'), RUN_PLAN_STEP_INDEX)
   const runId = await completeImpact('T-GAP-CAP', { artifact_md: 'x', contract_gaps: gaps })
   assert.equal(runStatus(runId), 'done')
-  assert.equal(cursor('T-GAP-CAP'), APPROVE_RUN_GATE_INDEX)
+  assert.equal(cursor('T-GAP-CAP'), PREFLIGHT_STEP_INDEX)
   assert.equal(feedbackRows('T-GAP-CAP').length, IMPACT_SENDBACK_CAP)
   assert.ok(
     events('T-GAP-CAP').some(
@@ -134,12 +135,12 @@ for (const [name, artifacts] of [
   ['an empty contract_gaps list', { artifact_md: '## Verdict\n**pass**', contract_gaps: [] }],
   ['no contract_gaps key', { artifact_md: '## Verdict\n**pass**' }],
 ]) {
-  test(`a fully declared plan (${name}) advances to Approve the run with no feedback`, async () => {
+  test(`a fully declared plan (${name}) advances to Preflight, then the gate, with no feedback`, async () => {
     const id = `T-DECLARED-${name.length}`
     seedTask(id)
     const runId = await completeImpact(id, artifacts)
     assert.equal(runStatus(runId), 'done')
-    assert.equal(cursor(id), APPROVE_RUN_GATE_INDEX)
+    assert.equal(cursor(id), PREFLIGHT_STEP_INDEX)
     assert.deepEqual(feedbackRows(id), [])
   })
 }
@@ -154,7 +155,7 @@ for (const [n, [name, gap]] of [
     const id = `T-BAD-${n}`
     seedTask(id)
     await completeImpact(id, { artifact_md: 'x', contract_gaps: [gap] })
-    assert.equal(cursor(id), APPROVE_RUN_GATE_INDEX)
+    assert.equal(cursor(id), PREFLIGHT_STEP_INDEX)
     assert.deepEqual(feedbackRows(id), [])
     assert.ok(!events(id).some((t) => t.includes('rm -rf') || t.includes('undeclared')))
   })

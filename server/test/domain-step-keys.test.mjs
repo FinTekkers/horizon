@@ -47,6 +47,7 @@ const SHIPPED = [
   ['task.assess', 'Assess'],
   ['task.run-plan', 'Run plan'],
   ['task.impact-review', 'Impact review'],
+  ['task.preflight', 'Preflight'],
   ['task.approve-run', 'Approve the run'],
   ['task.execute', 'Execute'],
   ['task.verify-report', 'Verify & report'],

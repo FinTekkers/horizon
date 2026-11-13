@@ -234,11 +234,11 @@ test('neither binding inlines a second copy of the step table — every label an
   // the derived constants' arguments, not a table: four change constants
   // (implement, review, accept, deploy), seven task ones (run plan, approve the
   // run, execute, verify & report — HZ-378/HZ-384 — assess and impact
-  // review — HZ-738 — and review & close — HZ-814) and seven plan ones
+  // review — HZ-738 — and review & close — HZ-814), preflight (HO-837) and seven plan ones
   // (approve & file, draft items, file items, review & close, inventory and
   // the two draft reviews — HZ-446/448/449/462/463).
   const stripped = (jsSource.match(KEY_LOOKUP_CALL) || []).length
-  assert.equal(stripped, 18, `expected exactly 18 keyIndex() key lookups in the binding, found ${stripped}`)
+  assert.equal(stripped, 19, `expected exactly 19 keyIndex() key lookups in the binding, found ${stripped}`)
 })
 
 test('neither reason binding inlines a second copy of the vocabulary — every id, both files', () => {
@@ -501,8 +501,8 @@ test('SHAPE PIN (fields): both bindings expose the authored entries, with exactl
 test('SHAPE PIN (JS): authored entries, both kinds, no synthesised index', () => {
   // HZ-377: 16 change rows plus 11 appended task rows — the labels and order
   // are pinned hand-written in domain-step-pins.test.mjs, this is the count.
-  // HZ-446: plus 12 appended plan rows.
-  assert.equal(binding.STEPS.length, 39)
+  // HZ-446: plus 12 appended plan rows. HO-837: the task gained Preflight (12).
+  assert.equal(binding.STEPS.length, 40)
   const first = binding.STEPS[0]
   assert.ok('runsIn' in first, 'the JS view must carry runsIn — config.js and farmd lane routing need it')
   assert.ok(!('index' in first), 'the JS view must NOT carry a synthesised index — position IS the index')
@@ -529,7 +529,11 @@ test('SHAPE PIN (JS): farm-only fields ride along on farm-lane steps, and only p
   const PM_ALLOWED = ['providerOverrideEligible']
   for (const step of binding.STEPS) {
     if (step.runsIn === 'farm') {
-      for (const field of FARM_ONLY) assert.ok(field in step, `farm step "${step.label}" is missing ${field}`)
+      // HO-837: a code-run step calls no model, so it has no turn budget.
+      for (const field of FARM_ONLY) {
+        if (step.codeRun === true && field === 'maxTurns') assert.ok(!(field in step), `code-run step "${step.label}" declares maxTurns`)
+        else assert.ok(field in step, `farm step "${step.label}" is missing ${field}`)
+      }
     } else if (step.runsIn === 'pm') {
       for (const field of FARM_ONLY) {
         if (PM_ALLOWED.includes(field)) continue
@@ -604,7 +608,7 @@ test('SHAPE PIN (Python): the Task steps 0-2 reach the Task farm view on the PM 
     ],
   )
   assert.equal(taskRows[3].label, 'Approve & prioritize')
-  assert.equal(binding.STEPS.length, 39, 'the step table gained or lost a row')
+  assert.equal(binding.STEPS.length, 40, 'the step table gained or lost a row')
   for (const row of firstThree) {
     const entry = pythonTaskSteps.find((e) => e.index === row.index)
     assert.ok(entry, `"${row.label}" is missing from the Task farm view`)

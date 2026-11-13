@@ -1,0 +1,26 @@
+{
+  "$comment": "HO-837: Preflight fixture \u2014 a lock another process holds. `/__TMP__` is the test's tmp dir; `task` overrides the stamped task fields.",
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "bash -c 'echo run'"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      {
+        "tool": "bash"
+      },
+      {
+        "precondition": {
+          "kind": "lock_free",
+          "check": "flock -n /__TMP__/pf.lock true"
+        }
+      }
+    ]
+  },
+  "task": {},
+  "expect": {
+    "kind": "precondition",
+    "name": "/__TMP__/pf.lock"
+  }
+}

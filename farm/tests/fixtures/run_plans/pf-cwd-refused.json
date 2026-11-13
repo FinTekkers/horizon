@@ -1,0 +1,20 @@
+{
+  "$comment": "HO-837: Preflight fixture \u2014 a cwd that does not resolve in the checkout (Execute's cwd_refused). `/__TMP__` is the test's tmp dir; `task` overrides the stamped task fields.",
+  "plan": {
+    "cwd": "no/such/dir",
+    "commands": [
+      "bash -c 'echo run'"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      {
+        "tool": "bash"
+      }
+    ]
+  },
+  "task": {},
+  "expect": {
+    "kind": "cwd",
+    "name": "no/such/dir"
+  }
+}

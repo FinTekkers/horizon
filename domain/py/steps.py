@@ -426,6 +426,18 @@ def by_kind_label(kind: str, label: str) -> dict:
         raise KeyError(f"no step labeled {label!r} for item kind {kind!r} in the step table") from None
 
 
+def is_code_run(kind: str, label: str) -> bool:
+    """HO-837: whether that item kind's step with this label is a code-run
+    step — fixed farm code, never a model, so no persona, provider or turn
+    budget. False for a label the kind does not run on a lane, never a
+    KeyError: farmd asks this of every task it claims."""
+    try:
+        index = by_kind_label(kind, label)["index"]
+    except KeyError:
+        return False
+    return _SOURCE["steps"][index].get("codeRun") is True
+
+
 def entry_for_dispatch(index, kind: str, label: str) -> dict:
     """HZ-383: the row a dispatched task names, checked three ways. farmd's
     /steps/run sends `step.index`, `step.label` and `item.kind`; the row at

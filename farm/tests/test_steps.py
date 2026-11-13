@@ -90,8 +90,8 @@ def test_runs_in_none_rows_never_reach_the_farm_view():
     # the row count is pinned too (no new rows). The none lane stays in the
     # schema; the fabricated-row test below proves a view still drops one.
     authored = json.loads(steps._SOURCE_PATH.read_text())["steps"]
-    # HZ-446: 27 rows plus a Plan's 12.
-    assert len(authored) == 39, "the step table gained or lost a row"
+    # HZ-446: 27 rows plus a Plan's 12. HO-837: plus the Task's Preflight.
+    assert len(authored) == 40, "the step table gained or lost a row"
     task_rows = [(index, step) for index, step in enumerate(authored) if step.get("itemKind") == "task"]
     assert [step["runsIn"] for _, step in task_rows[:3]] == ["pm", "pm", "pm"]
     assert task_rows[3][1]["kind"] == "gate"

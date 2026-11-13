@@ -133,3 +133,39 @@ def environ_value(pid: int, name: str) -> str | None:
         if entry.startswith(prefix):
             return entry[len(prefix) :].decode("utf-8", "replace")
     return None
+
+
+def held_locks() -> set[tuple[int, int, int]]:
+    """HO-837: (major, minor, inode) of every file a lock is held on now,
+    read from /proc/locks — a pure read: nothing is opened for writing and no
+    lock is taken. A file's lock is held when (os.major(st_dev),
+    os.minor(st_dev), st_ino) is in the set. Raises OSError when /proc/locks
+    cannot be read, so a caller never reads "free" from a failed read."""
+    held: set[tuple[int, int, int]] = set()
+    for line in (PROC / "locks").read_text().splitlines():
+        # "1: FLOCK  ADVISORY  WRITE 1234 08:01:131074 0 EOF"; a blocked
+        # waiter's line has a "->" after its number and holds nothing.
+        fields = line.split()
+        if len(fields) < 6 or fields[1] == "->":
+            continue
+        try:
+            major, minor, inode = fields[5].split(":")
+            held.add((int(major, 16), int(minor, 16), int(inode)))
+        except ValueError:
+            continue
+    return held
+
+
+def lock_held(path: str) -> bool:
+    """HO-837: whether any process holds a lock on `path` now. Only stats the
+    path — never opens it — so no lock is ever taken. A missing file holds no
+    lock. Matched by inode alone: btrfs and overlay report a subvolume's
+    st_dev, but /proc/locks names the superblock's, so a device match would
+    miss a held lock. An inode that collides across filesystems reads as
+    held, which blocks — never as free. Raises OSError (other than a missing
+    file) and the /proc/locks read's OSError."""
+    try:
+        inode = os.stat(path).st_ino
+    except FileNotFoundError:
+        return False
+    return any(held == inode for _, _, held in held_locks())

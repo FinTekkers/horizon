@@ -1,0 +1,26 @@
+{
+  "$comment": "HO-837: Preflight fixture \u2014 an upstream artifact that is not there. `/__TMP__` is the test's tmp dir; `task` overrides the stamped task fields.",
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "bash -c 'echo run'"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      {
+        "tool": "bash"
+      },
+      {
+        "precondition": {
+          "kind": "artifact_exists",
+          "check": "test -s /__TMP__/upstream/prices.csv"
+        }
+      }
+    ]
+  },
+  "task": {},
+  "expect": {
+    "kind": "precondition",
+    "name": "/__TMP__/upstream/prices.csv"
+  }
+}
