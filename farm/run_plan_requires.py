@@ -47,6 +47,19 @@ HO-835: only PROBED_KINDS entries reach the probe. A `service` or
 run or passed to the probe. A `file` with `access` is probed with `test -r`,
 whatever its access.
 
+HO-837: check_entries() is the same check with each gap as a Gap (kind, name,
+reason, line); check() is its lines. With strict=True it is Preflight's
+(farm/preflight.py), before Approve the run: nothing is ever "not checked" —
+an entry it cannot probe is a gap, an unknown job user raises Unavailable,
+a container image is never pulled — and `service` and `precondition` entries
+are observed without running their `version_cmd` or `check`: a lock_free
+lock path from /proc/locks, an artifact_exists path by `test -r` as the job
+user, no_deploy_running from the deploy state farmd and the server stamp, a
+service named after a deploy target against its last-good tag (any other
+service by host-name resolution). row_exists and account_exists cannot be
+observed without running the check, so each is a gap. Without strict the
+Run plan check is unchanged.
+
 HO-836: contract_gaps() is Impact review's contract audit, not part of this
 check. It reads each command's text for the tools it calls and the hosts it
 reaches, and names each one `requires` does not declare. Static: it runs,
@@ -56,12 +69,15 @@ rule, so reading through `sudo` has one definition.
 
 import os
 import re
+import shlex
+import socket
 import subprocess
 import time
+from typing import NamedTuple
 
 from domain.py import run_plan
 
-from . import container_runner, job_env, login_env, task_job
+from . import container_runner, job_env, login_env, procfs, task_job
 
 # The step this check runs in (step_agent.RUN_PLAN_LABEL); farmd stamps the
 # job's env names and uid on its task.
@@ -132,6 +148,17 @@ PROBED_KINDS = ("tool", "path", "env", "file")
 
 class Unavailable(Exception):
     """The check cannot run on this runner. One line, safe to show."""
+
+
+class Gap(NamedTuple):
+    """HO-837: one gap — what kind of entry, its name (a tool, path, variable,
+    file, lock or service — never a value), why, and the whole line check()
+    shows."""
+
+    kind: str
+    name: str
+    reason: str
+    line: str
 
 
 def _inside(path: str, root: str) -> bool:
@@ -922,9 +949,156 @@ def check(
     env and user (farmd stamps the last two on the task). None means
     unknown: nothing is implied, a name only farmd's env sets is a gap and no
     file is probed. Raises Unavailable."""
+    return [
+        gap.line
+        for gap in check_entries(
+            block,
+            repo_dir=repo_dir,
+            venv_dir=venv_dir,
+            runner=runner,
+            container_image=container_image,
+            forbid=forbid,
+            deadline=deadline,
+            test_env_file=test_env_file,
+            job_env_names=job_env_names,
+            job_uid=job_uid,
+        )
+    ]
+
+
+def _gap(kind: str, name: str, reason: str, line: str | None = None) -> Gap:
+    return Gap(kind, name, reason, line if line is not None else f"{kind} `{name}`: {reason}")
+
+
+# HO-837: Preflight's own lines for what check() reports "(not checked)".
+def _strict_escaping_path(path: str) -> Gap:
+    return _gap("path", path, "resolves outside the checkout")
+
+
+def _strict_disallowed_file(path: str) -> Gap:
+    return _gap("file", path, "resolves outside the checkout and outside " + " and ".join(ALLOWED_FILE_ROOTS))
+
+
+def _strict_other_user_file(path: str) -> Gap:
+    return _gap("file", path, "the job user's to read, and preflight is running as another user")
+
+
+# A path a precondition's `check` names: absolute, or the operand of a
+# test/[ file flag. Read as text only — the check never runs.
+_CHECK_PATH = re.compile(r"^/[A-Za-z0-9._@+/-]+$")
+_TEST_FLAGS = frozenset({"-e", "-f", "-s", "-r", "-d"})
+
+
+def _check_words(check: str) -> list[str]:
+    try:
+        return shlex.split(check)
+    except ValueError:
+        return check.split()
+
+
+def _absolute_paths(check: str) -> list[str]:
+    found = []
+    for word in _check_words(check):
+        if _CHECK_PATH.fullmatch(word) and word != "/dev/null" and word not in found:
+            found.append(word)
+    return found
+
+
+def _artifact_paths(check: str) -> list[str]:
+    words = _check_words(check)
+    found = _absolute_paths(check)
+    for flag, word in zip(words, words[1:]):
+        if flag in _TEST_FLAGS and word not in found and not word.startswith("-") and "$" not in word:
+            found.append(word)
+    return found
+
+
+def _resolves(host: str) -> bool:
+    try:
+        return bool(socket.getaddrinfo(host, None))
+    except (OSError, UnicodeError):
+        return False
+
+
+def _observed_gaps(
+    requires: list, *, real_repo: str, effective: str | None, service_tags: dict | None, deploy_busy: str | None, resolve_host
+) -> tuple[list[Gap], list[dict]]:
+    """HO-837: gaps for each `service` and `precondition` entry, observed
+    without running its `version_cmd` or `check`; and the artifact paths
+    still to probe (`test -r` as the job user), as {"artifact": path}."""
+    gaps: list[Gap] = []
+    artifacts: list[dict] = []
+    tags = service_tags or {}
+    for entry in requires:
+        if "service" in entry:
+            service = entry["service"]
+            name = service["name"]
+            if name in tags:
+                if tags[name] != service["expect"]:
+                    gaps.append(_gap("service", name, f"last-good tag is {tags[name] or 'none'}, and the plan expects {service['expect']}"))
+            elif not resolve_host(name):
+                gaps.append(_gap("service", name, "does not resolve on the runner"))
+        elif "precondition" in entry:
+            kind, text = entry["precondition"]["kind"], entry["precondition"]["check"]
+            if kind == "lock_free":
+                paths = _absolute_paths(text)
+                if not paths:
+                    gaps.append(_gap("precondition", kind, "names no absolute lock path preflight can observe"))
+                for path in paths:
+                    try:
+                        held = procfs.lock_held(path)
+                    except OSError as exc:
+                        gaps.append(_gap("precondition", path, f"lock_free: the lock cannot be read ({type(exc).__name__})"))
+                        continue
+                    if held:
+                        gaps.append(_gap("precondition", path, "lock_free: the lock is held by another process"))
+            elif kind == "no_deploy_running":
+                if deploy_busy:
+                    gaps.append(_gap("precondition", kind, deploy_busy))
+            elif kind == "artifact_exists":
+                paths = _artifact_paths(text)
+                if not paths:
+                    gaps.append(_gap("precondition", kind, "names no path preflight can observe"))
+                for path in paths:
+                    target = os.path.realpath(path if os.path.isabs(path) else os.path.join(real_repo, path))
+                    if not os.path.isabs(path) and not _inside(target, real_repo):
+                        gaps.append(_gap("precondition", path, "artifact_exists: resolves outside the checkout"))
+                    elif effective == "container" and not _inside(target, real_repo):
+                        gaps.append(_gap("precondition", path, "artifact_exists: not available to a container run"))
+                    else:
+                        artifacts.append({"artifact": path, "target": target})
+            else:
+                gaps.append(_gap("precondition", kind, "preflight cannot observe it without running its check, which it never runs"))
+    return gaps, artifacts
+
+
+def check_entries(
+    block: dict,
+    *,
+    repo_dir: str | None,
+    venv_dir: str | None,
+    runner: str | None,
+    container_image: str | None,
+    forbid: str,
+    deadline: float | None = None,
+    test_env_file: str | None = None,
+    job_env_names: list[str] | None = None,
+    job_uid: int | None = None,
+    strict: bool = False,
+    service_tags: dict | None = None,
+    deploy_busy: str | None = None,
+    resolve_host=None,
+) -> list[Gap]:
+    """check(), one Gap per gap. HO-837: `strict` is Preflight's mode (see the
+    module docstring); `service_tags` maps each deploy target name to its
+    last-good tag, `deploy_busy` says why a deploy is running (or None), and
+    `resolve_host` decides whether a service host resolves. Raises
+    Unavailable."""
     block = block or {}
     requires = block.get("requires") or []
-    undeclared = [_undeclared(name) for name in undeclared_names(block)]
+    if strict and job_uid is None:
+        raise Unavailable("the requires check cannot run: the job user is unknown")
+    undeclared = [] if strict else [_gap("env", name, "", _undeclared(name)) for name in undeclared_names(block)]
     # The plan's own entries first, then what it implies: env names its `env`
     # block references and literal config-file paths its commands name —
     # only once farmd said what Execute's env and user are, so a task it did
@@ -938,7 +1112,8 @@ def check(
                 entries.append({"env": name})
     if job_uid is not None:
         entries += [{"file": path} for path in _implied_files(block) if path not in listed_files]
-    if not entries:
+    observed_kinds = ("service", "precondition")
+    if not entries and not (strict and any(kind in entry for entry in requires for kind in observed_kinds)):
         return undeclared
     try:
         cwd = run_plan.resolve_cwd(repo_dir, block["cwd"], forbid=forbid)
@@ -946,6 +1121,18 @@ def check(
         raise Unavailable(f"the requires check cannot run: {exc}") from None
     real_repo = os.path.realpath(repo_dir)
     effective = block.get("runner") or runner
+
+    observed: list[Gap] = []
+    if strict:
+        observed, artifacts = _observed_gaps(
+            requires,
+            real_repo=real_repo,
+            effective=effective,
+            service_tags=service_tags,
+            deploy_busy=deploy_busy,
+            resolve_host=resolve_host or _resolves,
+        )
+        entries += artifacts
 
     resolvable: set[str] = set()
     if any("env" in entry for entry in entries):
@@ -965,30 +1152,46 @@ def check(
             target = os.path.realpath(os.path.join(real_repo, entry["path"]))
             if _inside(target, real_repo):
                 paths.append((i, target))
+            elif strict:
+                gaps[i] = _strict_escaping_path(entry["path"])
             else:
-                gaps[i] = _escaping_path(entry["path"])
+                gaps[i] = _gap("path", entry["path"], "", _escaping_path(entry["path"]))
         elif "env" in entry:
             if entry["env"] not in resolvable:
                 envs.append((i, entry["env"]))
+        elif "artifact" in entry:
+            if job_uid != os.geteuid():
+                gaps[i] = _gap("precondition", entry["artifact"], "artifact_exists: the job user's to read, and preflight is running as another user")
+            else:
+                files.append((i, entry["target"]))
         else:
             target = os.path.realpath(entry["file"])
             if not _inside(target, real_repo) and not any(_inside(target, root) for root in ALLOWED_FILE_ROOTS):
-                gaps[i] = _disallowed_file(entry["file"])
+                gaps[i] = _strict_disallowed_file(entry["file"]) if strict else _gap("file", entry["file"], "", _disallowed_file(entry["file"]))
             elif job_uid is None or job_uid != os.geteuid():
-                gaps[i] = _other_user_file(entry["file"])
+                gaps[i] = _strict_other_user_file(entry["file"]) if strict else _gap("file", entry["file"], "", _other_user_file(entry["file"]))
             elif effective == "container" and not _inside(target, real_repo):
-                gaps[i] = _container_file(entry["file"])
+                gaps[i] = _gap("file", entry["file"], "not available to a container run", _container_file(entry["file"]))
             else:
                 files.append((i, target))
     probed = tools + paths + envs + files
+
+    def ordered() -> list[Gap]:
+        return undeclared + [gaps[i] for i in sorted(gaps)] + observed
+
     if not probed:
-        return undeclared + [gaps[i] for i in sorted(gaps)]
+        return ordered()
     args = [name for _, name in tools] + [PATHS_MARKER] + [target for _, target in paths]
     script = PROBE
     if envs or files:
         script = PROBE_ENV_FILES
         args += [ENV_MARKER] + [name for _, name in envs] + [FILES_MARKER] + [target for _, target in files]
 
+    timeout = PROBE_TIMEOUT_S
+    if strict and deadline is not None:
+        timeout = min(PROBE_TIMEOUT_S, deadline - time.monotonic())
+        if timeout <= 0:
+            raise Unavailable("the requires check timed out")
     if effective == "host":
         try:
             venv = run_plan.resolve_venv(repo_dir, venv_dir, forbid=forbid)
@@ -998,13 +1201,19 @@ def check(
         # never reaches the probe.
         argv, env, run_in = ["bash", "-c", script, "_", *args], task_job._child_env({}, venv), cwd
     elif effective == "container":
-        remaining = PULL_TIMEOUT_CAP_S if deadline is None else int(deadline - time.monotonic())
-        if remaining < 1:
-            raise Unavailable("the requires check cannot run: no time left to pull the container image")
-        try:
-            container_runner.ensure_image(container_image, timeout_s=min(remaining, PULL_TIMEOUT_CAP_S))
-        except container_runner.Unavailable as exc:
-            raise Unavailable(f"the requires check cannot run: {exc}") from None
+        if strict:
+            # HO-837: Preflight never pulls; an image not already here is a gap
+            # Preflight's container check names, and this probe cannot run.
+            if not container_runner.image_present(container_image):
+                raise Unavailable("the requires check cannot run: the container image is not on the runner, and preflight never pulls it")
+        else:
+            remaining = PULL_TIMEOUT_CAP_S if deadline is None else int(deadline - time.monotonic())
+            if remaining < 1:
+                raise Unavailable("the requires check cannot run: no time left to pull the container image")
+            try:
+                container_runner.ensure_image(container_image, timeout_s=min(remaining, PULL_TIMEOUT_CAP_S))
+            except container_runner.Unavailable as exc:
+                raise Unavailable(f"the requires check cannot run: {exc}") from None
         argv = container_runner.probe_argv(image=container_image, repo_dir=real_repo, workdir=cwd, script=script, args=args)
         env = container_runner.client_env({})
         # cwd "/", as Execute starts its container: conmon drops an `oom`
@@ -1023,14 +1232,17 @@ def check(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=PROBE_TIMEOUT_S,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        raise Unavailable(f"the requires check did not finish in {PROBE_TIMEOUT_S}s") from None
+        raise Unavailable(f"the requires check did not finish in {timeout:g}s") from None
     except OSError as exc:
         raise Unavailable(f"the requires check could not run ({type(exc).__name__})") from None
     if probe.returncode != 0:
         detail = next((line.strip()[:200] for line in probe.stderr.splitlines() if line.strip()), "")
+        if strict:
+            # HO-837: stderr is the runner's, not ours to show on the card.
+            detail = ""
         raise Unavailable("the requires check failed on the runner" + (f": {detail}" if detail else ""))
 
     for line in probe.stdout.split():
@@ -1039,14 +1251,16 @@ def check(
         i, _ = probed[int(line) - 1]
         entry = entries[i]
         if "tool" in entry:
-            gaps[i] = _missing_tool(entry["tool"])
+            gaps[i] = _gap("tool", entry["tool"], "not on the runner's PATH", _missing_tool(entry["tool"]))
         elif "path" in entry:
-            gaps[i] = _missing_path(entry["path"])
+            gaps[i] = _gap("path", entry["path"], "does not exist in the checkout", _missing_path(entry["path"]))
         elif "env" in entry:
-            gaps[i] = _unset_env(entry["env"])
+            gaps[i] = _gap("env", entry["env"], "not set in the job's environment", _unset_env(entry["env"]))
+        elif "artifact" in entry:
+            gaps[i] = _gap("precondition", entry["artifact"], "artifact_exists: does not exist or is not readable by the job user")
         else:
-            gaps[i] = _unreadable_file(entry["file"])
-    return undeclared + [gaps[i] for i in sorted(gaps)]
+            gaps[i] = _gap("file", entry["file"], "not readable by the job user", _unreadable_file(entry["file"]))
+    return ordered()
 
 
 # HZ-769: added only when an env, file or `$NAME` gap is in the list, so a

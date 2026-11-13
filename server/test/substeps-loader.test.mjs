@@ -31,14 +31,15 @@ test('the four anchors still point at the steps they name, in the kind they belo
   assert.deepEqual(pin(1), { label: 'Define how we measure success', itemKind: 'change' })
   assert.deepEqual(pin(11), { label: 'Specialist agent implements', itemKind: 'change' })
   assert.deepEqual(pin(17), { label: "How we'll verify", itemKind: 'task' })
-  assert.deepEqual(pin(24), { label: 'Execute', itemKind: 'task' })
+  // HO-837: Preflight moved Execute from 24 to 25.
+  assert.deepEqual(pin(25), { label: 'Execute', itemKind: 'task' })
   assert.deepEqual([...substeps.OPENING_ANCHORS], [1, 17])
-  assert.deepEqual([...substeps.AUDIT_ANCHORS], [11, 24])
+  assert.deepEqual([...substeps.AUDIT_ANCHORS], [11, 25])
   assert.deepEqual([...SUBSTEP_OUTPUTS], ['artifact', 'golden_cases', 'findings'])
 })
 
 test('a valid file loads with no errors, normalized, persona optional', () => {
-  const { substeps: loaded, errors } = validateSubsteps({ substeps: [VALID, AUDIT, { ...AUDIT, id: 'execute-audit', anchor: 24 }] })
+  const { substeps: loaded, errors } = validateSubsteps({ substeps: [VALID, AUDIT, { ...AUDIT, id: 'execute-audit', anchor: 25 }] })
   assert.deepEqual(errors, [])
   assert.deepEqual(loaded.map((s) => s.id), ['golden-cases', 'impl-audit', 'execute-audit'])
   assert.deepEqual(loaded[1], { ...AUDIT, persona: null, applies: { labels: [], repos: ['Acme/core'], paths: [] } })
@@ -46,14 +47,14 @@ test('a valid file loads with no errors, normalized, persona optional', () => {
 
 const BAD = {
   'opening anchor 5': [{ id: 'bad-opening-5', kind: 'opening', anchor: 5, output: 'artifact' }, /opening anchor must be one of 1, 17, got 5/],
-  'audit anchor 12': [{ id: 'bad-audit-12', kind: 'audit', anchor: 12, output: 'findings' }, /audit anchor must be one of 11, 24, got 12/],
+  'audit anchor 12': [{ id: 'bad-audit-12', kind: 'audit', anchor: 12, output: 'findings' }, /audit anchor must be one of 11, 25, got 12/],
   'cross-kind opening anchor 11': [{ id: 'opening-at-implement', kind: 'opening', anchor: 11, output: 'artifact' }, /opening anchor must be one of 1, 17, got 11/],
-  'cross-kind audit anchor 17': [{ id: 'audit-at-verify', kind: 'audit', anchor: 17, output: 'findings' }, /audit anchor must be one of 11, 24, got 17/],
+  'cross-kind audit anchor 17': [{ id: 'audit-at-verify', kind: 'audit', anchor: 17, output: 'findings' }, /audit anchor must be one of 11, 25, got 17/],
   'output outside the three': [{ id: 'bad-output', kind: 'opening', anchor: 1, output: 'report' }, /output must be one of artifact, golden_cases, findings, got "report"/],
   'audit output artifact': [{ id: 'audit-artifact', kind: 'audit', anchor: 11, output: 'artifact' }, /audit output must be findings, got artifact/],
   'audit gate "required"': [{ id: 'audit-gate-required', kind: 'audit', anchor: 11, output: 'findings', gate: 'required' }, /no gate of its own/],
   'opening gate "optional"': [{ id: 'opening-gate-optional', kind: 'opening', anchor: 17, output: 'artifact', gate: 'optional' }, /no gate of its own/],
-  'audit gate false': [{ id: 'audit-gate-false', kind: 'audit', anchor: 24, output: 'findings', gate: false }, /no gate of its own/],
+  'audit gate false': [{ id: 'audit-gate-false', kind: 'audit', anchor: 25, output: 'findings', gate: false }, /no gate of its own/],
   'opening gate null': [{ id: 'opening-gate-null', kind: 'opening', anchor: 1, output: 'golden_cases', gate: null }, /no gate of its own/],
   'unknown persona': [{ id: 'bad-persona', kind: 'opening', anchor: 1, output: 'artifact', persona: 'astrologer' }, /unknown persona "astrologer"/],
 }

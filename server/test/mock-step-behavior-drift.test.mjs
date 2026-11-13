@@ -34,7 +34,8 @@ test('sanity: neither set is empty, so set equality below cannot pass vacuously'
   // HZ-383: 11 change steps plus the task kind's Assess, Run plan and Impact review.
   // HZ-378: plus Execute (job lane) and Verify & report. HZ-413: plus the Task's
   // first three steps (PM lane). HZ-446: plus a Plan's seven agent steps.
-  assert.equal(agentLabels.length, 26, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
+  // HO-837: plus the Task's Preflight (a code-run step, mocked as a pass).
+  assert.equal(agentLabels.length, 27, 'the number of agent-kind steps changed — check MOCK_STEP_BEHAVIOR deliberately')
 })
 
 test('HZ-446: SERVER_STEP_BEHAVIOR keys are exactly the server-step labels, and no mock names one', () => {

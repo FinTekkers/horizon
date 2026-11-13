@@ -253,6 +253,8 @@ export const PHASES = source.phases
 // (missingRequiredInputs) before a farm dispatch — if the artifact budget had
 // to truncate a required artifact, the step never runs. Omit for steps that
 // tolerate a truncated/absent prior artifact.
+// codeRun (HO-837): a farm step that runs fixed farm code, not a model — no
+// persona, provider, input budget or maxTurns (orchestrator.js dispatchCodeRun).
 export const STEPS = source.steps
 
 // ---- item kinds (HZ-377) ----
@@ -422,6 +424,10 @@ export const DEPLOY_STEP_INDEX = keyIndex('change.deploy')
 // step that may only start on the plan that gate approved.
 export const RUN_PLAN_STEP_INDEX = keyIndex('task.run-plan')
 export const APPROVE_RUN_GATE_INDEX = keyIndex('task.approve-run')
+// HO-837: the code-run step before that gate. It checks the plan's
+// prerequisites on the real runner, and the gate refuses the PIN until the
+// newest run of it passed for the plan on record (server/src/store.js).
+export const PREFLIGHT_STEP_INDEX = keyIndex('task.preflight')
 export const EXECUTE_STEP_INDEX = keyIndex('task.execute')
 // HZ-378: the read-only QA step that judges a finished job against the metric.
 export const VERIFY_REPORT_STEP_INDEX = keyIndex('task.verify-report')

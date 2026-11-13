@@ -33,6 +33,7 @@ import {
   IMPACT_REVIEW_STEP_INDEX,
   VERIFY_REPORT_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  PREFLIGHT_STEP_INDEX,
   APPROVE_FILE_GATE_INDEX,
   PLAN_DRAFT_STEP_INDEX,
   laneOf,
@@ -85,6 +86,8 @@ import {
   resolveStepProviders,
   staleStepChoices,
   approvedPlanCheck,
+  currentRunPlan,
+  runningDeployFor,
   defaultRunnerFor,
   latestArtifact,
   latestExecuteJobView,
@@ -135,6 +138,7 @@ import { DEPLOY_BLOCK_MESSAGE, deployBlock, isDeployBlocked, onDrainEnd, survive
 import { deployWaitFor } from './deployWait.js'
 import * as deployQueue from './deployQueue.js'
 import { findTargetByRepo } from './deployTargets.js'
+import { listTargetStatuses } from './deploy.js'
 import { deploySkipArtifact, deploySkipReason } from './deploySkip.js'
 import { servedRulesFor } from './rulesStore.js'
 import { DIGEST_STEP_INDEX, OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
@@ -1284,6 +1288,16 @@ export const MOCK_STEP_BEHAVIOR = {
     summary: 'impact review passed — no load, rate-limit or deploy-overlap concerns (mock)',
     artifact_md: '## Verdict\n**pass** (mock)\n\n## Undo\nNothing to undo in demo mode.',
   }),
+  // HO-837: demo mode has no runner to check — the mock passes for the plan
+  // on record, on its runner, so a demo Task reaches Approve the run approvable.
+  Preflight: (it) => {
+    const runner = currentRunPlan(it.id)?.runner ?? 'host'
+    return {
+      summary: `preflight passed on ${runner} as demo (mock)`,
+      artifact_md: `## Preflight\n\n**passed** — preflight passed on ${runner} as demo (mock)`,
+      preflight: { passed: true, runner, run_user: 'demo', unmet: [] },
+    }
+  },
   // HZ-378: Execute runs one mock command; Verify judges it. Both return
   // artifacts so demo mode shows the same links the farm path does.
   Execute: () => ({
@@ -1515,7 +1529,8 @@ export function kick(id, opts = {}) {
   // HZ-422: the first model in the step's chain with no usage limit active.
   // None free: the item waits for the earliest reset, and no run is written,
   // so no attempt is used.
-  const pick = toFarm && step.runsIn !== 'job' ? pickRunsOn(item, stepIndex) : null
+  // HO-837: nor for a code-run step, which calls no model.
+  const pick = toFarm && step.runsIn !== 'job' && !step.codeRun ? pickRunsOn(item, stepIndex) : null
   if (pick?.waitUntilMs != null) {
     dispatching.delete(id)
     waitForUsageReset(id, step, pick.waitUntilMs)
@@ -1537,6 +1552,11 @@ export function kick(id, opts = {}) {
       pick?.fallbackFrom ? new Date(pick.fallbackResetMs).toISOString() : null,
     ).lastInsertRowid
 
+  // HO-837: a Preflight run is bound to the plan it checks — the hash is the
+  // server's, written here for the farm and the mock alike, never by the farm.
+  if (stepIndex === PREFLIGHT_STEP_INDEX) {
+    db.prepare('UPDATE step_run SET plan_hash = ? WHERE id = ?').run(currentRunPlan(id)?.hash ?? null, runId)
+  }
   // HZ-541: before either path, so neither the farm nor a mock runs it.
   if (refuseWithoutGoldenCases(runId, id, stepIndex)) return
   if (toFarm) {
@@ -1986,6 +2006,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     FARM_QUEUE_TIMEOUT_MS,
   ).unref()
 
+  // HO-837: a code-run step gets no release, no inputs, no feedback, no
+  // persona and no provider — only what its farm code checks.
+  if (step.codeRun) return dispatchCodeRun(id, stepIndex, runId, attempt)
+
   // Deploy's real side effect — publishing the GitHub release that the
   // self-deploy webhook picks up — needs the GitHub token, which only this
   // Node process holds; the farm never gets it. So this side publishes the
@@ -2417,6 +2441,84 @@ function dispatchJob(id, stepIndex, runId, attempt) {
     if (err.status === 400) return failFarmRun(runId, `the farm refused the job: ${code || err.message}`)
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
+}
+
+// HO-837: hands the Preflight step to the farm. The payload is the plan the
+// gate will show (artifact, hash, effective runner), the checkout fields
+// Execute gets, the repo's test-login file path, whether a deploy of its
+// target runs now, and each deploy target's last-good tag the plan's
+// `service` entries name — never a secret value. A plan that is gone fails
+// the run; the gate never sees a pass for nothing.
+function dispatchCodeRun(id, stepIndex, runId, attempt) {
+  const step = STEPS[stepIndex]
+  const item = getItem(id)
+  const plan = currentRunPlan(id)
+  const planArtifact = latestArtifact(id, RUN_PLAN_STEP_INDEX)
+  if (!plan || !planArtifact) return failFarmRun(runId, 'Preflight found no run plan — re-run Run plan first')
+  const project =
+    hasNoProject(db, item.project_id)
+      ? null
+      : db.prepare('SELECT id, name, isolation, github_token_ref, run_user FROM project WHERE id = ?').get(item.project_id)
+  const testEnvFile = getRepoTestEnvFile(item.repo)
+  const target = findTargetByRepo(item.repo)
+  farmFetch('/steps/run', {
+    run_id: runId,
+    attempt,
+    artifacts: [],
+    feedback: [],
+    item: { id: item.id, kind: itemKindOf(item), lane: laneOf(item), title: item.title, repo: item.repo, issue: item.issue },
+    step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
+    ...(project ? { project: taskProject(project) } : {}),
+    plan_artifact: planArtifact,
+    plan_hash: plan.hash,
+    runner: plan.runner,
+    ...jobEnvFields(item.repo),
+    ...(testEnvFile ? { test_env_file: testEnvFile } : {}),
+    deploy_running: runningDeployFor(item.repo),
+    ...(target?.stateKey ? { deploy_state_key: target.stateKey } : {}),
+    service_tags: serviceTagsFor(plan.block),
+  }).catch((err) => {
+    if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
+    failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
+  })
+}
+
+// HO-837: {<deploy target key>: <last-good tag or null>} for each `service`
+// entry that names a deploy target on this host. Tags only.
+export function serviceTagsFor(block, statuses = listTargetStatuses) {
+  const names = new Set(
+    (block?.requires || []).filter((entry) => typeof entry?.service?.name === 'string').map((entry) => entry.service.name),
+  )
+  if (names.size === 0) return {}
+  const tags = {}
+  for (const status of statuses()) {
+    if (names.has(status.key)) tags[status.key] = status.lastTag ?? null
+  }
+  return tags
+}
+
+// HO-837: a Preflight result as stored — names and reasons only, each at most
+// PREFLIGHT_TEXT_MAX chars, at most PREFLIGHT_UNMET_MAX items. A missing or
+// malformed result is stored as unmet, never as a pass: the gate refuses it.
+const PREFLIGHT_TEXT_MAX = 200
+const PREFLIGHT_UNMET_MAX = 50
+const RUNNERS = ['host', 'container']
+
+export function sanitizePreflight(result) {
+  const text = (value) => String(value ?? '').slice(0, PREFLIGHT_TEXT_MAX)
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !Array.isArray(result.unmet) || typeof result.passed !== 'boolean') {
+    return { passed: false, runner: null, run_user: null, unmet: [{ kind: 'probe', name: 'preflight', reason: 'no result' }] }
+  }
+  const unmet = result.unmet
+    .filter((u) => u && typeof u === 'object')
+    .slice(0, PREFLIGHT_UNMET_MAX)
+    .map((u) => ({ kind: text(u.kind), name: text(u.name), reason: text(u.reason) }))
+  return {
+    passed: result.passed === true && unmet.length === 0 && result.unmet.length === 0,
+    runner: RUNNERS.includes(result.runner) ? result.runner : null,
+    run_user: typeof result.run_user === 'string' ? text(result.run_user) : null,
+    unmet,
+  }
 }
 
 // Agents whose steps run in the PM lane — derived, so a step moving lanes
@@ -3552,8 +3654,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
 
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
+  // HO-837: Preflight's result, in the same write.
+  const preflight = run.step_index === PREFLIGHT_STEP_INDEX ? JSON.stringify(sanitizePreflight(artifacts?.preflight)) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, verify_open_lines = ?, ended_at = datetime('now') WHERE id = ?",
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, verify_open_lines = ?, preflight_json = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(
     text,
     artifactMd,
@@ -3567,6 +3671,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     verify?.outcome ?? null,
     verify?.executeCause ?? null,
     verify?.openLines ? JSON.stringify(verify.openLines) : null,
+    preflight,
     runId,
   )
   addEvent(id, {
@@ -4095,7 +4200,7 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview } = await behavior(item)
+  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview, preflight } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
   if (failure) {
@@ -4152,6 +4257,10 @@ async function runMockStep(id, stepIndex, runId) {
     "UPDATE step_run SET status = 'done', output = ?, verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(summary, verify?.verdict ?? null, verify?.summary ?? null, verify?.outcome ?? null, verify?.executeCause ?? null, runId)
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
+  // HO-837: stored exactly as the farm path stores one.
+  if (stepIndex === PREFLIGHT_STEP_INDEX) {
+    db.prepare('UPDATE step_run SET preflight_json = ? WHERE id = ?').run(JSON.stringify(sanitizePreflight(preflight)), runId)
+  }
   writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
   addEvent(id, {
     who: agent.label,

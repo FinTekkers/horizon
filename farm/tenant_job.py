@@ -30,7 +30,7 @@ import tempfile
 from pathlib import Path
 
 from domain.py import run_plan
-from farm import config, job_env, login_env, task_job, workspaces
+from farm import config, job_env, job_start, login_env, task_job, workspaces
 
 
 class Refused(Exception):
@@ -59,8 +59,9 @@ def prepare(task: dict) -> dict:
         block = run_plan.extract(task.get("plan_artifact") or "")
     except ValueError:
         raise Refused("the run plan block could not be read") from None
-    if task.get("runner") != "host":
-        raise Refused("tenant jobs run on the host runner only")
+    refusal = job_start.tenant_runner_refusal(task.get("runner"))
+    if refusal:
+        raise Refused(refusal)
     repo = (task.get("item") or {}).get("repo")
     if not isinstance(repo, str) or not repo:
         raise Refused("the task names no item repo")
@@ -69,18 +70,14 @@ def prepare(task: dict) -> dict:
     except (RuntimeError, OSError):
         raise Refused("the run user's task clone could not be prepared") from None
     try:
-        cwd = run_plan.resolve_cwd(clone, block["cwd"], forbid=str(task_job.HORIZON_ROOT))
-        run_plan.resolve_venv(clone, None, forbid=str(task_job.HORIZON_ROOT))
+        # HO-837: the same check Preflight makes before Approve the run.
+        cwd, _ = job_start.resolve_dirs(clone, block["cwd"], runner="host", venv_dir=None, forbid=str(task_job.HORIZON_ROOT))
     except run_plan.CwdRefused as exc:
         raise Refused(str(exc).splitlines()[0] if str(exc) else "cwd refused") from None
-    login: dict[str, str] = {}
-    test_env_file = task.get("test_env_file")
-    if test_env_file:
-        try:
-            login_env.tenant_env_path(test_env_file, (task.get("project") or {}).get("id"))
-            login = login_env.load_login_env(test_env_file, workspace=Path(clone))
-        except login_env.LoginEnvError:
-            raise Refused("tenant test_env_file could not be used") from None
+    try:
+        login = job_start.tenant_login(task.get("test_env_file"), (task.get("project") or {}).get("id"), clone)
+    except login_env.LoginEnvError:
+        raise Refused("tenant test_env_file could not be used") from None
     env_path = config.farm_home() / "jobs" / f"{task['run_id']}.env.json"
     _write_private(
         env_path,

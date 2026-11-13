@@ -48,6 +48,7 @@ const { buildApp } = await import('../src/app.js')
 const { STEPS, requiredStepIndex, kindStepIndex, stepKeyAt, APPROVE_RUN_GATE_INDEX, RUN_PLAN_STEP_INDEX, EXECUTE_STEP_INDEX } =
   await import('../../domain/js/lifecycle.js')
 const { REASON } = await import('../../domain/js/reasons.js')
+const { seedPreflight } = await import('./helpers/preflight.mjs')
 
 store.purgeDemoItems()
 
@@ -108,7 +109,11 @@ const doneRun = (itemId, stepIndex, artifact) =>
   )
 
 // A Task parked at Approve the run, with the planning steps' artifacts on
-// record — or none for the Run plan when `plan` is null.
+// record — or none for the Run plan when `plan` is null. HO-837: and a
+// Preflight that passed for that plan, as the step before the gate leaves.
+// The view without it, for the shape pins below; its own tests are
+// preflight-gate.test.mjs.
+const planView = ({ preflight, ...rest }) => rest
 function seedTask(id, { plan = PLAN, repo = null } = {}) {
   db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, project_id, repo) VALUES (?, ?, 'High', ?, 'task', ?, ?)").run(
     id,
@@ -120,6 +125,7 @@ function seedTask(id, { plan = PLAN, repo = null } = {}) {
   doneRun(id, ASSESS, '## Scripts found\n- scripts/a.sh')
   if (plan !== null) doneRun(id, RUN_PLAN_STEP_INDEX, plan)
   doneRun(id, IMPACT_REVIEW, '## Verdict\n**pass**')
+  if (plan !== null) seedPreflight(db, store, id)
 }
 
 function seedChange(id, cursor) {
@@ -286,6 +292,7 @@ test('a return to Run plan clears the approved hash; re-approving records the NE
   // Run plan re-runs with a different plan and the item is back at the gate.
   const second = planArtifact(['scripts/a.sh'], 5)
   doneRun('T-RESET', RUN_PLAN_STEP_INDEX, second)
+  seedPreflight(db, store, 'T-RESET')
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(APPROVE_RUN_GATE_INDEX, 'T-RESET')
   assert.equal((await approveAs('T-RESET', withSession(PIN))).statusCode, 200)
   assert.equal(row('T-RESET').approved_plan_hash, sha256(second))
@@ -298,7 +305,8 @@ test('race: a newer plan lands after the card loaded — approving the old one i
   const shown = (await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } }))
     .json()
     .items.find((it) => it.id === 'T-RACE')
-  assert.deepEqual(shown.runPlan, { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [] })
+  assert.equal(shown.runPlan.preflight.status, 'passed')
+  assert.deepEqual(planView(shown.runPlan), { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [] })
   assert.equal(shown.approvedPlanHash, null)
 
   doneRun('T-RACE', RUN_PLAN_STEP_INDEX, planArtifact(['scripts/z.sh']))
@@ -336,10 +344,10 @@ test('HZ-491: with no runner, a repo with no image runs on the host and one with
   seedTask('T-491-BARE', { plan: runnerPlan(null), repo: BARE_REPO })
   seedTask('T-491-IMG', { plan: runnerPlan(null), repo: IMAGE_REPO })
   for (let i = 0; i < 2; i += 1) {
-    assert.deepEqual((await loadItem('T-491-BARE')).runPlan, {
+    assert.deepEqual(planView((await loadItem('T-491-BARE')).runPlan), {
       commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [],
     })
-    assert.deepEqual((await loadItem('T-491-IMG')).runPlan, {
+    assert.deepEqual(planView((await loadItem('T-491-IMG')).runPlan), {
       commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'container', imagePinned: true, runnerWarning: null, uncoveredLines: [],
     })
   }

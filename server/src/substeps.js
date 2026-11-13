@@ -29,15 +29,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { STEPS } from '../../domain/js/lifecycle.js'
+import { EXECUTE_STEP_INDEX, IMPLEMENT_STEP_INDEX, STEPS } from '../../domain/js/lifecycle.js'
 import { PROJECTS_DIR, slugify } from './definitions.js'
 import { PERSONAS, isPersona } from './personas.js'
 
 export const SUBSTEP_OUTPUTS = Object.freeze(['artifact', 'golden_cases', 'findings'])
 // Change "Define how we measure success" and Task "How we'll verify".
 export const OPENING_ANCHORS = Object.freeze([1, 17])
-// "Specialist agent implements" and "Execute".
-export const AUDIT_ANCHORS = Object.freeze([11, 24])
+// "Specialist agent implements" and "Execute". HO-837: derived, so an
+// inserted step (Preflight moved Execute from 24 to 25) never repoints one.
+export const AUDIT_ANCHORS = Object.freeze([IMPLEMENT_STEP_INDEX, EXECUTE_STEP_INDEX])
 
 const KIND_RULES = {
   opening: { anchors: OPENING_ANCHORS, outputs: ['artifact', 'golden_cases'] },

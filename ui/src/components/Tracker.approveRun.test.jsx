@@ -35,6 +35,8 @@ const noop = () => {}
 // One return target per gate, as the snapshot lists it (the default one).
 const returnTo = (key, label, redo) => ({ key, label, action: 'return', isDefault: true, redo, reapprovals: [], stopsRunning: false })
 
+const PREFLIGHT_PASSED = { status: 'passed', unmet: [], runner: 'container', runUser: 'ubuntu', checkedAt: '2026-11-12 10:04:11' }
+
 const taskItem = {
   id: 'TK-1',
   title: 'Backfill the ledger',
@@ -49,11 +51,15 @@ const taskItem = {
   events: [],
   stepOutputs: {},
   activeRun: null,
-  runPlan: { commands: 3, budgetMinutes: 20, hash: 'abc123', runner: 'container', imagePinned: true, runnerWarning: null },
+  // HO-837: the server's view of a plan whose Preflight passed.
+  runPlan: { commands: 3, budgetMinutes: 20, hash: 'abc123', runner: 'container', imagePinned: true, runnerWarning: null, preflight: PREFLIGHT_PASSED },
   approvedPlanHash: null,
   moves: servedMoves({
     approve: { key: 'task.approve-run', label: 'Approve the run' },
-    targets: [returnTo('task.run-plan', 'Run plan', 'Redoes 3 steps, from “Run plan” to “Approve the run”.')],
+    targets: [
+      returnTo('task.run-plan', 'Run plan', 'Redoes 3 steps, from “Run plan” to “Approve the run”.'),
+      { ...returnTo('task.preflight', 'Preflight', 'Redoes 1 step, from “Preflight” to “Approve the run”.'), isDefault: false },
+    ],
     canAbandon: true,
     amend: null,
   }),
@@ -221,4 +227,51 @@ test("a Plan's Approve & file card shows the human-only line, no run plan, and b
   const fileItems = getByText('File items').closest('.step-card')
   expect(fileItems.textContent).toContain('Horizon')
   expect(kindStepIndex('File items', 'plan')).toBe(APPROVE_FILE_GATE_INDEX + 1)
+})
+
+// ---- HO-837: the Preflight result on the card ----
+
+const UNMET = {
+  status: 'unmet',
+  runner: 'host',
+  runUser: 'ubuntu',
+  checkedAt: '2026-11-12 10:04:11',
+  unmet: [
+    { kind: 'env', name: 'HORIZON_API_TOKEN', reason: "not set in the job's environment" },
+    { kind: 'file', name: '/etc/horizon/stripe.env', reason: 'not readable by the job user' },
+  ],
+}
+const withPreflight = (preflight) => ({ ...taskItem, runPlan: { ...taskItem.runPlan, runner: 'host', preflight } })
+
+test('an unmet Preflight lists every item by name, disables Approve, and offers Re-run preflight and Send back to Run plan', () => {
+  const onMove = vi.fn()
+  const { container, getByRole } = render(<Harness item={withPreflight(UNMET)} onMove={onMove} />)
+  const card = awaitingCard(container)
+  const rows = [...card.querySelectorAll('[data-testid="preflight-unmet"]')].map((li) => li.textContent)
+  expect(rows).toEqual(["env HORIZON_API_TOKEN — not set in the job's environment", 'file /etc/horizon/stripe.env — not readable by the job user'])
+  expect(card.textContent).toContain('Preflight found 2 unmet prerequisites on host as ubuntu')
+  expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(true)
+  expect(within(card).getByRole('button', { name: 'Approve with comments' }).disabled).toBe(true)
+
+  fireEvent.click(within(card).getByRole('button', { name: 'Re-run preflight' }))
+  expect(onMove).toHaveBeenLastCalledWith('TK-1', 'return', 'task.preflight')
+  fireEvent.click(within(card).getByRole('button', { name: 'Send back to Run plan' }))
+  expect(onMove).toHaveBeenLastCalledWith('TK-1', 'return', 'task.run-plan')
+})
+
+test('a stale or missing Preflight says why and keeps Approve disabled; a passed one enables it and offers no re-run', () => {
+  const { container, getByRole, rerender } = render(<Harness item={withPreflight({ ...UNMET, status: 'stale', unmet: [] })} />)
+  const notReady = () => awaitingCard(container).querySelector('[data-testid="preflight-not-ready"]')
+  expect(notReady().textContent).toContain('Preflight ran for an earlier plan or runner')
+  expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(true)
+
+  rerender(<Harness item={withPreflight({ status: 'missing', unmet: [], runner: null, runUser: null, checkedAt: null })} />)
+  expect(notReady().textContent).toContain('Preflight has not run for this plan yet')
+  expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(true)
+
+  rerender(<Harness item={withPreflight({ ...PREFLIGHT_PASSED, runner: 'host' })} />)
+  expect(notReady()).toBeNull()
+  expect(awaitingCard(container).querySelector('[data-testid="preflight-passed"]').textContent).toBe('✓ Preflight passed on host as ubuntu')
+  expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
+  expect(screen.queryByRole('button', { name: 'Re-run preflight' })).toBeNull()
 })

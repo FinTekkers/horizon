@@ -1,0 +1,49 @@
+{
+  "$comment": "HO-837: Preflight fixture \u2014 every prerequisite holds: passes on the first run. `/__TMP__` is the test's tmp dir; `task` overrides the stamped task fields.",
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "bash -c 'echo run'"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      {
+        "tool": "bash"
+      },
+      {
+        "path": "requirements.txt"
+      },
+      {
+        "precondition": {
+          "kind": "lock_free",
+          "check": "flock -n /__TMP__/pf.lock true"
+        }
+      },
+      {
+        "precondition": {
+          "kind": "artifact_exists",
+          "check": "test -s /__TMP__/upstream/prices.csv"
+        }
+      },
+      {
+        "precondition": {
+          "kind": "no_deploy_running",
+          "check": "pgrep -f deploy-horizon.sh"
+        }
+      },
+      {
+        "service": {
+          "name": "pf-target",
+          "version_cmd": "cat VERSION",
+          "expect": "v1.2.3"
+        }
+      }
+    ]
+  },
+  "task": {
+    "service_tags": {
+      "pf-target": "v1.2.3"
+    }
+  },
+  "expect": null
+}

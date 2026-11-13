@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, knowledge, login_env, pause, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -1177,7 +1177,7 @@ def _is_tenant(task: dict) -> bool:
 
 # HZ-772: a tenant job runs as its run user on the host; rootless containers
 # for a nologin run user are not supported yet.
-TENANT_JOB_HOST_ONLY = "tenant jobs run on the host runner only"
+TENANT_JOB_HOST_ONLY = job_start.TENANT_HOST_ONLY
 
 
 def _tenant_launch_refusal(task: dict) -> str | None:
@@ -1235,6 +1235,21 @@ def _stamp_job_context(task: dict) -> None:
         return
     task["job_env_names"] = sorted(name for name, value in env.items() if value)
     task["job_uid"] = uid
+
+
+def _stamp_preflight_context(task: dict) -> None:
+    """HO-837: what a Preflight task needs from farmd — Execute's env names
+    and uid (_stamp_job_context), whether job runs are on, and whether the
+    repo's deploy target's deploy.lock is held now (None when it could not be
+    read, which Preflight counts as a running deploy). Names and flags only;
+    nothing is written and no lock is taken."""
+    _stamp_job_context(task)
+    task["jobs_enabled"] = _jobs_enabled()
+    if task.get("deploy_state_key"):
+        try:
+            task["deploy_lock_held"] = preflight.deploy_lock_held(task["deploy_state_key"])
+        except OSError:
+            task["deploy_lock_held"] = None
 
 
 def _tenant_spool(task: dict, entry: str = "agent") -> Path:
@@ -1332,6 +1347,11 @@ def _claim_and_launch(task_path, runs_dir: Path, repo_root: Path) -> str | None:
     if task.get("step", {}).get("label") == run_plan_requires.RUN_PLAN_LABEL:
         _stamp_job_context(task)
         _write_task_atomic(claimed, task)
+    # HO-837: Preflight (a code-run step) checks the same env and user, plus
+    # what only farmd can see: its job switch and the target's deploy.lock.
+    elif steps.is_code_run((task.get("item") or {}).get("kind") or "change", task.get("step", {}).get("label")):
+        _stamp_preflight_context(task)
+        _write_task_atomic(claimed, task)
     name = _run_session_name(task)
     # HZ-212: same session naming, same per-run log, fresh interpreter and
     # env on every step. HZ-371: one runner for both lanes — the lane only
@@ -1383,12 +1403,13 @@ def launch_job(task: dict) -> str:
     item_id = task["item"]["id"]
     artifact = task.get("plan_artifact") or ""
     block = run_plan.extract(artifact)
-    cwd = run_plan.resolve_cwd(task.get("repo_dir"), block["cwd"], forbid=str(task_job.HORIZON_ROOT))
     # HZ-431: a venv outside the checkout is refused here too (a CwdRefused).
     # HZ-416: only a host run uses the venv; a container run ignores it.
     # HZ-491: the server's effective runner, never the block's own field.
-    if task["runner"] == "host":
-        run_plan.resolve_venv(task.get("repo_dir"), task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT))
+    # HO-837: the same check Preflight makes before Approve the run.
+    cwd, _ = job_start.resolve_dirs(
+        task.get("repo_dir"), block["cwd"], runner=task["runner"], venv_dir=task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT)
+    )
     login = _job_login_env(task)
     env_values = _resolve_job_env(cwd, block.get("env", {}), login)
     active = QUEUE_DIR / "jobs" / "active"
@@ -2126,7 +2147,7 @@ async def steps_run(request: Request):
             return JSONResponse({"error": "missing plan_artifact or approved_hash"}, status_code=400)
         # HZ-491: the server works out where the job runs and sends it; the
         # farm applies no default, so a job naming no runner is refused.
-        if body.get("runner") not in task_job.RUNNERS:
+        if job_start.runner_refusal(body.get("runner")):
             return JSONResponse({"error": "job_runner_missing"}, status_code=400)
         # HZ-772: a tenant job runs as its run user (launch_tenant_job). One
         # it cannot run that way is refused before the server hears started.

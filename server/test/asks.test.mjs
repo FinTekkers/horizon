@@ -308,14 +308,15 @@ test('the automated review stores asks from its reply too', async () => {
 test('additive schema: step_run and item_split keep exactly the columns they have on main', () => {
   const columns = (table) => db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name)
   // As on main when HZ-728 added the ask table; an item that adds a column
-  // to either table on purpose updates this list.
+  // to either table on purpose updates this list. HO-837: plan_hash and
+  // preflight_json, a Preflight run's result.
   assert.deepEqual(columns('item_split'), [
     'id', 'source_item_id', 'target_repo', 'status', 'payload_json', 'plan_run_id', 'target_issue', 'target_item_id', 'error', 'created_at', 'updated_at',
   ])
   assert.deepEqual(columns('step_run'), [
     'id', 'item_id', 'step_index', 'attempt', 'agent', 'status', 'output', 'started_at', 'ended_at', 'artifact', 'agent_started_at',
     'auto_retry_count', 'provider', 'command_id', 'model', 'scope_json', 'deploy_interrupted', 'rule_blocked', 'job_view', 'substep_id',
-    'checks_ms', 'checks_started_at', 'verdict', 'verdict_summary', 'verify_outcome', 'execute_cause', 'verify_open_lines', 'usage_limit_hit', 'runs_on', 'fallback_from', 'fallback_reset_at',
+    'checks_ms', 'checks_started_at', 'verdict', 'verdict_summary', 'verify_outcome', 'execute_cause', 'verify_open_lines', 'plan_hash', 'preflight_json', 'usage_limit_hit', 'runs_on', 'fallback_from', 'fallback_reset_at',
     'source_shas', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'cost_usd', 'agent_run',
     'test_runs_expected', 'test_runs_stored', 'test_runs_stored_at', 'test_runs_abandoned',
   ])

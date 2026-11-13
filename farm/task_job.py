@@ -42,6 +42,7 @@ from pathlib import Path
 
 from domain.py import run_plan
 from farm import container_runner, db_changes, job_media, job_reports, run_reaper
+from farm import job_start as job_start_checks
 from farm import task_clone as task_clone_mod
 from farm.checks import redact
 
@@ -51,7 +52,8 @@ HORIZON_ROOT = Path(__file__).resolve().parent.parent
 
 # HZ-491: where a job's commands may run. The server sends one with every
 # job (store.js currentRunPlan); this module applies no default of its own.
-RUNNERS = ("host", "container")
+# HO-837: declared once in farm/job_start.py, which Preflight shares.
+RUNNERS = job_start_checks.RUNNERS
 
 
 def plan_hash_of(artifact_md: str) -> str:
@@ -304,8 +306,9 @@ def _run_job(
     commands = list(block["commands"])
     budget_s = int(block["budget_minutes"]) * 60
     # HZ-491: the server's effective runner, required — never a default here.
-    if runner not in RUNNERS:
-        raise ValueError(f"job runner must be one of {', '.join(RUNNERS)}, got {runner!r}")
+    refusal = job_start_checks.runner_refusal(runner)
+    if refusal:
+        raise ValueError(refusal)
 
     # Resume: keep passed commands done, retry everything else.
     prior = load_state(state_path)
@@ -357,10 +360,10 @@ def _run_job(
             # The clone itself must pass the HZ-415 guard before git runs in it.
             run_plan.resolve_cwd(repo_dir, ".", forbid=str(HORIZON_ROOT))
             task_clone_mod.fast_forward(repo_dir)
-        cwd = run_plan.resolve_cwd(repo_dir, plan_cwd, forbid=str(HORIZON_ROOT))
         # HZ-416: a container run ignores the host venv — its binaries do not
         # run in the image — so there is nothing to resolve or refuse here.
-        venv = None if runner == "container" else run_plan.resolve_venv(repo_dir, venv_dir, forbid=str(HORIZON_ROOT))
+        # HO-837: the same check Preflight makes before Approve the run.
+        cwd, venv = job_start_checks.resolve_dirs(repo_dir, plan_cwd, runner=runner, venv_dir=venv_dir, forbid=str(HORIZON_ROOT))
     except run_plan.CwdRefused as exc:
         refusal = str(exc).splitlines()[0] if str(exc) else "cwd refused"
         state = {

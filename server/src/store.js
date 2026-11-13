@@ -31,6 +31,7 @@ import {
   isServerStep,
   RUN_PLAN_STEP_INDEX,
   APPROVE_RUN_GATE_INDEX,
+  PREFLIGHT_STEP_INDEX,
   APPROVE_FILE_GATE_INDEX,
   EXECUTE_STEP_INDEX,
   gateStepIndexes,
@@ -1368,7 +1369,7 @@ export function defaultRunnerFor(repo) {
 // HZ-491: `runner` is the effective runner, worked out here once: the plan's
 // own `runner` wins, else defaultRunnerFor(). Approve the run stores it, and
 // Execute sends it to the farm, which applies no default of its own.
-function currentRunPlan(itemId) {
+export function currentRunPlan(itemId) {
   const artifact = latestArtifact(itemId, RUN_PLAN_STEP_INDEX)
   const block = extractRunPlan(artifact)
   if (!block) return null
@@ -1403,6 +1404,8 @@ function runPlanView(itemId, metric) {
     imagePinned: plan.imagePinned,
     runnerWarning: plan.runner === 'container' && !plan.imagePinned ? NO_IMAGE_WARNING : null,
     uncoveredLines: unprovenLines(plan.block, metric),
+    // HO-837: the newest Preflight run, judged against this plan.
+    preflight: preflightView(preflightState(itemId, plan)),
   }
 }
 
@@ -1427,6 +1430,90 @@ export function approvedPlanCheck(itemId) {
     }
   }
   return { ok: true, hash: approvedHash, runner: plan.runner }
+}
+
+// ---- Preflight (HO-837) ----
+// The newest finished Preflight run of the item (a sub-step row never
+// counts), with the plan hash it was dispatched with and its result.
+const selectLatestPreflight = db.prepare(
+  "SELECT id, plan_hash, preflight_json, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1",
+)
+const selectRunningDeploy = db.prepare(
+  "SELECT target, tag, status FROM deploy_batch WHERE target = ? AND status IN ('publishing','deploying','verifying') ORDER BY id DESC LIMIT 1",
+)
+
+// A deploy of the repo's target running now, or null: a deploy queue batch
+// publishing, deploying or verifying, or — for Horizon's own target — the
+// deploy drain (through the registered block(now) hook, never deployDrain.js
+// itself, which imports this module). Observe-only: the reverse of HZ-408's
+// deploy_hold, which holds a deploy for a run.
+export function runningDeployFor(repo, now = Date.now()) {
+  const target = repo ? findTargetByRepo(repo) : null
+  if (!target) return null
+  const batch = selectRunningDeploy.get(target.key)
+  if (batch) return { target: batch.target, tag: batch.tag ?? null, status: batch.status }
+  if (target.key === 'horizon' && deployDrainProvider.block(now)) return { target: 'horizon', tag: null, status: 'draining' }
+  return null
+}
+
+function parsePreflight(json) {
+  try {
+    const parsed = JSON.parse(json)
+    return parsed && typeof parsed === 'object' && Array.isArray(parsed.unmet) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+// What the newest Preflight run says about `plan`: status 'missing' (no run,
+// or none with a result — an item that reached the gate before the step
+// existed), 'stale' (dispatched for another plan hash or runner), 'unmet' or
+// 'passed'. A deploy running now is unmet too, whatever the run found.
+export function preflightState(itemId, plan = currentRunPlan(itemId)) {
+  const row = selectLatestPreflight.get(itemId, PREFLIGHT_STEP_INDEX)
+  const result = row?.preflight_json ? parsePreflight(row.preflight_json) : null
+  if (!row || !result) return { status: 'missing', unmet: [], runner: null, runUser: null, checkedAt: row?.ended_at ?? null, hash: row?.plan_hash ?? null }
+  const base = { runner: result.runner ?? null, runUser: result.run_user ?? null, checkedAt: row.ended_at, hash: row.plan_hash ?? null }
+  // A result with no runner is the stored "no result" (sanitizePreflight): unmet, never stale.
+  if (!plan || row.plan_hash !== plan.hash || (result.runner != null && result.runner !== plan.runner)) {
+    return { ...base, status: 'stale', unmet: [] }
+  }
+  const unmet = result.unmet.map((u) => ({ kind: String(u.kind), name: String(u.name), reason: String(u.reason) }))
+  if (result.runner == null && unmet.length === 0) unmet.push({ kind: 'probe', name: 'preflight', reason: 'the result named no runner' })
+  const repo = db.prepare('SELECT repo FROM work_item WHERE id = ?').get(itemId)?.repo ?? null
+  const deploy = runningDeployFor(repo)
+  if (deploy && !unmet.some((u) => u.kind === 'deploy')) {
+    unmet.push({ kind: 'deploy', name: deploy.target, reason: `a deploy of ${deploy.target}${deploy.tag ? ` ${deploy.tag}` : ''} is ${deploy.status}` })
+  }
+  return { ...base, status: result.passed === true && unmet.length === 0 ? 'passed' : 'unmet', unmet }
+}
+
+// The card's copy of it: names and reasons only.
+function preflightView(state) {
+  return { status: state.status, unmet: state.unmet, runner: state.runner, runUser: state.runUser, checkedAt: state.checkedAt }
+}
+
+// The Approve the run bind: { ok } only when the newest Preflight passed for
+// the plan on record; else the refusal the PIN gets.
+export function preflightCheck(itemId, plan = currentRunPlan(itemId)) {
+  const state = preflightState(itemId, plan)
+  if (state.status === 'passed') return { ok: true }
+  if (state.status === 'missing') return { error: 'preflight_missing' }
+  if (state.status === 'stale') {
+    return {
+      error: 'preflight_stale',
+      preflightHash: state.hash,
+      currentHash: plan?.hash ?? null,
+      preflightRunner: state.runner,
+      runner: plan?.runner ?? null,
+    }
+  }
+  return { error: 'preflight_unmet', unmet: state.unmet }
+}
+
+const PREFLIGHT_REFUSALS = {
+  preflight_missing: 'Preflight has not run for this plan',
+  preflight_stale: 'the plan changed since Preflight ran',
 }
 
 // ---- artifact version history (HZ-46) ----
@@ -2765,6 +2852,26 @@ export function approveGate(
     // HZ-491: the runner the card showed, so an image pinned or cleared
     // since the load is not approved unseen.
     if (runner != null && runner !== plan.runner) return { error: 'run_plan_changed' }
+    // HO-837: after the PIN proof, so a valid PIN is refused too until the
+    // newest Preflight passed for this plan and runner.
+    const preflight = preflightCheck(id, plan)
+    if (preflight.error) {
+      const why =
+        preflight.error === 'preflight_unmet'
+          ? `Preflight has ${preflight.unmet.length} unmet prerequisite${preflight.unmet.length === 1 ? '' : 's'} (${preflight.unmet
+              .map((u) => `${u.kind} ${u.name}`)
+              .join(', ')
+              .slice(0, 300)})`
+          : PREFLIGHT_REFUSALS[preflight.error]
+      addEvent(id, {
+        who: actor,
+        text: `could not approve “${STEPS[stepIndex].label}”: ${why} — the gate stays open`,
+        color: '#9C333E',
+        initials: '✕',
+      })
+      notify()
+      return preflight
+    }
     approvedHash = plan.hash
     approvedRunner = plan.runner
   }

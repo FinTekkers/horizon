@@ -1,0 +1,22 @@
+{
+  "$comment": "HO-837: Preflight fixture \u2014 the server named no runner (Execute's job_runner_missing). `/__TMP__` is the test's tmp dir; `task` overrides the stamped task fields.",
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "bash -c 'echo run'"
+    ],
+    "budget_minutes": 5,
+    "requires": [
+      {
+        "tool": "bash"
+      }
+    ]
+  },
+  "task": {
+    "runner": null
+  },
+  "expect": {
+    "kind": "runner",
+    "name": "none"
+  }
+}

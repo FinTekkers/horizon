@@ -15,6 +15,9 @@ import {
   itemKindOf,
   isHumanOnlyGate,
   APPROVE_RUN_GATE_INDEX,
+  PREFLIGHT_STEP_INDEX,
+  RUN_PLAN_STEP_INDEX,
+  stepKeyAt,
   APPROVE_FILE_GATE_INDEX,
   PLAN_DRAFT_STEP_INDEX,
   FILE_ITEMS_STEP_INDEX,
@@ -162,6 +165,56 @@ function runPlanSummary(runPlan) {
   if (!runPlan) return 'Run plan: not found'
   const commands = `${runPlan.commands} command${runPlan.commands === 1 ? '' : 's'}`
   return `Run plan: ${commands} · budget ${runPlan.budgetMinutes} min · ${runnerLabel(runPlan)}`
+}
+
+// HO-837: what the newest Preflight run says about the plan on the card
+// (server/src/store.js preflightState). Approve the run is offered only while
+// it says `passed`; the server refuses the PIN otherwise anyway.
+const PREFLIGHT_NOT_READY = {
+  missing: 'Preflight has not run for this plan yet — re-run it before approving.',
+  stale: 'Preflight ran for an earlier plan or runner — re-run it before approving.',
+}
+
+// The two moves the card offers while Preflight blocks, by step key.
+const PREFLIGHT_KEY = stepKeyAt(PREFLIGHT_STEP_INDEX)
+const RUN_PLAN_KEY = stepKeyAt(RUN_PLAN_STEP_INDEX)
+
+function preflightPassed(item) {
+  return item.runPlan?.preflight?.status === 'passed'
+}
+
+function PreflightStatus({ preflight }) {
+  if (!preflight) return null
+  if (preflight.status === 'passed') {
+    return (
+      <div className="step-card__preflight" data-testid="preflight-passed" style={{ color: 'var(--success-ink, var(--muted))' }}>
+        ✓ Preflight passed on {preflight.runner} as {preflight.runUser}
+      </div>
+    )
+  }
+  if (preflight.status === 'unmet') {
+    return (
+      <div className="step-card__preflight step-card__run-plan-warning" style={{ color: 'var(--danger-ink)' }}>
+        <div>
+          ✕ Preflight found {preflight.unmet.length} unmet prerequisite{preflight.unmet.length === 1 ? '' : 's'}
+          {preflight.runner ? ` on ${preflight.runner}` : ''}
+          {preflight.runUser ? ` as ${preflight.runUser}` : ''} — fix the host, then re-run Preflight:
+        </div>
+        <ul className="step-card__preflight-unmet">
+          {preflight.unmet.map((u, i) => (
+            <li key={`${u.kind}:${u.name}:${i}`} data-testid="preflight-unmet">
+              {u.kind} <code>{u.name}</code> — {u.reason}
+            </li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
+  return (
+    <div className="step-card__preflight step-card__run-plan-warning" data-testid="preflight-not-ready" style={{ color: 'var(--danger-ink)' }}>
+      ⚠ {PREFLIGHT_NOT_READY[preflight.status] ?? PREFLIGHT_NOT_READY.missing}
+    </div>
+  )
 }
 
 // HZ-185: why a forward to Accept the code didn't go through, keyed by the
@@ -420,6 +473,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // HZ-815: the videos and images the Execute run stored, played inline on
   // Execute, Verify & report and Review & close.
   const media = status !== 'pending' && TASK_MEDIA_STEP_INDEXES.has(index) ? stepOutputs?.[EXECUTE_STEP_INDEX]?.job?.media : null
+  // HO-837: Approve the run waits for a passing Preflight for this plan.
+  const preflightBlocks = index === APPROVE_RUN_GATE_INDEX && !!item.runPlan && !preflightPassed(item)
   const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
   const retryHere = retryTarget(item)?.step === st.key
   const canReturn = returnTargets(item).length > 0
@@ -552,6 +607,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   {item.runPlan.uncoveredLines.length === 1 ? 'has' : 'have'} no proof
                 </div>
               )}
+              {/* HO-837: the plan's prerequisites on the real runner. */}
+              {index === APPROVE_RUN_GATE_INDEX && item.runPlan && <PreflightStatus preflight={item.runPlan.preflight} />}
             </div>
           )}
           {goldenCases && (
@@ -720,7 +777,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   {!goldenPending && (
                     <button
                       className="btn-gate-approve"
-                      disabled={gateBusy}
+                      disabled={gateBusy || preflightBlocks}
                       aria-busy={gateBusy || undefined}
                       onClick={() => onApprove(item.id, st.label)}
                     >
@@ -729,12 +786,33 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   )}
                   <button
                     className="btn-gate-feedback"
-                    disabled={gateBusy}
+                    disabled={gateBusy || preflightBlocks}
                     aria-busy={gateBusy || undefined}
                     onClick={() => onApproveWithComments(item.id, st.label)}
                   >
                     Approve with comments
                   </button>
+                  {/* HO-837: after a host fix, Preflight runs again; or the plan goes back. */}
+                  {preflightBlocks && returnTargets(item).some((t) => t.key === PREFLIGHT_KEY) && (
+                    <button
+                      className="btn-gate-reject"
+                      disabled={gateBusy}
+                      aria-busy={gateBusy || undefined}
+                      onClick={() => onMove(item.id, 'return', PREFLIGHT_KEY)}
+                    >
+                      Re-run preflight
+                    </button>
+                  )}
+                  {preflightBlocks && returnTargets(item).some((t) => t.key === RUN_PLAN_KEY) && (
+                    <button
+                      className="btn-gate-reject"
+                      disabled={gateBusy}
+                      aria-busy={gateBusy || undefined}
+                      onClick={() => onMove(item.id, 'return', RUN_PLAN_KEY)}
+                    >
+                      Send back to Run plan
+                    </button>
+                  )}
                   {/* HO-844: only while the server offers it — a Task at
                       Review & close whose Verify found missing proof. */}
                   {index === TASK_REVIEW_CLOSE_GATE_INDEX && item.acceptWithExceptions && onAcceptWithExceptions && (

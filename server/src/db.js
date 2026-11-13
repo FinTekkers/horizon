@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { reconcileGoogleUsers } from './loginAllowlist.js'
 import { ensureUnlinkedProject, runMembershipMigration } from './membership.js'
 import { ADMIN_EMAIL, ADMIN_EMAILS } from './config.js'
-import { ACCEPT_GATE_INDEX, endIndex, gateStepIndexes, IMPLEMENT_ITEM_KIND, ITEM_KINDS, itemKindOf } from '../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX, endIndex, gateStepIndexes, IMPLEMENT_ITEM_KIND, ITEM_KINDS, itemKindOf, PREFLIGHT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
 
 const DB_PATH =
@@ -711,6 +711,18 @@ try {
   db.exec('ALTER TABLE step_run ADD COLUMN verify_open_lines TEXT')
 } catch {
   // column already exists
+}
+// HO-837: a Preflight run's result. plan_hash is the hash of the Run plan
+// artifact the server dispatched it with (written at dispatch, never by the
+// farm); preflight_json is {passed, runner, run_user, unmet: [{kind, name,
+// reason}]} — names and reasons only, never a value. NULL on every other run
+// and on every row from before. Read through idx_step_run_item.
+for (const column of ['plan_hash TEXT', 'preflight_json TEXT']) {
+  try {
+    db.exec(`ALTER TABLE step_run ADD COLUMN ${column}`)
+  } catch {
+    // column already exists
+  }
 }
 // HZ-422: usage limits. A run that hit one (usage_limit_hit) is `cancelled` like
 // a deploy stop and keeps its attempt; the run that replaced it on the next
@@ -1870,6 +1882,112 @@ if (!shiftedReview) {
     db.prepare("INSERT INTO setting (key, value) VALUES ('pipeline_v3_review_shift', 'done')").run()
   })()
 }
+
+// HO-837: the Preflight step (task.preflight) is inserted before Approve the
+// run, so every position from it on moves up by one — work_item.cursor and
+// notified_step, every step_index and gate_index column, the step-index
+// keys of the provider-choice JSON and each stored sub-step's anchor. Same shape and atomicity trick as the
+// shifts above: the setting INSERT is the last statement. On a fresh database
+// it shifts nothing (there are no rows yet). notified_step moves with the
+// cursor it recorded, so a parked item reads as already notified at its moved
+// gate — the hazard baselineNotifiedStep (below) absorbs for the older shifts,
+// fixed exactly here instead of re-marking every item now at a gate.
+export const PREFLIGHT_SHIFT_SETTING = 'pipeline_v4_preflight_shift'
+
+// The step-index-keyed JSON columns: {"<step index>": ...} objects that no
+// column scan can find, so they are listed by hand. HZ-357 / HZ-370.
+const INDEX_KEYED_JSON = [
+  ['work_item', 'provider_choices_json'],
+  ['project', 'provider_defaults_json'],
+]
+
+// Every key >= from moves by `delta`; anything that is not an object of
+// numeric keys is left as it is.
+export function shiftIndexKeys(json, from, delta) {
+  if (typeof json !== 'string' || !json) return json
+  let parsed
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return json
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json
+  const out = {}
+  for (const [key, value] of Object.entries(parsed)) {
+    const index = /^\d+$/.test(key) ? Number(key) : null
+    out[index !== null && index >= from ? String(index + delta) : key] = value
+  }
+  return JSON.stringify(out)
+}
+
+// work_item.substeps_json (HZ-538) is a JSON array of sub-step definitions,
+// each naming its anchor step by position: an anchor >= from moves by `delta`.
+export function shiftSubstepAnchors(json, from, delta) {
+  if (typeof json !== 'string' || !json) return json
+  let parsed
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return json
+  }
+  if (!Array.isArray(parsed)) return json
+  let moved = false
+  const out = parsed.map((sub) => {
+    if (!sub || typeof sub !== 'object' || !Number.isInteger(sub.anchor) || sub.anchor < from) return sub
+    moved = true
+    return { ...sub, anchor: sub.anchor + delta }
+  })
+  return moved ? JSON.stringify(out) : json
+}
+
+// The (table, column) pairs holding a step position: every step_index and
+// gate_index column, found at run time.
+function indexColumns(database) {
+  const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
+  const found = []
+  for (const { name } of tables) {
+    for (const column of database.prepare(`PRAGMA table_info(${JSON.stringify(name)})`).all()) {
+      if (column.name === 'step_index' || column.name === 'gate_index') found.push([name, column.name])
+    }
+  }
+  return found
+}
+
+// Moves every stored step position >= `from` up by one. Exported for its test
+// and the rollback's (infra/host/DEPLOY.md runs the reverse by hand).
+export function shiftStepPositions(database, from) {
+  database.prepare('UPDATE work_item SET cursor = cursor + 1 WHERE cursor >= ?').run(from)
+  database.prepare('UPDATE work_item SET notified_step = notified_step + 1 WHERE notified_step >= ?').run(from)
+  for (const [table, column] of indexColumns(database)) {
+    database.prepare(`UPDATE ${JSON.stringify(table)} SET ${column} = ${column} + 1 WHERE ${column} >= ?`).run(from)
+  }
+  for (const [table, column] of INDEX_KEYED_JSON) {
+    const rows = database.prepare(`SELECT rowid AS rid, ${column} AS json FROM ${table} WHERE ${column} IS NOT NULL`).all()
+    const write = database.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`)
+    for (const row of rows) {
+      const next = shiftIndexKeys(row.json, from, 1)
+      if (next !== row.json) write.run(next, row.rid)
+    }
+  }
+  const substeps = database.prepare('SELECT id, substeps_json AS json FROM work_item WHERE substeps_json IS NOT NULL').all()
+  const writeSubsteps = database.prepare('UPDATE work_item SET substeps_json = ? WHERE id = ?')
+  for (const row of substeps) {
+    const next = shiftSubstepAnchors(row.json, from, 1)
+    if (next !== row.json) writeSubsteps.run(next, row.id)
+  }
+}
+
+export function runPreflightShift(database = db) {
+  if (database.prepare('SELECT value FROM setting WHERE key = ?').get(PREFLIGHT_SHIFT_SETTING)) return false
+  const from = PREFLIGHT_STEP_INDEX
+  database.transaction(() => {
+    shiftStepPositions(database, from)
+    database.prepare('INSERT INTO setting (key, value) VALUES (?, ?)').run(PREFLIGHT_SHIFT_SETTING, 'done')
+  })()
+  return true
+}
+
+runPreflightShift(db)
 
 // HZ-654: project membership, roles and per-user active project, and every
 // work_item onto a project (membership.js). Once-only and one transaction;
