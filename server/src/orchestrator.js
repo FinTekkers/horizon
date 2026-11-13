@@ -43,7 +43,7 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines, criteriaLines } from '../../domain/js/fields.js'
-import { DB_CHANGES_RULES, TASK_MEDIA_RULES, circularProofs, validTableName } from '../../domain/js/runPlan.js'
+import { DB_CHANGES_RULES, TASK_MEDIA_RULES, circularProofs, contractGaps, validTableName } from '../../domain/js/runPlan.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { isCommitSha } from '../../domain/js/codeRefs.js'
 import { ingestDraft } from './planDraft.js'
@@ -1862,21 +1862,44 @@ function sendBackTo(id, stepIndex, { feedback, fix = null, event, source = 'ui' 
 // Reject with feedback.
 export const IMPACT_SENDBACK_SOURCE = 'impact-review'
 
-// What Impact review's `circular_proofs` does to the item: null when it
-// flagged no line (or sent a shape domain/js/runPlan.js refuses — the farm
-// checked it already), else the flagged lines, the feedback naming each, and
-// whether the cap still allows a send-back.
-export function impactSendBack(id, raw, metric) {
-  const circular = circularProofs(raw, metric) ?? []
-  if (circular.length === 0) return null
-  const lines = circular.map((entry) => entry.line)
-  const named = `${lines.length === 1 ? 'line' : 'lines'} ${lines.join(', ')}`
-  const feedback = [
-    `Impact review found a circular proof for metric ${named}. Each proof below only reads back what the same run wrote. Prove the line from an independent source (the published figure, a different service or a stored fixture), or mark it manual.`,
-    ...circular.map((entry) => `- Line ${entry.line}: ${entry.reason}`),
-  ].join('\n')
+// What Impact review's `circular_proofs` and HO-836's `contract_gaps` do to
+// the item: null when neither flags anything (or each sent a shape
+// domain/js/runPlan.js refuses — the farm checked it already), else one
+// feedback naming each flagged line and each gap with its command index,
+// what was found (for the events), and whether the cap still allows a
+// send-back. Both kinds share IMPACT_SENDBACK_CAP: it counts every row with
+// this source. A gap names only a tool or a host, never a command's text.
+export function impactSendBack(id, artifacts, metric) {
+  const circular = circularProofs(artifacts?.circular_proofs, metric) ?? []
+  const gaps = contractGaps(artifacts?.contract_gaps) ?? []
+  if (circular.length === 0 && gaps.length === 0) return null
+  const found = []
+  const sections = []
+  if (circular.length) {
+    const lines = circular.map((entry) => entry.line)
+    const named = `${lines.length === 1 ? 'line' : 'lines'} ${lines.join(', ')}`
+    found.push(`a circular proof for metric ${named}`)
+    sections.push(
+      [
+        `Impact review found a circular proof for metric ${named}. Each proof below only reads back what the same run wrote. Prove the line from an independent source (the published figure, a different service or a stored fixture), or mark it manual.`,
+        ...circular.map((entry) => `- Line ${entry.line}: ${entry.reason}`),
+      ].join('\n'),
+    )
+  }
+  if (gaps.length) {
+    const commands = [...new Set(gaps.map((gap) => gap.command))]
+    found.push(
+      `${gaps.length} undeclared ${gaps.length === 1 ? 'tool or service' : 'tools or services'} in ${commands.length === 1 ? 'command' : 'commands'} ${commands.join(', ')}`,
+    )
+    sections.push(
+      [
+        "Impact review found tools or services the run plan's `requires` does not declare. Declare each one in `requires` (a tool as {\"tool\": \"<name>\"}, a host as a `service` entry whose `name` is the host), or change the command.",
+        ...gaps.map((gap) => `- Command ${gap.command}: ${gap.kind} ${gap.name}`),
+      ].join('\n'),
+    )
+  }
   const sent = db.prepare('SELECT COUNT(*) AS n FROM feedback WHERE item_id = ? AND source = ?').get(id, IMPACT_SENDBACK_SOURCE).n
-  return { lines, named, feedback, sent, capped: sent >= IMPACT_SENDBACK_CAP }
+  return { found: found.join(' and '), feedback: sections.join('\n\n'), sent, capped: sent >= IMPACT_SENDBACK_CAP }
 }
 
 // HZ-379: the hold in kick() above. One check per item at a time; a check
@@ -3519,8 +3542,11 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
 
   // HZ-770: a circular proof sends the plan back to Run plan before Approve
   // the run, naming each line, up to IMPACT_SENDBACK_CAP times; after that
-  // the item goes on to the gate and a human decides.
-  const circular = run.step_index === IMPACT_REVIEW_STEP_INDEX ? impactSendBack(id, artifacts?.circular_proofs, item.metric) : null
+  // the item goes on to the gate and a human decides. HO-836: so does a
+  // contract gap, naming each with its command index, under the same cap.
+  // Only a Task is audited.
+  const impact =
+    run.step_index === IMPACT_REVIEW_STEP_INDEX && itemKindOf(item) === 'task' ? impactSendBack(id, artifacts, item.metric) : null
 
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
@@ -3549,13 +3575,13 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     detail: verify?.summary ?? null,
     verdict: verify?.verdict ?? null,
   })
-  if (circular && !circular.capped) {
+  if (impact && !impact.capped) {
     sendBackTo(id, RUN_PLAN_STEP_INDEX, {
-      feedback: circular.feedback,
+      feedback: impact.feedback,
       source: IMPACT_SENDBACK_SOURCE,
       event: {
         who: 'Horizon',
-        text: `Impact review found a circular proof for metric ${circular.named} (send-back ${circular.sent + 1}/${IMPACT_SENDBACK_CAP}) — sent back to “${STEPS[RUN_PLAN_STEP_INDEX].label}”`,
+        text: `Impact review found ${impact.found} (send-back ${impact.sent + 1}/${IMPACT_SENDBACK_CAP}) — sent back to “${STEPS[RUN_PLAN_STEP_INDEX].label}”`,
         color: '#DFA200',
         initials: 'HZ',
       },
@@ -3564,10 +3590,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
     // back to (store.js requestChanges).
     writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
-    if (circular) {
+    if (impact) {
       addEvent(id, {
         who: 'Horizon',
-        text: `Impact review still finds a circular proof for metric ${circular.named}, but the send-back cap (${IMPACT_SENDBACK_CAP}) is reached — a human decides at the gate`,
+        text: `Impact review still finds ${impact.found}, but the send-back cap (${IMPACT_SENDBACK_CAP}) is reached — a human decides at the gate`,
         color: '#9C333E',
         initials: 'HZ',
       })

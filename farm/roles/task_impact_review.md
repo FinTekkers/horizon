@@ -29,6 +29,13 @@ Run plan before Approve the run, naming each line. Leave the list empty
 when every proof reads an independent source. Flag only a circular proof
 here; a weak one stays a **concerns** note in `## Proof`.
 
+Horizon audits the plan's contract itself. It reads each command for the
+tools it calls and the hosts it reaches, and lists each one `requires` does
+not declare in `contract_gaps`, with its command index. It then sends the
+plan back to Run plan before Approve the run, as it does for a circular
+proof. Never return a `contract_gaps` key: Horizon drops it. You may still
+name an undeclared service under `## Load` or `## Rate limits`.
+
 You have read-only access. Never run a script or command, against live
 systems or anywhere else. Nothing you write here is executed.
 

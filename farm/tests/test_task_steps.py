@@ -43,18 +43,27 @@ def task_index(label: str) -> int:
     return steps.by_kind_label("task", label)["index"]
 
 
-def make_task(label: str, *, kind="task", index=None, repo=None, provider_choices=None) -> dict:
+def run_plan_artifact(block: dict) -> dict:
+    """A prior Run plan artifact, as the server sends it: the validated
+    block rendered at the end (step_agent appends it the same way)."""
+    return {"label": step_agent.RUN_PLAN_LABEL, "content": f"## Run plan\nbody\n\n## Run plan block\n{run_plan.render(block)}"}
+
+
+def make_task(label: str, *, kind="task", index=None, repo=None, provider_choices=None, plan=VALID_PLAN) -> dict:
+    """HO-836: a Task's Impact review reads the prior Run plan block, so it
+    carries one (`plan`; None for none)."""
     item = {"id": "T-383", "title": "Backfill", "desc": "Run the backfill", "priority": "High", "repo": repo}
     if kind is not None:
         item["kind"] = kind
     if provider_choices:
         item["providerChoices"] = provider_choices
+    artifacts = [run_plan_artifact(plan)] if label == step_agent.IMPACT_REVIEW_LABEL and plan is not None else []
     return {
         "run_id": 383,
         "attempt": 1,
         "item": item,
         "step": {"index": task_index(label) if index is None else index, "label": label},
-        "artifacts": [],
+        "artifacts": artifacts,
         "feedback": [],
     }
 
@@ -665,6 +674,48 @@ def test_impact_review_passes_flagged_circular_proofs_through(monkeypatch):
     with pytest.raises(AgentError, match="metric line 9"):
         step_agent.execute(task)
     assert len(calls) == 2
+
+
+# ---- HO-836: Impact review's contract audit ----
+
+GAPPED_PLAN = {
+    **VALID_PLAN,
+    "commands": ["./backfill.sh --dry-run", "cat out.csv | jq .", "curl -H 'Authorization: Bearer x' https://u:p@api.example.com/x?token=abc"],
+    "requires": [{"tool": "curl"}],
+}
+GAPPED = [
+    {"kind": "tool", "name": "cat", "command": 2},
+    {"kind": "tool", "name": "jq", "command": 2},
+    {"kind": "service", "name": "api.example.com", "command": 3},
+]
+
+
+def test_a_fully_declared_plan_gets_no_contract_gaps_and_one_agent_call(monkeypatch):
+    """Metric 5, the farm half: the scan finds nothing, so no key — and a
+    `contract_gaps` the agent invents is dropped, never passed on."""
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.IMPACT_REVIEW_LABEL, contract_gaps=GAPPED)])
+    result = step_agent.execute(make_task(step_agent.IMPACT_REVIEW_LABEL))
+    assert len(calls) == 1
+    assert "contract_gaps" not in result.get("artifacts", {})
+
+
+def test_the_scans_gaps_ride_through_and_the_log_names_only_kind_name_and_index(monkeypatch, capsys):
+    """Metric 4, the farm half; guardrail 4 for the log."""
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.IMPACT_REVIEW_LABEL, contract_gaps=[{"kind": "tool", "name": "zz", "command": 1}])])
+    result = step_agent.execute(make_task(step_agent.IMPACT_REVIEW_LABEL, plan=GAPPED_PLAN))
+    assert len(calls) == 1
+    assert result["artifacts"]["contract_gaps"] == GAPPED
+    out = capsys.readouterr()
+    assert "3 contract gaps (tool cat @2, tool jq @2, service api.example.com @3)" in out.out
+    for secret in ("u:p", "token=", "Bearer", "curl -H"):
+        assert secret not in out.out + out.err
+
+
+def test_impact_review_with_no_run_plan_block_fails_before_any_agent_call(monkeypatch):
+    calls = stub_agent(monkeypatch, [reply_for(step_agent.IMPACT_REVIEW_LABEL)])
+    with pytest.raises(AgentError, match="Run plan artifact"):
+        step_agent.execute(make_task(step_agent.IMPACT_REVIEW_LABEL, plan=None))
+    assert calls == []
 
 
 # ---- guardrail 4: secrets are references only ----

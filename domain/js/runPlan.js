@@ -329,3 +329,28 @@ export function circularProofs(value, metric) {
   })
   return valid ? [...value].sort((a, b) => a.line - b.line) : null
 }
+
+// HO-836: Impact review's `contract_gaps` — each tool or host a plan's
+// commands reach that its `requires` does not declare, as the farm's static
+// scan reports them (farm/run_plan_requires.py contract_gaps()). [] for none
+// (no key or an empty list), or null for a bad shape: an unknown kind, a name
+// a `tool` or `service` entry could not hold (so no command text can ride
+// through), or a `command` that is not a 1-based index. Sorted by command,
+// then kind, then name.
+const GAP_NAME = { tool: TOOL_NAME, service: SERVICE_NAME }
+
+export function contractGaps(value) {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value)) return null
+  const valid = value.every(
+    (entry) =>
+      exactKeys(entry, ['kind', 'name', 'command']) &&
+      typeof entry.kind === 'string' &&
+      Object.hasOwn(GAP_NAME, entry.kind) &&
+      typeof entry.name === 'string' &&
+      GAP_NAME[entry.kind].test(entry.name) &&
+      whole(entry.command),
+  )
+  if (!valid) return null
+  return [...value].sort((a, b) => a.command - b.command || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
+}

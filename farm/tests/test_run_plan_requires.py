@@ -479,7 +479,7 @@ def test_no_value_or_file_content_reaches_the_gaps_the_feedback_the_log_or_the_p
 # ---- metric 5: the stored plans that failed in preflight ----
 
 
-@pytest.mark.parametrize("name", ["hz514", "hz532", "hz533", "hz700-a5"])
+@pytest.mark.parametrize("name", ["hz514", "hz532", "hz533", "hz700-a5", "hz836-jq-psql"])
 def test_each_committed_plan_fixture_holds_no_literal_secret(name):
     text = (FIXTURES / f"{name}.json").read_text()
     assert run_plan.literal_secrets(text) == []
@@ -714,3 +714,157 @@ def test_a_full_v2_plan_finishes_run_plan_and_the_card_reads_it(monkeypatch, rep
         ["node", "--input-type=module", "-e", script], cwd=REPO_ROOT, input=artifact, capture_output=True, text=True, check=True
     )
     assert json.loads(out.stdout) == plan
+
+
+# ---- HO-836: the contract audit — undeclared tools and hosts ----
+
+SHARED_GAPS = json.loads((REPO_ROOT / "domain" / "fixtures" / "contract-gaps-cases.json").read_text())
+API_SERVICE = {"service": {"name": "api.example.com", "version_cmd": "curl -fsS https://api.example.com/health", "expect": "ok"}}
+REDACTED_URL = "curl -H 'Authorization: Bearer x' https://u:p@api.example.com/x?token=abc"
+
+
+def gaps_of(*commands, requires=()):
+    """contract_gaps() of a plan with these commands, as (kind, name, command)."""
+    block = run_plan.validate({**VALID_PLAN, "commands": list(commands), "requires": list(requires)})
+    return [(gap["kind"], gap["name"], gap["command"]) for gap in run_plan_requires.contract_gaps(block)]
+
+
+def test_a_stored_plan_calling_jq_or_psql_flags_each_until_declared():
+    """Metric 1. No stored Run plan calls `jq` or `psql`, so
+    hz836-jq-psql.json is the stored hz532 plan, unchanged, with two
+    commands added: `jq` at 13 and `psql` at 14. It is read back the way
+    Impact review reads it: rendered into an artifact, then run_plan.extract()."""
+    plan = fixture_plan("hz836-jq-psql")
+    assert plan["commands"][:12] == fixture_plan("hz532")["commands"]
+
+    def replay(requires):
+        artifact = f"## Run plan\n\n## Run plan block\n{run_plan.render({**plan, 'requires': requires})}"
+        gaps = run_plan_requires.contract_gaps(run_plan.extract(artifact))
+        return [(gap["kind"], gap["name"], gap["command"]) for gap in gaps]
+
+    stored = plan["requires"]
+    hosts = [("service", "www.fintekkers.org", 1), ("service", "www.fintekkers.org", 11)]
+    assert replay(stored) == [*hosts, ("tool", "jq", 13), ("tool", "psql", 14)]
+    assert replay([*stored, {"tool": "jq"}]) == [*hosts, ("tool", "psql", 14)]
+    assert replay([*stored, {"tool": "jq"}, {"tool": "psql"}]) == hosts
+    site = {"service": {"name": "www.fintekkers.org", "version_cmd": "curl -sI https://www.fintekkers.org/", "expect": "HTTP/2 200"}}
+    assert replay([*stored, {"tool": "jq"}, {"tool": "psql"}, site]) == []
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("cat f | jq .", [("tool", "cat", 1), ("tool", "jq", 1)]),
+        ("cd x && psql", [("tool", "psql", 1)]),
+        ("true; jq .", [("tool", "jq", 1)]),
+        ("ls | xargs psql", [("tool", "ls", 1), ("tool", "xargs", 1), ("tool", "psql", 1)]),
+    ],
+)
+def test_tools_after_each_separator_are_flagged_and_builtins_never_are(command, expected):
+    """Metric 2: the full list, with the command's index — never a word
+    after the tool (`.`, `f`, `x`), never a builtin."""
+    assert gaps_of("./prepare.sh", command) == [(kind, name, 2) for kind, name, _ in expected]
+
+
+def test_every_listed_builtin_is_never_a_gap():
+    """Metric 2: cd, echo, export, set, test, [ and true."""
+    for name in ("cd", "echo", "export", "set", "test", "[", "true"):
+        assert name in run_plan_requires.SHELL_BUILTINS
+    assert gaps_of("echo hi; export A=1; set -e; test -f x; [ -f x ]; true; cd x") == []
+
+
+def test_a_url_host_is_flagged_until_a_service_entry_declares_it():
+    """Metric 3."""
+    command = "curl https://api.example.com/x"
+    assert gaps_of("./prepare.sh", command, requires=[{"tool": "curl"}]) == [("service", "api.example.com", 2)]
+    assert gaps_of("./prepare.sh", command, requires=[{"tool": "curl"}, API_SERVICE]) == []
+
+
+def test_a_declared_service_passes_validate_and_check_and_is_never_probed(repo, probes):
+    """Metric 3: a plan whose host is declared reaches Impact review — Run
+    plan's check skips the `service` entry and never probes it."""
+    block = run_plan.validate({**VALID_PLAN, "cwd": "sub", "env": {}, "commands": ["curl https://api.example.com/x"], "requires": [API_SERVICE]})
+    kwargs = dict(repo_dir=str(repo), venv_dir=None, runner="host", container_image=None, forbid=str(REPO_ROOT))
+    assert run_plan_requires.check(block, **kwargs) == []
+    assert probes == []
+    assert [gap for gap in run_plan_requires.contract_gaps(block) if gap["kind"] == "service"] == []
+
+    block["requires"] = [{"tool": "curl"}, API_SERVICE]
+    assert run_plan_requires.check(block, **kwargs) == []
+    assert run_plan_requires.contract_gaps(block) == []
+    (probe,) = probes
+    assert "curl" in probe["argv"] and not any("example.com" in arg for arg in probe["argv"])
+
+
+def test_the_shared_case_is_exactly_what_the_scan_reports():
+    """Metrics 4-5: the farm half of domain/fixtures/contract-gaps-cases.json;
+    the server test posts the same `gaps` for the same plan."""
+    block = run_plan.validate(SHARED_GAPS["plan"])
+    assert run_plan_requires.contract_gaps(block) == SHARED_GAPS["gaps"]
+    declared = run_plan.validate({**block, "requires": block["requires"] + SHARED_GAPS["declared"]})
+    assert run_plan_requires.contract_gaps(declared) == []
+
+
+def test_contract_gaps_runs_resolves_and_fetches_nothing(monkeypatch):
+    """Guardrail 1: with every way to run, resolve or fetch refused, every
+    committed plan still scans."""
+    import socket
+    import urllib.request
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the contract audit ran, resolved or fetched something")
+
+    for target, name in [
+        (subprocess, "run"), (subprocess, "Popen"), (os, "system"),
+        (socket, "getaddrinfo"), (socket, "create_connection"), (urllib.request, "urlopen"),
+    ]:  # fmt: skip
+        monkeypatch.setattr(target, name, refuse)
+    plans = [json.loads(path.read_text()) for path in sorted(FIXTURES.glob("*.json"))] + [SHARED_GAPS["plan"]]
+    assert len(plans) >= 6
+    for plan in plans:
+        run_plan_requires.contract_gaps(plan)
+
+
+def test_a_gap_carries_only_the_host_never_userinfo_query_or_a_header():
+    """Guardrail 4."""
+    gaps = run_plan_requires.contract_gaps({"commands": [REDACTED_URL], "requires": [{"tool": "curl"}]})
+    assert gaps == [{"kind": "service", "name": "api.example.com", "command": 1}]
+    text = json.dumps(gaps) + run_plan_requires.describe_gaps(gaps)
+    for secret in ("u:p", "token=", "Bearer", "curl -H"):
+        assert secret not in text
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("curl http://API.Example.COM./x", [("tool", "curl"), ("service", "api.example.com")]),
+        ("curl http://127.0.0.1:3001/api/health", [("tool", "curl"), ("service", "127.0.0.1")]),
+        ('curl "$BASE/x" ${API}/y file:///tmp/x', [("tool", "curl")]),
+        ("psql -h db.internal; ls -h; df -h", [("tool", "psql"), ("service", "db.internal"), ("tool", "ls"), ("tool", "df")]),
+        ("command -v jq; type jq; which jq", [("tool", "which")]),
+        ("check() { ls; }; check a", [("tool", "ls")]),
+        ("bash -c 'jq .'; python3 -c 'import yq'", [("tool", "bash"), ("tool", "jq"), ("tool", "python3")]),
+        ("echo 'jq .' \"yq\"; cat <<'EOF'\nzq .\nGET https://h.example.com/x\nEOF", [("tool", "cat"), ("service", "h.example.com")]),
+        ("xargs -I {} -n 1 psql; sudo -u postgres psql", [("tool", "xargs"), ("tool", "psql"), ("tool", "sudo")]),
+        ("X=1 timeout -k 5 60 env -u A B=2 nice -n 5 make", [("tool", "timeout"), ("tool", "env"), ("tool", "nice"), ("tool", "make")]),
+        ('case "$X" in a|b) jq .;; esac; for f in a b; do wc "$f"; done', [("tool", "jq"), ("tool", "wc")]),
+        ('v=$(yq x) && echo "$(zq y)" `gq z` <(hq)', [("tool", "yq"), ("tool", "zq"), ("tool", "gq"), ("tool", "hq")]),
+        ("./run.sh 2>&1 | /usr/bin/tee log > out.txt", []),
+        ("(( i++ )); [[ x == y && z ]] && bash --norc -c 'jq .'", [("tool", "bash"), ("tool", "jq")]),
+        ("function f { wc; }; f", [("tool", "wc")]),
+    ],
+)
+def test_scanner_edges(command, expected):
+    assert [(kind, name) for kind, name, _ in gaps_of(command)] == expected
+
+
+def test_a_sudo_read_config_file_is_still_not_implied():
+    """The `sudo` rule _implied_files shares with the scan: a path a sudo
+    command reads — directly, in `<(...)` or in a `bash -c` script — is not
+    the job user's to open; one the job's own shell reads is."""
+    block = {"commands": [
+        "source <(sudo -n cat /etc/horizon/a.env); . /etc/horizon/b.env",
+        "sudo -u root bash -c 'cat /etc/horizon/c.env' && bash -c \"sudo cat /etc/horizon/d.env\"",
+        "cat /etc/horizon/e.env",
+    ]}  # fmt: skip
+    assert run_plan_requires._implied_files(block) == ["/etc/horizon/b.env", "/etc/horizon/e.env"]

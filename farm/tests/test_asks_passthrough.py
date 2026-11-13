@@ -11,6 +11,7 @@ import pytest
 from domain.py import steps
 from farm import pm_steps, step_agent
 from farm.step_agent import execute
+from farm.tests.test_task_steps import VALID_PLAN, run_plan_artifact
 
 ASK = {
     "kind": "blocking",
@@ -31,7 +32,8 @@ def generic_task(label, kind="change"):
         "item": {"id": "T-1", "title": "t", "desc": "d", "metric": "m", "guardrails": "", "priority": "Medium",
                  "repo": None, "issue": None, "kind": kind},
         "step": {"index": steps.by_kind_label(kind, label)["index"], "label": label},
-        "artifacts": [],
+        # HO-836: a Task's Impact review reads the prior Run plan block.
+        "artifacts": [run_plan_artifact(VALID_PLAN)] if label == step_agent.IMPACT_REVIEW_LABEL else [],
         "feedback": [],
     }
 

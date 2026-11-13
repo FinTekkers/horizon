@@ -80,7 +80,9 @@ say so in `## Proof` as a blocking finding.
 
 `requires` lists every tool and file the commands need. Fill it in for
 every plan:
-- each tool a command calls, such as `python3`, as `{"tool": "<name>"}`;
+- each tool a command calls, such as `python3`, as `{"tool": "<name>"}` —
+  after `|`, `&&`, `;` or `xargs` too, `cat`, `grep` and `jq` included.
+  A shell builtin such as `cd`, `echo` or `test` needs none;
 - each file or folder a command reads, as `{"path": "<path>"}`, relative
   to the repo root (not to `cwd`).
 - each env variable a command reads, as `{"env": "<NAME>"}`, and in `env`
@@ -103,6 +105,11 @@ absolute, has a `..` or resolves outside the checkout is rejected.
 `no_deploy_running`, `row_exists`, `account_exists` or `artifact_exists`),
 and `"access": "w"` beside a `file` the run writes. A `check` or
 `version_cmd` only reads; the farm's write check is best-effort.
+
+Each host a command reaches — a URL's host, or a database client's `-h` —
+needs a `service` whose `name` is that host, such as `api.example.com`, with
+no scheme or port. Impact review reads the commands and sends the plan back
+naming each tool or host `requires` does not declare, by command number.
 
 `rehearsal`: `dry_run`, optional `limit`, `ro_env` (new read-only names,
 never `env` names) and `samples`, one `{"command": <k>, "expect": "<one
