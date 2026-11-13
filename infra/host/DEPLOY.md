@@ -1441,7 +1441,8 @@ The sandbox:
 - `--network=none`, a read-only image, and the checkout mounted read-only
   with each `.env` masked;
 - a 256 MB tmpfs `/tmp` as the only writable place;
-- for a `host` plan, the host's `/usr`, `/opt` (and the venv) mounted
+- for a `host` plan, the host's `/usr`, `/bin`, `/lib`, `/lib64` and `/opt`
+  (each that is a real directory, not a symlink) and the venv, mounted
   read-only;
 - the Postgres socket dir mounted read-only when the plan has `ro_env` names.
 
