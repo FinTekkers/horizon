@@ -6,7 +6,9 @@ horizon-run-<pid>-* dir under the real temp root, exported as TMPDIR — so
 every tempfile call in the suite, and in every child process it spawns,
 lands there. This guard is what *notices* when something is left behind:
 anything still inside the sandbox when the session ends was created by this
-run, so the run fails (exit status 1) and names each entry.
+run, so the run fails (exit status 1) and names each entry — except the
+harness control files in EXTERNAL_CONTROL_PREFIXES, which the harness
+itself writes and no test creates.
 
 It only ever reads. It never deletes a file or a dir, including the
 leftovers it names: they stay for the operator to inspect.
@@ -28,6 +30,12 @@ import pytest
 # The prefixes HZ-238's success metric counts in /tmp. Part 9's npm guard
 # (scripts/tmp-leak-guard.mjs) is to carry the same list — keep them equal.
 TMP_PREFIXES = ("horizon-", "hz-tmux-", "claude-resume-", "pino-", "sonic-boom-", "thread-stream-")
+# Files inside the sandbox that no test creates: the agent harness's own
+# ARTCTL control snapshot (artillery_cli_control.<pid>.json), written by
+# the harness supervising the run, byte-identical in every run. Counting
+# it as a leak fails every run on a harness-managed host, including the
+# base check — which then reports a real failure on main that is not one.
+EXTERNAL_CONTROL_PREFIXES = ("artillery_cli_control",)
 SANDBOX_PREFIX = "horizon-run-"
 # Out-of-sandbox entries are listed this many at most, after their count.
 MAX_WARNINGS_SHOWN = 5
@@ -42,10 +50,13 @@ def tmp_entries(root: Path, prefixes: tuple[str, ...] = TMP_PREFIXES) -> set[str
 
 
 def sandbox_leftovers(sandbox: Path) -> list[str]:
-    """Sorted absolute paths of everything directly inside the run's sandbox.
-    A missing sandbox holds nothing."""
+    """Sorted absolute paths of everything directly inside the run's sandbox,
+    except the harness control files no test creates. A missing sandbox holds
+    nothing."""
     try:
-        return sorted(str(p) for p in sandbox.iterdir())
+        return sorted(
+            str(p) for p in sandbox.iterdir() if not p.name.startswith(EXTERNAL_CONTROL_PREFIXES)
+        )
     except FileNotFoundError:
         return []
 
