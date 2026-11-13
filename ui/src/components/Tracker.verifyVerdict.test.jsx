@@ -16,7 +16,16 @@ vi.mock('../api', () => ({
 }))
 
 import Tracker from './Tracker'
-import { STEPS, VERIFY_REPORT_STEP_INDEX, RUN_PLAN_STEP_INDEX, requiredStepIndex } from '../../../domain/js/lifecycle.js'
+import {
+  STEPS,
+  VERIFY_REPORT_STEP_INDEX,
+  RUN_PLAN_STEP_INDEX,
+  REVIEW_STEP_INDEX,
+  DEPLOY_STEP_INDEX,
+  TASK_REVIEW_CLOSE_GATE_INDEX,
+  endIndex,
+  requiredStepIndex,
+} from '../../../domain/js/lifecycle.js'
 
 afterEach(() => cleanup())
 
@@ -154,4 +163,111 @@ test('a Change step and a Run plan Task step carrying a fail verdict both keep t
   expect(iconOf(change.container, ARCH).textContent).toBe('✓')
   expect(change.container.querySelector('[data-testid="verify-verdict-fail"]')).toBeNull()
   expect(within(stepRow(change.container, ARCH)).queryByRole('img', { name: /failed/i })).toBeNull()
+})
+
+// ---- HO-848: HO-841's Verify outcome and Execute cause ----
+
+const outcomeRow = (output) => {
+  const { container } = renderTracker({ stepOutputs: { [VERIFY]: verifyOutput({ verdictSummary: SUMMARY, ...output }) } })
+  return { container, row: stepRow(container, VERIFY), icon: iconOf(container, VERIFY) }
+}
+
+test('done_proof_incomplete has its own icon, label and outcome line, unlike work_failed; both show the summary', () => {
+  const proof = outcomeRow({ verdict: 'fail', verifyOutcome: 'done_proof_incomplete', executeCause: null })
+  expect(proof.icon.classList.contains('step__icon--verdict-proof')).toBe(true)
+  expect(proof.icon.classList.contains('step__icon--verdict-fail')).toBe(false)
+  expect(within(proof.row).getByRole('img', { name: 'Done, proof incomplete' })).toBeTruthy()
+  expect(within(proof.row).queryByRole('img', { name: /failed/i })).toBeNull()
+  expect(within(proof.row).getByTestId('verify-outcome').textContent).toBe('Done, proof incomplete')
+  expect(within(proof.row).getByTestId('verify-verdict-proof-incomplete')).toBe(proof.icon)
+  expect(within(proof.row).getByTestId('verify-verdict-summary').textContent).toBe(SUMMARY)
+  cleanup()
+
+  const failed = outcomeRow({ verdict: 'fail', verifyOutcome: 'work_failed', executeCause: null })
+  expect(failed.icon.classList.contains('step__icon--verdict-fail')).toBe(true)
+  expect(failed.icon.classList.contains('step__icon--verdict-proof')).toBe(false)
+  expect(within(failed.row).getByRole('img', { name: 'Verify & report failed' })).toBeTruthy()
+  expect(within(failed.row).queryByRole('img', { name: 'Done, proof incomplete' })).toBeNull()
+  expect(within(failed.row).getByTestId('verify-outcome').textContent).toBe('Verify & report failed')
+  expect(within(failed.row).getByTestId('verify-verdict-fail')).toBe(failed.icon)
+  expect(within(failed.row).getByTestId('verify-verdict-summary').textContent).toBe(SUMMARY)
+})
+
+test('an Execute cause shows beside the verdict; no cause shows no chip', () => {
+  const caused = outcomeRow({ verdict: 'fail', verifyOutcome: 'work_failed', executeCause: 'prereq' })
+  const line = within(caused.row).getByTestId('verify-outcome')
+  expect(within(line).getByTestId('verify-execute-cause').textContent).toBe('prereq')
+  expect(line.textContent).toBe('Verify & report failedprereq')
+  cleanup()
+
+  const none = outcomeRow({ verdict: 'fail', verifyOutcome: 'work_failed', executeCause: null })
+  expect(within(none.row).getByTestId('verify-outcome')).toBeTruthy()
+  expect(none.container.querySelector('[data-testid="verify-execute-cause"]')).toBeNull()
+})
+
+test('a historic fail with no stored outcome looks exactly like work_failed, with no cause', () => {
+  const current = outcomeRow({ verdict: 'fail', verifyOutcome: 'work_failed', executeCause: null })
+  const currentClass = current.icon.className
+  const currentLabel = within(current.row).getByRole('img', { name: /failed/i }).getAttribute('aria-label')
+  const currentLine = within(current.row).getByTestId('verify-outcome').textContent
+  cleanup()
+
+  const historic = outcomeRow({ verdict: 'fail' })
+  expect(historic.icon.className).toBe(currentClass)
+  expect(within(historic.row).getByRole('img', { name: /failed/i }).getAttribute('aria-label')).toBe(currentLabel)
+  expect(within(historic.row).getByTestId('verify-outcome').textContent).toBe(currentLine)
+  expect(historic.container.querySelector('[data-testid="verify-execute-cause"]')).toBeNull()
+})
+
+// HO-841's stepOutputs() reads an outcome off every step row, so a failed
+// Review or Deploy arrives with verifyOutcome too. Their rendering is unchanged.
+test('Review, Deploy and Review & close with the HO-841 outcome fields keep their icons and show no outcome or cause', () => {
+  const plain = { output: 'ok', attempt: 1, artifact: '## Verdict\n**fail**', verdict: 'fail', verdictSummary: SUMMARY }
+  const cases = [
+    { kind: 'change', cursor: endIndex('change'), indexes: [REVIEW_STEP_INDEX, DEPLOY_STEP_INDEX] },
+    { kind: 'task', cursor: endIndex('task') + 1, indexes: [TASK_REVIEW_CLOSE_GATE_INDEX] },
+  ]
+  for (const { kind, cursor, indexes } of cases) {
+    const outputsWith = (extra) => Object.fromEntries(indexes.map((i) => [i, { ...plain, ...extra }]))
+    const baseline = renderTracker({ kind, cursor, stepOutputs: outputsWith({}) })
+    const before = indexes.map((i) => iconOf(baseline.container, i).className)
+    const beforeMeta = indexes.map((i) => stepRow(baseline.container, i).querySelector('.step-card__meta').textContent)
+    cleanup()
+
+    for (const extra of [
+      { verifyOutcome: 'work_failed', executeCause: null },
+      { verifyOutcome: 'done_proof_incomplete', executeCause: 'prereq' },
+    ]) {
+      const { container } = renderTracker({ kind, cursor, stepOutputs: outputsWith(extra) })
+      expect(indexes.map((i) => iconOf(container, i).className)).toEqual(before)
+      expect(indexes.map((i) => stepRow(container, i).querySelector('.step-card__meta').textContent)).toEqual(beforeMeta)
+      for (const i of indexes) {
+        const row = stepRow(container, i)
+        expect(within(row).queryByTestId('verify-outcome')).toBeNull()
+        expect(within(row).queryByTestId('verify-execute-cause')).toBeNull()
+        expect(within(row).queryByRole('img', { name: 'Done, proof incomplete' })).toBeNull()
+        expect(row.querySelector('.step__icon--verdict-proof')).toBeNull()
+      }
+      cleanup()
+    }
+  }
+})
+
+test('an unknown Execute cause shows no chip and never its raw value', () => {
+  const { row, container } = outcomeRow({ verdict: 'fail', verifyOutcome: 'work_failed', executeCause: 'bogus' })
+  expect(within(row).getByTestId('verify-outcome').textContent).toBe('Verify & report failed')
+  expect(container.querySelector('[data-testid="verify-execute-cause"]')).toBeNull()
+  expect(container.textContent).not.toContain('bogus')
+})
+
+test('an unknown outcome, or no verdict at all, renders the neutral ? and no outcome line', () => {
+  for (const output of [{ verdict: 'fail', verifyOutcome: 'bogus', executeCause: 'prereq' }, { verdict: null, verdictSummary: null }]) {
+    const { icon, row, container } = outcomeRow(output)
+    expect(icon.textContent).toBe('?')
+    expect(icon.classList.contains('step__icon--verdict-unknown')).toBe(true)
+    expect(within(row).queryByTestId('verify-outcome')).toBeNull()
+    expect(container.querySelector('[data-testid="verify-execute-cause"]')).toBeNull()
+    expect(container.textContent).not.toContain('bogus')
+    cleanup()
+  }
 })

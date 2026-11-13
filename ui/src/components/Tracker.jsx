@@ -55,7 +55,7 @@ import FiledAutopilotSelect from './FiledAutopilotSelect'
 import ScreenshotPanel from './ScreenshotPanel'
 import StepActionMenu from './StepActionMenu'
 import AcceptWithExceptionsButton, { ExceptionsList } from './AcceptWithExceptions'
-import { BackIcon, LinkIcon, PrIcon, CircleXIcon, PlanIcon } from './icons'
+import { BackIcon, LinkIcon, PrIcon, CircleXIcon, CircleAlertIcon, PlanIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
 
@@ -64,12 +64,38 @@ const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', bl
 // stored verdict (before it was recorded) a neutral '?'. 'loading' until the
 // outputs land, so a failed run never flashes a tick. null for every other
 // step, which keeps its STEP_GLYPHS icon.
+// HO-848: the outcome HO-841 stores — 'pass', 'work_failed' or
+// 'done_proof_incomplete' — read from output.verifyOutcome. A run with no
+// stored outcome (historic rows, the mock API) falls back to its pass/fail
+// verdict, with 'fail' read as 'work_failed', as the server does. An outcome
+// the UI does not know is 'unknown', the neutral '?'.
 function verifyVerdictOf(index, status, output, settled) {
   if (index !== VERIFY_REPORT_STEP_INDEX || status !== 'done') return null
   if (!settled) return 'loading'
-  return output?.verdict === 'pass' || output?.verdict === 'fail' ? output.verdict : 'unknown'
+  const outcome = output?.verifyOutcome
+  if (outcome != null) return outcome === 'pass' || Object.hasOwn(VERIFY_OUTCOME_VIEW, outcome) ? outcome : 'unknown'
+  if (output?.verdict === 'fail') return 'work_failed'
+  return output?.verdict === 'pass' ? 'pass' : 'unknown'
 }
 const VERIFY_FAILED_LABEL = 'Verify & report failed'
+// HO-848: how each failing Verify outcome looks on the rail icon and the card.
+// work_failed keeps HZ-429's red circle-X, label and test id unchanged.
+const VERIFY_OUTCOME_VIEW = {
+  work_failed: { iconClass: 'verdict-fail', label: VERIFY_FAILED_LABEL, Icon: CircleXIcon, testId: 'verify-verdict-fail' },
+  done_proof_incomplete: {
+    iconClass: 'verdict-proof',
+    label: 'Done, proof incomplete',
+    Icon: CircleAlertIcon,
+    testId: 'verify-verdict-proof-incomplete',
+  },
+}
+// HO-848: why Execute failed, shown beside a failing outcome. Only the known
+// enums; any other value shows nothing.
+const EXECUTE_CAUSES = new Set(['prereq', 'unforeseeable'])
+function executeCauseOf(outcome, output) {
+  if (!Object.hasOwn(VERIFY_OUTCOME_VIEW, outcome ?? '')) return null
+  return EXECUTE_CAUSES.has(output?.executeCause) ? output.executeCause : null
+}
 
 // HZ-561: a step ahead of the cursor that already ran (the item moved back
 // past it) shows its newest finished attempt instead of "Queued". `failed`
@@ -376,7 +402,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const humanOnly = status === 'awaiting' && isHumanOnlyGate(index)
   const sentLabel = restartSentLabel(item, index, restartSent)
   const verdict = verifyVerdictOf(index, status, output, outputsSettled)
-  const verdictIcon = { fail: 'verdict-fail', unknown: 'verdict-unknown', loading: 'verdict-loading' }[verdict]
+  const outcomeView = Object.hasOwn(VERIFY_OUTCOME_VIEW, verdict ?? '') ? VERIFY_OUTCOME_VIEW[verdict] : null
+  const executeCause = executeCauseOf(verdict, output)
+  const verdictIcon = outcomeView ? outcomeView.iconClass : { unknown: 'verdict-unknown', loading: 'verdict-loading' }[verdict]
   const ranAhead = ranAheadOf(item, index, status, output)
   // HZ-541: the first gate shows the item's golden cases; while they wait for
   // approval, the table's one button is the gate's Approve.
@@ -401,11 +429,11 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
       <div className="step__rail">
         <div
           className={`step__icon step__icon--${status}${queued ? ' step__icon--queued' : ''}${verdictIcon ? ` step__icon--${verdictIcon}` : ''}${ranAhead ? ` step__icon--ran-ahead${ranAhead.failed ? ' step__icon--verdict-fail' : ''}` : ''}`}
-          data-testid={verdict === 'fail' ? 'verify-verdict-fail' : undefined}
+          data-testid={outcomeView?.testId}
           title={verdict === 'unknown' ? 'No verdict recorded for this run' : undefined}
         >
-          {queued ? '⋯' : verdict === 'fail' ? (
-            <CircleXIcon size={18} label={VERIFY_FAILED_LABEL} />
+          {queued ? '⋯' : outcomeView ? (
+            <outcomeView.Icon size={18} label={outcomeView.label} />
           ) : verdict === 'unknown' ? (
             '?'
           ) : verdict === 'loading' ? (
@@ -487,7 +515,17 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               Not dispatched: {item.notDispatched.message}
             </div>
           )}
-          {verdict === 'fail' && output?.verdictSummary && (
+          {outcomeView && (
+            <div className={`step-card__outcome step-card__outcome--${outcomeView.iconClass}`} data-testid="verify-outcome">
+              <span className="step-card__outcome-label">{outcomeView.label}</span>
+              {executeCause && (
+                <span className="step-card__cause" data-testid="verify-execute-cause" title="Why Execute failed">
+                  {executeCause}
+                </span>
+              )}
+            </div>
+          )}
+          {outcomeView && output?.verdictSummary && (
             <div className="step-card__verdict" data-testid="verify-verdict-summary">
               {output.verdictSummary}
             </div>

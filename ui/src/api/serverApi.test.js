@@ -1152,6 +1152,20 @@ test('getProductivity GETs /admin/productivity with range and project in the que
   expect(fetchSpy.mock.calls[0][0]).toBe(`${serverApi.API_BASE}/admin/productivity?range=7d&project=a%26b`)
 })
 
+// HO-848: Admin's Verify report reads HO-841's endpoint with since and n in
+// the query string; n defaults to 50.
+test('getVerifyReport GETs /admin/productivity/verify with since and n in the query string', async () => {
+  const serverApi = await import('./serverApi')
+  const fetchSpy = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ returned: 0 }) }))
+  vi.stubGlobal('fetch', fetchSpy)
+
+  await expect(serverApi.getVerifyReport({ since: '2026-11-01', n: 20 })).resolves.toEqual({ returned: 0 })
+  expect(fetchSpy.mock.calls[0][0]).toBe(`${serverApi.API_BASE}/admin/productivity/verify?since=2026-11-01&n=20`)
+
+  await serverApi.getVerifyReport({ since: '2026-11-01' })
+  expect(fetchSpy.mock.calls[1][0]).toBe(`${serverApi.API_BASE}/admin/productivity/verify?since=2026-11-01&n=50`)
+})
+
 // ---- HZ-661: a member's active project and repo can clear live ----
 
 test('activeProjectId and repoUrl follow the stream: null clears them, a missing key keeps them', async () => {

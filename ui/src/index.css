@@ -496,6 +496,10 @@ button { font-family: var(--font-sans); }
 .howto__steps code { font: 500 11px var(--font-mono); background: var(--subtle); border-radius: 5px; padding: 1px 5px; }
 
 .gh-error { font: 500 13px var(--font-sans); color: var(--danger); margin-top: 12px; }
+/* HO-848: Admin › Verify report's start date, N and Show on one wrapping row. */
+.verify-report__form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 12px; }
+.verify-report__form .composer__submit { margin-top: 14px; }
+.verify-report__result { margin-top: 12px; }
 .gh-success { font: 500 13px var(--font-sans); color: var(--success); margin-top: 12px; }
 
 .project-block { margin-top: 18px; padding: 14px 16px; background: var(--canvas); border: 1px solid var(--border); border-radius: 14px; }
@@ -1237,6 +1241,8 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
 .step__icon--blocked { background: var(--danger); color: #fff; }
 /* HZ-429: a done Verify & report's verdict — after --done so it wins. */
 .step__icon--verdict-fail { background: var(--danger); color: #fff; }
+/* HO-848: Verify finished the work but not its proof — amber, not red. */
+.step__icon--verdict-proof { background: var(--warning); color: var(--on-warning); }
 .step__icon--verdict-unknown,
 .step__icon--verdict-loading { background: var(--surface); border: 2px solid var(--muted); color: var(--muted); }
 /* HZ-561: a step ahead of the cursor that already ran — its last result, not
@@ -1289,6 +1295,16 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
 .step-card__verdict {
   margin-top: 6px; font: 600 12px var(--font-sans); line-height: 1.4; color: var(--danger-ink);
   white-space: pre-line; overflow-wrap: anywhere;
+}
+/* HO-848: the Verify outcome label, and Execute's cause beside it. */
+.step-card__outcome {
+  margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font: 600 12px var(--font-sans); line-height: 1.4; color: var(--danger-ink);
+}
+.step-card__outcome--verdict-proof { color: var(--warning-ink); }
+.step-card__cause {
+  font: 600 11px var(--font-sans); color: var(--muted); background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 7px;
 }
 .step-card__output-link,
 .step-card__artifact-link {

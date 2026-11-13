@@ -6,7 +6,7 @@ import { expect, test } from 'vitest'
 import { ADMIN_HOME, adminPath, isMemberOnlySection, isOwnerOnlySection, parseAdminPath, visibleSections } from './adminRoutes'
 
 test("the owner's sections lead with Needs attention and leave out the member's check commands", () => {
-  expect(visibleSections(true).map((s) => s.key)).toEqual(['attention', 'projects', 'deploys', 'flaky', 'github', 'account'])
+  expect(visibleSections(true).map((s) => s.key)).toEqual(['attention', 'projects', 'deploys', 'flaky', 'verify', 'github', 'account'])
   expect(isMemberOnlySection('checks')).toBe(true)
   expect(isMemberOnlySection('projects')).toBe(false)
   expect(isMemberOnlySection('toString')).toBe(false)

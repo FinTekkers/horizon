@@ -240,3 +240,56 @@ def test_a_policy_that_does_not_fail_open_raises_at_its_ceiling_and_holds_nothin
     assert not any(e.get("check_slot") == "granted" for e in events)
     assert check_slots.waiting_runs() == []
     assert check_slots.busy_slots() == 0
+
+
+# ---- HO-823: the run shown "0 ahead" is the run granted next ----
+
+
+def test_each_waiter_is_granted_only_after_its_queued_event_said_0_ahead():
+    """HO-823, the step a person sees: a pre-merge run streams its queued
+    events, `ahead` included, to the server. A, B and C queue in order; each
+    is granted in turn, and the last queued event each heard before its
+    grant said ahead=0 — never a run granted while its display read 1 or 2."""
+    policy = check_slots.SlotPolicy(report_ahead=True)
+    names = ("A", "B", "C")
+    events = {name: [] for name in names}
+    leave = {name: threading.Event() for name in names}
+    granted = []
+    threads = []
+
+    def waiter(name):
+        def go():
+            with check_slots.check_slot(run_id=name, poll_s=0.05, on_event=events[name].append, policy=policy):
+                granted.append(name)
+                leave[name].wait(10)
+
+        thread = threading.Thread(target=go, daemon=True)
+        thread.start()
+        return thread
+
+    holder = _hold_slot_0()
+    try:
+        for name in names:
+            threads.append(waiter(name))
+            assert _wait_for(lambda: events[name]), f"{name} never queued"
+        assert [events[name][0] for name in names] == [
+            {"check_slot": "queued", "ahead": n} for n in range(3)
+        ]
+    finally:
+        _release(holder)
+    try:
+        for count, name in enumerate(names, start=1):
+            assert _wait_for(lambda: len(granted) >= count), f"{name} was never granted"
+            assert granted == list(names[:count])
+            leave[name].set()
+    finally:
+        for name in names:
+            leave[name].set()
+        for thread in threads:
+            thread.join(timeout=10)
+
+    for name in names:
+        assert events[name][-1] == {"check_slot": "granted", "mode": "held"}
+        aheads = [e["ahead"] for e in events[name] if e["check_slot"] == "queued"]
+        assert aheads[-1] == 0, f"{name} was granted while its last event said {aheads[-1]} ahead"
+        assert aheads == sorted(aheads, reverse=True), f"{name}'s count went up: {aheads}"

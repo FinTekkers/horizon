@@ -634,6 +634,7 @@ const SECTION_LABELS = [
   'New project',
   'Deploy targets',
   'Flaky tests',
+  'Verify report',
   'GitHub access',
   'Your PIN and API tokens',
 ]
