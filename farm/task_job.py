@@ -199,6 +199,29 @@ def run_job(**kwargs) -> dict:
                 wipe_throwaway(kwargs["state_path"], kwargs["log_path"])
 
 
+# HO-838: the job's prerequisite re-check cap. farmd's dispatch re-check ran
+# moments earlier under the same cap.
+PREREQ_RECHECK_S = 25
+
+
+def _prereq_recheck(task: dict, approved_hash: str) -> list[dict]:
+    """HO-838: the Preflight checks (farm/preflight.py, the one engine) on
+    the approved plan, as this runner is about to run it — the unmet items,
+    [] when every check holds. Read-only; takes no lock of its own. Fails
+    closed: an error or a malformed result is an unmet `probe`, never a pass.
+    The env names and uid are the ones farmd stamped at launch."""
+    from farm import preflight
+
+    try:
+        result = preflight.run({**task, "plan_hash": approved_hash}, deadline=time.monotonic() + PREREQ_RECHECK_S)
+    except Exception as exc:  # noqa: BLE001 — fail closed, never a pass
+        return [{"kind": "probe", "name": "prerequisite re-check", "reason": f"failed ({type(exc).__name__})"}]
+    unmet = [item for item in result.get("unmet") or [] if isinstance(item, dict)]
+    if result.get("passed") is True and not unmet:
+        return []
+    return unmet or [{"kind": "probe", "name": "prerequisite re-check", "reason": "no result"}]
+
+
 def _hold_clone_lock(stack: contextlib.ExitStack, repo_dir: str | None) -> None:
     """HZ-738: Execute's shared clone_lock, released when `stack` closes. A
     clone that fails the HZ-415 guard is never written to, not even the lock
@@ -233,6 +256,7 @@ def _run_job(
     memory_limit: str | None = None,
     first_line: str | None = None,
     media_roots: tuple = (),
+    prereq_task: dict | None = None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -281,7 +305,14 @@ def _run_job(
     start's output, before the env line — a tenant job's `running as` line.
 
     HZ-815: `media_roots`, config.MEDIA_OUTPUT_ROOTS for a farm host run, are
-    the dirs besides the checkout a plan's `outputs` may be copied from."""
+    the dirs besides the checkout a plan's `outputs` may be copied from.
+
+    HO-838: `prereq_task` is the job's task file as farmd stamped it. main()
+    always passes it, so every start re-runs the Preflight checks
+    (_prereq_recheck) once the clone is fast-forwarded and the cwd resolved,
+    before the container or any command. A check that fails, raises or runs
+    out of time ends the job `prereq_refused`, zero commands run. A direct
+    call with no task (a unit test of the run itself) has nothing to check."""
     last_nudge = [0.0]
 
     def nudge(*, force: bool = True) -> None:
@@ -386,6 +417,39 @@ def _run_job(
         save_state(state_path, state)
         with log_path.open("a", encoding="utf-8") as log:
             log.write(redact(f"Execute refused: {refusal} — zero commands run\n", secrets))
+            log.flush()
+        nudge()
+        return state["summary"]
+
+    # HO-838: the host may have drifted since approval. Checked after the
+    # fast-forward, so a path the new commit adds is there, and before the
+    # container starts (so no image is pulled) or any command runs.
+    unmet = _prereq_recheck(prereq_task, approved_hash) if prereq_task is not None else []
+    if unmet:
+        from farm import preflight
+
+        refusal = preflight.drift_text(unmet)
+        state = {
+            "run_id": run_id,
+            "item_id": item_id,
+            "status": "prereq_refused",
+            "refusal": refusal.splitlines()[0],
+            "unmet": unmet,
+            "started_at": _now_iso(),
+            "ended_at": _now_iso(),
+            "budget_s": budget_s,
+            "approved_hash": approved_hash,
+            "commands": [
+                dict(prior_done[c])
+                if c in prior_done
+                else {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
+                for c in commands
+            ],
+            "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
+        }
+        save_state(state_path, state)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(redact(f"Execute refused: {refusal}\nzero commands run\n", secrets))
             log.flush()
         nudge()
         return state["summary"]
@@ -937,6 +1001,8 @@ def main(argv: list[str] | None = None) -> int:
             memory_limit=task.get("memory_limit"),
             first_line=first_line,
             media_roots=() if results_dir else MEDIA_OUTPUT_ROOTS,
+            # HO-838: every start re-checks the prerequisites.
+            prereq_task=task,
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)

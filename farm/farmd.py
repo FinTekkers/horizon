@@ -1426,6 +1426,8 @@ def launch_job(task: dict) -> str:
         raise
     task["env_file"] = str(env_path)
     task["claimed_at"] = time.time()
+    # HO-838: what the runner's prerequisite re-check needs from farmd.
+    _stamp_preflight_context(task)
     claimed = active / f"{run_id}.json"
     _write_task_atomic(claimed, task)
     name = _job_session_name(item_id)
@@ -1466,6 +1468,9 @@ def launch_tenant_job(task: dict) -> str:
         task.pop(key, None)
     task["results_dir"] = str(_tenant_job_results_dir(task))
     task["claimed_at"] = time.time()
+    # HO-838: the run user's env names and uid, the jobs switch and the
+    # deploy lock, for the tenant runner's prerequisite re-check.
+    _stamp_preflight_context(task)
     active = QUEUE_DIR / "jobs" / "active"
     active.mkdir(parents=True, exist_ok=True)
     claimed = active / f"{run_id}.json"
@@ -1677,6 +1682,18 @@ def _poll_jobs() -> None:
                         "ok": False,
                         "error": f"Execute refused: {state.get('refusal') or 'cwd refused'}"[:300],
                         "reason": reasons.REASON["JOB_CWD_REFUSED"],
+                        "job_view": _job_view(run_id, task),
+                    }
+                )
+            elif status == "prereq_refused":
+                # HO-838: the runner's prerequisite re-check refused before
+                # any command. The same tag as the server's dispatch re-check.
+                code = _forward_result(
+                    {
+                        "run_id": task["run_id"],
+                        "ok": False,
+                        "error": preflight.drift_text(state.get("unmet") or [])[:PREREQ_DRIFT_ERROR_MAX],
+                        "reason": reasons.REASON["PREREQ_DRIFT"],
                         "job_view": _job_view(run_id, task),
                     }
                 )
@@ -2791,6 +2808,53 @@ async def repos_check_defaults(request: Request):
     if not (hub / ".git").exists():
         return {"repo": repo, "defaults": {slot: None for slot in CHECK_SLOTS}}
     return {"repo": repo, "defaults": await asyncio.to_thread(default_check_slots, hub)}
+
+
+# HO-838: the dispatch re-check's own cap, inside the server's 30 s wait.
+PREREQ_RECHECK_S = 25
+# The server's /fail `error` limit (orchestrator.js FAILED_OUTPUT_MAX_CHARS).
+PREREQ_DRIFT_ERROR_MAX = 4000
+# What a tenant's dispatch re-check leaves to the re-check in its job.
+PREREQ_TENANT_DEFERRED = ["cwd", "login_env", "requires"]
+
+
+@app.post("/preflight")
+async def preflight_recheck(request: Request):
+    """HO-838: Execute's dispatch re-check — the Preflight step's checks
+    (farm/preflight.py, the one engine) run again on the approved plan, as
+    the server is about to hand it to the job lane. The body is the job's own
+    (server/src/orchestrator.js jobRequest); farmd stamps Execute's env names
+    and uid, its jobs switch and the deploy lock, as for a Preflight task.
+
+    Read-only, like /repos/check-defaults: no git, no clone_lock, no flock,
+    no file written. A task clone a fast-forward is moving may be read
+    mid-move; the job's own re-check runs after its fast-forward. A tenant
+    task's clone is the run user's, so its cwd, login env and requires are
+    left to the tenant job's re-check (`deferred`). Answers names and
+    reasons only, never a value: {ok, failed, unmet, deferred, elapsed_ms}."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict) or not all(isinstance(body.get(key), str) and body.get(key) for key in ("plan_artifact", "approved_hash", "runner")):
+        return JSONResponse({"error": "plan_artifact, approved_hash and runner are required"}, status_code=400)
+    task = dict(body)
+    task["plan_hash"] = body["approved_hash"]
+    tenant = _is_tenant(task)
+    started = time.monotonic()
+    try:
+        _stamp_preflight_context(task)
+        result = await asyncio.to_thread(preflight.run, task, deadline=started + PREREQ_RECHECK_S, tree=not tenant)
+    except Exception as exc:  # noqa: BLE001 — the server refuses on it, never skips
+        return JSONResponse({"error": f"preflight unavailable: {type(exc).__name__}"}, status_code=503)
+    unmet = list(result.get("unmet") or [])
+    return {
+        "ok": result.get("passed") is True and not unmet,
+        "failed": preflight.drift_names(unmet),
+        "unmet": unmet,
+        "deferred": PREREQ_TENANT_DEFERRED if tenant else [],
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+    }
 
 
 # Each pipe-pane read is capped; the UI pages with `offset`.
