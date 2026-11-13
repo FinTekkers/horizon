@@ -217,6 +217,60 @@ function PreflightStatus({ preflight }) {
   )
 }
 
+// HO-839: the plan's rehearsal in the read-only sandbox (server/src/store.js
+// rehearsalView), shown once Preflight passed. Approve the run is offered only
+// when it ran clean for this plan; the server refuses every approver otherwise.
+const TENANT_SAMPLES_ONLY = 'Tenant Task: proofs rehearsed on samples only. The dry run was not rehearsed.'
+
+function rehearsalClean(item) {
+  return item.runPlan?.rehearsal?.clean === true
+}
+
+function RehearsalStatus({ rehearsal }) {
+  const samplesOnly = rehearsal?.scope === 'samples' && (
+    <div className="step-card__preflight" data-testid="rehearsal-samples-only" style={{ color: 'var(--muted)' }}>
+      {TENANT_SAMPLES_ONLY}
+    </div>
+  )
+  if (!rehearsal) {
+    return (
+      <div className="step-card__preflight step-card__run-plan-warning" data-testid="rehearsal-missing" style={{ color: 'var(--danger-ink)' }}>
+        ⚠ No rehearsal on record for this plan — Approve is hidden. Re-run Preflight, or send the plan back to Run plan.
+      </div>
+    )
+  }
+  if (rehearsal.clean) {
+    return (
+      <>
+        <div className="step-card__preflight" data-testid="rehearsal-clean" style={{ color: 'var(--success-ink, var(--muted))' }}>
+          ✓ Rehearsal ran clean{rehearsal.seconds != null ? ` in ${rehearsal.seconds}s` : ''} in the read-only sandbox
+        </div>
+        {samplesOnly}
+      </>
+    )
+  }
+  return (
+    <>
+      <div className="step-card__preflight step-card__run-plan-warning" style={{ color: 'var(--danger-ink)' }}>
+        <div data-testid="rehearsal-failed">
+          ✕ Rehearsal failed: <code>{rehearsal.reason}</code> — Approve is hidden. Send the plan back to Run plan, or abandon the task.
+        </div>
+        {rehearsal.failures?.length > 0 && (
+          <ul className="step-card__preflight-unmet">
+            {rehearsal.failures.map((f, i) => (
+              <li key={`${f.what}:${f.reason}:${i}`} data-testid="rehearsal-finding">
+                {f.what} — <code>{f.reason}</code>
+                {f.exit != null ? ` (exit ${f.exit})` : ''}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      {samplesOnly}
+    </>
+  )
+}
+
 // HZ-185: why a forward to Accept the code didn't go through, keyed by the
 // route's error code. Anything else falls back to a generic line.
 const FORWARD_ERRORS = {
@@ -475,6 +529,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const media = status !== 'pending' && TASK_MEDIA_STEP_INDEXES.has(index) ? stepOutputs?.[EXECUTE_STEP_INDEX]?.job?.media : null
   // HO-837: Approve the run waits for a passing Preflight for this plan.
   const preflightBlocks = index === APPROVE_RUN_GATE_INDEX && !!item.runPlan && !preflightPassed(item)
+  // HO-839: once it passed, Approve is hidden — not just disabled — until the
+  // plan rehearsed clean. Send back and Abandon stay.
+  const rehearsalBlocks = index === APPROVE_RUN_GATE_INDEX && !!item.runPlan && preflightPassed(item) && !rehearsalClean(item)
   const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
   const retryHere = retryTarget(item)?.step === st.key
   const canReturn = returnTargets(item).length > 0
@@ -609,6 +666,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               )}
               {/* HO-837: the plan's prerequisites on the real runner. */}
               {index === APPROVE_RUN_GATE_INDEX && item.runPlan && <PreflightStatus preflight={item.runPlan.preflight} />}
+              {index === APPROVE_RUN_GATE_INDEX && item.runPlan && preflightPassed(item) && <RehearsalStatus rehearsal={item.runPlan.rehearsal} />}
             </div>
           )}
           {goldenCases && (
@@ -774,7 +832,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   The server's 409 stays the real protection. */}
               {!mergeQueued && (
                 <>
-                  {!goldenPending && (
+                  {!goldenPending && !rehearsalBlocks && (
                     <button
                       className="btn-gate-approve"
                       disabled={gateBusy || preflightBlocks}
@@ -784,16 +842,19 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                       {humanOnly ? st.label : 'Approve'}
                     </button>
                   )}
-                  <button
-                    className="btn-gate-feedback"
-                    disabled={gateBusy || preflightBlocks}
-                    aria-busy={gateBusy || undefined}
-                    onClick={() => onApproveWithComments(item.id, st.label)}
-                  >
-                    Approve with comments
-                  </button>
-                  {/* HO-837: after a host fix, Preflight runs again; or the plan goes back. */}
-                  {preflightBlocks && returnTargets(item).some((t) => t.key === PREFLIGHT_KEY) && (
+                  {!rehearsalBlocks && (
+                    <button
+                      className="btn-gate-feedback"
+                      disabled={gateBusy || preflightBlocks}
+                      aria-busy={gateBusy || undefined}
+                      onClick={() => onApproveWithComments(item.id, st.label)}
+                    >
+                      Approve with comments
+                    </button>
+                  )}
+                  {/* HO-837: after a host fix, Preflight runs again; or the plan goes back.
+                      HO-839: the same two moves while the rehearsal blocks. */}
+                  {(preflightBlocks || rehearsalBlocks) && returnTargets(item).some((t) => t.key === PREFLIGHT_KEY) && (
                     <button
                       className="btn-gate-reject"
                       disabled={gateBusy}
@@ -803,7 +864,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                       Re-run preflight
                     </button>
                   )}
-                  {preflightBlocks && returnTargets(item).some((t) => t.key === RUN_PLAN_KEY) && (
+                  {(preflightBlocks || rehearsalBlocks) && returnTargets(item).some((t) => t.key === RUN_PLAN_KEY) && (
                     <button
                       className="btn-gate-reject"
                       disabled={gateBusy}

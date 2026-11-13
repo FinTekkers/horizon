@@ -27,6 +27,7 @@ import {
   IMPACT_REVIEW_STEP_INDEX,
   IMPLEMENT_ITEM_KIND,
   IMPLEMENT_STEP_INDEX,
+  PREFLIGHT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   RUN_PLAN_STEP_INDEX,
   STEPS,
@@ -99,6 +100,8 @@ export const MOVE_FIELDS = Object.freeze(
 const AUTOMATED_OUTCOMES = new Map([
   [REVIEW_STEP_INDEX, new Set([IMPLEMENT_STEP_INDEX, ACCEPT_GATE_INDEX])],
   [IMPACT_REVIEW_STEP_INDEX, new Set([RUN_PLAN_STEP_INDEX])],
+  // HO-839: a failed rehearsal sends the plan back from Preflight.
+  [PREFLIGHT_STEP_INDEX, new Set([RUN_PLAN_STEP_INDEX])],
 ])
 
 const NO_RESET = Object.freeze({

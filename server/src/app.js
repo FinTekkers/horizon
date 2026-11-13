@@ -4074,6 +4074,8 @@ export function buildApp({
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const result = createTarget(targetFromBody(request.body.key, request.body))
+      // HO-839: a new target's image is pre-pulled on the farm too.
+      if (result.ok) orchestrator.prePullOnImageChange(null, result.target?.containerImage)
       return deployTargetResult(request, reply, result, 'create', 201)
     },
   )
@@ -4091,7 +4093,11 @@ export function buildApp({
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      return deployTargetResult(request, reply, updateTarget(request.params.key, request.body), 'update')
+      const imageBefore = findTargetByKey(request.params.key)?.containerImage ?? null
+      const result = updateTarget(request.params.key, request.body)
+      // HO-839: a changed image is pre-pulled on the farm, off this request.
+      if (result.ok) orchestrator.prePullOnImageChange(imageBefore, result.target?.containerImage)
+      return deployTargetResult(request, reply, result, 'update')
     },
   )
 

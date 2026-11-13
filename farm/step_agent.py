@@ -62,6 +62,7 @@ from . import (
     plan_bundle,
     preflight,
     read_only_guard,
+    rehearsal,
     review_diff,
     run_plan_requires,
     screenshot_runner,
@@ -2802,7 +2803,45 @@ def _execute_code_run(task: dict) -> dict:
     result = preflight.run(task, deadline=time.monotonic() + preflight.CAP_S)
     summary = preflight.summary(result)
     log(f"preflight: {summary}")
-    return {"summary": summary, "artifacts": {"artifact_md": preflight.render(result), "preflight": result}}
+    artifacts = {"artifact_md": preflight.render(result), "preflight": result}
+    # HO-839: once preflight passes, the plan's rehearsal — run by farmd in
+    # the sandbox, under its own cap (rehearsal.CAP_S, after any image pull),
+    # not Preflight's. Only reason ids come back; the server sends a failed
+    # one back to Run plan.
+    if result.get("passed"):
+        rehearsed = _rehearse(task)
+        artifacts["rehearsal"] = rehearsed
+        artifacts["artifact_md"] += "\n\n" + rehearsal.render(rehearsed)
+        summary = f"{summary}; {rehearsal.summary(rehearsed)}"
+        log(f"rehearsal: {rehearsal.summary(rehearsed)}")
+    return {"summary": summary, "artifacts": artifacts}
+
+
+# HO-839: how long the step waits on farmd's rehearsal — the pull's cap,
+# the rehearsal's, and room for the sandbox to start and stop.
+REHEARSAL_WAIT_S = rehearsal.PULL_CAP_S + rehearsal.CAP_S + 120
+
+
+def _rehearse(task: dict) -> dict:
+    """farmd's rehearsal result for this Preflight run. Raises AgentError —
+    a failed step, never a clean result — when the sandbox cannot start or
+    farmd cannot rehearse; nothing ever runs unsandboxed."""
+    try:
+        res = httpx.post(f"{FARMD}/internal/rehearsal", json={"run_id": task["run_id"]}, timeout=REHEARSAL_WAIT_S)
+    except httpx.HTTPError as exc:
+        raise AgentError(f"the rehearsal could not run: farmd unreachable ({type(exc).__name__})") from None
+    try:
+        body = res.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    if res.status_code == 200 and isinstance(body.get("rehearsal"), dict):
+        return body["rehearsal"]
+    why = str(body.get("reason") or body.get("error") or f"HTTP {res.status_code}")[:200]
+    if body.get("error") == "sandbox_unavailable":
+        raise AgentError(f"the rehearsal sandbox could not start: {why}")
+    raise AgentError(f"the rehearsal could not run: {why}")
 
 
 def _owner_digest_notes(task: dict, artifact: str) -> list[str]:

@@ -1406,6 +1406,8 @@ function runPlanView(itemId, metric) {
     uncoveredLines: unprovenLines(plan.block, metric),
     // HO-837: the newest Preflight run, judged against this plan.
     preflight: preflightView(preflightState(itemId, plan)),
+    // HO-839: its rehearsal, for this plan only (null when there is none).
+    rehearsal: rehearsalView(itemId, plan),
   }
 }
 
@@ -1436,7 +1438,7 @@ export function approvedPlanCheck(itemId) {
 // The newest finished Preflight run of the item (a sub-step row never
 // counts), with the plan hash it was dispatched with and its result.
 const selectLatestPreflight = db.prepare(
-  "SELECT id, plan_hash, preflight_json, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1",
+  "SELECT id, plan_hash, preflight_json, rehearsal_json, ended_at FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1",
 )
 const selectRunningDeploy = db.prepare(
   "SELECT target, tag, status FROM deploy_batch WHERE target = ? AND status IN ('publishing','deploying','verifying') ORDER BY id DESC LIMIT 1",
@@ -1509,6 +1511,43 @@ export function preflightCheck(itemId, plan = currentRunPlan(itemId)) {
     }
   }
   return { error: 'preflight_unmet', unmet: state.unmet }
+}
+
+// ---- Rehearsal (HO-839) ----
+// What the newest Preflight run's rehearsal says about `plan`: null when
+// there is none for it (no run, a Preflight that found unmet items, a run
+// from before HO-839, or one dispatched for another plan hash), else
+// {clean, reason, scope, seconds, failures} — reason ids and labels only.
+// Clean only when it ran clean for exactly this plan.
+export function rehearsalView(itemId, plan = currentRunPlan(itemId)) {
+  const row = selectLatestPreflight.get(itemId, PREFLIGHT_STEP_INDEX)
+  if (!row?.rehearsal_json || !plan || row.plan_hash !== plan.hash) return null
+  let parsed
+  try {
+    parsed = JSON.parse(row.rehearsal_json)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const failures = Array.isArray(parsed.failures)
+    ? parsed.failures.map((f) => ({ what: String(f?.what ?? ''), reason: String(f?.reason ?? ''), exit: Number.isInteger(f?.exit) ? f.exit : null }))
+    : []
+  const clean = parsed.clean === true && failures.length === 0
+  return {
+    clean,
+    reason: clean ? null : String(parsed.reason ?? 'rehearsal_missing'),
+    scope: parsed.scope === 'full' || parsed.scope === 'samples' ? parsed.scope : null,
+    seconds: Number.isInteger(parsed.seconds) ? parsed.seconds : null,
+    failures,
+  }
+}
+
+// The Approve the run bind's second half: { ok } only when the plan on
+// record rehearsed clean; else the refusal every approver gets.
+export function rehearsalCheck(itemId, plan = currentRunPlan(itemId)) {
+  const view = rehearsalView(itemId, plan)
+  if (view?.clean === true) return { ok: true }
+  return { error: 'rehearsal_not_clean', reason: view?.reason ?? null }
 }
 
 const PREFLIGHT_REFUSALS = {
@@ -2871,6 +2910,19 @@ export function approveGate(
       })
       notify()
       return preflight
+    }
+    // HO-839: and only once this plan rehearsed clean — enforced here, for
+    // every approver (card, WhatsApp, caretaker), not only by the card.
+    const rehearsed = rehearsalCheck(id, plan)
+    if (rehearsed.error) {
+      addEvent(id, {
+        who: actor,
+        text: `could not approve “${STEPS[stepIndex].label}”: ${rehearsed.reason ? `the rehearsal failed (${rehearsed.reason})` : 'the plan has no clean rehearsal'} — send it back to Run plan or re-run Preflight`,
+        color: '#9C333E',
+        initials: '✕',
+      })
+      notify()
+      return rehearsed
     }
     approvedHash = plan.hash
     approvedRunner = plan.runner

@@ -1,0 +1,46 @@
+{
+  "$comment": "HO-839 replay set: a host-runner backfill whose proof counts a stored CSV with awk. Rehearses clean.",
+  "files": {
+    "backfill.sh": "#!/bin/sh\n[ \"$1\" = --dry-run ] || { echo 'the real backfill is not part of the rehearsal' >&2; exit 1; }\necho \"would update ${REHEARSAL_LIMIT:-all} accounts\"\n",
+    "fixtures/accounts.csv": "id,name\n1,a\n2,b\n3,c\n4,d\n"
+  },
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "sh backfill.sh",
+      "awk -F, 'NR>1{n++} END{print n \" rows\"}' fixtures/accounts.csv"
+    ],
+    "budget_minutes": 5,
+    "runner": "host",
+    "requires": [
+      {
+        "tool": "awk"
+      },
+      {
+        "tool": "sh"
+      },
+      {
+        "path": "backfill.sh"
+      },
+      {
+        "path": "fixtures/accounts.csv"
+      }
+    ],
+    "proof": [
+      {
+        "line": 1,
+        "command": 2
+      }
+    ],
+    "rehearsal": {
+      "dry_run": "sh backfill.sh --dry-run",
+      "limit": 4,
+      "samples": [
+        {
+          "command": 2,
+          "expect": "4 rows"
+        }
+      ]
+    }
+  }
+}

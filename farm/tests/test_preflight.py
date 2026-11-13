@@ -470,6 +470,9 @@ def test_preflight_writes_nothing_takes_no_lock_and_runs_no_plan_command(repo, t
     monkeypatch.setattr(step_agent, "run_agent", refuse("run_agent"))
     monkeypatch.setattr(step_agent, "model_persona", refuse("model_persona"))
     monkeypatch.setattr(step_agent, "ensure_item_worktree", refuse("ensure_item_worktree"))
+    # HO-839: a passing preflight then asks farmd for the plan's rehearsal,
+    # which runs in farmd's sandbox, not here (farm/tests/test_rehearsal.py).
+    monkeypatch.setattr(step_agent, "_rehearse", lambda task: {"clean": True, "reason": None, "scope": "full", "seconds": 0, "plan_hash": task["plan_hash"], "failures": []})
 
     results = []
     for name in ("pf-lock-held", "pf-all-hold"):

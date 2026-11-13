@@ -45,7 +45,7 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { AUTO_RETRY_REASONS, REASON } from '../../domain/js/reasons.js'
 import { patchLimits, addedCriteriaLines, criteriaLines } from '../../domain/js/fields.js'
-import { DB_CHANGES_RULES, TASK_MEDIA_RULES, circularProofs, contractGaps, validTableName } from '../../domain/js/runPlan.js'
+import { DB_CHANGES_RULES, REHEARSAL_REASONS, REHEARSAL_SCOPES, TASK_MEDIA_RULES, circularProofs, contractGaps, validTableName } from '../../domain/js/runPlan.js'
 import { renderPlanDraftMd } from '../../domain/js/planDraft.js'
 import { isCommitSha } from '../../domain/js/codeRefs.js'
 import { ingestDraft } from './planDraft.js'
@@ -1294,8 +1294,10 @@ export const MOCK_STEP_BEHAVIOR = {
     const runner = currentRunPlan(it.id)?.runner ?? 'host'
     return {
       summary: `preflight passed on ${runner} as demo (mock)`,
-      artifact_md: `## Preflight\n\n**passed** — preflight passed on ${runner} as demo (mock)`,
+      artifact_md: `## Preflight\n\n**passed** — preflight passed on ${runner} as demo (mock)\n\n## Rehearsal\n\n**clean** — rehearsal ran clean in 0s (mock)`,
       preflight: { passed: true, runner, run_user: 'demo', unmet: [] },
+      // HO-839: and its rehearsal ran clean, so the demo gate offers Approve.
+      rehearsal: { clean: true, reason: null, scope: 'full', seconds: 0, failures: [] },
     }
   },
   // HZ-378: Execute runs one mock command; Verify judges it. Both return
@@ -1882,6 +1884,17 @@ function sendBackTo(id, stepIndex, { feedback, fix = null, event, source = 'ui' 
 // row tagged with this source; the cap counts those rows, never a human's
 // Reject with feedback.
 export const IMPACT_SENDBACK_SOURCE = 'impact-review'
+// HO-839: a failed rehearsal's send-back, under the same cap.
+export const REHEARSAL_SENDBACK_SOURCE = 'rehearsal'
+
+// HO-839: the automatic send-backs to Run plan so far — Impact review's and
+// the rehearsal's together, so a plan bounces at most IMPACT_SENDBACK_CAP
+// times whichever sent it. A human's feedback ('ui') never counts.
+export function sendBackCount(id) {
+  return db
+    .prepare('SELECT COUNT(*) AS n FROM feedback WHERE item_id = ? AND source IN (?, ?)')
+    .get(id, IMPACT_SENDBACK_SOURCE, REHEARSAL_SENDBACK_SOURCE).n
+}
 
 // What Impact review's `circular_proofs` and HO-836's `contract_gaps` do to
 // the item: null when neither flags anything (or each sent a shape
@@ -1919,8 +1932,71 @@ export function impactSendBack(id, artifacts, metric) {
       ].join('\n'),
     )
   }
-  const sent = db.prepare('SELECT COUNT(*) AS n FROM feedback WHERE item_id = ? AND source = ?').get(id, IMPACT_SENDBACK_SOURCE).n
+  const sent = sendBackCount(id)
   return { found: found.join(' and '), feedback: sections.join('\n\n'), sent, capped: sent >= IMPACT_SENDBACK_CAP }
+}
+
+// HO-839: what each rehearsal reason asks of the Run plan agent.
+const REHEARSAL_ASKS = {
+  rehearsal_missing: 'The plan has nothing to rehearse. Add `rehearsal.dry_run` (the `--dry-run` or `--limit` form) and one `rehearsal.samples` entry per proof command.',
+  rehearsal_dry_run_failed: 'The dry run exited non-zero in the read-only sandbox. Fix `rehearsal.dry_run` so it previews the run without writing.',
+  rehearsal_parser_failed: 'A proof command exited non-zero in the read-only sandbox (a broken `jq` path or parser, or a missing file). Fix the command so it reads its source and prints its sample line.',
+  rehearsal_sample_mismatch: "A proof command ran but did not print its sample's expected line. Fix the command or its `rehearsal.samples` entry.",
+  rehearsal_write_refused: 'A command tried to write to the database and the read-only transaction refused it. The dry run, proofs and checks must only read.',
+  rehearsal_checkout_write_refused: 'A command tried to write to a read-only filesystem (the checkout, `.git`, the image or a host tool dir). Write only under `/tmp`, and only in the real run.',
+  rehearsal_idempotency_write: 'A precondition `check` tried to write. A check must only read.',
+  rehearsal_writable_role: 'An `ro_env` connection logs in as a role that can write. Point it at a read-only role (SELECT only, no superuser).',
+  rehearsal_role_unverified: 'An `ro_env` connection could not be checked for write privilege from the farm. Use a Unix-socket DSN to a database on this host.',
+  rehearsal_rows_changed: "A `db_changes` table's row count changed during the rehearsal. The rehearsal must not change any row.",
+  rehearsal_checkout_dirty: "The checkout's `git status --porcelain` changed during the rehearsal. Nothing may be written there.",
+  rehearsal_timeout: 'The rehearsal ran past its cap. Make the dry run smaller (`rehearsal.limit`) and the proofs faster.',
+}
+
+// HO-839: a rehearsal result as stored — reason ids from
+// domain/runPlanContract.json, labels and exit codes only, at most
+// REHEARSAL_FAILURES_MAX findings. A missing or malformed result is stored as
+// not clean, never as clean: the gate refuses it.
+const REHEARSAL_TEXT_MAX = 200
+const REHEARSAL_FAILURES_MAX = 50
+
+export function sanitizeRehearsal(result) {
+  const reasonOf = (value) => (REHEARSAL_REASONS.includes(value) ? value : null)
+  if (!result || typeof result !== 'object' || Array.isArray(result) || typeof result.clean !== 'boolean' || !Array.isArray(result.failures)) {
+    return { clean: false, reason: 'rehearsal_missing', scope: null, seconds: null, failures: [{ what: 'rehearsal', reason: 'rehearsal_missing', exit: null }] }
+  }
+  const failures = result.failures
+    .filter((f) => f && typeof f === 'object')
+    .slice(0, REHEARSAL_FAILURES_MAX)
+    .map((f) => ({
+      what: String(f.what ?? '').slice(0, REHEARSAL_TEXT_MAX),
+      reason: reasonOf(f.reason) ?? 'rehearsal_missing',
+      exit: Number.isInteger(f.exit) ? f.exit : null,
+    }))
+  const clean = result.clean === true && failures.length === 0 && result.failures.length === 0
+  return {
+    clean,
+    reason: clean ? null : (reasonOf(result.reason) ?? failures[0]?.reason ?? 'rehearsal_missing'),
+    scope: REHEARSAL_SCOPES.includes(result.scope) ? result.scope : null,
+    seconds: Number.isInteger(result.seconds) && result.seconds >= 0 ? result.seconds : null,
+    failures: clean ? [] : failures.length ? failures : [{ what: 'rehearsal', reason: reasonOf(result.reason) ?? 'rehearsal_missing', exit: null }],
+  }
+}
+
+// HO-839: what a stored (sanitized) rehearsal does to the item: null when it
+// ran clean, else one feedback naming each finding and what to fix, and
+// whether the shared cap still allows a send-back. Labels and reason ids
+// only — never a command's output.
+export function rehearsalSendBack(id, rehearsal) {
+  if (!rehearsal || rehearsal.clean === true) return null
+  const reasons = [...new Set(rehearsal.failures.map((f) => f.reason))]
+  const feedback = [
+    `The rehearsal of this run plan failed in the read-only sandbox (no network, read-only checkout and database): ${rehearsal.reason}. Fix the plan, then it is rehearsed again before Approve the run.`,
+    ...rehearsal.failures.map((f) => `- ${f.what}: ${f.reason}${f.exit == null ? '' : ` (exit ${f.exit})`}`),
+    '',
+    ...reasons.map((reason) => `${reason}: ${REHEARSAL_ASKS[reason] ?? 'Fix the plan.'}`),
+  ].join('\n')
+  const sent = sendBackCount(id)
+  return { reason: rehearsal.reason, feedback, sent, capped: sent >= IMPACT_SENDBACK_CAP }
 }
 
 // HZ-379: the hold in kick() above. One check per item at a time; a check
@@ -2481,6 +2557,20 @@ function dispatchCodeRun(id, stepIndex, runId, attempt) {
     if (err.status === 400 && Object.hasOwn(FARM_REFUSALS, err.code ?? '')) return failFarmRun(runId, FARM_REFUSALS[err.code])
     failFarmRun(runId, `could not hand the step to the farm: ${err.message}`, REASON.UNREACHABLE)
   })
+}
+
+// HO-839: when a deploy target's container image changes, farmd pulls the new
+// one in the background (POST /images/pull), so a rehearsal or Execute rarely
+// waits on a pull — its 600 s cap stays outside the rehearsal's own. Fire and
+// forget: a refused or failed pre-pull is pulled again by the rehearsal.
+// Returns whether a pull was asked for.
+export function prePullOnImageChange(before, after, pull = (image) => farmFetch('/images/pull', { image })) {
+  const image = typeof after === 'string' ? after.trim() : ''
+  if (!FARM_URL || !image || image === (typeof before === 'string' ? before.trim() : '')) return false
+  Promise.resolve()
+    .then(() => pull(image))
+    .catch(() => {})
+  return true
 }
 
 // HO-837: {<deploy target key>: <last-good tag or null>} for each `service`
@@ -3654,10 +3744,15 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
 
   // HZ-407: a job's final view lands in the same write that closes the run.
   const finalView = STEPS[run.step_index]?.runsIn === 'job' ? cleanJobView(jobView) : null
-  // HO-837: Preflight's result, in the same write.
-  const preflight = run.step_index === PREFLIGHT_STEP_INDEX ? JSON.stringify(sanitizePreflight(artifacts?.preflight)) : null
+  // HO-837: Preflight's result, in the same write. HO-839: and, when it
+  // passed, its rehearsal's — a passing Preflight with none is stored as not
+  // clean, so the gate never offers Approve for it.
+  const preflightResult = run.step_index === PREFLIGHT_STEP_INDEX ? sanitizePreflight(artifacts?.preflight) : null
+  const preflight = preflightResult ? JSON.stringify(preflightResult) : null
+  const rehearsal = preflightResult?.passed ? sanitizeRehearsal(artifacts?.rehearsal) : null
+  const rehearsed = run.step_index === PREFLIGHT_STEP_INDEX && ownsImpactReview ? rehearsalSendBack(id, rehearsal) : null
   db.prepare(
-    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, verify_open_lines = ?, preflight_json = ?, ended_at = datetime('now') WHERE id = ?",
+    "UPDATE step_run SET status = 'done', output = ?, artifact = ?, provider = ?, model = ?, command_id = ?, source_shas = ?, job_view = COALESCE(?, job_view), verdict = ?, verdict_summary = ?, verify_outcome = ?, execute_cause = ?, verify_open_lines = ?, preflight_json = ?, rehearsal_json = ?, ended_at = datetime('now') WHERE id = ?",
   ).run(
     text,
     artifactMd,
@@ -3672,6 +3767,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     verify?.executeCause ?? null,
     verify?.openLines ? JSON.stringify(verify.openLines) : null,
     preflight,
+    rehearsal && JSON.stringify(rehearsal),
     runId,
   )
   addEvent(id, {
@@ -3682,7 +3778,20 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     detail: verify?.summary ?? null,
     verdict: verify?.verdict ?? null,
   })
-  if (impact && !impact.capped) {
+  if (rehearsed && !rehearsed.capped) {
+    // HO-839: a failed rehearsal goes back to Run plan before anyone can
+    // approve it, under the cap Impact review's send-backs count toward too.
+    sendBackTo(id, RUN_PLAN_STEP_INDEX, {
+      feedback: rehearsed.feedback,
+      source: REHEARSAL_SENDBACK_SOURCE,
+      event: {
+        who: 'Horizon',
+        text: `the rehearsal failed (${rehearsed.reason}; send-back ${rehearsed.sent + 1}/${IMPACT_SENDBACK_CAP}, shared with Impact review) — sent back to “${STEPS[RUN_PLAN_STEP_INDEX].label}”`,
+        color: '#DFA200',
+        initials: 'HZ',
+      },
+    })
+  } else if (impact && !impact.capped) {
     sendBackTo(id, RUN_PLAN_STEP_INDEX, {
       feedback: impact.feedback,
       source: IMPACT_SENDBACK_SOURCE,
@@ -3701,6 +3810,15 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
       addEvent(id, {
         who: 'Horizon',
         text: `Impact review still finds ${impact.found}, but the send-back cap (${IMPACT_SENDBACK_CAP}) is reached — a human decides at the gate`,
+        color: '#9C333E',
+        initials: 'HZ',
+      })
+    }
+    // HO-839: never skipped — at the cap the gate opens with Approve hidden.
+    if (rehearsed) {
+      addEvent(id, {
+        who: 'Horizon',
+        text: `the rehearsal failed (${rehearsed.reason}), and the send-back cap (${IMPACT_SENDBACK_CAP}, shared with Impact review) is reached — Approve stays hidden; send the plan back or abandon the task`,
         color: '#9C333E',
         initials: 'HZ',
       })
@@ -4200,7 +4318,7 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
-  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview, preflight } = await behavior(item)
+  let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview, preflight, rehearsal } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
   if (failure) {
@@ -4259,7 +4377,12 @@ async function runMockStep(id, stepIndex, runId) {
   if (artifactMd) db.prepare('UPDATE step_run SET artifact = ? WHERE id = ?').run(artifactMd, runId)
   // HO-837: stored exactly as the farm path stores one.
   if (stepIndex === PREFLIGHT_STEP_INDEX) {
-    db.prepare('UPDATE step_run SET preflight_json = ? WHERE id = ?').run(JSON.stringify(sanitizePreflight(preflight)), runId)
+    const checked = sanitizePreflight(preflight)
+    db.prepare('UPDATE step_run SET preflight_json = ?, rehearsal_json = ? WHERE id = ?').run(
+      JSON.stringify(checked),
+      checked.passed ? JSON.stringify(sanitizeRehearsal(rehearsal)) : null,
+      runId,
+    )
   }
   writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
   addEvent(id, {

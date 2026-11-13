@@ -110,6 +110,20 @@ never `env` names) and `samples`, one `{"command": <k>, "expect": "<one
 line>"}` per `proof` command, or the step fails. Names and read-only
 commands only: never a secret, file contents or a live row.
 
+Before Approve the run, the farm rehearses this block in a sandbox: no
+network, the checkout read-only, `/tmp` the only writable place, and only
+the `ro_env` names set (never the `env` ones). It runs `dry_run` (with
+`$REHEARSAL_LIMIT` set to `limit`), each precondition `check`, then each
+sampled proof command, whose output must hold its `expect` line. A
+non-zero exit, a missing line, or any write attempt sends the plan back to
+you. So:
+- the dry run and proofs must work offline, reading the checkout or a
+  stored fixture;
+- an `ro_env` database connection must be a Unix-socket DSN to a database
+  on this host (`host=/var/run/postgresql dbname=<db> user=<role>`) for a
+  read-only role: SELECT only, never a superuser. A TCP DSN cannot connect
+  in the sandbox, and a role that can write fails the rehearsal.
+
 Horizon dependencies already guarantee a blocker has merged or closed
 before this Task runs. Do not add a `gh` command, or a `gh` tool, to check
 that.

@@ -128,6 +128,11 @@ function requiresError(requires) {
 // no `check`, `version_cmd`, `dry_run` or sample is ever run here.
 export const RUN_PLAN_CONTRACT = runPlanContract
 const CONTRACT = runPlanContract
+// HO-839: what a rehearsal of the block may say — the reason ids
+// farm/rehearsal.py emits and the server stores, its scopes, and its cap.
+export const REHEARSAL_REASONS = Object.freeze([...CONTRACT.rehearsalReasons])
+export const REHEARSAL_SCOPES = Object.freeze([...CONTRACT.rehearsalScopes])
+export const REHEARSAL_CAP_S = CONTRACT.rehearsalCapS
 const SERVICE_NAME = new RegExp(CONTRACT.serviceName)
 const WRITE_SHAPES = CONTRACT.writeShapes.map((shape) => ({
   name: shape.name,
