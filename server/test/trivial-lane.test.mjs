@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-trivial-lane-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -27,6 +28,8 @@ const issueBodies = new Map()
 const githubWrites = []
 const farmCalls = []
 globalThis.fetch = async (url, opts = {}) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   const u = String(url)
   const method = opts.method || 'GET'
   if (u.startsWith('https://api.github.com/')) {

@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
 import { REPO_ROOT } from './helpers/repoFiles.mjs'
 import { resolveFarmPython } from './helpers/farmd.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-preflight-gate-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -26,6 +27,8 @@ for (const key of ['GITHUB_WEBHOOK_SECRET', 'FARM_STEP_INDEXES', 'WA_POLL_ENABLE
 
 const dispatches = []
 globalThis.fetch = async (url, opts) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   const body = opts?.body ? JSON.parse(opts.body) : null
   dispatches.push({ url: String(url), body })
   if (String(url).includes('/runs/status')) return { ok: true, json: async () => ({ states: {} }) }
@@ -419,11 +422,11 @@ test('guardrail 4: a secret value set on the runner never reaches the stored res
 
 // ==== Execute's own refusals stay as the backstop ====
 
-test("Execute's refuseUnapprovedRun still refuses an unapproved item, whatever Preflight says", () => {
+test("Execute's refuseUnapprovedRun still refuses an unapproved item, whatever Preflight says", async () => {
   const id = seedTask('PF-BACKSTOP', { cursor: EXECUTE_STEP_INDEX })
   seedPreflight(db, store, id)
   const runId = Number(
     db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 1, 'DevOps', 'active')").run(id, EXECUTE_STEP_INDEX).lastInsertRowid,
   )
-  assert.equal(orchestrator.refuseUnapprovedRun(runId, id, EXECUTE_STEP_INDEX).error, 'plan_not_approved')
+  assert.equal((await orchestrator.refuseUnapprovedRun(runId, id, EXECUTE_STEP_INDEX)).error, 'plan_not_approved')
 })

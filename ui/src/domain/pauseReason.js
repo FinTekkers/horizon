@@ -71,6 +71,10 @@ const CATEGORY_COPY = {
     label: 'Plan draft rejected',
     detail: 'The Draft items reply broke the draft contract, such as a guessed key, an unknown repo or a missing draft. Nothing was saved or filed. Resume to draft again.',
   },
+  [REASON.PREREQ_DRIFT]: {
+    label: 'Run refused: host changed since approval',
+    detail: 'A prerequisite checked at approval is now missing or a deploy is running, so no command ran. The event lists each failed check. Fix the host and resume.',
+  },
 }
 
 // Both mirror the event text server/src/store.js:1208 writes on pause/resume.

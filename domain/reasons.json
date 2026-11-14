@@ -14,6 +14,7 @@
     { "id": "invalid_plan_draft", "retryable": false },
     { "id": "usage_limited", "retryable": true },
     { "id": "fails_on_main", "retryable": false },
-    { "id": "golden_cases_not_approved", "retryable": false }
+    { "id": "golden_cases_not_approved", "retryable": false },
+    { "id": "prereq_drift", "retryable": false }
   ]
 }

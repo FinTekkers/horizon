@@ -124,6 +124,7 @@ import {
   FARM_STEP_TIMEOUT_MS,
   DEPLOY_WAIT_MS,
   FARM_QUEUE_TIMEOUT_MS,
+  FARM_PREFLIGHT_TIMEOUT_MS,
   FARM_CHECKS_PAUSE_MAX_MS,
   FARM_START_TIMEOUT_MS,
   FARM_CONFLICT_RESOLVE_TIMEOUT_MS,
@@ -2442,7 +2443,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       .join('; ')
     return failFarmRun(runId, `required input incomplete: ${detail}`, REASON.REQUIRED_INPUT_INCOMPLETE)
   }
-  if (refuseUnapprovedRun(runId, id, stepIndex)) return
+  // HO-838: only Execute awaits — its prerequisite re-check is a farm call.
+  // Every other step still dispatches in the same tick, as before. A Stop
+  // during the re-check leaves the run inactive, so nothing is dispatched.
+  if (stepIndex === EXECUTE_STEP_INDEX) {
+    if (await refuseUnapprovedRun(runId, id, stepIndex)) return
+    if (!runStillActive(runId)) return
+  }
   if (step.runsIn === 'job') return dispatchJob(id, stepIndex, runId, attempt)
 
   // HZ-801: each stored input carries the full URL of its artifact page, so
@@ -2716,44 +2723,73 @@ function jobEnvFields(repo) {
   }
 }
 
+// HO-838: the fields Execute gets, shared by dispatchJob and the dispatch
+// re-check, so the two payloads cannot drift apart. Includes the approved
+// plan, runner, checkout fields, test-env path, deploy state and service
+// tags — never a secret value. The re-check then sees exactly what Execute
+// would run.
+export function jobRequest(id) {
+  const item = getItem(id)
+  if (!item) return {}
+  const projectRow =
+    hasNoProject(db, item.project_id)
+      ? null
+      : db.prepare('SELECT id, name, isolation, github_token_ref, run_user FROM project WHERE id = ?').get(item.project_id)
+  const planArtifact = latestArtifact(id, RUN_PLAN_STEP_INDEX) ?? ''
+  const approved = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id) ?? {}
+  const target = findTargetByRepo(item.repo)
+  const testEnvFile = getRepoTestEnvFile(item.repo)
+  const plan = currentRunPlan(id)
+  return {
+    item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
+    ...(projectRow ? { project: taskProject(projectRow) } : {}),
+    plan_artifact: planArtifact,
+    approved_hash: approved.approved_plan_hash ?? '',
+    runner: approved.approved_runner ?? '',
+    ...jobEnvFields(item.repo),
+    ...(testEnvFile ? { test_env_file: testEnvFile } : {}),
+    ...(target?.stateKey ? { deploy_state_key: target.stateKey } : {}),
+    deploy_running: runningDeployFor(item.repo),
+    service_tags: serviceTagsFor(plan?.block ?? {}),
+  }
+}
+
 // HZ-378: hands an Execute step to the farm's job lane. The payload carries
 // the plan artifact and the approved hash — never secret values, which farmd
 // resolves farm-side. The queue watchdog (armed by dispatchToFarm before this
 // runs) still bounds the handoff; no execution timer is ever armed for jobs.
+// HO-838: shares jobRequest with the dispatch re-check so the two payloads
+// cannot drift apart.
 function dispatchJob(id, stepIndex, runId, attempt) {
   const step = STEPS[stepIndex]
-  const item = getItem(id)
-  const project =
-    hasNoProject(db, item.project_id)
-      ? null
-      : db.prepare('SELECT id, name, isolation, github_token_ref, run_user FROM project WHERE id = ?').get(item.project_id)
-  const planArtifact = latestArtifact(id, RUN_PLAN_STEP_INDEX)
-  const approved = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id)
-  const approvedHash = approved?.approved_plan_hash
-  // HZ-491: the effective runner approved with the plan; refuseUnapprovedRun
-  // already checked it still matches the repo's image setting.
-  const runner = approved?.approved_runner
-  if (!planArtifact || !approvedHash || !runner) return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
-  // HZ-553: the item's own repo's test-login file path, whenever set — never
-  // its values, and never a path the run plan names. farmd reads the file at
-  // launch and refuses the job (login_env_refused: ...) when it can't.
-  const testEnvFile = getRepoTestEnvFile(item.repo)
+  const req = jobRequest(id)
+  if (!req.plan_artifact || !req.approved_hash || !req.runner) {
+    return failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+  }
   farmFetch('/steps/run', {
     run_id: runId,
     attempt,
-    item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
+    item: req.item,
     // HZ-709: the key names the step; farmd finds it by key and falls back
     // to the index only for a task queued before keys.
     step: { key: stepKeyAt(stepIndex), index: stepIndex, label: step.label, agent: step.agent },
-    ...(project ? { project: taskProject(project) } : {}),
-    plan_artifact: planArtifact,
-    approved_hash: approvedHash,
+    ...(req.project ? { project: req.project } : {}),
+    plan_artifact: req.plan_artifact,
+    approved_hash: req.approved_hash,
     // HO-843: each approved command's hash, and after a per-command
     // re-approval the index Execute may carry passed commands up to.
     ...approvedCommandFields(id),
-    runner,
-    ...jobEnvFields(item.repo),
-    ...(testEnvFile ? { test_env_file: testEnvFile } : {}),
+    runner: req.runner,
+    repo_dir: req.repo_dir,
+    venv_dir: req.venv_dir,
+    ...(req.task_clone ? { task_clone: true } : {}),
+    container_image: req.container_image,
+    cpu_limit: req.cpu_limit,
+    memory_limit: req.memory_limit,
+    ...(req.test_env_file ? { test_env_file: req.test_env_file } : {}),
+    ...(req.deploy_state_key ? { deploy_state_key: req.deploy_state_key } : {}),
+    ...(req.deploy_running ? { deploy_running: req.deploy_running } : {}),
+    ...(req.service_tags && Object.keys(req.service_tags).length ? { service_tags: req.service_tags } : {}),
   }).catch((err) => {
     const code = err.code ?? ''
     if ((err.status === 400 || err.status === 409) && Object.hasOwn(FARM_REFUSALS, code)) {
@@ -4234,25 +4270,82 @@ export function failFarmRun(runId, error, reason = null, jobView = null, limit =
   return { ok: true }
 }
 
+// HO-838: name caps — same as farm/preflight.py DRIFT_NAMES_MAX / DRIFT_NAME_MAX.
+const DRIFT_NAMES_MAX = 20
+const DRIFT_NAME_MAX = 120
+
+// HO-838: the dispatch re-check — the Preflight checks on the approved plan
+// as farmd sees them right now. Read-only, no lock, never pulls an image.
+// Any failure, timeout or unreachable farm refuses dispatch with PREREQ_DRIFT
+// and runs no command. Text lists failed names only, never a value or file
+// content.
+export async function refuseOnPrereqDrift(runId, id) {
+  let body
+  try {
+    body = jobRequest(id)
+  } catch (exc) {
+    const reason = String(exc).slice(0, 200)
+    const text = `prerequisite re-check could not run: ${reason} — dispatch refused`
+    failFarmRun(runId, text, REASON.PREREQ_DRIFT)
+    return { error: REASON.PREREQ_DRIFT, failed: [] }
+  }
+  let data
+  try {
+    data = await farmFetch('/preflight', body, { timeoutMs: FARM_PREFLIGHT_TIMEOUT_MS })
+  } catch (err) {
+    const reason = String(err?.message ?? err).slice(0, 200)
+    const text = `prerequisite re-check could not run: ${reason} — dispatch refused`
+    failFarmRun(runId, text, REASON.PREREQ_DRIFT)
+    return { error: REASON.PREREQ_DRIFT, failed: [] }
+  }
+  if (!data || typeof data !== 'object' || typeof data.ok !== 'boolean') {
+    const text = `prerequisite re-check could not run: invalid response — dispatch refused`
+    failFarmRun(runId, text, REASON.PREREQ_DRIFT)
+    return { error: REASON.PREREQ_DRIFT, failed: [] }
+  }
+  if (data.ok) return null
+  const failed = Array.isArray(data.failed) ? data.failed : []
+  const names = failed.slice(0, DRIFT_NAMES_MAX).map((n) => String(n).slice(0, DRIFT_NAME_MAX))
+  const shown = names.length ? names.join(', ') : 'check'
+  let text = `prerequisites changed since approval — failed: ${shown}`
+  if (Array.isArray(data.unmet) && data.unmet.length) {
+    const lines = data.unmet.slice(0, DRIFT_NAMES_MAX).map((u) => {
+      const kind = String(u?.kind ?? 'check').slice(0, 200)
+      const name = String(u?.name ?? '').slice(0, DRIFT_NAME_MAX)
+      const reason = String(u?.reason ?? '').slice(0, 200)
+      return `- ${kind} ${name}: ${reason}`
+    })
+    if (lines.length) text = `${text}\n${lines.join('\n')}`
+  }
+  failFarmRun(runId, text, REASON.PREREQ_DRIFT)
+  return { error: REASON.PREREQ_DRIFT, failed }
+}
+
 // HZ-384: a Task's Execute starts only on the run plan a human approved at
 // Approve the run. Returns null when the run may go ahead (any other step, or
 // a plan that still matches); otherwise fails the run, pausing the item, and
 // returns the store's check result. Runs before dispatch, so a hash mismatch
 // runs zero commands.
-export function refuseUnapprovedRun(runId, id, stepIndex) {
+// HO-838: now async — after the hash gate it re-runs the light preflight
+// checks via farmd POST /preflight. Any failure refuses dispatch.
+export async function refuseUnapprovedRun(runId, id, stepIndex) {
   if (stepIndex !== EXECUTE_STEP_INDEX) return null
   const check = approvedPlanCheck(id)
-  if (!check.error) return null
-  if (check.error === REASON.PLAN_CHANGED_SINCE_APPROVAL) {
-    failFarmRun(
-      runId,
-      'the run plan changed since it was approved — send it back to Run plan and approve it again',
-      REASON.PLAN_CHANGED_SINCE_APPROVAL,
-    )
-  } else {
-    failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+  if (check.error) {
+    if (check.error === REASON.PLAN_CHANGED_SINCE_APPROVAL) {
+      failFarmRun(
+        runId,
+        'the run plan changed since it was approved — send it back to Run plan and approve it again',
+        REASON.PLAN_CHANGED_SINCE_APPROVAL,
+      )
+    } else {
+      failFarmRun(runId, 'the run plan was never approved — approve it at Approve the run first')
+    }
+    return check
   }
-  return check
+  const drift = await refuseOnPrereqDrift(runId, id)
+  if (drift) return drift
+  return null
 }
 
 // HZ-541: Draft implementation plan, Implement and Review need the golden

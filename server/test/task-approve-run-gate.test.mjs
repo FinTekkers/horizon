@@ -33,6 +33,7 @@ globalThis.fetch = async (url, opts) => {
   const body = opts?.body ? JSON.parse(opts.body) : null
   dispatches.push({ url: String(url), body })
   if (String(url).includes('/runs/status')) return { ok: true, json: async () => ({ states: {} }) }
+  if (String(url).includes('/preflight')) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 
@@ -401,7 +402,7 @@ test('HZ-491: approving binds the effective runner — pinning or clearing an im
     assert.equal(check.approvedRunner, 'container')
     assert.equal(check.runner, 'host')
     const run = activeRun('T-491-BIND')
-    assert.equal(orchestrator.refuseUnapprovedRun(run, 'T-491-BIND', EXECUTE_STEP_INDEX).error, REASON.PLAN_CHANGED_SINCE_APPROVAL)
+    assert.equal((await orchestrator.refuseUnapprovedRun(run, 'T-491-BIND', EXECUTE_STEP_INDEX)).error, REASON.PLAN_CHANGED_SINCE_APPROVAL)
     assert.match(db.prepare('SELECT output FROM step_run WHERE id = ?').get(run).output, /^FAILED: the run plan changed since it was approved/)
   } finally {
     pinImage(IMAGE)
@@ -434,15 +435,15 @@ test("Execute's guard: a matching plan starts, a changed plan fails the run, an 
   seedTask('T-EXEC')
   assert.equal((await approveAs('T-EXEC', withSession(PIN))).statusCode, 200)
   const matching = activeRun('T-EXEC')
-  assert.equal(orchestrator.refuseUnapprovedRun(matching, 'T-EXEC', EXECUTE_STEP_INDEX), null)
+  assert.equal(await orchestrator.refuseUnapprovedRun(matching, 'T-EXEC', EXECUTE_STEP_INDEX), null)
   assert.equal(runOf(matching).status, 'active', 'a matching plan leaves the run alone')
   // Only Execute is guarded.
-  assert.equal(orchestrator.refuseUnapprovedRun(matching, 'T-EXEC', RUN_PLAN_STEP_INDEX), null)
+  assert.equal(await orchestrator.refuseUnapprovedRun(matching, 'T-EXEC', RUN_PLAN_STEP_INDEX), null)
   db.prepare("UPDATE step_run SET status = 'cancelled' WHERE id = ?").run(matching)
 
   doneRun('T-EXEC', RUN_PLAN_STEP_INDEX, planArtifact(['scripts/edited.sh']))
   const changed = activeRun('T-EXEC')
-  const refused = orchestrator.refuseUnapprovedRun(changed, 'T-EXEC', EXECUTE_STEP_INDEX)
+  const refused = await orchestrator.refuseUnapprovedRun(changed, 'T-EXEC', EXECUTE_STEP_INDEX)
   assert.equal(refused.error, REASON.PLAN_CHANGED_SINCE_APPROVAL)
   assert.equal(runOf(changed).status, 'cancelled')
   assert.match(runOf(changed).output, /^FAILED: the run plan changed since it was approved/)
@@ -453,7 +454,7 @@ test("Execute's guard: a matching plan starts, a changed plan fails the run, an 
   seedTask('T-UNAPPROVED')
   db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(EXECUTE_STEP_INDEX, 'T-UNAPPROVED')
   const unapproved = activeRun('T-UNAPPROVED')
-  assert.deepEqual(orchestrator.refuseUnapprovedRun(unapproved, 'T-UNAPPROVED', EXECUTE_STEP_INDEX), {
+  assert.deepEqual(await orchestrator.refuseUnapprovedRun(unapproved, 'T-UNAPPROVED', EXECUTE_STEP_INDEX), {
     error: 'plan_not_approved',
   })
   assert.match(runOf(unapproved).output, /^FAILED: the run plan was never approved/)

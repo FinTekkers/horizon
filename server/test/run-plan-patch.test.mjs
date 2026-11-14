@@ -34,6 +34,8 @@ globalThis.fetch = async (url, opts) => {
   const body = opts?.body ? JSON.parse(opts.body) : null
   dispatches.push({ url: String(url), body })
   if (String(url).includes('/runs/status')) return { ok: true, json: async () => ({ states: {} }) }
+  // HO-838: Execute's dispatch re-check finds no drift on this farm.
+  if (String(url).includes('/preflight')) return { ok: true, json: async () => ({ ok: true, failed: [], unmet: [], elapsed_ms: 0 }) }
   return { ok: true, json: async () => ({}) }
 }
 

@@ -39,6 +39,7 @@ import { REPO_ROOT } from './helpers/repoFiles.mjs'
 // model takes the generic retry, still bounded by the unchanged AUTO_RETRY_CAP.
 // HZ-590 added fails_on_main, non-retryable: the retryable set is unchanged.
 // HZ-541 added golden_cases_not_approved, non-retryable: same again.
+// HO-838 added prereq_drift, non-retryable: same again.
 const PINNED_IDS = [
   'never_picked_up',
   'timeout',
@@ -55,10 +56,11 @@ const PINNED_IDS = [
   'usage_limited',
   'fails_on_main',
   'golden_cases_not_approved',
+  'prereq_drift',
 ]
 const PINNED_RETRYABLE = ['never_picked_up', 'sdk_message_too_large', 'timeout', 'turn_cap', 'unreachable', 'usage_limited']
 
-test('PIN: the declared vocabulary is exactly these fifteen reasons', () => {
+test('PIN: the declared vocabulary is exactly these sixteen reasons', () => {
   assert.deepEqual([...REASON_IDS].sort(), [...PINNED_IDS].sort())
   assert.equal(REASONS.length, PINNED_IDS.length)
 })
@@ -80,6 +82,11 @@ test('PIN: read_only_violated is declared but NOT retryable — the item pauses 
 test('PIN: plan_changed_since_approval is declared but NOT retryable — a human must approve the run again', () => {
   assert.equal(isRetryable('plan_changed_since_approval'), false)
   assert.equal(REASONS.find((r) => r.id === 'plan_changed_since_approval').retryable, false)
+})
+
+test('PIN: prereq_drift is declared but NOT retryable — the host changed since approval and needs a human', () => {
+  assert.equal(isRetryable('prereq_drift'), false)
+  assert.equal(REASONS.find((r) => r.id === 'prereq_drift').retryable, false)
 })
 
 test('PIN: job_budget_exceeded is declared but NOT retryable — the item pauses for a human, never auto-retries', () => {

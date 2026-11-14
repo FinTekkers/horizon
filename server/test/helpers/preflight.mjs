@@ -22,3 +22,13 @@ export function seedPreflight(db, store, id, { passed = true, unmet = [], planHa
       rehearsed ? JSON.stringify(rehearsed) : null,
     ).lastInsertRowid
 }
+
+// HO-838: Execute's dispatch re-check calls farmd POST /preflight before
+// /steps/run. A test whose fake farm is not about the re-check answers it
+// with this clean pass, so its Execute dispatch goes ahead as before.
+// Returns null for any other URL.
+export function preflightPass(url) {
+  return new URL(String(url)).pathname === '/preflight'
+    ? { ok: true, status: 200, json: async () => ({ ok: true, failed: [], unmet: [], deferred: [], elapsed_ms: 0 }) }
+    : null
+}
