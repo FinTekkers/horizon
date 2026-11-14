@@ -111,6 +111,7 @@ import {
 import { projectPersonaOverlay } from './definitions.js'
 import { isolationFields } from './projectIsolation.js'
 import { snapshotSubsteps } from './substeps.js'
+import { recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
@@ -2338,6 +2339,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // its metric line. Absent on every other step, and for every item without
     // golden cases.
     ...(GOLDEN_PROMPT_STEP_INDEXES.includes(stepIndex) && goldenCasesRequired(item) ? { golden_cases: true } : {}),
+    // HO-862: the steps that may return a web page, on a project with web-page
+    // visuals on (never a tenant). Absent otherwise, so every other body is
+    // unchanged.
+    ...(visualPagesFor(item, stepIndex) ? { visual_pages: true } : {}),
     // HZ-431: Run plan's prompt names the interpreter Execute will use, so it
     // gets the same checkout and venv setting the Execute dispatch carries.
     // HZ-491: plus where a plan that sets no runner will run.
@@ -3636,6 +3641,14 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   const model = typeof artifacts?.model === 'string' && artifacts.model.trim() ? artifacts.model.trim() : null
   // HZ-546: the commit of each repo the run read. NULL from an older farm.
   const sourceShas = cleanSourceShas(artifacts?.source_shas, item)
+  // HO-862: a stored web-page round. One that does not check out is dropped
+  // with one event naming why; it never fails the run.
+  if (artifacts?.page !== undefined) {
+    const recorded = recordPageRound(runId, item, run.step_index, artifacts.page)
+    if (recorded.error) {
+      addEvent(id, { who: 'Horizon', text: `did not record the web page from “${step.label}”: ${recorded.error}`, color: '#DFA200', initials: 'HZ' })
+    }
+  }
 
   if (run.step_index === REVIEW_STEP_INDEX) {
     if (!validateVerdict(artifacts?.verdict)) return failFarmRun(runId, 'malformed review verdict JSON')
@@ -4153,6 +4166,12 @@ export async function fetchJobMedia(itemId, projectId, name, { range, signal } =
     headers: range ? { range } : {},
     signal,
   })
+}
+
+// HO-862: one web-page file of an item from farmd — page.html or a recorded
+// round's PNG — as the raw fetch Response.
+export async function fetchPageFile(itemId, name, { signal } = {}) {
+  return fetch(`${FARM_URL}/pages/${encodeURIComponent(itemId)}/${encodeURIComponent(name)}`, { signal })
 }
 
 // The whitelisted, capped copy of a view, or null when it is not one.

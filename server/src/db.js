@@ -1874,6 +1874,32 @@ db.exec(`
   );
 `)
 
+// HO-862: a project's web-page visuals switch (server/src/visualPages.js).
+// Additive and defaulted OFF: every existing project keeps today's prompts and
+// dispatch bodies until an owner turns it on in Admin (PIN-gated).
+if (!db.prepare('PRAGMA table_info(project)').all().some((column) => column.name === 'visual_pages_enabled')) {
+  db.exec('ALTER TABLE project ADD COLUMN visual_pages_enabled INTEGER NOT NULL DEFAULT 0 CHECK (visual_pages_enabled IN (0, 1))')
+}
+
+// HO-862: one row per stored round of an item's web page. The farm owns the
+// files (FARM_HOME/state/pages/<item>) and the round numbers; this table lists
+// only the rounds whose result reached the server, so a gap is harmless. The
+// latest row's page is what GET /api/items/:id/page serves. Holds no page text.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS item_page_round (
+    item_id     TEXT    NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    round       INTEGER NOT NULL CHECK (round >= 1),
+    step_run_id INTEGER NOT NULL REFERENCES step_run(id) ON DELETE CASCADE,
+    sha256      TEXT    NOT NULL,
+    bytes       INTEGER NOT NULL,
+    desktop_png TEXT    NOT NULL,
+    phone_png   TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (item_id, round)
+  );
+  CREATE INDEX IF NOT EXISTS idx_item_page_round_run ON item_page_round(step_run_id);
+`)
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },

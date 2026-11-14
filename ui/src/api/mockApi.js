@@ -108,6 +108,14 @@ export function mediaUrl() {
   return '#'
 }
 
+export function pageUrl() {
+  return '#'
+}
+
+export function pageShotUrl() {
+  return '#'
+}
+
 export function issueUrl(item) {
   return `${REPO_URL}/issues/${item.issue}`
 }
@@ -290,6 +298,10 @@ export async function setProjectAutopilot() {
 }
 
 export async function setProjectDefinitionsEnabled() {
+  throw new Error('Projects are not available in mock mode')
+}
+
+export async function setProjectVisualPagesEnabled() {
   throw new Error('Projects are not available in mock mode')
 }
 

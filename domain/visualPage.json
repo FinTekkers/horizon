@@ -1,0 +1,16 @@
+{
+  "$comment": "HO-862: the one declaration of a web-page visual artifact's rules. Read by farm/visual_page.py (the static checks, the capture's viewports and CSP, the stored names) and by server/src/visualPages.js and server/src/app.js (the /page route's CSP and the shot route's name check), so the page an agent's JS runs in on the farm is the page owners get, and a name the farm stores is always one the server serves. `csp` has `sandbox allow-scripts` and never `allow-same-origin`: agent JS runs in an opaque origin with no Horizon session, cookies or API access. `fulfilUrl` is the fixed URL the capture worker answers from the page text; `.invalid` never resolves, so it is never fetched.",
+  "maxBytes": 200000,
+  "maxLineChars": 2000,
+  "maxBase64Run": 200,
+  "csp": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox allow-scripts",
+  "fulfilUrl": "http://page.invalid/",
+  "maxHeightPx": 4000,
+  "shotTimeoutS": 30,
+  "viewports": [
+    { "name": "desktop", "width": 1024, "height": 640 },
+    { "name": "phone", "width": 375, "height": 667 }
+  ],
+  "pageName": "page.html",
+  "shotName": "^page-r[1-9][0-9]{0,3}-(desktop|phone)\\.png$"
+}

@@ -12,6 +12,7 @@ vi.mock('../../api', () => ({
   setProjectEnabled: vi.fn(),
   setProjectAutopilot: vi.fn(),
   setProjectDefinitionsEnabled: vi.fn(),
+  setProjectVisualPagesEnabled: vi.fn(),
   setProjectStepProvider: vi.fn(async () => ({ ok: true })),
   addRepoToProject: vi.fn(),
   disconnectRepo: vi.fn(),

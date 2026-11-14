@@ -74,6 +74,7 @@ import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import * as definitions from './definitions.js'
+import * as visualPages from './visualPages.js'
 import * as projectDefinitions from './projectDefinitions.js'
 import * as rulesStore from './rulesStore.js'
 import * as knowledgeDocs from './knowledgeDocs.js'
@@ -1580,40 +1581,130 @@ export function buildApp({
       if (!item) return reply.code(404).send({ error: 'not_found' })
       const entry = orchestrator.MEDIA_NAME.test(name) ? store.jobMedia(id).find((m) => m.name === name) : null
       if (!entry) return reply.code(404).send({ error: 'no_media' })
-      if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
-      // A phone drops Range requests all the time: stop reading from farmd
-      // the moment the browser goes away (and, harmlessly, once it is sent).
-      const abort = new AbortController()
-      reply.raw.once('close', () => abort.abort())
-      let res
-      try {
-        const range = typeof request.headers.range === 'string' ? request.headers.range : undefined
-        res = await orchestrator.fetchJobMedia(id, item.project_id ?? null, name, { range, signal: abort.signal })
-      } catch {
-        return reply.code(503).send({ error: 'farm unavailable' })
-      }
-      if (res.status !== 200 && res.status !== 206) {
-        res.body?.cancel().catch(() => {})
-        if (res.status === 416) {
+      const range = typeof request.headers.range === 'string' ? request.headers.range : undefined
+      return streamFarmFile(reply, (signal) => orchestrator.fetchJobMedia(id, item.project_id ?? null, name, { range, signal }), {
+        notFound: 'no_media',
+        okStatuses: [200, 206],
+        passHeaders: ['content-length', 'content-range'],
+        onRefused: (res) => {
+          if (res.status !== 416) return null
           const unsatisfied = res.headers.get('content-range')
           if (unsatisfied) reply.header('Content-Range', unsatisfied)
           return reply.code(416).send({ error: 'range_not_satisfiable' })
-        }
-        return res.status === 404 ? reply.code(404).send({ error: 'no_media' }) : reply.code(503).send({ error: 'farm unavailable' })
-      }
-      for (const header of ['content-length', 'content-range']) {
-        const value = res.headers.get(header)
-        if (value) reply.header(header, value)
-      }
-      reply
-        .code(res.status)
-        .header('Content-Type', orchestrator.MEDIA_MIMES.has(entry.mime) ? entry.mime : 'application/octet-stream')
-        .header('Accept-Ranges', 'bytes')
-        .header('X-Content-Type-Options', 'nosniff')
-        .header('Content-Security-Policy', "default-src 'none'; sandbox")
-        .header('Content-Disposition', `inline; filename="${name}"`)
-        .header('Cache-Control', 'private, max-age=300')
-      return reply.send(res.body ? Readable.fromWeb(res.body) : '')
+        },
+        headers: {
+          'Content-Type': orchestrator.MEDIA_MIMES.has(entry.mime) ? entry.mime : 'application/octet-stream',
+          'Accept-Ranges': 'bytes',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+          'Content-Disposition': `inline; filename="${name}"`,
+          'Cache-Control': 'private, max-age=300',
+        },
+      })
+    },
+  )
+
+  // HZ-815, HO-862: one file farmd serves over loopback, streamed to the
+  // browser — the media route's and the web-page routes' shared tail, called
+  // once the route has checked the name against its own records. A browser
+  // that goes away (a phone drops Range requests all the time) stops the farm
+  // read. farmd unset or unreachable is 503; its 404 is the route's
+  // `notFound`; any other refusal is 503 unless `onRefused` answers it.
+  // `headers` are the route's own — never farmd's.
+  async function streamFarmFile(reply, fetchFile, { notFound, okStatuses = [200], passHeaders = ['content-length'], onRefused = null, headers = {} }) {
+    if (!FARM_URL) return reply.code(503).send({ error: 'farm unavailable' })
+    const abort = new AbortController()
+    reply.raw.once('close', () => abort.abort())
+    let res
+    try {
+      res = await fetchFile(abort.signal)
+    } catch {
+      return reply.code(503).send({ error: 'farm unavailable' })
+    }
+    if (!okStatuses.includes(res.status)) {
+      res.body?.cancel().catch(() => {})
+      const answered = onRefused?.(res)
+      if (answered) return answered
+      return res.status === 404 ? reply.code(404).send({ error: notFound }) : reply.code(503).send({ error: 'farm unavailable' })
+    }
+    for (const header of passHeaders) {
+      const value = res.headers.get(header)
+      if (value) reply.header(header, value)
+    }
+    reply.code(res.status)
+    for (const [name, value] of Object.entries(headers)) reply.header(name, value)
+    return reply.send(res.body ? Readable.fromWeb(res.body) : '')
+  }
+
+  // HO-862: an item's web-page visual — the stable artifact link. Members of
+  // the item's project only, on the item page's own login; the page comes from
+  // farmd over loopback and is never on a static mount. It is served under
+  // visualPages.PAGE_CSP: `sandbox allow-scripts` with no allow-same-origin,
+  // so the agent's JS runs in an opaque origin and never sees this origin's
+  // session, cookies or API. no-store, so a new round shows on reload.
+  fastify.get(
+    '/api/items/:id/page',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string', minLength: 1 } } },
+        response: {
+          200: { content: { 'text/html': { schema: { type: 'string', description: "The latest round's page, from farmd" } } } },
+          404: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      if (!store.getItem(id)) return reply.code(404).send({ error: 'not_found' })
+      if (!visualPages.latestPageRound(id)) return reply.code(404).send({ error: 'no_page' })
+      return streamFarmFile(reply, (signal) => orchestrator.fetchPageFile(id, 'page.html', { signal }), {
+        notFound: 'no_page',
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': visualPages.PAGE_CSP,
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+          'Cache-Control': 'private, no-store',
+        },
+      })
+    },
+  )
+
+  // HO-862: one recorded round's screenshot of the item's web page. Only a
+  // name matching visualPages.SHOT_NAME that a recorded round lists reaches
+  // farmd. nosniff and sandboxed like every media file.
+  fastify.get(
+    '/api/items/:id/page/shots/:name',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'name'],
+          properties: { id: { type: 'string', minLength: 1 }, name: { type: 'string', minLength: 1, maxLength: 200 } },
+        },
+        response: {
+          200: { content: { 'image/png': { schema: { type: 'string', format: 'binary', description: 'The PNG, from farmd' } } } },
+          404: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id, name } = request.params
+      if (!store.getItem(id)) return reply.code(404).send({ error: 'not_found' })
+      if (!visualPages.pageShotRecorded(id, name)) return reply.code(404).send({ error: 'no_shot' })
+      return streamFarmFile(reply, (signal) => orchestrator.fetchPageFile(id, name, { signal }), {
+        notFound: 'no_shot',
+        headers: {
+          'Content-Type': 'image/png',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+          'Cache-Control': 'private, max-age=300',
+        },
+      })
     },
   )
 
@@ -4542,6 +4633,39 @@ export function buildApp({
       if (!humanAuthorized(request, reply)) return
       const result = store.setProjectDefinitionsEnabled(request.params.id, request.body.enabled, actorOf(request))
       if (result.error) return reply.code(404).send({ error: 'Project not found' })
+      broadcast()
+      return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
+    },
+  )
+
+  // HO-862: the switch for a project's web-page visuals. Gate-PIN protected
+  // like /definitions-enabled, checked before the lookup so a bad PIN never
+  // touches state. A tenant project cannot turn it on (409).
+  fastify.post(
+    '/api/projects/:id/visual-pages',
+    {
+      config: { scope: 'member:project' },
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['enabled'],
+          additionalProperties: false,
+          properties: { enabled: { type: 'boolean' } },
+        },
+        response: { 200: OK_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = store.setProjectVisualPagesEnabled(request.params.id, request.body.enabled, actorOf(request))
+      if (result.error === 'not_found') return reply.code(404).send({ error: 'Project not found' })
+      if (result.error === 'tenant') return reply.code(409).send({ error: 'Web-page visuals are not available for tenant projects' })
       broadcast()
       return { ok: true, projectId: request.params.id, old: result.old, new: result.new, ...(result.unchanged ? { unchanged: true } : {}) }
     },
