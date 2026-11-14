@@ -131,8 +131,9 @@ test('every pause path writes PAUSE_SET — no raw `paused = 1` is left in serve
   }
   const orchestratorSrc = readFileSync(new URL('orchestrator.js', srcDir), 'utf8')
   // Lane plan-section check, deploy verification failed, retry budget
-  // exhausted, stopJob, and a failed server step (HZ-446).
-  assert.equal(orchestratorSrc.match(/SET \$\{PAUSE_SET\}/g)?.length, 5)
+  // exhausted, stopJob, a failed server step (HZ-446), and a patched command
+  // that failed a per-command check (HO-845).
+  assert.equal(orchestratorSrc.match(/SET \$\{PAUSE_SET\}/g)?.length, 6)
   const storeSrc = readFileSync(new URL('store.js', srcDir), 'utf8')
   assert.match(storeSrc, /const pausedSet = paused \? PAUSE_SET :/)
 })

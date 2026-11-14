@@ -374,6 +374,13 @@ const WRITE_CASES = {
     body: { repo: REPO_A, path: 'docs/iso.pdf', sourceSha: 'a'.repeat(40), status: 'failed', pageCount: 0, sectionCount: 0, sections: [], error: 'iso' },
     own: { headers: FARM, status: 404 }, // unknown_source: ISO Alpha's definitions switch is off
   },
+  // HO-845: no such per-command check, so the result changes nothing.
+  'POST /api/farm/command-checks/:checkId/result': {
+    expect: 'exempt',
+    url: '/api/farm/command-checks/999999/result',
+    body: { stage: 'audit', status: 'pass', command_hash: 'a'.repeat(64) },
+    own: { headers: FARM, status: 404 },
+  },
   'POST /api/farm/steps/:runId/started': { expect: 'exempt', url: `/api/farm/steps/${RUN_A}/started`, own: { headers: FARM, status: 200 } },
   'POST /api/farm/steps/:runId/checks': { expect: 'exempt', url: `/api/farm/steps/${RUN_A}/checks`, body: { phase: 'start' }, own: { headers: FARM, status: 200 } },
   'POST /api/farm/steps/:runId/progress': { expect: 'exempt', url: `/api/farm/steps/${RUN_A}/progress`, body: { commands: [] }, own: { headers: FARM, status: 200 } },

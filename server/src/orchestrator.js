@@ -88,6 +88,8 @@ import {
   approvedPlanCheck,
   currentRunPlan,
   commandPatchState,
+  commandPatchOf,
+  COMMAND_STAGE_LABELS,
   settleCommandPatch,
   dropCommandPatch,
   approvedCommandFields,
@@ -150,6 +152,7 @@ import { DIGEST_STEP_INDEX, OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { ingestAsks, recordSplitAsk } from './asks.js'
 import { awaitsSpawnedCode, hasSpawned, linkSpawned, requestKeyFor, spawnItems, spawnRuleOf, spawnedCodeLive, validateSpawnSpec } from './spawn.js'
 import { recordFlakes } from './checkFlakes.js'
+import { COMMAND_STAGE_TIMEOUT_MS, commandCheckRow, failStage, pendingChecks, recordStageResult, staleChecks, startCommandChecks, startNextStage } from './commandChecks.js'
 import { NON_AGENT, cleanUsage, recordRunUsage } from './stepUsage.js'
 import { splitCheckError } from './checkHeadline.js'
 import { recordTestRuns } from './testResults.js'
@@ -1892,8 +1895,10 @@ function sendBackToImplement(id, { feedback, fix = null, event }) {
 // and never a human's (a human's feedback is 'ui').
 // HO-843: a send-back to Run plan drops any owner patch and per-command
 // approval — the agent writes the next plan, which needs full approval.
-function sendBackTo(id, stepIndex, { feedback, fix = null, event, source = 'ui' }) {
-  if (stepIndex === RUN_PLAN_STEP_INDEX) dropCommandPatch(id)
+// HO-845: except a failed per-command check's (`keepCommandPatch`), which
+// keeps every other command's approval.
+function sendBackTo(id, stepIndex, { feedback, fix = null, event, source = 'ui', keepCommandPatch = false }) {
+  if (stepIndex === RUN_PLAN_STEP_INDEX && !keepCommandPatch) dropCommandPatch(id)
   db.prepare('INSERT INTO feedback (item_id, target, message, source) VALUES (?, ?, ?, ?)').run(id, STEPS[stepIndex].agent, feedback, source)
   writeStepCompletion(id, stepIndex, fix ? { fix_pass: fix.pass, fix_findings_json: fix.findingsJson } : {})
   addEvent(id, event)
@@ -2016,6 +2021,210 @@ export function rehearsalSendBack(id, rehearsal) {
   ].join('\n')
   const sent = sendBackCount(id)
   return { reason: rehearsal.reason, feedback, sent, capped: sent >= IMPACT_SENDBACK_CAP }
+}
+
+// ---- HO-845: the per-command checks of a one-command patch ----
+// At Approve the run, an owner's one-command patch (HO-843) waits for its
+// patched command k to pass three stages, in order — contract audit, preflight,
+// rehearsal — each a separate farm job (POST /commands/check) bound to k's
+// hash, with its own timeout, answered on POST /api/farm/command-checks/:id/
+// result. commandChecks.js holds the rows and the order rule; this drives them.
+// Any fail, error, refusal, unreachable farm, timeout or restart past the
+// timeout is a fail: the item goes back to Run plan, paused, naming the stage,
+// with k unapproved and every other command's approval kept. Nothing runs.
+export const COMMAND_CHECK_SENDBACK_SOURCE = 'command-check'
+const commandStageTimers = new Map() // check id -> its timeout
+
+// The patch waiting at Approve the run that `row` checks, or null once the
+// item left the gate, the patch changed, or the row is another command's.
+function patchCheckedBy(row) {
+  const item = getItem(row.item_id)
+  if (!item || isClosed(item) || isAbandoned(item) || item.cursor !== APPROVE_RUN_GATE_INDEX) return null
+  const pending = commandPatchOf(row.item_id)
+  return pending && pending.index === row.command_index && pending.commandHash === row.command_hash ? pending : null
+}
+
+// Starts the audit of the patch waiting at Approve the run, once per patch.
+// Null when there is none, or its checks already started.
+export function startPatchedCommandChecks(id) {
+  const item = getItem(id)
+  if (!item || item.cursor !== APPROVE_RUN_GATE_INDEX) return null
+  const pending = commandPatchOf(id)
+  if (!pending) return null
+  const started = startCommandChecks(id, { index: pending.index, hash: pending.commandHash })
+  if (started.error) return null
+  addEvent(id, {
+    who: 'Horizon',
+    text: `checking patched command ${pending.index + 1} of ${pending.count}: contract audit, then preflight, then rehearsal — its Approve card waits for all three`,
+    color: '#0E6E74',
+    initials: 'HZ',
+  })
+  notifyChange()
+  dispatchCommandStage(started.checkId)
+  return started
+}
+
+function armCommandStageTimer(checkId, ms) {
+  clearTimeout(commandStageTimers.get(checkId))
+  const timer = setTimeout(() => failCommandStage(checkId, 'command_check_timeout'), Math.max(0, ms))
+  timer.unref?.()
+  commandStageTimers.set(checkId, timer)
+}
+
+function clearCommandStageTimer(checkId) {
+  clearTimeout(commandStageTimers.get(checkId))
+  commandStageTimers.delete(checkId)
+}
+
+// The farm job for one stage row. The payload mirrors Preflight's: the plan on
+// record, its hash and runner, the checkout fields and the test-login file's
+// path — never a value. A refused or failed hand-off fails the stage.
+function dispatchCommandStage(checkId) {
+  const row = commandCheckRow(checkId)
+  if (!row || row.status !== 'pending') return
+  armCommandStageTimer(checkId, COMMAND_STAGE_TIMEOUT_MS[row.stage])
+  if (!FARM_URL) {
+    setTimeout(() => settleCommandStage(checkId, mockCommandStage(row)), latency()).unref?.()
+    return
+  }
+  const payload = commandStagePayload(row)
+  if (!payload) return failCommandStage(checkId, 'command_check_error')
+  farmFetch('/commands/check', payload).catch((err) => {
+    const unavailable = (err.status === 409 && err.code === 'sandbox_unavailable') || isFarmNetworkFailure(err) || [err.code, err.cause?.code].includes('ECONNREFUSED')
+    failCommandStage(checkId, unavailable ? 'command_check_unavailable' : 'command_check_error')
+  })
+}
+
+function commandStagePayload(row) {
+  const item = getItem(row.item_id)
+  const plan = currentRunPlan(row.item_id)
+  const planArtifact = latestArtifact(row.item_id, RUN_PLAN_STEP_INDEX)
+  if (!item || !plan || !planArtifact) return null
+  const project = hasNoProject(db, item.project_id)
+    ? null
+    : db.prepare('SELECT id, name, isolation, github_token_ref, run_user FROM project WHERE id = ?').get(item.project_id)
+  const testEnvFile = getRepoTestEnvFile(item.repo)
+  const target = findTargetByRepo(item.repo)
+  return {
+    check_id: row.id,
+    stage: row.stage,
+    command_index: row.command_index,
+    command_hash: row.command_hash,
+    item: { id: item.id, kind: itemKindOf(item), repo: item.repo },
+    ...(project ? { project: taskProject(project) } : {}),
+    plan_artifact: planArtifact,
+    plan_hash: plan.hash,
+    runner: plan.runner,
+    ...jobEnvFields(item.repo),
+    ...(testEnvFile ? { test_env_file: testEnvFile } : {}),
+    deploy_running: runningDeployFor(item.repo),
+    ...(target?.stateKey ? { deploy_state_key: target.stateKey } : {}),
+    service_tags: serviceTagsFor(plan.block),
+  }
+}
+
+// Demo mode has no farm: every stage passes, except the one an item's title
+// names as `[mock-fail:<stage>]` (how the e2e seed drives a failure).
+const MOCK_STAGE_FAILURES = {
+  audit: { gaps: [{ kind: 'tool', name: 'jq' }] },
+  preflight: { gaps: [{ kind: 'env', name: 'DEMO_DB_URL' }], env: [{ name: 'DEMO_DB_URL', set: false }] },
+  rehearsal: { failures: [{ what: 'dry run', reason: 'rehearsal_dry_run_failed', exit: 1 }] },
+}
+function mockCommandStage(row) {
+  const fail = /\[mock-fail:(audit|preflight|rehearsal)\]/.exec(getItem(row.item_id)?.title ?? '')?.[1] === row.stage
+  return {
+    stage: row.stage,
+    status: fail ? 'fail' : 'pass',
+    command_hash: row.command_hash,
+    reason: fail ? 'command_check_failed' : null,
+    summary: fail ? MOCK_STAGE_FAILURES[row.stage] : {},
+  }
+}
+
+// A stage's result, from the farm's callback or the demo mock. On a pass the
+// next stage starts (or, after the rehearsal, the Approve card may show); on
+// a fail the item goes back to Run plan. Returns the route's answer, or a
+// recordStageResult refusal (not_found, stale_check, bad_body).
+export function settleCommandStage(checkId, { stage, status, command_hash: commandHash, reason = null, summary = null } = {}) {
+  const recorded = recordStageResult(checkId, { stage, status, commandHash, reason, summary })
+  if (recorded.error) return recorded
+  clearCommandStageTimer(checkId)
+  const { row } = recorded
+  const pending = patchCheckedBy(row)
+  if (!recorded.passed) return { ok: true, next: null, returnedTo: pending ? returnForFailedCheck(row, pending) : null }
+  if (!pending) return { ok: true, next: null, returnedTo: null }
+  if (recorded.next) {
+    const next = startNextStage(checkId)
+    if (next.error) return { ok: true, next: null, returnedTo: null }
+    notifyChange()
+    dispatchCommandStage(next.checkId)
+    return { ok: true, next: next.stage, returnedTo: null }
+  }
+  addEvent(row.item_id, {
+    who: 'Horizon',
+    text: `patched command ${pending.index + 1} of ${pending.count} passed its contract audit, preflight and rehearsal — approve it with the PIN`,
+    color: '#0E6E74',
+    initials: 'HZ',
+  })
+  notifyChange()
+  return { ok: true, next: null, returnedTo: null }
+}
+
+// A stage that timed out, errored or could not run — a fail, never a pass.
+function failCommandStage(checkId, reason) {
+  clearCommandStageTimer(checkId)
+  const failed = failStage(checkId, reason)
+  if (failed.error) return failed
+  const pending = patchCheckedBy(failed.row)
+  return { ok: true, returnedTo: pending ? returnForFailedCheck(failed.row, pending) : null }
+}
+
+// HO-845: back to Run plan, paused — so no agent rewrites the plan and nothing
+// dispatches — with one feedback row naming the failed stage. The owner patch
+// and every per-command hash stay as they are: k stays unapproved and the
+// other commands keep their approval (an automated outcome: no plan reset).
+function returnForFailedCheck(row, pending) {
+  const id = row.item_id
+  const stage = COMMAND_STAGE_LABELS[row.stage]
+  sendBackTo(id, RUN_PLAN_STEP_INDEX, {
+    feedback: `The owner's patch of command ${pending.index + 1} of ${pending.count} failed its ${stage} (${row.reason}). It was not approved; every other command keeps its approval. Patch the command again, or write a new plan.`,
+    source: COMMAND_CHECK_SENDBACK_SOURCE,
+    keepCommandPatch: true,
+    event: {
+      who: 'Horizon',
+      text: `patched command ${pending.index + 1} of ${pending.count} failed its ${stage} (${row.reason}) — back to “${STEPS[RUN_PLAN_STEP_INDEX].label}”, paused; no Approve card, and the other commands keep their approval`,
+      color: '#9C333E',
+      initials: 'HZ',
+    },
+  })
+  db.prepare(`UPDATE work_item SET ${PAUSE_SET}, updated_at = datetime('now') WHERE id = ?`).run(id)
+  notifyChange()
+  return STEPS[RUN_PLAN_STEP_INDEX].label
+}
+
+// Fails every pending stage past its timeout at `nowMs`; returns how many.
+export function sweepStaleChecks(nowMs = Date.now()) {
+  let failed = 0
+  for (const row of staleChecks(nowMs)) if (!failCommandStage(row.id, 'command_check_timeout').error) failed += 1
+  return failed
+}
+
+// Boot: stale stages fail; the rest get their timers back (the farm may still
+// answer; demo mode's mock died with the process, so it runs again); a patch
+// that reached the gate with no checks gets them.
+function resumeCommandChecks(nowMs = Date.now()) {
+  const failed = sweepStaleChecks(nowMs)
+  for (const row of pendingChecks()) {
+    if (!FARM_URL) {
+      dispatchCommandStage(row.id)
+      continue
+    }
+    armCommandStageTimer(row.id, Date.parse(`${row.started_at.replace(' ', 'T')}Z`) + COMMAND_STAGE_TIMEOUT_MS[row.stage] - nowMs)
+  }
+  for (const { id } of db.prepare('SELECT id FROM work_item WHERE cursor = ? AND command_patch_json IS NOT NULL').all(APPROVE_RUN_GATE_INDEX)) {
+    startPatchedCommandChecks(id)
+  }
+  return { failed }
 }
 
 // HZ-379: the hold in kick() above. One check per item at a time; a check
@@ -3905,6 +4114,8 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   postStepComment(getItem(id), run.step_index, run.attempt, text, cleanPatch, false, artifactMd)
   notifyChange()
   dispatching.delete(id)
+  // HO-845: at Approve the run with a one-command patch, its checks start.
+  startPatchedCommandChecks(id)
   kick(id)
   emitStepEnded(id)
   return { ok: true }
@@ -4550,6 +4761,7 @@ async function runMockStep(id, stepIndex, runId) {
   postStepComment(getItem(id), stepIndex, attempt, summary, patch, true)
   notifyChange()
   dispatching.delete(id)
+  startPatchedCommandChecks(id)
   kick(id) // next step, until a gate/closure
 }
 
@@ -4880,6 +5092,9 @@ export async function init(log) {
     const resumed = resumeActiveItems()
     if (resumed > 0) log.info(`Orchestrator resumed ${resumed} item(s) mid-agent-step`)
   }
+  // HO-845: a restart leaves no per-command check stage open.
+  const checks = resumeCommandChecks()
+  if (checks.failed > 0) log.info(`Failed ${checks.failed} per-command check stage(s) that ran past their timeout`)
 }
 
 // Exported for tests: server-restart re-arming is the other half of HZ-57's
