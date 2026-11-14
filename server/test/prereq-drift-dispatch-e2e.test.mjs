@@ -91,3 +91,67 @@ test('real farm: MY_VAR removed after approval — dispatch refuses naming it, t
   assert.deepEqual(jobFiles(), [], 'farmd got no /steps/run: no job task file')
   assert.deepEqual(db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id), approvedBefore)
 })
+
+// HO-838 metric 2, end to end: a deploy of the repo's target starts after
+// approval. jobRequest carries it (deploy_running, deploy_state_key) to the
+// real farmd /preflight, whose real deploy probe refuses dispatch naming
+// no_deploy_running with the prereq_drift tag, and no job reaches farmd.
+test('real farm: a deploy started after approval — dispatch refuses naming no_deploy_running, tagged prereq_drift, no job reaches farmd', async () => {
+  const plan =
+    '## Commands\n1. run\n\n## Run plan block\n```json run-plan\n' +
+    JSON.stringify({
+      cwd: '.',
+      commands: ['echo hi'],
+      budget_minutes: 5,
+      requires: [{ precondition: { kind: 'no_deploy_running', check: 'pgrep -f deploy.sh' } }],
+    }) +
+    '\n```'
+  const id = 'HO-838-E2E-DEPLOY'
+  db.prepare(
+    "INSERT INTO work_item (id, title, priority, cursor, kind, repo, approved_plan_hash, approved_runner) VALUES (?, 'Prereq deploy e2e', 'High', ?, 'task', ?, ?, 'host')",
+  ).run(id, EXECUTE_STEP_INDEX, REPO, sha256(plan))
+  db.prepare(
+    "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, artifact, ended_at) VALUES (?, ?, 1, ?, 'done', 'ok', ?, datetime('now'))",
+  ).run(id, RUN_PLAN_STEP_INDEX, STEPS[RUN_PLAN_STEP_INDEX].agent, plan)
+  const approvedBefore = db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id)
+
+  // At approval no deploy runs: the real probe passes.
+  const reqAtApproval = orchestrator.jobRequest(id)
+  assert.equal(reqAtApproval.deploy_running, null)
+  assert.equal(reqAtApproval.deploy_state_key, `prereq-e2e-${process.pid}`)
+  const atApproval = await (
+    await fetch(`${farmd.url}/preflight`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reqAtApproval) })
+  ).json()
+  assert.equal(atApproval.ok, true, JSON.stringify(atApproval))
+
+  // The host drifts: a deploy of the repo's target starts.
+  const batchId = db
+    .prepare("INSERT INTO deploy_batch (target, repo, status, window_closes_at, tag, started_at) VALUES ('prereq-e2e', ?, 'deploying', datetime('now'), ?, datetime('now'))")
+    .run(REPO, `prereq-e2e-v${process.pid}`).lastInsertRowid
+  try {
+    assert.deepEqual(orchestrator.jobRequest(id).deploy_running, { target: 'prereq-e2e', tag: `prereq-e2e-v${process.pid}`, status: 'deploying' })
+    orchestrator.kick(id)
+    let item
+    for (let i = 0; i < 200; i++) {
+      await wait(50)
+      item = store.getItem(id)
+      if (item.paused) break
+    }
+    assert.ok(item.paused, 'the refusal pauses the item')
+
+    const execRuns = db.prepare('SELECT status, output FROM step_run WHERE item_id = ? AND step_index = ?').all(id, EXECUTE_STEP_INDEX)
+    assert.equal(execRuns.length, 1)
+    assert.notEqual(execRuns[0].status, 'active')
+    assert.match(execRuns[0].output, /^FAILED: prerequisites changed since approval — failed: .*no_deploy_running/)
+
+    const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all(id).map((e) => e.text)
+    const refusal = events.find((t) => t.includes(`(${REASON.PREREQ_DRIFT})`))
+    assert.ok(refusal, `an event carries the prereq_drift tag: ${JSON.stringify(events)}`)
+    assert.match(refusal, /no_deploy_running/)
+
+    assert.deepEqual(jobFiles(), [], 'farmd got no /steps/run: no job task file')
+    assert.deepEqual(db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id), approvedBefore)
+  } finally {
+    db.prepare("UPDATE deploy_batch SET status = 'done', ended_at = datetime('now') WHERE id = ?").run(batchId)
+  }
+})

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from domain.py import reasons, run_plan
 from farm import farmd, task_job
 from farm.config import QUEUE_DIR, STATE_DIR, LOGS_DIR
+from farm.tests.test_preflight import held_lock, pf  # noqa: F401 — HO-837's deploy fixture
 
 client = TestClient(farmd.app)
 
@@ -116,18 +117,31 @@ def test_preflight_route_timed_ok_under_30s_with_real_probes(running_farm, tmp_p
     assert elapsed < 30
 
 
-def test_preflight_route_using_real_deploy_probe_returns_no_deploy_running(running_farm, tmp_path):
+def test_preflight_route_with_real_deploy_lock_probe_returns_no_deploy_running_once_a_deploy_starts(running_farm, monkeypatch, tmp_path, held_lock):
+    """Metric 2: HO-837's pf-deploy-running plan and held_lock fixture, no
+    stubbed probe. At approval the target's deploy.lock is free and the route
+    passes; a deploy then starts (the lock is held) and the route names
+    no_deploy_running. farmd stamps deploy_lock_held itself from
+    ~/.horizon/<deploy_state_key>/deploy.lock."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    block = {
-        "cwd": ".",
-        "commands": ["echo hi"],
-        "budget_minutes": 1,
-        "requires": [{"precondition": {"kind": "no_deploy_running", "check": "test -f /tmp"}}],
-    }
-    artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
+    doc = pf("pf-deploy-running", tmp_path)
+    artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(doc["plan"]) + "\n"
+    state_key = doc["task"]["deploy_state_key"]
+    home = tmp_path / "home"
+    lock_dir = home / ".horizon" / state_key
+    lock_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    payload = _preflight_payload(9840, artifact, str(repo), deploy_state_key=state_key, deploy_running=None)
 
-    payload = _preflight_payload(9840, artifact, str(repo), deploy_running={"target": "horizon", "status": "deploying", "tag": "v1"})
+    (lock_dir / "deploy.lock").write_text("")
+    before = running_farm.post("/preflight", json=payload)
+    assert before.status_code == 200
+    assert before.json()["ok"] is True, before.json()
+
+    # The deploy starts: deploy.lock is now the file held_lock's child holds.
+    (lock_dir / "deploy.lock").unlink()
+    os.link(tmp_path / "pf.lock", lock_dir / "deploy.lock")
     res = running_farm.post("/preflight", json=payload)
     assert res.status_code == 200
     data = res.json()
@@ -189,7 +203,13 @@ def test_preflight_with_flock_and_clone_lock_patched_still_answers_and_no_repo_c
     assert (repo / "file.txt").read_text() == "original"
 
 
-def test_sentinels_not_in_route_response_job_state_log_or_forwarded_error(monkeypatch, fake_tmux, tmp_path):
+def test_sentinels_not_in_route_response_job_state_log_or_forwarded_error(running_farm, monkeypatch, fake_tmux, tmp_path):
+    """Guardrail 4: MY_VAR holds the secret value and stays set while a
+    different declared var (OTHER_VAR) is removed; a declared readable file
+    holds the file sentinel. The real /preflight answer, then a real job —
+    farmd's launch, task_job's in-job re-check, farmd's forward — refuse
+    naming OTHER_VAR, and neither sentinel appears in the response, the job
+    state, the job log or the forwarded error."""
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "secret.txt").write_text("sentinel-file-7a1e")
@@ -197,50 +217,49 @@ def test_sentinels_not_in_route_response_job_state_log_or_forwarded_error(monkey
         "cwd": ".",
         "commands": ["echo hi"],
         "budget_minutes": 1,
-        "requires": [{"env": "MY_VAR"}, {"file": str(repo / "secret.txt")}],
+        "runner": "host",
+        "env": {"MY_VAR": "$MY_VAR", "OTHER_VAR": "$OTHER_VAR"},
+        "requires": [{"file": str(repo / "secret.txt")}],
     }
     artifact = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(block) + "\n"
-
     monkeypatch.setenv("MY_VAR", "sentinel-9f2c")
-    monkeypatch.delenv("MY_VAR", raising=False)
+    monkeypatch.delenv("OTHER_VAR", raising=False)
+    sentinels = ("sentinel-9f2c", "sentinel-file-7a1e")
 
-    client2 = TestClient(farmd.app)
-    payload = _preflight_payload(9842, artifact, str(repo))
-    res = client2.post("/preflight", json=payload)
+    res = running_farm.post("/preflight", json=_preflight_payload(9842, artifact, str(repo)))
     assert res.status_code == 200
-    text = res.text
-    assert "sentinel-9f2c" not in text
-    assert "sentinel-file-7a1e" not in text
+    data = res.json()
+    assert data["ok"] is False
+    assert data["failed"] == ["OTHER_VAR"], data
+    for sentinel in sentinels:
+        assert sentinel not in res.text
 
+    run_id, item_id = 9134, "HZ-13"
+    state_path = STATE_DIR / "jobs" / f"{item_id}.json"
+    log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
     farmd.JOB_SESSIONS.clear()
-    farmd.launch_job(job_payload(9133, repo_dir=str(repo)))
-    (STATE_DIR / "jobs").mkdir(parents=True, exist_ok=True)
-    (STATE_DIR / "jobs" / "HZ-13.json").write_text(
-        json.dumps(
-            {
-                "run_id": 9133,
-                "item_id": "HZ-13",
-                "status": "prereq_refused",
-                "refusal": "prerequisites changed",
-                "unmet": [{"kind": "env", "name": "MY_VAR", "reason": "missing"}],
-                "commands": [],
-                "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
-            }
-        )
-    )
-    (LOGS_DIR / "farm-job-hz-13.log").write_text("log without secrets")
+    monkeypatch.setattr(task_job, "_notify_progress", lambda run_id: None)
+    payload = {**job_payload(run_id, repo_dir=str(repo), runner="host"), "plan_artifact": artifact, "approved_hash": task_job.plan_hash_of(artifact)}
     forwarded = []
     monkeypatch.setattr(farmd, "_forward_result", lambda body: forwarded.append(body) or 200)
     try:
+        farmd.launch_job(payload)
+        task_job.main(["--task", str(QUEUE_DIR / "jobs" / "active" / f"{run_id}.json")])
+        state_text = state_path.read_text()
+        state = json.loads(state_text)
+        assert state["status"] == "prereq_refused", state
+        assert state["summary"]["run"] == 0
+        assert [u["name"] for u in state["unmet"]] == ["OTHER_VAR"], state["unmet"]
+        log_text = log_path.read_text()
+        assert "OTHER_VAR" in log_text
         farmd._poll_jobs()
     finally:
-        _cleanup_job(9133, "HZ-13")
-    assert forwarded
-    for body in forwarded:
-        # Check that error and reason don't contain sentinel, but job_view may have logTail
-        # The guardrail is about secret values not appearing in error text and preflight output
-        # Log file itself is redacted via _job_secrets, but our direct write bypasses it, so we check only error field
-        assert "sentinel-9f2c" not in body.get("error", "")
-        assert "sentinel-file-7a1e" not in body.get("error", "")
-        # Ensure unmet names not containing sentinel values
-        assert "sentinel" not in json.dumps(body.get("unmet", [])) if "unmet" in body else True
+        _cleanup_job(run_id, item_id)
+    assert len(forwarded) == 1
+    body = forwarded[0]
+    assert body["reason"] == reasons.REASON["PREREQ_DRIFT"]
+    assert "OTHER_VAR" in body["error"]
+    for sentinel in sentinels:
+        assert sentinel not in state_text
+        assert sentinel not in log_text
+        assert sentinel not in body["error"]
