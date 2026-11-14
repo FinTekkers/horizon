@@ -2868,7 +2868,7 @@ async def preflight_recheck(request: Request):
     started = time.monotonic()
     try:
         _stamp_preflight_context(task)
-        result = await asyncio.to_thread(preflight.run, task, deadline=started + PREREQ_RECHECK_S, tree=not tenant)
+        result = await asyncio.to_thread(preflight.run, task, deadline=started + PREREQ_RECHECK_S, tree=not tenant, cap_s=PREREQ_RECHECK_S)
     except Exception as exc:  # noqa: BLE001 — the server refuses on it, never skips
         return JSONResponse({"error": f"preflight unavailable: {type(exc).__name__}"}, status_code=503)
     raw_unmet = list(result.get("unmet") or [])

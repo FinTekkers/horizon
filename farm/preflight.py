@@ -227,11 +227,12 @@ def _checks(task: dict, deadline: float, unmet: list, progress: dict, tree: bool
     step("requires", requires)
 
 
-def run(task: dict, *, deadline: float, tree: bool = True) -> dict:
+def run(task: dict, *, deadline: float, tree: bool = True, cap_s: float = CAP_S) -> dict:
     """The preflight result: {passed, runner, run_user, plan_hash, unmet:
     [{kind, name, reason}]}. `deadline` is time.monotonic()-based; when it
     passes, the checks still running are abandoned and the result is unmet
-    `probe` "timed out". Never raises.
+    `probe` "timed out". Never raises. `cap_s` is the cap that reason
+    names: HO-838's re-checks run under their own, shorter one.
 
     HO-838: `tree` False is farmd's dispatch re-check of a tenant task. Only
     the run user can see its own task clone, so farmd checks what it can
@@ -244,7 +245,7 @@ def run(task: dict, *, deadline: float, tree: bool = True) -> dict:
     worker.join(max(0.0, deadline - time.monotonic()))
     found = list(unmet)
     if worker.is_alive():
-        found.append(_unmet("probe", progress["check"], f"timed out: preflight has {CAP_S}s"))
+        found.append(_unmet("probe", progress["check"], f"timed out: preflight has {cap_s:g}s"))
     return {
         "passed": not found,
         "runner": task.get("runner"),
