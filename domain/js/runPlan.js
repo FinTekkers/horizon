@@ -133,6 +133,10 @@ const CONTRACT = runPlanContract
 export const REHEARSAL_REASONS = Object.freeze([...CONTRACT.rehearsalReasons])
 export const REHEARSAL_SCOPES = Object.freeze([...CONTRACT.rehearsalScopes])
 export const REHEARSAL_CAP_S = CONTRACT.rehearsalCapS
+// HO-845: the per-command checks of a one-command patch, in run order, and
+// the only reason ids one may store (farm/command_checks.py reports them).
+export const COMMAND_CHECK_STAGES = Object.freeze([...CONTRACT.commandCheckStages])
+export const COMMAND_CHECK_REASONS = Object.freeze([...CONTRACT.commandCheckReasons])
 const SERVICE_NAME = new RegExp(CONTRACT.serviceName)
 const WRITE_SHAPES = CONTRACT.writeShapes.map((shape) => ({
   name: shape.name,

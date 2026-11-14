@@ -106,6 +106,9 @@ const AUTOMATED_OUTCOMES = new Map([
   [IMPACT_REVIEW_STEP_INDEX, new Set([RUN_PLAN_STEP_INDEX])],
   // HO-839: a failed rehearsal sends the plan back from Preflight.
   [PREFLIGHT_STEP_INDEX, new Set([RUN_PLAN_STEP_INDEX])],
+  // HO-845: a patched command that failed a per-command check goes back from
+  // Approve the run, keeping every other command's approval (no plan reset).
+  [APPROVE_RUN_GATE_INDEX, new Set([RUN_PLAN_STEP_INDEX])],
 ])
 
 const NO_RESET = Object.freeze({

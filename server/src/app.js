@@ -5497,6 +5497,43 @@ export function buildApp({
     },
   )
 
+  // HO-845: farmd's result for one per-command check stage of an owner's
+  // one-command patch (orchestrator.js settleCommandStage). The summary is
+  // checked against an allowlist of names, access flags and reason ids in
+  // commandChecks.js — anything else is 400 bad_body, and neither the answer
+  // nor the log line echoes it. 409 stale_check: the stage already ended, was
+  // replaced, is another stage or hash, or an earlier stage has not passed.
+  fastify.post(
+    '/api/farm/command-checks/:checkId/result',
+    {
+      config: { scope: 'farm' },
+      schema: {
+        params: { type: 'object', required: ['checkId'], properties: { checkId: { type: 'integer' } } },
+        body: { type: 'object' },
+      },
+    },
+    (request, reply) => {
+      if (!farmAuthorized(request, reply)) return
+      const body = request.body ?? {}
+      const allowed = new Set(['stage', 'status', 'command_hash', 'reason', 'summary'])
+      if (Object.keys(body).some((key) => !allowed.has(key)) || typeof body.stage !== 'string' || typeof body.status !== 'string' || typeof body.command_hash !== 'string') {
+        request.log.warn({ checkId: request.params.checkId }, 'command check result refused: bad_body')
+        return reply.code(400).send({ error: 'bad_body' })
+      }
+      const result = orchestrator.settleCommandStage(request.params.checkId, body)
+      if (result.error === 'not_found') return reply.code(404).send({ error: 'not_found' })
+      if (result.error === 'bad_body') {
+        request.log.warn({ checkId: request.params.checkId }, 'command check result refused: bad_body')
+        return reply.code(400).send({ error: 'bad_body' })
+      }
+      if (result.error) {
+        request.log.info({ checkId: request.params.checkId }, `command check result dropped: ${result.error}`)
+        return reply.code(409).send({ error: result.error })
+      }
+      return reply.send(result)
+    },
+  )
+
   // HZ-407: farmd's forward of a running job's view (the runner's nudge). It
   // is stored on the run and pushed down the item's own stream; a view for a
   // run that already closed is answered stale and changes nothing.
