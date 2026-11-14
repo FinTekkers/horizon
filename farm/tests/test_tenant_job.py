@@ -563,6 +563,59 @@ def test_a_tenant_runner_records_its_own_stop_on_sighup(tmp_path):
         os.killpg(pgid, 0)
 
 
+# ---- HO-838: the tenant job re-checks the prerequisites as its run user ----
+
+
+API_VALUE = "acme-api-key-sentinel-77290"
+
+
+@pytest.mark.parametrize("drifted", [False, True], ids=["clean-host-runs", "removed-var-refused"])
+def test_a_tenant_job_re_checks_prerequisites_as_its_run_user(host, entry, git_spy, monkeypatch, drifted):
+    """HO-838 test contract (tenant): the run user's own job runs the
+    Preflight checks on its own clone and test-env file before any command.
+    A declared secret the file holds lets the plan run; the same secret gone
+    from the file after approval ends the job `prereq_refused`, zero
+    commands run, the var named and its value nowhere."""
+    real_run_job = task_job.run_job
+    monkeypatch.setattr(task_job, "run_job", lambda **kwargs: real_run_job(**kwargs))
+    plan = "## Commands\nplan\n\n## Run plan block\n" + run_plan.render(
+        {
+            "cwd": ".",
+            "commands": ["echo ran >> ran.txt"],
+            "budget_minutes": 1,
+            "env": {"ACME_API_KEY": "$ACME_API_KEY"},
+            "requires": [{"env": "ACME_API_KEY"}],
+        }
+    ) + "\n"
+    job = {**make_job(host, 77290, item_id="AC-90"), "plan_artifact": plan, "approved_hash": task_job.plan_hash_of(plan)}
+    env_file = host.root / "tenants" / "7" / "e2e.env"
+    env_file.write_text(f"SCREENSHOT_LOGIN_KEY={LOGIN_VALUE}\nACME_API_KEY={API_VALUE}\n")
+    queued = enqueue(host, job)
+    if drifted:
+        env_file.write_text(f"SCREENSHOT_LOGIN_KEY={LOGIN_VALUE}\n")
+    try:
+        assert run_as_run_user(monkeypatch, entry, queued["payload"]) == 0
+        state_path, log_path = host.jobs / "7" / "AC-90.json", host.jobs / "7" / "farm-job-ac-90.log"
+        state = json.loads(state_path.read_text())
+        clone = host.homes / "acme_run" / ".horizon-farm" / "task-clones" / "acme__site7"
+        log = log_path.read_text()
+        if drifted:
+            assert state["status"] == "prereq_refused"
+            assert state["refusal"] == "prerequisites changed since approval — failed: ACME_API_KEY"
+            assert [c["status"] for c in state["commands"]] == ["pending"]
+            assert not (clone / "ran.txt").exists(), "no command ran"
+            assert "zero commands run" in log
+        else:
+            assert state["status"] == "finished"
+            assert [c["status"] for c in state["commands"]] == ["done"]
+            assert (clone / "ran.txt").read_text() == "ran\n"
+        for channel in (json.dumps(state), log):
+            assert A_TOKEN not in channel and LOGIN_VALUE not in channel and API_VALUE not in channel
+    finally:
+        (QUEUE_DIR / "jobs" / "active" / "77290.json").unlink(missing_ok=True)
+        farmd.JOB_SESSIONS.pop("77290", None)
+
+
 # ---- guardrail 4: the sudoers file is unchanged in shape ----
 
 

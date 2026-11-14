@@ -214,8 +214,16 @@ def _prereq_recheck(task: dict, approved_hash: str) -> list[dict]:
     `plan` unmet is dropped here — the hash_mismatch path owns it."""
     from farm import preflight
 
+    # What farmd stamps at launch, filled from this runner when absent (a
+    # task file farmd did not stamp, or a tenant run user farmd could not
+    # resolve): this process is the one about to run the commands, so its
+    # uid is Execute's, and it runs only because farmd's job lane launched it
+    # with job runs on. Env names are not filled: an unstamped task's env is
+    # checked as the engine always has (farm/run_plan_requires.py).
+    own = {"job_uid": os.geteuid(), "jobs_enabled": True}
+    checked = {**task, **{key: value for key, value in own.items() if task.get(key) is None}, "plan_hash": approved_hash}
     try:
-        result = preflight.run({**task, "plan_hash": approved_hash}, deadline=time.monotonic() + PREREQ_RECHECK_S)
+        result = preflight.run(checked, deadline=time.monotonic() + PREREQ_RECHECK_S)
     except Exception as exc:  # noqa: BLE001 — fail closed, never a pass
         return [{"kind": "probe", "name": "prerequisite re-check", "reason": f"failed ({type(exc).__name__})"}]
     raw = [item for item in result.get("unmet") or [] if isinstance(item, dict)]

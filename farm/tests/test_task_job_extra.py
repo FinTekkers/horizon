@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from domain.py import run_plan
 from farm import task_job, workspaces
 from farm.tests.test_task_job import plan_artifact, STATE_DIR, LOGS_DIR, _task_file, _main_task_file, _origin_and_clone, PROBE, FAKE_IMAGE, server_runner
 from farm.config import QUEUE_DIR
@@ -20,26 +21,29 @@ def _state_of(path):
 
 
 def test_run_job_with_real_probes_and_no_drift_is_not_prereq_refused_and_first_command_runs(tmp_path, monkeypatch):
-    """Metric 3: _run_job with real probes and no drift, state not prereq_refused and first command runs. Includes path that exists only after fast_forward."""
+    """Metric 3: task_job.main with real probes and no drift is not
+    prereq_refused and its first command runs. The plan requires a path only
+    the fast-forward brings (the clone is one commit behind origin), so the
+    re-check must run after the fast-forward, not before it."""
     _upstream, clone = _origin_and_clone(tmp_path)
-    # Create a file only after fast_forward would bring new commit? For simplicity, we test that file exists after fast_forward exists
-    # We'll add a file to origin and ensure it's present after fast_forward
-    origin = tmp_path / "origin"
-    # _origin_and_clone creates origin at tmp_path/origin? Let's check implementation; it should have origin
-    # We'll just test clean host passes
+    assert not (clone / "two.txt").exists(), "two.txt is only on origin until the fast-forward"
     item_id = "HO-838-CLEAN"
     state_path = STATE_DIR / "jobs" / f"{item_id}.json"
     log_path = LOGS_DIR / f"farm-job-{item_id.lower()}.log"
     monkeypatch.setattr(task_job, "_notify_progress", lambda run_id: None)
-    task = _main_task_file(tmp_path, item_id, plan_artifact(".", ["echo ok"]), clone, task_clone=True)
+    artifact = "## Commands\nA plan.\n\n## Run plan block\n" + run_plan.render(
+        {"cwd": ".", "commands": ["cat two.txt"], "budget_minutes": 1, "runner": "host", "requires": [{"path": "two.txt"}]}
+    ) + "\n"
+    task = _main_task_file(tmp_path, item_id, artifact, clone, task_clone=True)
 
     try:
+        started = time.monotonic()
         result = task_job.main(["--task", str(task)])
         assert result == 0
         state = _state_of(state_path)
-        assert state.get("status") != "prereq_refused", state
-        # First command should be done
+        assert state.get("status") == "finished", state
         assert state["commands"][0]["status"] == "done"
+        assert time.monotonic() - started < 30
     finally:
         state_path.unlink(missing_ok=True)
         log_path.unlink(missing_ok=True)
