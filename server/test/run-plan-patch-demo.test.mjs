@@ -2,7 +2,8 @@
 // patch back byte for byte, as the farm's patch check does, instead of
 // writing its own plan — so a demo Task reaches Approve the run with the
 // patched command's diff (the e2e journey, 53-task-patch-command.spec.js,
-// depends on it). Mock Impact review and Preflight then run as usual.
+// depends on it). Mock Impact review and Preflight then run as usual, and
+// HO-845's mock per-command checks pass before the card may approve.
 //
 // Its own file because config.js reads the environment at import time.
 
@@ -79,6 +80,13 @@ test('demo mode: a waiting patch completes Run plan with the byte-identical patc
   const view = store.itemViewById('T-DEMO').runPlan
   assert.deepEqual(view.commandPatch, { index: 1, count: 2, before: 'make test', after: 'make test -k fast', commandHash: sha256('make test -k fast') })
   assert.equal(view.preflight.status, 'passed')
+  // HO-845: the mock contract audit, preflight and rehearsal of command 2 pass,
+  // in order, and only then may its card approve.
+  await waitFor(() => store.itemViewById('T-DEMO').runPlan.patchedCommand?.approvable === true, 'the three per-command checks')
+  assert.deepEqual(
+    store.itemViewById('T-DEMO').runPlan.patchedCommand.stages.map((s) => [s.stage, s.status]),
+    [['audit', 'pass'], ['preflight', 'pass'], ['rehearsal', 'pass']],
+  )
 
   const ok = store.approveGate('T-DEMO', APPROVE_RUN_GATE_INDEX, '', 'Owner', {
     proof,

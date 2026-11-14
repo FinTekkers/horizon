@@ -173,7 +173,9 @@ test('uncovered metric lines show "metric lines 3, 4 have no proof" and Approve 
 test('a one-command patch: the card renders only command k\'s diff, never the rest of the plan', () => {
   const others = ['scripts/a.sh --dry-run', 'scripts/c.sh --verify']
   const commandPatch = { index: 1, count: 3, before: 'scripts/b.sh --all', after: 'scripts/b.sh --since 2026-11-01', commandHash: 'f'.repeat(64) }
-  const { container, getByRole, getByLabelText } = render(<Harness item={{ ...taskItem, runPlan: { ...taskItem.runPlan, commandPatch } }} />)
+  // HO-845: with its three checks passed, so the card offers Approve.
+  const patchedCommand = checksOf(['pass', 'pass', 'pass'])
+  const { container, getByRole, getByLabelText } = render(<Harness item={{ ...taskItem, runPlan: { ...taskItem.runPlan, commandPatch, patchedCommand } }} />)
   const card = awaitingCard(container)
   const diff = within(card).getByTestId('command-patch')
   expect(within(diff).getByText('Command 2 of 3 changed')).toBeTruthy()
@@ -190,6 +192,53 @@ test('a one-command patch: the card renders only command k\'s diff, never the re
 
   fireEvent.click(getByRole('button', { name: 'Approve the run' }))
   expect(getByRole('alertdialog').textContent).toContain('Approve this gate?')
+})
+
+// HO-845: the server's view of the patched command's three checks.
+function checksOf(statuses, { failedStage = null, findings = [] } = {}) {
+  const stages = ['audit', 'preflight', 'rehearsal'].map((stage, i) => ({ stage, status: statuses[i], reason: statuses[i] === 'fail' ? 'command_check_failed' : null }))
+  return { index: 1, hash: 'f'.repeat(64), stages, failedStage, findings, approvable: statuses.every((st) => st === 'pass') }
+}
+const PATCH = { index: 1, count: 3, before: 'scripts/b.sh --all', after: 'scripts/b.sh --since 2026-11-01', commandHash: 'f'.repeat(64) }
+const withChecks = (patchedCommand, extra = {}) => ({ ...taskItem, ...extra, runPlan: { ...taskItem.runPlan, commandPatch: PATCH, patchedCommand } })
+
+// HO-845: the patched command's Approve card waits for its contract audit,
+// preflight and rehearsal — hidden, not just disabled — and a failed check is
+// named; once all three passed, Approve the run is offered.
+test('while the patched command\'s checks run, each stage shows its status and there is no Approve button', () => {
+  const { container } = render(<Harness item={withChecks(checksOf(['pass', 'pending', 'not_started']))} />)
+  const card = awaitingCard(container)
+  expect(within(card).getByTestId('command-check-audit').textContent).toBe('✓ contract audit — passed')
+  expect(within(card).getByTestId('command-check-preflight').textContent).toBe('… preflight — running')
+  expect(within(card).getByTestId('command-check-rehearsal').textContent).toBe('· rehearsal — waits for the check before it')
+  expect(within(card).getByText('Approve waits until all three checks pass.')).toBeTruthy()
+  expect(within(card).queryByRole('button', { name: 'Approve the run' })).toBeNull()
+  expect(within(card).queryByRole('button', { name: 'Approve with comments' })).toBeNull()
+  expect(card.querySelector('.btn-gate-approve')).toBeNull()
+})
+
+test('a failed preflight is named as the failed check, with its findings, and there is no Approve button', () => {
+  const failed = checksOf(['pass', 'fail', 'not_started'], { failedStage: 'preflight', findings: ['env DB_URL is not set'] })
+  const { container } = render(<Harness item={withChecks(failed)} />)
+  const card = awaitingCard(container)
+  expect(within(card).getByText('Failed check: preflight')).toBeTruthy()
+  expect(within(card).getByTestId('command-check-finding').textContent).toBe('env DB_URL is not set')
+  expect(within(card).queryByRole('button', { name: 'Approve the run' })).toBeNull()
+})
+
+test('back at Run plan, the Run plan step names the failed check', () => {
+  const failed = checksOf(['fail', 'not_started', 'not_started'], { failedStage: 'audit', findings: ['tool jq'] })
+  const { container } = render(<Harness item={withChecks(failed, { cursor: kindStepIndex('Run plan', 'task'), paused: true })} />)
+  expect(within(container).getByText('Failed check: contract audit')).toBeTruthy()
+  expect(container.querySelector('.btn-gate-approve')).toBeNull()
+})
+
+test('once all three checks passed, Approve the run is offered, enabled', () => {
+  const { container } = render(<Harness item={withChecks(checksOf(['pass', 'pass', 'pass']))} />)
+  const card = awaitingCard(container)
+  expect(within(card).queryByTestId('command-checks-waiting')).toBeNull()
+  expect(within(card).queryByTestId('command-check-failed')).toBeNull()
+  expect(within(card).getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
 })
 
 test('with no patch waiting the card shows the whole plan\'s summary and no diff', () => {

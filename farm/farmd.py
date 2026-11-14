@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, visual_page, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, visual_page, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -3171,6 +3171,72 @@ async def internal_rehearsal(request: Request):
             _REHEARSING.discard(run_id)
     print(f"farmd: rehearsal for run {run_id}: {rehearsal.summary(result)}", flush=True)
     return {"rehearsal": result}
+
+
+# ---- HO-845: the per-command checks of a one-command patch ----
+# The server hands each stage (contract audit, preflight, rehearsal) of an
+# owner-patched command here as its own job, one at a time and in order, and
+# times each out itself. The stage runs in the background (farm/
+# command_checks.py) and its result — names, flags and reason ids only — is
+# posted back to /api/farm/command-checks/<check_id>/result. Never a value.
+
+
+def _command_check_bad(body) -> bool:
+    return (
+        not isinstance(body, dict)
+        or body.get("stage") not in command_checks.STAGES
+        or not isinstance(body.get("check_id"), int)
+        or isinstance(body.get("check_id"), bool)
+        or not isinstance(body.get("command_index"), int)
+        or isinstance(body.get("command_index"), bool)
+        or not isinstance(body.get("command_hash"), str)
+        or not _HASH_HEX.match(body["command_hash"])
+        or not isinstance(body.get("plan_artifact"), str)
+        or not isinstance(body.get("plan_hash"), str)
+    )
+
+
+def _post_command_check(check_id: int, result: dict) -> None:
+    """The stage's result to the server, a few tries. A lost one leaves the
+    stage pending, and the server's own timeout fails it — never a pass."""
+    url = f"{HORIZON_URL}/api/farm/command-checks/{check_id}/result"
+    for attempt in (1, 2, 3):
+        try:
+            res = httpx.post(url, json=result, headers={"x-farm-secret": SHARED_SECRET}, timeout=15)
+            if res.status_code != 200:
+                print(f"farmd: command check {check_id} result -> {res.status_code}", flush=True)
+            return
+        except Exception as exc:  # noqa: BLE001 — retried, then the server times it out
+            print(f"farmd: command check {check_id} result attempt {attempt} failed ({type(exc).__name__})", flush=True)
+            time.sleep(2)
+
+
+def _run_command_check(task: dict) -> None:
+    result = command_checks.run_stage(task["stage"], task, rehearse=_rehearse)
+    reason = f" ({result['reason']})" if result.get("reason") else ""
+    print(f"farmd: command check {task['check_id']} {task['stage']}: {result['status']}{reason}", flush=True)
+    _post_command_check(task["check_id"], result)
+
+
+@app.post("/commands/check")
+async def commands_check(request: Request):
+    """HO-845: one stage of an owner-patched command's checks. 202 accepted
+    (the result is posted back later), 400 bad_request, 409
+    sandbox_unavailable for a rehearsal with no sandbox to run in — the
+    server fails the stage; nothing runs unsandboxed."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if _command_check_bad(body):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if body["stage"] == "rehearsal" and not container_runner.available():
+        return JSONResponse({"error": "sandbox_unavailable"}, status_code=409)
+    task = dict(body)
+    if task["stage"] == "preflight":
+        _stamp_preflight_context(task)
+    threading.Thread(target=_run_command_check, args=(task,), name="command-check", daemon=True).start()
+    return JSONResponse({"accepted": True}, status_code=202)
 
 
 def _valid_image_ref(image) -> bool:

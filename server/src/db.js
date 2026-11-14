@@ -1840,6 +1840,34 @@ db.exec(`
     BEGIN SELECT RAISE(ABORT, 'gate_exception is append-only'); END;
 `)
 
+// HO-845: the per-command checks of an owner's one-command patch
+// (server/src/commandChecks.js) — one row per stage (contract audit, then
+// preflight, then rehearsal) of the patched command, bound to its 0-based
+// index and the sha256 of its text. A stage's row is written only once the
+// stage before it passed for the same hash. `reason` is an id from
+// domain/runPlanContract.json `commandCheckReasons`; `summary_json` holds
+// names, access flags and reason ids only, never a value or file contents.
+// `superseded` = 1 once a newer patch replaced the one the row checked, so
+// no pass is ever reused by a later patch, even of the same text.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS command_check (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id       TEXT    NOT NULL REFERENCES work_item(id),
+    command_index INTEGER NOT NULL,
+    command_hash  TEXT    NOT NULL,
+    stage         TEXT    NOT NULL CHECK (stage IN ('audit','preflight','rehearsal')),
+    status        TEXT    NOT NULL CHECK (status IN ('pending','pass','fail')),
+    reason        TEXT,
+    summary_json  TEXT,
+    superseded    INTEGER NOT NULL DEFAULT 0,
+    started_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    ended_at      TEXT
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS command_check_live
+    ON command_check (item_id, command_index, command_hash, stage) WHERE superseded = 0;
+  CREATE INDEX IF NOT EXISTS command_check_pending ON command_check (status, started_at);
+`)
+
 // HZ-448: a Plan's item drafts (server/src/planDraft.js), one row per saved
 // version of the whole document — the Draft items step's reply ('agent') or an
 // owner's edit ('owner'). The highest version is the current draft; older ones
