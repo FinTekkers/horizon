@@ -1341,6 +1341,18 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
 .job-chip--running { color: var(--primary-ink); background: color-mix(in srgb, var(--primary-ink) 12%, transparent); }
 .job-chip--pending { color: var(--muted); background: color-mix(in srgb, var(--muted) 12%, transparent); }
 .job-chip--stopped { color: var(--danger-ink); background: color-mix(in srgb, var(--danger-ink) 12%, transparent); }
+/* HO-843: Patch on the first command that did not pass, and its one-line editor. */
+.job-panel__patch { flex: none; padding: 2px 10px; font-size: 12px; }
+.job-panel__patch-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 1 100%; }
+.job-panel__patch-label { display: flex; flex-direction: column; gap: 2px; flex: 1 1 260px; font-size: 11px; color: var(--muted); }
+.job-panel__patch-input { font: 400 12px var(--font-mono); padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; color: var(--deep); background: var(--surface); }
+/* HO-843: Approve the run's per-command diff — the patched command only. */
+.command-patch { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.command-patch__title { font-weight: 600; color: var(--deep); }
+.command-patch__diff { margin: 0; padding: 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-alt); border-radius: 6px; }
+.command-patch__line--removed { color: var(--danger-ink); }
+.command-patch__line--added { color: var(--success-ink); }
+.command-patch__note { font-size: 12px; color: var(--muted); }
 
 .step-card__persona { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .step-card__persona-label { font: 700 11px var(--font-sans); color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }

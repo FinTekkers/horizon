@@ -105,3 +105,31 @@ test('log lines render as text, never as HTML', () => {
   expect(screen.getByTestId('job-log').textContent).toBe('<img src=x onerror=alert(1)>')
   expect(container.querySelector('img')).toBeNull()
 })
+
+// HO-843: Patch, on the first command that did not pass, only while no job
+// runs at Execute on an approved plan; its errors are keyed by code, and a
+// literal secret is named by shape only.
+test('Patch is offered on the first command that did not pass, and never while the job runs', () => {
+  const approved = { ...item, paused: true, approvedPlanHash: 'h'.repeat(64) }
+  const { rerender } = render(<JobPanel item={approved} job={job('stopped', ['done', 'stopped', 'pending'])} onPatch={vi.fn()} />)
+  expect(screen.getAllByRole('button', { name: 'Patch' })).toHaveLength(1)
+  expect(within(screen.getAllByRole('listitem')[1]).getByRole('button', { name: 'Patch' })).toBeTruthy()
+  rerender(<JobPanel item={approved} job={job('running', ['done', 'running', 'pending'])} onPatch={vi.fn()} />)
+  expect(screen.queryByRole('button', { name: 'Patch' })).toBeNull()
+  rerender(<JobPanel item={{ ...approved, approvedPlanHash: null }} job={job('stopped', ['done', 'stopped', 'pending'])} onPatch={vi.fn()} />)
+  expect(screen.queryByRole('button', { name: 'Patch' })).toBeNull()
+})
+
+test('Patch sends the edited command with its 0-based index; a literal secret is refused by shape name', async () => {
+  const onPatch = vi.fn(() => Promise.reject(Object.assign(new Error('literal_secret'), { shapes: ['github-token'] })))
+  render(<JobPanel item={{ ...item, paused: true, approvedPlanHash: 'h'.repeat(64) }} job={job('stopped', ['done', 'stopped', 'pending'])} onPatch={onPatch} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Patch' }))
+  const input = screen.getByLabelText('New command 2')
+  expect(input.value).toBe('scripts/step-2.sh')
+  fireEvent.change(input, { target: { value: 'scripts/step-2.sh --fast' } })
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Patch command' }))
+  })
+  expect(onPatch).toHaveBeenCalledWith('TK-7', { index: 1, command: 'scripts/step-2.sh --fast' })
+  expect(screen.getByRole('alert').textContent).toBe('That looks like a literal secret (github-token) — name secrets only as references like $GITHUB_TOKEN.')
+})

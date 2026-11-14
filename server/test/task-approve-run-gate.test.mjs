@@ -307,7 +307,7 @@ test('race: a newer plan lands after the card loaded — approving the old one i
     .json()
     .items.find((it) => it.id === 'T-RACE')
   assert.equal(shown.runPlan.preflight.status, 'passed')
-  assert.deepEqual(planView(shown.runPlan), { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [] })
+  assert.deepEqual(planView(shown.runPlan), { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [], commandPatch: null })
   assert.equal(shown.approvedPlanHash, null)
 
   doneRun('T-RACE', RUN_PLAN_STEP_INDEX, planArtifact(['scripts/z.sh']))
@@ -346,10 +346,10 @@ test('HZ-491: with no runner, a repo with no image runs on the host and one with
   seedTask('T-491-IMG', { plan: runnerPlan(null), repo: IMAGE_REPO })
   for (let i = 0; i < 2; i += 1) {
     assert.deepEqual(planView((await loadItem('T-491-BARE')).runPlan), {
-      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [],
+      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [], commandPatch: null,
     })
     assert.deepEqual(planView((await loadItem('T-491-IMG')).runPlan), {
-      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'container', imagePinned: true, runnerWarning: null, uncoveredLines: [],
+      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'container', imagePinned: true, runnerWarning: null, uncoveredLines: [], commandPatch: null,
     })
   }
   for (const [id, runner] of [['T-491-BARE', 'host'], ['T-491-IMG', 'container']]) {
@@ -534,4 +534,101 @@ test('the PIN appears in no log line, event, gate decision, artifact or caretake
     assert.ok(!text.includes(PIN), `the PIN is in ${table}`)
   }
   orchestrator.cancel('T-LEAK') // HZ-378: the approval dispatched the Execute job — clear its watchdog so the process can exit
+})
+
+// ---- HO-843: per-command approval of a one-command owner patch ----
+
+const { runPlanPatchHarness } = await import('./helpers/runPlanPatch.mjs')
+const patching = runPlanPatchHarness({ db, store, orchestrator, app, dispatches, session: withSession(), pin: PIN })
+
+test('HO-843 metric 1: approval stores one hash per command; patching command 2 nulls only its hash; its PIN re-approval writes one audit row naming it', async () => {
+  seedTask('T-PCMD')
+  await patching.approveInFull('T-PCMD')
+  const before = patching.hashes('T-PCMD')
+  assert.deepEqual(before, ['scripts/a.sh', 'scripts/b.sh', 'scripts/c.sh'].map(sha256), 'one sha256 per command, beside approved_plan_hash')
+  assert.equal(patching.row('T-PCMD').approved_plan_hash, sha256(PLAN))
+  assert.match(patching.row('T-PCMD').approved_frame_hash, /^[0-9a-f]{64}$/)
+  assert.equal(patching.decisions('T-PCMD').at(-1).command_index, null, 'a full approval names no command')
+  const frame = patching.row('T-PCMD').approved_frame_hash
+
+  const NEW = 'scripts/b.sh --since 2026-11-01'
+  const res = await patching.patchAtExecute('T-PCMD', 1, NEW)
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual([res.json().ok, res.json().mode, res.json().commandIndex], [true, 'command', 1])
+  // Only command 2's hash is cleared; the other two are byte-equal.
+  assert.deepEqual(patching.hashes('T-PCMD'), [before[0], null, before[2]])
+  assert.equal(patching.row('T-PCMD').approved_frame_hash, frame)
+  assert.equal(patching.row('T-PCMD').approved_plan_hash, null)
+  assert.equal(patching.row('T-PCMD').cursor, RUN_PLAN_STEP_INDEX)
+
+  await patching.driveToGate('T-PCMD')
+  const patched = patching.patchState('T-PCMD').artifact
+  const shown = patching.view('T-PCMD').runPlan
+  assert.deepEqual(shown.commandPatch, { index: 1, count: 3, before: 'scripts/b.sh', after: NEW, commandHash: sha256(NEW) })
+  assert.equal(shown.hash, sha256(patched))
+
+  const decided = patching.decisions('T-PCMD').length
+  const ok = await patching.approveCommand('T-PCMD')
+  assert.equal(ok.statusCode, 200, ok.body)
+  assert.equal(patching.row('T-PCMD').cursor, EXECUTE_STEP_INDEX)
+  assert.deepEqual(patching.hashes('T-PCMD'), [before[0], sha256(NEW), before[2]])
+  // The whole hash is recomputed for the patched plan, so Execute's check passes.
+  assert.equal(patching.row('T-PCMD').approved_plan_hash, sha256(patched))
+  assert.deepEqual(store.approvedPlanCheck('T-PCMD'), { ok: true, hash: sha256(patched), runner: 'host' })
+  assert.equal(patching.row('T-PCMD').command_patch_json, null)
+
+  const rows = patching.decisions('T-PCMD').slice(decided)
+  assert.equal(rows.length, 1, 'one audit entry for the re-approval')
+  assert.deepEqual([rows[0].command_index, rows[0].command_hash, rows[0].plan_hash, rows[0].decided_by], [1, sha256(NEW), sha256(patched), 'Alice Example'])
+  assert.ok(patching.view('T-PCMD').events.some((e) => e.text === 'approved: approve the run — command 2 of 3'))
+  // No command text in the audit trail: the decision, the events or the moves.
+  const trail = JSON.stringify([
+    db.prepare("SELECT * FROM gate_decision WHERE item_id = 'T-PCMD'").all(),
+    db.prepare("SELECT who, text, detail FROM event WHERE item_id = 'T-PCMD'").all(),
+    db.prepare("SELECT note FROM item_move WHERE item_id = 'T-PCMD'").all(),
+  ])
+  for (const text of ['scripts/b.sh', NEW]) assert.ok(!trail.includes(text), `"${text}" is in the audit trail`)
+  for (const line of logLines) assert.ok(!line.includes(NEW), `the new command is in a log line: ${line}`)
+
+  // HO-843 metric 3: Execute is sent every approved hash and the carry marker.
+  const job = await patching.dispatchFor('T-PCMD', EXECUTE_STEP_INDEX)
+  assert.equal(job.approved_hash, sha256(patched))
+  assert.deepEqual(job.approved_command_hashes, [before[0], sha256(NEW), before[2]])
+  assert.equal(job.carry_through, 1)
+  orchestrator.cancel('T-PCMD')
+})
+
+test('HO-843 guardrail 2: no PIN and a stale runner are refused; the per-command hashes do not change', async () => {
+  seedTask('T-PNOPIN')
+  await patching.approveInFull('T-PNOPIN')
+  assert.equal((await patching.patchAtExecute('T-PNOPIN', 2, 'scripts/c.sh --fast')).statusCode, 200)
+  await patching.driveToGate('T-PNOPIN')
+  const waiting = patching.hashes('T-PNOPIN')
+  assert.equal(waiting[2], null)
+
+  const noPin = await patching.approveCommand('T-PNOPIN', {}, withSession())
+  assert.equal(noPin.statusCode, 401)
+  // The store's own bind too: a direct call with no proof is refused.
+  const direct = await app.gateActions.approve('T-PNOPIN', APPROVE_RUN_GATE_INDEX, '', 'Caretaker', { commandIndex: 2, commandHash: sha256('scripts/c.sh --fast') })
+  assert.deepEqual(direct, { error: 'human_pin_required', status: 403 })
+  const stale = await patching.approveCommand('T-PNOPIN', { runner: 'container' })
+  assert.equal(stale.statusCode, 409)
+  assert.deepEqual(stale.json(), { error: 'run_plan_changed' })
+  assert.deepEqual(patching.hashes('T-PNOPIN'), waiting)
+  assert.equal(patching.row('T-PNOPIN').cursor, APPROVE_RUN_GATE_INDEX)
+  assert.equal(patching.row('T-PNOPIN').approved_plan_hash, null)
+})
+
+test('HO-843 guardrail 2: a Run plan check that hands back a changed artifact fails the run and approves nothing', async () => {
+  seedTask('T-PCHANGED')
+  await patching.approveInFull('T-PCHANGED')
+  assert.equal((await patching.patchAtExecute('T-PCHANGED', 0, 'scripts/a.sh --dry-run')).statusCode, 200)
+  const changed = planArtifact(['scripts/a.sh --dry-run', 'scripts/b.sh', 'rm -rf /tmp/x'])
+  await patching.completeStep('T-PCHANGED', RUN_PLAN_STEP_INDEX, { artifact_md: changed })
+  const run = db.prepare("SELECT status, output FROM step_run WHERE item_id = 'T-PCHANGED' AND step_index = ? ORDER BY id DESC LIMIT 1").get(RUN_PLAN_STEP_INDEX)
+  assert.equal(run.status, 'cancelled')
+  assert.match(run.output, /^FAILED: the patched plan came back changed/)
+  const after = patching.row('T-PCHANGED')
+  assert.deepEqual([after.cursor, after.paused, after.approved_plan_hash, after.approved_command_hashes_json, after.command_patch_json], [RUN_PLAN_STEP_INDEX, 1, null, null, null])
+  assert.equal(patching.view('T-PCHANGED').runPlan?.commandPatch ?? null, null)
 })

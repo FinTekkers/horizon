@@ -359,3 +359,64 @@ export function contractGaps(value) {
   if (!valid) return null
   return [...value].sort((a, b) => a.command - b.command || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name))
 }
+
+// HO-843: the JS copy of domain/py/run_plan.py's SECRET_PATTERNS — each a
+// shape a live credential takes. literalSecrets() returns the NAMES of the
+// shapes found, in the same fixed order as run_plan.literal_secrets(), never
+// the matched text. Parity: domain/fixtures/run-plan-cases.json
+// `literal_secrets`, asserted by both bindings.
+const SECRET_PATTERNS = [
+  ['github-token', /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/],
+  ['aws-access-key', /\bAKIA[0-9A-Z]{16}\b/],
+  ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ['slack-token', /\bxox[abpr]-[A-Za-z0-9-]{10,}/],
+  ['api-key', /\bsk-[A-Za-z0-9_-]{20,}/],
+  ['secret-assignment', /\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD)["']?\s*[=:]\s*["']?(?![$<{])[^\s"'`,;]{8,}/],
+]
+
+export function literalSecrets(text) {
+  if (typeof text !== 'string') return []
+  return SECRET_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([name]) => name)
+}
+
+// HO-843: the artifact with its LAST run-plan block (the one extractRunPlan
+// reads) rewritten as `block`. Everything outside the fenced block stays
+// byte-identical. Null when the artifact has no block to replace.
+export function replaceRunPlan(artifact, block) {
+  if (typeof artifact !== 'string') return null
+  const found = [...artifact.matchAll(FENCED)]
+  if (found.length === 0) return null
+  const last = found[found.length - 1]
+  const fenced = `\`\`\`json run-plan\n${JSON.stringify(block, null, 2)}\n\`\`\``
+  return artifact.slice(0, last.index) + fenced + artifact.slice(last.index + last[0].length)
+}
+
+// HO-843: the artifact with its last run-plan block cut out.
+export function runPlanProse(artifact) {
+  if (typeof artifact !== 'string') return null
+  const found = [...artifact.matchAll(FENCED)]
+  if (found.length === 0) return null
+  const last = found[found.length - 1]
+  return artifact.slice(0, last.index) + artifact.slice(last.index + last[0].length)
+}
+
+// Sorted-key JSON, so a key order change never reads as a change.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+// HO-843: what the frame hash (store.js frameHashOf) covers — the prose
+// outside the block plus every block key but `commands` (cwd, env, requires,
+// runner, budget, proof, rehearsal and any key added later, unnamed), as one
+// canonical string. A change to any of it is never a one-command patch.
+export function runPlanFrameText(artifact, block) {
+  const { commands: _commands, ...frame } = block
+  return canonicalJson({ prose: runPlanProse(artifact) ?? '', frame })
+}

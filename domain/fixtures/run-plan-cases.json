@@ -275,5 +275,24 @@
     { "case": "two samples for one command", "block": { "cwd": ".", "commands": ["./backfill.sh --limit 50", "./count.sh"], "budget_minutes": 5, "env": { "DB_URL": "$DATABASE_URL" }, "rehearsal": { "samples": [{ "command": 2, "expect": "a" }, { "command": 2, "expect": "b" }] } }, "valid": false, "reason": "run_plan 'rehearsal.samples' names command 2 more than once" },
     { "case": "a two-line expect", "block": { "cwd": ".", "commands": ["./backfill.sh --limit 50", "./count.sh"], "budget_minutes": 5, "env": { "DB_URL": "$DATABASE_URL" }, "rehearsal": { "samples": [{ "command": 2, "expect": "a\nb" }] } }, "valid": false, "reason": "run_plan 'rehearsal.samples' expect must be one non-blank line of at most 200 characters" },
     { "case": "an expect one character too long", "block": { "cwd": ".", "commands": ["./backfill.sh --limit 50", "./count.sh"], "budget_minutes": 5, "env": { "DB_URL": "$DATABASE_URL" }, "rehearsal": { "samples": [{ "command": 2, "expect": "hz835-sentinelxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }] } }, "valid": false, "reason": "run_plan 'rehearsal.samples' expect must be one non-blank line of at most 200 characters" }
+  ],
+  "$comment11": "HO-843. command_hash: a command's sha256 hex, asserted by BOTH server/test/run-plan-patch.test.mjs (server/src/store.js commandHashesOf) and farm/tests/test_job_reports.py (farm/task_job.py command_hash_of), so an approved per-command hash is one Execute accepts. literal_secrets: the secret shape names each text holds, asserted by server/test/run-plan-reports-cases.test.mjs (domain/js/runPlan.js literalSecrets) and farm/tests/test_job_reports.py (domain/py/run_plan.py literal_secrets). Each text is its parts joined, so no whole credential-shaped string sits in the repo.",
+  "command_hash": [
+    {"case": "ascii", "command": "pytest -q tests/a", "hash": "1e8f86242f7916d59825c7b37fbe696b0aa94d7bb5075dd765951acd0aeb1bf1"},
+    {"case": "non-ASCII", "command": "echo 'naïve café — 日本語' > /tmp/out.txt", "hash": "4a6ec7f9ba06f723a9791cd048f91f4bea370b39d44281b2d45c34481d9630de"},
+    {"case": "quotes and a backslash", "command": "jq -r '.rows[] | \"\\(.id)\"' data.json", "hash": "36ef2f33957137e480ee37c61c2682c81ea287f007fc4a6836ac24b6cccd2d73"},
+    {"case": "empty after trim", "command": "   ", "hash": "0aad7da77d2ed59c396c99a74e49f3a4524dcdbcb5163251b1433d640247aeb4"},
+    {"case": "trailing space", "command": "make test ", "hash": "8c1757c91f1574425827bb69b282aac92dc291d1a283b8884a779c943480021a"}
+  ],
+  "literal_secrets": [
+    {"case": "a reference and prose", "text": ["export GITHUB_TOKEN=$GITHUB_TOKEN; uses sk-learn"], "shapes": []},
+    {"case": "an ordinary command", "text": ["pytest -q tests/a -k fast"], "shapes": []},
+    {"case": "a placeholder value", "text": ["API_KEY=<your key here>"], "shapes": []},
+    {"case": "a GitHub token assigned", "text": ["GITHUB_TOKEN=", "gh", "p_A1b2C3d4E5f6G7h8I9j0K1l2M3n4"], "shapes": ["github-token", "secret-assignment"]},
+    {"case": "an AWS access key", "text": ["aws s3 ls --key AK", "IAABCDEFGHIJKLMNOP"], "shapes": ["aws-access-key"]},
+    {"case": "a private key header", "text": ["-----BEGIN RSA PRIV", "ATE KEY-----"], "shapes": ["private-key"]},
+    {"case": "a Slack token", "text": ["curl -H 'x: xo", "xb-1234567890-abcdef'"], "shapes": ["slack-token"]},
+    {"case": "an API key", "text": ["run --key s", "k-abcdefghijklmnopqrstuvwx"], "shapes": ["api-key"]},
+    {"case": "a password assigned", "text": ["DB_PASSWORD=", "hunter2hunter2"], "shapes": ["secret-assignment"]}
   ]
 }

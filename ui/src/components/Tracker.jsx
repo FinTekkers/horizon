@@ -35,7 +35,7 @@ import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { STEP_HINTS, retryTarget, returnTargets, stepActionFor } from '../domain/stepActions'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, setAutopilotOff } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, patchRunPlan, setAutopilotOff } from '../api'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
 import { metricLines } from '../../../domain/js/goldenCases.js'
@@ -47,6 +47,7 @@ import BlockingAsksBanner from './BlockingAsksBanner'
 import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
+import CommandPatchDiff from './CommandPatchDiff'
 import DbChangesTable from './DbChangesTable'
 import TaskMedia from './TaskMedia'
 import PlanInventoryTables from './PlanInventoryTables'
@@ -646,7 +647,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
             <div className="step-card__human-only">
               <div style={{ color: 'var(--warning-ink)', fontWeight: 600 }}>Always a human · even on Autopilot</div>
               {/* HZ-446: only Approve the run approves a run plan. */}
-              {index === APPROVE_RUN_GATE_INDEX && (
+              {/* HO-843: a one-command patch shows only that command's diff. */}
+              {index === APPROVE_RUN_GATE_INDEX && item.runPlan?.commandPatch && <CommandPatchDiff patch={item.runPlan.commandPatch} />}
+              {index === APPROVE_RUN_GATE_INDEX && !item.runPlan?.commandPatch && (
                 <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
                   {runPlanSummary(item.runPlan)}
                 </div>
@@ -714,7 +717,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
             </a>
           )}
           {/* HZ-407: a Task's Execute job, live from the item's own stream. */}
-          {st.runsIn === 'job' && output?.job && <JobPanel item={item} job={output.job} onStop={stopJob} onResume={resumeJob} />}
+          {st.runsIn === 'job' && output?.job && <JobPanel item={item} job={output.job} onStop={stopJob} onResume={resumeJob} onPatch={patchRunPlan} />}
           {index === EXECUTE_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} id="db-changes" />}
           {index === VERIFY_REPORT_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} />}
           {media?.length > 0 && <TaskMedia itemId={item.id} media={media} />}

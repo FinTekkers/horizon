@@ -466,3 +466,21 @@ def test_unproven_counts_a_numbered_test_metric_as_one_line_each():
     block = {"cwd": ".", "commands": ["echo hi"], "budget_minutes": 1}
     assert run_plan.unproven({**block, "proof": full}, metric) is None
     assert run_plan.unproven({**block, "proof": full[:4]}, metric) == "proof has no entry for metric line 5"
+
+
+# ---- HO-843: per-command hashes and the literal-secret shapes, shared with the server ----
+# server/test/run-plan-patch.test.mjs (store.js commandHashesOf) and
+# server/test/run-plan-reports-cases.test.mjs (runPlan.js literalSecrets) are
+# the JS halves, over the same cases.
+
+
+@pytest.mark.parametrize("case", CASES["command_hash"], ids=lambda c: c["case"])
+def test_command_hash_matches_the_shared_fixture(case):
+    from farm import task_job
+
+    assert task_job.command_hash_of(case["command"]) == case["hash"]
+
+
+@pytest.mark.parametrize("case", CASES["literal_secrets"], ids=lambda c: c["case"])
+def test_literal_secrets_matches_the_shared_fixture(case):
+    assert run_plan.literal_secrets("".join(case["text"])) == case["shapes"]

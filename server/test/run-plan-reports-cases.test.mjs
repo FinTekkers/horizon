@@ -12,7 +12,11 @@ import {
   circularProofs,
   effectiveRunner,
   extractRunPlan,
+  literalSecrets,
+  replaceRunPlan,
   runPlanError,
+  runPlanFrameText,
+  runPlanProse,
   unprovenLines,
   unprovenReason,
   writeShape,
@@ -221,3 +225,37 @@ for (const c of cases.outputs) {
     else assert.equal(block, null)
   })
 }
+
+// HO-843: the same fixture's `literal_secrets` cases (farm/tests/test_job_reports.py
+// is the Python half), so a command patch the server refuses is one the
+// farm's check refuses too — by shape name, never the text.
+test('the fixture has literal-secret cases with and without a hit', () => {
+  assert.ok(cases.literal_secrets.some((c) => c.shapes.length === 0))
+  assert.ok(cases.literal_secrets.some((c) => c.shapes.length > 1))
+})
+
+for (const c of cases.literal_secrets) {
+  test(`literal_secrets: ${c.case}`, () => {
+    assert.deepEqual(literalSecrets(c.text.join('')), c.shapes)
+  })
+}
+
+// HO-843: replaceRunPlan rewrites only the last block; the prose outside it
+// stays byte for byte, so a one-command patch never reads as a frame change.
+test('replaceRunPlan keeps the prose outside the block byte-identical, with quotes, a backslash and non-ASCII text', () => {
+  const block = { cwd: '.', commands: ['make lint', "jq -r '.rows[] | \"\\(.id)\"' data.json", 'echo naïve café — 日本語'], budget_minutes: 10, env: { DB: '$DATABASE_URL' } }
+  const prose = '## Commands\n1. `make lint` — "quoted" \\ back\\slash\n2. naïve café — 日本語\n\n## Run plan block\n'
+  const tail = '\n\n## After\nnothing ``` here\n'
+  const older = '```json run-plan\n{"cwd": ".", "commands": ["old"], "budget_minutes": 1}\n```\n\n'
+  const artifact = `${older}${prose}\`\`\`json run-plan\n${JSON.stringify(block)}\n\`\`\`${tail}`
+  const patched = { ...block, commands: block.commands.map((c, i) => (i === 1 ? `${c} --fast "x\\y" ü` : c)) }
+  const out = replaceRunPlan(artifact, patched)
+  assert.deepEqual(extractRunPlan(out), patched)
+  assert.equal(runPlanProse(out), runPlanProse(artifact))
+  // So the frame (prose plus every key but `commands`) is unchanged too.
+  assert.equal(runPlanFrameText(out, patched), runPlanFrameText(artifact, block))
+  assert.notEqual(runPlanFrameText(out, { ...patched, budget_minutes: 11 }), runPlanFrameText(artifact, block))
+  assert.ok(out.startsWith(older + prose), 'everything before the last block is unchanged, the earlier block included')
+  assert.ok(out.endsWith(tail), 'everything after it is unchanged')
+  assert.equal(replaceRunPlan('no block here', patched), null)
+})

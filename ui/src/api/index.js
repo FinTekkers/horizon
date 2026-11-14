@@ -74,6 +74,7 @@ export const {
   setAutopilotOff,
   stopJob,
   resumeJob,
+  patchRunPlan,
   setPersona,
   setStepProvider,
   addDependency,

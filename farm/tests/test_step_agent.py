@@ -4881,3 +4881,87 @@ def farmd_like_execute_artifact(report: str) -> str:
 
     reports_md = job_reports.reports_md([{"path": "/tmp/mdi-51-run1.json", "status": "inlined", "bytes": len(report), "text": report}])
     return farmd.job_artifact_md("1 command(s) run, 1 passed, 0 failed", "$ load\nok\n", commands=["- exit 0 — `load`"], reports_md=reports_md)
+
+
+# ---- HO-843: Run plan while an owner patch waits is a check, not an agent run ----
+
+
+def _patch_task(repo, plan, *, names=(), task_clone=True):
+    from farm.tests.test_run_plan_requires import run_plan_task, stamped
+    from domain.py import run_plan as run_plan_mod
+
+    task = stamped(run_plan_task(repo), names=names)
+    artifact = "## Commands\n1. lint\n2. test — “quoted” naïve\n\n## Run plan block\n" + run_plan_mod.render(plan) + "\n\n## After\nprose\n"
+    task.update(patched_artifact=artifact, task_clone=task_clone)
+    return task, artifact
+
+
+@pytest.fixture
+def no_agent_no_refresh(monkeypatch):
+    """Fails the test if the patch check starts an agent or touches the task clone."""
+
+    def _agent(*args, **kwargs):
+        raise AssertionError("the patch check must not start an agent")
+
+    def _refresh(*args, **kwargs):
+        raise AssertionError("the patch check must not refresh the task clone")
+
+    monkeypatch.setattr(step_agent, "run_agent", _agent)
+    monkeypatch.setattr(step_agent, "_refresh_task_clone", _refresh)
+    monkeypatch.setattr(step_agent.task_clone, "refresh", _refresh)
+
+
+def test_patch_check_passes_the_artifact_back_byte_for_byte_with_no_agent(tmp_path, no_agent_no_refresh):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task, artifact = _patch_task(repo, {"cwd": ".", "commands": ["make lint", "make test -k fast"], "budget_minutes": 5})
+    result = step_agent.execute(task)
+    assert result["artifacts"]["artifact_md"] == artifact
+    assert result["summary"] == "owner patch passed the requires check"
+
+
+def test_patch_check_fails_on_a_requires_gap_naming_the_env_var_never_its_value(tmp_path, monkeypatch, no_agent_no_refresh):
+    """Metric 5 / guardrail 4: the patched plan needs an env var the job's
+    environment does not set — a gap named by the variable, no value, and no
+    re-prompt (there is no agent to send it to)."""
+    value = "ho843-farm-only-value-71c2"
+    monkeypatch.setenv("HO843_STAGING_URL", value)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    plan = {"cwd": ".", "commands": ["make lint", 'curl "$HO843_STAGING_URL"'], "budget_minutes": 5, "requires": [{"env": "HO843_STAGING_URL"}]}
+    task, _artifact = _patch_task(repo, plan, names=())
+    with pytest.raises(AgentError) as err:
+        step_agent.execute(task)
+    reason = str(err.value)
+    assert reason.startswith(step_agent.REQUIRES_GAP_PREFIX)
+    assert "HO843_STAGING_URL" in reason
+    assert value not in reason
+
+
+def test_patch_check_refuses_a_literal_secret_by_shape_name(tmp_path, no_agent_no_refresh):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    token = "gh" + "p_" + "Rk4Lm8Np2Qs6Tv0Wx3Yz7Ab1"
+    task, _artifact = _patch_task(repo, {"cwd": ".", "commands": ["make lint", f"GITHUB_TOKEN={token} make test"], "budget_minutes": 5})
+    with pytest.raises(AgentError) as err:
+        step_agent.execute(task)
+    assert "github-token" in str(err.value)
+    assert token not in str(err.value)
+
+
+def test_patch_check_refuses_an_unreadable_block(tmp_path, no_agent_no_refresh):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task, _artifact = _patch_task(repo, {"cwd": ".", "commands": ["make lint"], "budget_minutes": 5})
+    task["patched_artifact"] = "## Run plan block\n```json run-plan\n{not json}\n```"
+    with pytest.raises(AgentError, match="^invalid run plan"):
+        step_agent.execute(task)
+
+
+def test_impact_review_leaves_the_task_clone_while_a_patch_waits(monkeypatch):
+    def _refresh(*args, **kwargs):
+        raise AssertionError("the task clone must stay where the passed commands ran")
+
+    monkeypatch.setattr(step_agent.task_clone, "refresh", _refresh)
+    task = {"task_clone": True, "repo_dir": "/nonexistent", "command_patch": True}
+    assert step_agent._refresh_task_clone("task", step_agent.IMPACT_REVIEW_LABEL, task, {"repo": "acme/x", "id": "T-1"}, None) is None
