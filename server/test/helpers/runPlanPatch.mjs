@@ -1,6 +1,7 @@
 // HO-843: driving an owner's one-command patch through the real app — a
 // full approval at Approve the run, the patch route, the Run plan check, Impact
-// review and Preflight completed as the farm completes them, and the PIN
+// review and Preflight completed as the farm completes them, HO-845's three
+// per-command checks answered as farmd answers them, and the PIN
 // re-approval. Shared by task-approve-run-gate.test.mjs and
 // run-plan-patch.test.mjs, each with its own database, app and stubbed farm.
 
@@ -92,13 +93,30 @@ export function runPlanPatchHarness({ db, store, orchestrator, app, dispatches, 
     return orchestrator.failFarmRun(run.id, error)
   }
 
+  // HO-845: the pending per-command check stage of the item, once it exists.
+  const pendingCheck = (id) =>
+    waitFor(() => db.prepare("SELECT * FROM command_check WHERE item_id = ? AND status = 'pending' AND superseded = 0 ORDER BY id DESC LIMIT 1").get(id), `a pending command check on ${id}`)
+
+  // HO-845: the farm's answer for each pending stage in turn — contract audit,
+  // preflight, rehearsal — as POST /api/farm/command-checks/:id/result gives it.
+  async function passCommandChecks(id) {
+    for (let i = 0; i < 3; i += 1) {
+      const check = await pendingCheck(id)
+      const res = orchestrator.settleCommandStage(check.id, { stage: check.stage, status: 'pass', command_hash: check.command_hash, summary: {} })
+      assert.equal(res.ok, true, JSON.stringify(res))
+    }
+  }
+
   // Run plan hands the patched artifact back byte for byte, Impact review
   // passes, Preflight passes with a clean rehearsal: the item is at the gate.
-  async function driveToGate(id) {
+  // HO-845: then a one-command patch's three per-command checks pass too,
+  // unless `checks: false` leaves them to the caller.
+  async function driveToGate(id, { checks = true } = {}) {
     await completeStep(id, RUN_PLAN_STEP_INDEX, { artifact_md: patchState(id).artifact })
     await completeStep(id, IMPACT_REVIEW_STEP_INDEX, { artifact_md: '## Verdict\n**pass**' })
     await completeStep(id, PREFLIGHT_STEP_INDEX, { artifact_md: '## Preflight', preflight: PREFLIGHT_PASSED, rehearsal: CLEAN_REHEARSAL })
     assert.equal(row(id).cursor, APPROVE_RUN_GATE_INDEX)
+    if (checks && view(id).runPlan?.commandPatch) await passCommandChecks(id)
   }
 
   // The per-command re-approval exactly as the card sends it.
@@ -111,5 +129,5 @@ export function runPlanPatchHarness({ db, store, orchestrator, app, dispatches, 
     )
   }
 
-  return { row, hashes, patchState, activeRun, decisions, view, waitFor, dispatchFor, approve, patch, approveInFull, patchAtExecute, completeStep, failStep, driveToGate, approveCommand }
+  return { row, hashes, patchState, activeRun, decisions, view, waitFor, dispatchFor, approve, patch, approveInFull, patchAtExecute, completeStep, failStep, driveToGate, pendingCheck, passCommandChecks, approveCommand }
 }

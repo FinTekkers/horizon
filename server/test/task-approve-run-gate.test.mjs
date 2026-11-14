@@ -307,7 +307,7 @@ test('race: a newer plan lands after the card loaded — approving the old one i
     .json()
     .items.find((it) => it.id === 'T-RACE')
   assert.equal(shown.runPlan.preflight.status, 'passed')
-  assert.deepEqual(planView(shown.runPlan), { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [], commandPatch: null })
+  assert.deepEqual(planView(shown.runPlan), { commands: 3, budgetMinutes: 20, hash: sha256(PLAN), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [], commandPatch: null, patchedCommand: null })
   assert.equal(shown.approvedPlanHash, null)
 
   doneRun('T-RACE', RUN_PLAN_STEP_INDEX, planArtifact(['scripts/z.sh']))
@@ -346,10 +346,10 @@ test('HZ-491: with no runner, a repo with no image runs on the host and one with
   seedTask('T-491-IMG', { plan: runnerPlan(null), repo: IMAGE_REPO })
   for (let i = 0; i < 2; i += 1) {
     assert.deepEqual(planView((await loadItem('T-491-BARE')).runPlan), {
-      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [], commandPatch: null,
+      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'host', imagePinned: false, runnerWarning: null, uncoveredLines: [], commandPatch: null, patchedCommand: null,
     })
     assert.deepEqual(planView((await loadItem('T-491-IMG')).runPlan), {
-      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'container', imagePinned: true, runnerWarning: null, uncoveredLines: [], commandPatch: null,
+      commands: 1, budgetMinutes: 5, hash: sha256(runnerPlan(null)), runner: 'container', imagePinned: true, runnerWarning: null, uncoveredLines: [], commandPatch: null, patchedCommand: null,
     })
   }
   for (const [id, runner] of [['T-491-BARE', 'host'], ['T-491-IMG', 'container']]) {

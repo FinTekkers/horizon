@@ -48,6 +48,7 @@ import Markdown from './Markdown'
 import GateActionStatus from './GateActionStatus'
 import JobPanel from './JobPanel'
 import CommandPatchDiff from './CommandPatchDiff'
+import CommandChecksStatus from './CommandChecksStatus'
 import DbChangesTable from './DbChangesTable'
 import TaskMedia from './TaskMedia'
 import PlanInventoryTables from './PlanInventoryTables'
@@ -533,6 +534,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // HO-839: once it passed, Approve is hidden — not just disabled — until the
   // plan rehearsed clean. Send back and Abandon stay.
   const rehearsalBlocks = index === APPROVE_RUN_GATE_INDEX && !!item.runPlan && preflightPassed(item) && !rehearsalClean(item)
+  // HO-845: a patched command's Approve card is hidden — not just disabled —
+  // until its contract audit, preflight and rehearsal all passed.
+  const commandChecksBlock = index === APPROVE_RUN_GATE_INDEX && !!item.runPlan?.commandPatch && item.runPlan.patchedCommand?.approvable !== true
   const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
   const retryHere = retryTarget(item)?.step === st.key
   const canReturn = returnTargets(item).length > 0
@@ -649,6 +653,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               {/* HZ-446: only Approve the run approves a run plan. */}
               {/* HO-843: a one-command patch shows only that command's diff. */}
               {index === APPROVE_RUN_GATE_INDEX && item.runPlan?.commandPatch && <CommandPatchDiff patch={item.runPlan.commandPatch} />}
+              {/* HO-845: and that command's three checks, in order. */}
+              {index === APPROVE_RUN_GATE_INDEX && item.runPlan?.commandPatch && <CommandChecksStatus checks={item.runPlan.patchedCommand} />}
               {index === APPROVE_RUN_GATE_INDEX && !item.runPlan?.commandPatch && (
                 <div className="step-card__run-plan" style={{ color: 'var(--muted)' }}>
                   {runPlanSummary(item.runPlan)}
@@ -717,6 +723,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
             </a>
           )}
           {/* HZ-407: a Task's Execute job, live from the item's own stream. */}
+          {/* HO-845: back at Run plan, the patched command's failed check. */}
+          {index === RUN_PLAN_STEP_INDEX && item.runPlan?.patchedCommand?.failedStage && <CommandChecksStatus checks={item.runPlan.patchedCommand} />}
           {st.runsIn === 'job' && output?.job && <JobPanel item={item} job={output.job} onStop={stopJob} onResume={resumeJob} onPatch={patchRunPlan} />}
           {index === EXECUTE_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} id="db-changes" />}
           {index === VERIFY_REPORT_STEP_INDEX && dbChanges && <DbChangesTable dbChanges={dbChanges} />}
@@ -835,7 +843,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   The server's 409 stays the real protection. */}
               {!mergeQueued && (
                 <>
-                  {!goldenPending && !rehearsalBlocks && (
+                  {!goldenPending && !rehearsalBlocks && !commandChecksBlock && (
                     <button
                       className="btn-gate-approve"
                       disabled={gateBusy || preflightBlocks}
@@ -845,7 +853,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                       {humanOnly ? st.label : 'Approve'}
                     </button>
                   )}
-                  {!rehearsalBlocks && (
+                  {!rehearsalBlocks && !commandChecksBlock && (
                     <button
                       className="btn-gate-feedback"
                       disabled={gateBusy || preflightBlocks}

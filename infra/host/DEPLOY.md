@@ -1515,6 +1515,33 @@ command is refused by shape name.
   `command_hash`) are additive, and the old code ignores them. A patch in
   flight then reads as an ordinary Run plan run that needs full approval.
 
+## Per-command checks of a patched command (HO-845)
+
+No host setup. When a one-command patch reaches **Approve the run**, the
+server holds the command's Approve card until the patched command passes
+three checks, in order: contract audit, preflight, then rehearsal. Each
+check is its own farm job (`POST /commands/check` on farmd). Each runs on a
+one-command plan holding only the patched command, and is bound to the sha256
+of that command's text. farmd posts each result back to
+`/api/farm/command-checks/<id>/result`. A result holds names, access flags
+and reason ids only, never a value. Rows live in the new `command_check`
+table.
+
+A check that fails, errors, cannot reach the farm, finds no sandbox, or runs
+past its timeout (2, 5 and 20 minutes) is a fail. The Task goes back to Run
+plan, paused, and names the failed check. The patched command stays
+unapproved, every other command keeps its approval, and nothing runs. A
+server restart fails any check already past its timeout and re-arms the rest.
+
+- **Deploy** the server and the farm in the same release. Mixed versions
+  fail closed. An older farm answers `POST /commands/check` with 404, so
+  the check fails and the Task goes back to Run plan. An older server sends
+  no checks.
+- **Roll back**: redeploy the last good tag. The `command_check` table is
+  additive and the old code never reads it. You may leave it, or drop it with
+  `DROP TABLE command_check`. A patched command then gets HO-843's card with
+  no checks, and that card still needs the PIN.
+
 ## Task containers: rootless Podman (HZ-416)
 
 A Task's Execute runs its approved commands in a throwaway rootless Podman

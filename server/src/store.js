@@ -64,6 +64,7 @@ import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks
 import { findTargetByRepo } from './deployTargets.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
+import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
 
 const listeners = new Set()
 
@@ -1396,6 +1397,7 @@ const NO_IMAGE_WARNING = 'no container image for this repo'
 function runPlanView(itemId, metric) {
   const plan = currentRunPlan(itemId)
   if (!plan) return null
+  const pending = commandPatchOf(itemId, plan)
   return {
     commands: plan.block.commands.length,
     budgetMinutes: plan.block.budget_minutes,
@@ -1409,7 +1411,10 @@ function runPlanView(itemId, metric) {
     // HO-839: its rehearsal, for this plan only (null when there is none).
     rehearsal: rehearsalView(itemId, plan),
     // HO-843: the one-command patch this approval re-approves, or null.
-    commandPatch: commandPatchOf(itemId, plan),
+    commandPatch: pending,
+    // HO-845: its contract audit, preflight and rehearsal, by its hash — the
+    // card offers Approve only once all three passed.
+    patchedCommand: pending ? commandChecksView(itemId, pending.index, pending.commandHash) : null,
   }
 }
 
@@ -1574,6 +1579,8 @@ export function approvedCommandFields(itemId) {
 }
 
 const COMMAND_MAX_CHARS = 2000
+// HO-845: each per-command check stage as an event names it.
+export const COMMAND_STAGE_LABELS = Object.freeze({ audit: 'contract audit', preflight: 'preflight', rehearsal: 'rehearsal' })
 const PATCH_STEP_INDEXES = new Set([EXECUTE_STEP_INDEX, APPROVE_RUN_GATE_INDEX])
 
 // HO-843: the owner's patch of one command of a Task's run plan — at Execute
@@ -1655,6 +1662,8 @@ export function patchRunPlan(id, { from, planHash, index, command } = {}, actor 
   agentRunner.cancel(id, 'superseded')
   const moved = moveItem(id, { action: 'return', toKey: stepKeyAt(RUN_PLAN_STEP_INDEX), who: actor, note, fields, keepCommandHashes: true })
   if (moved.error) return moved
+  // HO-845: the checks of any earlier patch never count for this one.
+  supersedeCommandChecks(id)
   addEvent(id, {
     who: actor,
     text: one
@@ -3179,6 +3188,24 @@ export function approveGate(
         return { error: 'command_patch_pending' }
       }
       if (commandIndex !== pending.index || commandHash !== pending.commandHash || planHash !== plan.hash) return { error: 'run_plan_changed' }
+      // HO-845: and only once the patched command passed its contract audit,
+      // preflight and rehearsal, in that order, for this very hash — checked
+      // after the PIN proof, for every approver, not only by the card.
+      const checks = commandCheckGate(id, pending.index, pending.commandHash)
+      if (checks.error) {
+        addEvent(id, {
+          who: actor,
+          text: `could not approve “${STEPS[stepIndex].label}”: ${
+            checks.failedStage
+              ? `command ${pending.index + 1} failed its ${COMMAND_STAGE_LABELS[checks.failedStage]} (${checks.reason})`
+              : `command ${pending.index + 1} has not passed its contract audit, preflight and rehearsal yet`
+          } — the gate stays open`,
+          color: '#9C333E',
+          initials: '✕',
+        })
+        notify()
+        return checks
+      }
       const row = selectCommandApproval.get(id)
       const stored = parseCommandHashes(row.approved_command_hashes_json)
       approvedCommands = { hashes: stored.map((h, i) => (i === pending.index ? pending.commandHash : h)), frame: row.approved_frame_hash }
