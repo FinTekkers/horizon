@@ -20,14 +20,14 @@ from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 # HZ-128: the step model lives in domain/, not in farm/ — an absolute import
 # off the repo root, which farmd already runs from (`python -m farm.farmd`).
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, visual_page, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -2794,6 +2794,28 @@ def media_file(item_id: str, name: str, request: Request, project_id: str | None
     if span:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
     return StreamingResponse(_media_chunks(real, start, length), status_code=206 if span else 200, media_type=media_type, headers=headers)
+
+
+@app.get("/pages/{item_id}/{name}")
+def page_file(item_id: str, name: str, request: Request):
+    """HO-862, loopback only: an item's web-page visual — page.html (the
+    latest round) or one round's recorded PNG — for the server's member-only
+    GET /api/items/:id/page routes. Only what visual_page.stored_file allows:
+    a recorded name whose realpath is a regular file inside the item's pages
+    dir; never a listing. No tenant dir: the server never turns pages on for
+    a tenant project."""
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "loopback only"}, status_code=403)
+    real = visual_page.stored_file(item_id, name) if _JOB_ITEM_ID_RE.match(item_id) else None
+    if real is None:
+        return JSONResponse({"error": "unknown page file"}, status_code=404)
+    media_type = "text/html; charset=utf-8" if name == visual_page.PAGE_NAME else "image/png"
+    try:
+        body = real.read_bytes()
+    except OSError:
+        return JSONResponse({"error": "unknown page file"}, status_code=404)
+    return Response(body, media_type=media_type, headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
 
 
 # HZ-245: `owner/name`, each part starting with an alphanumeric — so no

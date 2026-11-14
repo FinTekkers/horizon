@@ -263,6 +263,12 @@ it was. Try again and enter the PIN. To change a model, someone has to edit
 `domain/personas.json` in a reviewed Horizon PR. That change applies to
 every project.
 
+**Web-page visuals (optional).** On the same Agents tab, **Web-page visuals**
+lets the options and plan agents, on any provider, return a self-contained web
+page that opens from the item page. It is off by default, needs the gate PIN,
+and needs no setup beyond the farm's capture worker. See
+[Web-page visual artifacts](e2e-screenshots.md#web-page-visual-artifacts-ho-862).
+
 ## 7. Run the Validate project pre-flight
 
 **There is no Validate project button in Admin yet** (HZ-248). The server can

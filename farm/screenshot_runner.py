@@ -43,6 +43,10 @@ the check's process group never reaches them. They carry the run's
 HORIZON_RUN_ID instead (farm/run_reaper.py), and so does every browser the
 worker launches: the run reaps them whichever way it ends. Inside a check
 the tag is already set; a direct caller gets a run of its own.
+
+HO-862: farm/visual_page.py drives the same worker for an agent's web page,
+through the public Worker and WorkerGone names below; nothing here changes
+for the `screenshots` slot.
 """
 
 import contextlib
@@ -349,6 +353,11 @@ class _Worker:
         with contextlib.suppress(subprocess.TimeoutExpired):
             self.proc.wait(timeout=5)
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+# HO-862: the public names farm/visual_page.py uses.
+Worker = _Worker
+WorkerGone = _WorkerGone
 
 
 def _prepare_output(out_dir: Path) -> None:

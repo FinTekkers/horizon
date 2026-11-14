@@ -121,6 +121,7 @@ function fixtures(id = P1, slug = SLUG, repo = R1) {
     'GET /api/projects/:id/validation': { url: `${p}/validation` },
     'POST /api/projects/:id/autopilot': { url: `${p}/autopilot`, payload: { mode: 'on' } },
     'POST /api/projects/:id/definitions-enabled': { url: `${p}/definitions-enabled`, payload: { enabled: false } },
+    'POST /api/projects/:id/visual-pages': { url: `${p}/visual-pages`, payload: { enabled: true } },
     'PUT /api/projects/:id/isolation': { url: `${p}/isolation`, payload: { runUser: 'tenantx' } },
     'GET /api/projects/:slug/definitions': { url: `${s}/definitions` },
     'GET /api/projects/:slug/definitions/:file/history': { url: `${s}/definitions/steps.json/history` },

@@ -62,6 +62,7 @@ import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
+import { visualPageFields } from './visualPages.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
@@ -550,6 +551,9 @@ export function listProjects({ checks = true, viewer = null } = {}) {
     autopilotEvents: selectAutopilotEvents.all(p.id),
     // HZ-535: the PIN-gated switch for the project's own definitions.
     definitionsEnabled: !!p.definitions_enabled,
+    // HO-862: the PIN-gated web-page visuals switch (never on for a tenant).
+    // Only while on, so a project with it off lists exactly as before.
+    ...(p.visual_pages_enabled ? { visualPagesEnabled: true } : {}),
     // HZ-662: internal | tenant, and a tenant's $NAME credential reference and
     // run user — references only, never a token value.
     ...isolationFields(p),
@@ -877,6 +881,27 @@ export function setDefaultBranch(repoFullName, branch, now = Date.now()) {
       .run(branch, sqlTime(now), repoFullName).changes > 0
   if (changed) notify()
   return changed
+}
+
+// HO-862: the ONLY writer of project.visual_pages_enabled; its one caller is
+// the PIN-gated Admin route. Same shape as setProjectDefinitionsEnabled. A
+// tenant project cannot turn it on (its files are out of farmd's reach); it
+// can always turn it off.
+export function setProjectVisualPagesEnabled(projectId, enabled, who) {
+  const value = enabled ? 1 : 0
+  const result = db.transaction(() => {
+    const row = db.prepare('SELECT visual_pages_enabled, isolation FROM project WHERE id = ?').get(projectId)
+    if (!row) return { error: 'not_found' }
+    if (row.visual_pages_enabled === value) return { ok: true, old: !!value, new: !!value, unchanged: true }
+    if (value === 1 && row.isolation !== 'internal') return { error: 'tenant' }
+    db.prepare('UPDATE project SET visual_pages_enabled = ? WHERE id = ?').run(value, projectId)
+    db.prepare(
+      "INSERT INTO project_event (project_id, kind, old_value, new_value, who) VALUES (?, 'visual_pages_enabled', ?, ?, ?)",
+    ).run(projectId, String(row.visual_pages_enabled), String(value), who)
+    return { ok: true, old: !!row.visual_pages_enabled, new: !!value }
+  })()
+  if (result.ok && !result.unchanged) notify()
+  return result
 }
 
 // HZ-662: `isolation` is 'internal' for the owner's projects and 'tenant' for
@@ -2825,6 +2850,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...substepFields(row, overlay),
     // HZ-541: only on an item whose first gate approves golden cases.
     ...goldenCasesFields(row),
+    // HO-862: only on an item with a recorded web-page round.
+    ...visualPageFields(row),
     // HO-844: only on a Task — at Review & close on a done_proof_incomplete
     // Verify outcome, the lines Accept with exceptions asks a reason for; and
     // once accepted so, every exception. Absent otherwise.
