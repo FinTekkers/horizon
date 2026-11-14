@@ -68,7 +68,7 @@ for (const stepIndex of [OPTIONS_STEP, PLAN_STEP]) {
 
 test('a new project has the switch off, and the project view says so', () => {
   assert.equal(db.prepare('SELECT visual_pages_enabled FROM project WHERE id = ?').get(store.createProject('Fresh').id).visual_pages_enabled, 0)
-  assert.equal(store.listProjects().find((p) => p.id === DEFAULT).visualPagesEnabled, false)
+  assert.ok(!Object.hasOwn(store.listProjects().find((p) => p.id === DEFAULT), 'visualPagesEnabled'))
   assert.equal(store.listProjects().find((p) => p.id === ON).visualPagesEnabled, true)
 })
 

@@ -551,7 +551,8 @@ export function listProjects({ checks = true, viewer = null } = {}) {
     // HZ-535: the PIN-gated switch for the project's own definitions.
     definitionsEnabled: !!p.definitions_enabled,
     // HO-862: the PIN-gated web-page visuals switch (never on for a tenant).
-    visualPagesEnabled: !!p.visual_pages_enabled,
+    // Only while on, so a project with it off lists exactly as before.
+    ...(p.visual_pages_enabled ? { visualPagesEnabled: true } : {}),
     // HZ-662: internal | tenant, and a tenant's $NAME credential reference and
     // run user — references only, never a token value.
     ...isolationFields(p),
