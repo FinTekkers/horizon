@@ -1661,6 +1661,49 @@ export function buildApp({
     },
   )
 
+  // HO-843: the owner patches one command of a Task's run plan — at Execute
+  // with no job running, or at Approve the run. A signed-in human only (no
+  // token, WhatsApp or Autopilot); no PIN here, because the patched command
+  // needs the PIN at Approve the run. The item goes back to Run plan, where
+  // the patch is re-checked before any Approve card appears. A command that
+  // looks like a literal secret is refused with the shape names only.
+  const PATCH_ERRORS = { bad_patch: 400, no_change: 400, literal_secret: 400, not_found: 404 }
+  fastify.post(
+    '/api/items/:id/run-plan/patch',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: idParam,
+        body: {
+          type: 'object',
+          required: ['from', 'planHash', 'index', 'command'],
+          propertyNames: { enum: ['from', 'planHash', 'index', 'command'] },
+          properties: {
+            from: { type: 'string', minLength: 1, maxLength: 80 },
+            planHash: { type: 'string', minLength: 1, maxLength: 128 },
+            index: { type: 'integer', minimum: 0 },
+            command: { type: 'string', minLength: 1, maxLength: 2000 },
+          },
+        },
+        response: {
+          200: { ...OK_OBJECT, description: '`{ ok, mode, commandIndex, patchedHash, item }` — mode `command` or `full`.' },
+          400: ERROR_OBJECT,
+          403: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+        },
+        security: SESSION_SECURITY,
+      },
+    },
+    (request, reply) => {
+      if (!requireHumanSession(request, reply)) return
+      const { from, planHash, index, command } = request.body
+      const result = store.patchRunPlan(request.params.id, { from, planHash, index, command }, actorOf(request))
+      if (result.error) return reply.code(Object.hasOwn(PATCH_ERRORS, result.error) ? PATCH_ERRORS[result.error] : 409).send(result)
+      return reply.send({ ...result, ...actionState(request.params.id, { restart: true }) })
+    },
+  )
+
   // Create a work item. With GitHub connected this creates the issue there
   // (GitHub stays the source of truth) and ingests it; in demo mode it creates
   // a local item. Title, outcome and success metric are the bot farm's minimum
@@ -2949,6 +2992,10 @@ export function buildApp({
             runner: { type: 'string', enum: ['container', 'host'] },
             goldenHash: { type: 'string', maxLength: 128 },
             filedAutopilot: { type: 'string', enum: ['default', 'off'] },
+            // HO-843: the one patched command a per-command re-approval of
+            // Approve the run approves, and the hash its card showed.
+            commandIndex: { type: 'integer', minimum: 0 },
+            commandHash: { type: 'string', maxLength: 128 },
             // HZ-711: an abandon may drop the links where this item blocks others.
             removeDependentLinks: { type: 'boolean' },
           },
@@ -3000,6 +3047,8 @@ export function buildApp({
           runner: body.runner || null,
           goldenHash: body.goldenHash || null,
           filedAutopilot: body.filedAutopilot || null,
+          commandIndex: Number.isInteger(body.commandIndex) ? body.commandIndex : null,
+          commandHash: body.commandHash || null,
         }
         result =
           STEPS[item.cursor].kind === 'gate'
@@ -4074,6 +4123,8 @@ export function buildApp({
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const result = createTarget(targetFromBody(request.body.key, request.body))
+      // HO-839: a new target's image is pre-pulled on the farm too.
+      if (result.ok) orchestrator.prePullOnImageChange(null, result.target?.containerImage)
       return deployTargetResult(request, reply, result, 'create', 201)
     },
   )
@@ -4091,7 +4142,11 @@ export function buildApp({
     },
     (request, reply) => {
       if (!humanAuthorized(request, reply)) return
-      return deployTargetResult(request, reply, updateTarget(request.params.key, request.body), 'update')
+      const imageBefore = findTargetByKey(request.params.key)?.containerImage ?? null
+      const result = updateTarget(request.params.key, request.body)
+      // HO-839: a changed image is pre-pulled on the farm, off this request.
+      if (result.ok) orchestrator.prePullOnImageChange(imageBefore, result.target?.containerImage)
+      return deployTargetResult(request, reply, result, 'update')
     },
   )
 

@@ -17,6 +17,7 @@ vi.mock('../api', () => ({
   subscribeStepOutputs: vi.fn(() => () => {}),
   stopJob: vi.fn(),
   resumeJob: vi.fn(),
+  patchRunPlan: vi.fn(),
 }))
 
 import Tracker from './Tracker'

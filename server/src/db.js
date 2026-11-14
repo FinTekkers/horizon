@@ -459,6 +459,17 @@ db.exec(`
 // approved_runner (HZ-491): the effective runner ('container'|'host') approved
 // with that plan. NULL beside a hash = approved before it was stored, so
 // Execute asks for re-approval.
+// approved_command_hashes_json (HO-843): beside that hash, a JSON array of the
+// sha256 hex of each approved command, in order. A one-command owner patch
+// (store.js patchRunPlan) nulls only that command's entry until its PIN
+// re-approval. NULL = approved without per-command hashes (every row from
+// before this column): any patch to such a plan needs full re-approval.
+// approved_frame_hash (HO-843): sha256 of everything in the approved plan
+// except `commands` — the prose outside the block and every other key. A
+// patch that changes it is never a one-command patch.
+// command_patch_json (HO-843): the owner patch in flight — its mode, command
+// index, old and new command text, the patched artifact and its hash, and
+// whether the Run plan check passed. NULL once approved, failed or sent back.
 // autopilot_off (HZ-544): 1 while the issue carries the `autopilot-off` label,
 // written only by the GitHub sync (store.upsertFromGithub) — a cache of the
 // label, like `priority`. 0 for every existing row: no item is off until a
@@ -483,7 +494,7 @@ for (const kind of ITEM_KINDS) {
   if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
 }
 const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0', 'substeps_json TEXT', 'substep_cursor INTEGER']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0', 'substeps_json TEXT', 'substep_cursor INTEGER', 'approved_command_hashes_json TEXT', 'approved_frame_hash TEXT', 'command_patch_json TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -724,6 +735,16 @@ for (const column of ['plan_hash TEXT', 'preflight_json TEXT']) {
     // column already exists
   }
 }
+// HO-839: the rehearsal a passing Preflight run asked for — {clean, reason,
+// scope, seconds, failures: [{what, reason, exit}]}, reason ids and labels
+// only, never output or a value. Bound to the run's plan_hash above. NULL on
+// every other run, on a Preflight that found unmet items, and on every row
+// from before (an item at Approve the run then has no clean rehearsal).
+try {
+  db.exec('ALTER TABLE step_run ADD COLUMN rehearsal_json TEXT')
+} catch {
+  // column already exists
+}
 // HZ-422: usage limits. A run that hit one (usage_limit_hit) is `cancelled` like
 // a deploy stop and keeps its attempt; the run that replaced it on the next
 // chain model names the one it fell back from and when that lifts. An item
@@ -926,6 +947,17 @@ if (!db.prepare('PRAGMA table_info(gate_action)').all().some((column) => column.
 // every other decision, and on every row from before this column.
 if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((column) => column.name === 'plan_hash')) {
   db.exec('ALTER TABLE gate_decision ADD COLUMN plan_hash TEXT')
+}
+
+// HO-843: a per-command re-approval at Approve the run — the 0-based index of
+// the one patched command and its newly approved hash. NULL on a full
+// approval, every other decision, and every row from before these columns.
+// Never the command's text.
+for (const column of ['command_index INTEGER', 'command_hash TEXT']) {
+  const name = column.split(' ')[0]
+  if (!db.prepare('PRAGMA table_info(gate_decision)').all().some((c) => c.name === name)) {
+    db.exec(`ALTER TABLE gate_decision ADD COLUMN ${column}`)
+  }
 }
 
 // HZ-642: the Autopilot choice an Approve & file decision made for the items

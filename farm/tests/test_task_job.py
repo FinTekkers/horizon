@@ -1211,3 +1211,204 @@ def test_a_task_clone_off_main_is_refused_and_left_on_its_branch(tmp_path):
     assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
     assert not marker.exists()
     assert _git(clone, "symbolic-ref", "--short", "HEAD") == "elsewhere"
+
+
+# ---- HO-843: per-command approval — the second hash check and the passed-prefix carry ----
+
+
+def _hashes(artifact):
+    return [task_job.command_hash_of(c) for c in run_plan.extract(artifact)["commands"]]
+
+
+def run_approved(state_dir, artifact, repo_dir, *, hashes=None, carry_through=None, runner="host", task_clone_flag=False):
+    """One start of the job on `artifact`, approved whole and — unless
+    `hashes` says otherwise — per command, as the server sends it after an
+    approval that stored per-command hashes."""
+    state_path = state_dir / "job.json"
+    log_path = state_dir / "job.log"
+    summary = task_job.run_job(
+        run_id=8,
+        item_id="HO-843",
+        plan_artifact=artifact,
+        approved_hash=task_job.plan_hash_of(artifact),
+        runner=runner,
+        state_path=state_path,
+        log_path=log_path,
+        repo_dir=str(repo_dir),
+        container_image=FAKE_IMAGE,
+        task_clone=task_clone_flag,
+        approved_command_hashes=_hashes(artifact) if hashes is None else hashes,
+        carry_through=carry_through,
+    )
+    return summary, json.loads(state_path.read_text()), log_path.read_text()
+
+
+def _marks(repo):
+    path = Path(repo) / "marks.txt"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def _with_command(artifact, index, command, **block_changes):
+    block = run_plan.extract(artifact)
+    block = {**block, **block_changes, "commands": [command if i == index else c for i, c in enumerate(block["commands"])]}
+    return "## Commands\nA plan.\n\n## Run plan block\n" + run_plan.render(block) + "\n"
+
+
+def test_command_hash_of_is_sha256_of_the_utf8_text():
+    """The shared-fixture parity cases are in test_job_reports.py."""
+    import hashlib
+
+    for text in ("make test", "naïve — 日本", "make test "):
+        assert task_job.command_hash_of(text) == hashlib.sha256(text.encode("utf8")).hexdigest()
+    assert task_job.command_hash_of("make test") != task_job.command_hash_of("make test ")
+
+
+def test_per_command_carry_keeps_the_passed_prefix_and_runs_from_k(tmp_path):
+    """Metric 3: commands 1–2 passed, command 3 is patched and re-approved
+    alone (carry_through=2, its 0-based index): 1–2 are marked resumed and
+    skipped, 3 runs — and 4 runs again too, though it passed before:
+    nothing at or after k is carried."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    commands = [f"echo c{n} >> marks.txt" for n in (1, 2, 3, 4)]
+    first = plan_artifact(".", commands, runner="host")
+    _summary, state, _log = run_approved(tmp_path, first, repo)
+    assert state["status"] == "finished" and _marks(repo) == ["c1", "c2", "c3", "c4"]
+    assert [c["hash"] for c in state["commands"]] == _hashes(first)
+    assert state["frame_hash"] == task_job.frame_hash_of(run_plan.extract(first))
+
+    patched = _with_command(first, 2, "echo c3-new >> marks.txt")
+    summary, state, log = run_approved(tmp_path, patched, repo, carry_through=2)
+    assert _marks(repo) == ["c1", "c2", "c3", "c4", "c3-new", "c4"]
+    assert [c.get("resumed", False) for c in state["commands"]] == [True, True, False, False]
+    assert summary == {"run": 4, "passed": 4, "failed": 0, "failing": []}
+    assert "2 passed command(s) kept, running from command 3" in log
+
+
+def test_a_patched_command_equal_to_an_earlier_passed_one_still_runs(tmp_path):
+    """Guardrail 1: the carry is by position and hash, never by text — the
+    plan is [test, lint, e2e]; lint failed and is patched to `test`'s text.
+    It runs; only index 0 is carried."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    first = plan_artifact(".", ["echo test >> marks.txt", "exit 3", "echo e2e >> marks.txt"], runner="host")
+    run_approved(tmp_path, first, repo)
+    assert _marks(repo) == ["test"]
+    patched = _with_command(first, 1, "echo test >> marks.txt")
+    _summary, state, _log = run_approved(tmp_path, patched, repo, carry_through=1)
+    assert _marks(repo) == ["test", "test", "e2e"]
+    assert [c.get("resumed", False) for c in state["commands"]] == [True, False, False]
+
+
+def test_the_second_hash_check_runs_the_plan_when_every_command_hash_matches(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    artifact = plan_artifact(".", ["echo a >> marks.txt", "echo b >> marks.txt"], runner="host")
+    summary, state, _log = run_approved(tmp_path, artifact, repo)
+    assert state["status"] == "finished" and summary["passed"] == 2
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(lambda h: [h[0], None], id="an unapproved (null) hash"),
+        pytest.param(lambda h: [h[0], "0" * 64], id="a wrong hash"),
+        pytest.param(lambda h: h[:1], id="one hash short"),
+        pytest.param(lambda h: [*h, h[0]], id="one hash too many"),
+    ],
+)
+def test_the_second_hash_check_runs_zero_commands_when_any_command_hash_is_unapproved(tmp_path, monkeypatch, bad):
+    """Metric 3 / guardrail 1: the whole hash matches, but one command's
+    hash is not approved — hash_mismatch, zero subprocesses."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("run_job must not spawn when a command hash is not approved")
+
+    monkeypatch.setattr(task_job.subprocess, "Popen", _boom)
+    artifact = plan_artifact(".", ["echo a >> marks.txt", "echo b >> marks.txt"], runner="host")
+    summary, state, log = run_approved(tmp_path, artifact, tmp_path, hashes=bad(_hashes(artifact)))
+    assert summary == {"run": 0, "passed": 0, "failed": 0, "failing": []}
+    assert state["status"] == "hash_mismatch"
+    assert [c["status"] for c in state["commands"]] == ["pending", "pending"]
+    assert "zero commands run" in log
+
+
+def _first_then_patched(tmp_path, repo, *, block_changes=None, runner_after="host", repo_after=None, carry_through=1, between=None, task_clone_flag=False):
+    """Command 1 passes and command 2 fails; command 2 is patched; then the
+    next start, with whatever changed. Returns that start's state."""
+    first = plan_artifact(".", ["echo one >> marks.txt", "exit 4"], runner=None)
+    run_approved(tmp_path, first, repo, task_clone_flag=task_clone_flag)
+    if between:
+        between()
+    patched = _with_command(first, 1, "echo two >> marks.txt", **(block_changes or {}))
+    _summary, state, _log = run_approved(
+        tmp_path, patched, repo_after or repo, carry_through=carry_through, runner=runner_after, task_clone_flag=task_clone_flag
+    )
+    return state
+
+
+def _ran_all(state, repo):
+    assert [c.get("resumed", False) for c in state["commands"]] == [False, False]
+    assert _marks(repo)[-2:] == ["one", "two"]
+
+
+def test_zero_carry_when_the_frame_changed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _ran_all(_first_then_patched(tmp_path, repo, block_changes={"budget_minutes": 6}), repo)
+
+
+def test_zero_carry_when_the_runner_changed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _ran_all(_first_then_patched(tmp_path, repo, runner_after="container"), repo)
+
+
+def test_zero_carry_when_the_resolved_cwd_changed(tmp_path):
+    first_repo, second_repo = tmp_path / "repo-a", tmp_path / "repo-b"
+    first_repo.mkdir()
+    second_repo.mkdir()
+    state = _first_then_patched(tmp_path, first_repo, repo_after=second_repo)
+    assert [c.get("resumed", False) for c in state["commands"]] == [False, False]
+    assert _marks(second_repo) == ["one", "two"]
+
+
+def test_zero_carry_after_a_full_re_approval(tmp_path):
+    """A full re-approval after a normal return sends no carry marker: a full
+    re-approval is a full re-run."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _ran_all(_first_then_patched(tmp_path, repo, carry_through=None), repo)
+
+
+def test_zero_carry_when_the_task_clone_head_moved(tmp_path):
+    """Run plan or Impact review fast-forwarded the task clone since the
+    passed commands ran: they ran on other code, so nothing is carried."""
+    upstream, clone = _origin_and_clone(tmp_path)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+
+    def moved():
+        _push_commit(upstream, "three.txt")
+        task_clone.fast_forward(str(clone))
+
+    _ran_all(_first_then_patched(runs, clone, between=moved, task_clone_flag=True), clone)
+
+
+def test_a_task_clone_that_did_not_move_carries_the_prefix(tmp_path):
+    upstream, clone = _origin_and_clone(tmp_path)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    state = _first_then_patched(runs, clone, task_clone_flag=True)
+    assert [c.get("resumed", False) for c in state["commands"]] == [True, False]
+    assert state["clone_head"] == _git(clone, "rev-parse", "HEAD")
+
+
+def test_main_passes_the_per_command_fields_from_the_task_file(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(task_job, "run_job", lambda **kwargs: seen.update(kwargs) or {"run": 0, "passed": 0, "failed": 0, "failing": []})
+    artifact = plan_artifact(".", ["true"], runner="host")
+    task = _main_task_file(tmp_path, "HO-843", artifact, tmp_path, approved_command_hashes=_hashes(artifact), carry_through=0)
+    assert task_job.main(["--task", str(task)]) == 0
+    assert seen["approved_command_hashes"] == _hashes(artifact)
+    assert seen["carry_through"] == 0

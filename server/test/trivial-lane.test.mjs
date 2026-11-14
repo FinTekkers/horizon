@@ -142,7 +142,15 @@ function replyFor(stepIndex) {
   if (stepIndex === REVIEW) return { summary: 'review passed', artifacts: { verdict: REVIEW_PASS } }
   if (stepIndex === RUN_PLAN) return { summary: 'planned', artifacts: { artifact_md: RUN_PLAN_MD } }
   if (stepIndex === PREFLIGHT) {
-    return { summary: 'preflight passed', artifacts: { artifact_md: '## Preflight\n**passed**', preflight: { passed: true, runner: 'host', run_user: 'ubuntu', unmet: [] } } }
+    // HO-839: a passing Preflight's result carries its plan's rehearsal.
+    return {
+      summary: 'preflight passed',
+      artifacts: {
+        artifact_md: '## Preflight\n**passed**',
+        preflight: { passed: true, runner: 'host', run_user: 'ubuntu', unmet: [] },
+        rehearsal: { clean: true, reason: null, scope: 'full', seconds: 2, failures: [] },
+      },
+    }
   }
   if (stepIndex === VERIFY) return { summary: 'verified', artifacts: { artifact_md: '## Verdict\n**pass**', verdict: { verdict: 'pass', summary: 'ok' } } }
   if (stepIndex === PLAN) return { summary: 'planned', artifacts: { artifact_md: '## Files & lines\n**1. `server/src/app.js` — EDIT.**\n- `snapshot()` changes.\n' } }

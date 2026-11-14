@@ -1429,6 +1429,92 @@ db.transaction(() => {
   The two `step_run` columns (`plan_hash`, `preflight_json`) are additive;
   the old code ignores them.
 
+## Rehearsal before Approve the run (HO-839)
+
+Once Preflight passes, the same step asks farmd to **rehearse** the plan's
+`rehearsal` block. Rootless Podman (the section below) must already work for
+the farm user. Approve the run is offered only when the current plan
+rehearsed clean. The server refuses every approver otherwise
+(`rehearsal_not_clean`): the card, WhatsApp and the caretaker.
+
+The sandbox:
+- `--network=none`, a read-only image, and the checkout mounted read-only
+  with each `.env` masked;
+- a 256 MB tmpfs `/tmp` as the only writable place;
+- for a `host` plan, the host's `/usr`, `/bin`, `/lib`, `/lib64` and `/opt`
+  (each that is a real directory, not a symlink) and the venv, mounted
+  read-only;
+- the Postgres socket dir mounted read-only when the plan has `ro_env` names.
+
+Only the plan's `ro_env` names are passed in, never its `env` names.
+`PGOPTIONS` sets `default_transaction_read_only=on`. Before any command runs,
+the farm refuses an `ro_env` connection whose role can write. The step then
+runs, in order:
+1. the dry run;
+2. each precondition `check`;
+3. each sampled proof command.
+
+It also checks that `git status --porcelain` and the `db_changes` row counts
+do not change. A failure sends the plan back to Run plan with a `feedback`
+row of source `rehearsal`. It shares Impact review's send-back cap (2). At
+the cap the item reaches the gate with Approve hidden. The rehearsal is
+capped at 210 s, timed after any image pull (600 s cap). A timeout is a
+failure, never skipped. A sandbox that cannot start fails the step. Nothing
+ever runs unsandboxed.
+
+- **`FARM_REHEARSAL_IMAGE`** (farm.env): the image a `host` plan and a
+  tenant Task rehearse in. The host's tool dirs are mounted over it, so it
+  only supplies `/etc` and the loader layout. Pin it by digest, for example
+  `docker.io/library/python@sha256:<digest>`. Pre-pull it once as the farm
+  user: `podman pull <image>`. Unset, it is `docker.io/library/python:3.12-slim`.
+  A `container` plan rehearses in its own pinned image.
+- **`FARM_PG_SOCKET_DIR`** (farm.env): the Postgres socket dir a rehearsal
+  may reach. The default is `/var/run/postgresql` when it exists. An
+  `ro_env` DSN must be a socket DSN to a database on this host, for a
+  SELECT-only role. A TCP DSN cannot connect under `--network=none`. A
+  remote database is not reachable yet.
+- **Image pre-pull**: saving a deploy target in Admin with a new container
+  image asks farmd (`POST /images/pull`) to pull it in the background.
+- **Tenant Tasks** rehearse proofs on samples only. The tenant's clone
+  belongs to its run user, so farmd mounts nothing of it. Each sampled proof
+  command must parse. No dry run runs. The card says so.
+- **Gate host checks**: run `FARM_REQUIRE_REAL_SANDBOX=1 python -m pytest
+  farm/tests/test_rehearsal.py` once after installing. With the flag set, a
+  missing Podman, image or Postgres image (`HORIZON_TEST_PG_IMAGE`, default
+  `docker.io/library/postgres:16-alpine`) fails the run instead of skipping.
+- **Release note**: an item already at **Approve the run** has no rehearsal
+  on record, so Approve is hidden. Click **Re-run preflight** on it, or
+  send it back to Run plan. Items already approved are not affected.
+- **Roll back**: redeploy the last good tag. The `step_run.rehearsal_json`
+  column is additive, and the old code ignores it. Keep the plan field.
+
+## Patch one command with per-command re-approval (HO-843)
+
+No host setup. Approve the run now stores one hash per command
+(`work_item.approved_command_hashes_json`) and a frame hash over the rest
+of the plan (`approved_frame_hash`), beside `approved_plan_hash`. An owner
+can **Patch** the first command that did not pass on a stopped Execute
+card. The Task goes back to Run plan, where the farm re-checks the patched
+plan's `requires` with no agent and hands it back byte for byte. Impact
+review and Preflight then run as usual. **Approve the run** shows only that
+command's diff and needs the PIN. Every other command keeps its approval,
+and Execute skips the commands before it that passed, but only on the same
+frame, runner, cwd and task clone HEAD. Any other patch, or any doubt,
+clears every hash and needs full approval. A literal secret in a patched
+command is refused by shape name.
+
+- **Deploy** the server and the farm in the same release. Mixed versions
+  fail closed: an older farm's Run plan rewrites the plan, so the server
+  fails the run and full approval follows. An older server sends no
+  per-command fields, so the farm runs as before.
+- **Release note**: a plan approved before this release has no per-command
+  hashes, so patching it needs full re-approval. Nothing is backfilled.
+- **Roll back**: redeploy the last good tag. The three `work_item` columns
+  (`approved_command_hashes_json`, `approved_frame_hash`,
+  `command_patch_json`) and the two `gate_decision` columns (`command_index`,
+  `command_hash`) are additive, and the old code ignores them. A patch in
+  flight then reads as an ordinary Run plan run that needs full approval.
+
 ## Task containers: rootless Podman (HZ-416)
 
 A Task's Execute runs its approved commands in a throwaway rootless Podman

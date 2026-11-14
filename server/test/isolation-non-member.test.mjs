@@ -302,6 +302,8 @@ const WRITE_CASES = {
   // 409 no_job / nothing_to_resume / no_pr: states the seeded item is not in.
   'POST /api/items/:id/job/stop': { expect: '404', url: `${ITEM}/job/stop`, owner: 409 },
   'POST /api/items/:id/job/resume': { expect: '404', url: `${ITEM}/job/resume`, owner: 409 },
+  // HO-843: 409 not_a_task — the seeded item is a Change, whose plan is never patched.
+  'POST /api/items/:id/run-plan/patch': { expect: '404', url: `${ITEM}/run-plan/patch`, body: { from: 'iso.not-here', planHash: 'iso', index: 0, command: 'make test' }, owner: 409 },
   // HZ-710: 409 stale_step — the owner names a step the item is not at.
   'POST /api/items/:id/move': { expect: '404', url: `${ITEM}/move`, body: { action: 'retry', from: 'iso.not-here' }, owner: 409 },
   'POST /api/items/:id/resolve-conflicts': { expect: '404', url: `${ITEM}/resolve-conflicts`, owner: 409 },

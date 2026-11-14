@@ -62,6 +62,7 @@ from . import (
     plan_bundle,
     preflight,
     read_only_guard,
+    rehearsal,
     review_diff,
     run_plan_requires,
     screenshot_runner,
@@ -2132,6 +2133,40 @@ def _requires_recheck(kind: str, label: str, task: dict):
     return recheck
 
 
+def _patch_check(kind: str, label: str, task: dict, deadline: float) -> dict:
+    """HO-843: Run plan while an owner patch of the approved plan waits for
+    its check (`patched_artifact`). No agent runs and the task clone is not
+    touched: the patched block is validated, its commands are checked for a
+    literal secret, and its `requires` is checked on the runner Execute will
+    use (_requires_recheck) — the same check a written plan passes. Any of
+    them failing raises AgentError: a gap names the env var or file only,
+    never a value, and there is no re-prompt, because there is no agent. On
+    a pass the artifact comes back byte for byte; the server refuses any
+    other."""
+    artifact = task.get("patched_artifact")
+    if not isinstance(artifact, str) or not artifact.strip():
+        raise AgentError("the owner patch carries no run plan")
+    try:
+        block = run_plan.extract(artifact)
+    except ValueError as exc:
+        raise AgentError(f"invalid run plan: {exc}") from None
+    found = sorted({name for command in block["commands"] for name in run_plan.literal_secrets(command)})
+    if found:
+        log(f"{label}: the owner patch carries a literal secret ({', '.join(found)}) — rejected")
+        raise AgentError(
+            f"the owner patch carries what looks like a literal secret ({', '.join(found)}); "
+            "name secrets only as references like $GITHUB_TOKEN"
+        )
+    recheck = _requires_recheck(kind, label, task)
+    gaps = recheck({"run_plan": block}, deadline) if recheck else []
+    if gaps:
+        for gap in gaps:
+            log(f"{label}: the runner lacks what the patched plan requires: {gap}")
+        raise AgentError(REQUIRES_GAP_PREFIX + "; ".join(gaps))
+    log(f"{label}: the owner patch passed the requires check — no agent ran")
+    return {"summary": "owner patch passed the requires check", "artifacts": {"artifact_md": artifact}}
+
+
 def _refresh_task_clone(kind: str, label: str, task: dict, item: dict, ws: Path | None) -> str | None:
     """HZ-738: Assess, Run plan and Impact review read main as it is now,
     not as the last Execute left it. Fast-forwards the target's task clone
@@ -2149,6 +2184,12 @@ def _refresh_task_clone(kind: str, label: str, task: dict, item: dict, ws: Path 
     if STEP_CONFIGS.get(kind) is not TASK_STEP_CONFIG or label not in TASK_CLONE_REFRESH_LABELS:
         return None
     if not task.get("task_clone"):
+        return None
+    # HO-843: while a one-command owner patch waits for approval, the clone
+    # stays on the commit its passed commands ran on, so Execute can carry
+    # them (farm/task_job.py checks HEAD did not move).
+    if task.get("command_patch"):
+        log(f"{label}: task clone left as it is — an owner patch waits for approval")
         return None
     try:
         sha = task_clone.refresh(task.get("repo_dir"), forbid=str(task_job.HORIZON_ROOT), wait_s=TASK_CLONE_WAIT_S)
@@ -2802,7 +2843,45 @@ def _execute_code_run(task: dict) -> dict:
     result = preflight.run(task, deadline=time.monotonic() + preflight.CAP_S)
     summary = preflight.summary(result)
     log(f"preflight: {summary}")
-    return {"summary": summary, "artifacts": {"artifact_md": preflight.render(result), "preflight": result}}
+    artifacts = {"artifact_md": preflight.render(result), "preflight": result}
+    # HO-839: once preflight passes, the plan's rehearsal — run by farmd in
+    # the sandbox, under its own cap (rehearsal.CAP_S, after any image pull),
+    # not Preflight's. Only reason ids come back; the server sends a failed
+    # one back to Run plan.
+    if result.get("passed"):
+        rehearsed = _rehearse(task)
+        artifacts["rehearsal"] = rehearsed
+        artifacts["artifact_md"] += "\n\n" + rehearsal.render(rehearsed)
+        summary = f"{summary}; {rehearsal.summary(rehearsed)}"
+        log(f"rehearsal: {rehearsal.summary(rehearsed)}")
+    return {"summary": summary, "artifacts": artifacts}
+
+
+# HO-839: how long the step waits on farmd's rehearsal — the pull's cap,
+# the rehearsal's, and room for the sandbox to start and stop.
+REHEARSAL_WAIT_S = rehearsal.PULL_CAP_S + rehearsal.CAP_S + 120
+
+
+def _rehearse(task: dict) -> dict:
+    """farmd's rehearsal result for this Preflight run. Raises AgentError —
+    a failed step, never a clean result — when the sandbox cannot start or
+    farmd cannot rehearse; nothing ever runs unsandboxed."""
+    try:
+        res = httpx.post(f"{FARMD}/internal/rehearsal", json={"run_id": task["run_id"]}, timeout=REHEARSAL_WAIT_S)
+    except httpx.HTTPError as exc:
+        raise AgentError(f"the rehearsal could not run: farmd unreachable ({type(exc).__name__})") from None
+    try:
+        body = res.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    if res.status_code == 200 and isinstance(body.get("rehearsal"), dict):
+        return body["rehearsal"]
+    why = str(body.get("reason") or body.get("error") or f"HTTP {res.status_code}")[:200]
+    if body.get("error") == "sandbox_unavailable":
+        raise AgentError(f"the rehearsal sandbox could not start: {why}")
+    raise AgentError(f"the rehearsal could not run: {why}")
 
 
 def _owner_digest_notes(task: dict, artifact: str) -> list[str]:
@@ -3301,6 +3380,10 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     role_file, wants_artifact, tools, persona_agent = _step_config(kind, label, item_lane(item))
     table = steps.FARM_VIEWS[kind]
     max_turns, timeout_s = steps.budget_for_label(table, label)
+    # HO-843: an owner patch's Run plan is a check, not an agent run — before
+    # any workspace or task clone is touched.
+    if STEP_CONFIGS.get(kind) is TASK_STEP_CONFIG and label == RUN_PLAN_LABEL and task.get("patched_artifact"):
+        return _patch_check(kind, label, task, time.monotonic() + timeout_s)
     provider_locked = steps.provider_locked_for(table, label)
     role = (ROLES / role_file).read_text()
     personas = item_personas(item)

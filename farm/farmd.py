@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -2166,6 +2166,11 @@ async def steps_run(request: Request):
         # farm applies no default, so a job naming no runner is refused.
         if job_start.runner_refusal(body.get("runner")):
             return JSONResponse({"error": "job_runner_missing"}, status_code=400)
+        # HO-843: per-command hashes, when sent, are one sha256 hex per
+        # command, and the carry marker a command index; anything else is
+        # refused before anything runs.
+        if _job_command_fields_bad(body):
+            return JSONResponse({"error": "job_command_hashes_bad"}, status_code=400)
         # HZ-772: a tenant job runs as its run user (launch_tenant_job). One
         # it cannot run that way is refused before the server hears started.
         tenant = _is_tenant(body)
@@ -2207,6 +2212,25 @@ async def steps_run(request: Request):
     # able to read this file mid-write and get truncated JSON.
     _write_task_atomic(task_path, body)
     return {"ok": True, "queued": queue}
+
+
+_HASH_HEX = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _job_command_fields_bad(body: dict) -> bool:
+    """HO-843: True when a job's `approved_command_hashes` is present but not
+    a list of 64-hex strings, or its `carry_through` is present but not a
+    whole number, or comes without the hashes."""
+    hashes = body.get("approved_command_hashes")
+    if "approved_command_hashes" in body and not (
+        isinstance(hashes, list) and hashes and all(isinstance(h, str) and _HASH_HEX.match(h) for h in hashes)
+    ):
+        return True
+    if "carry_through" in body:
+        k = body.get("carry_through")
+        if not isinstance(k, int) or isinstance(k, bool) or k < 0 or "approved_command_hashes" not in body:
+            return True
+    return False
 
 
 @app.post("/conflicts/resolve")
@@ -3095,6 +3119,141 @@ def _notify_checks(run_id, phase: str) -> None:
         except Exception as exc:
             print(f"farmd: checks {phase} notify attempt {attempt} for run {run_id} failed: {exc}", flush=True)
             time.sleep(2)
+
+
+# ---- HO-839: rehearsal and image pre-pull ----
+# The Preflight step asks for its plan's rehearsal here once preflight
+# passes: farmd is the farm user (the only one with rootless Podman) and holds
+# Execute's env sources, so the step — a tenant one running as its run user
+# too — never resolves a secret or starts a container itself. One rehearsal
+# per run at a time.
+_REHEARSING: set = set()
+_PULLING: set = set()
+_SANDBOX_LOCK = threading.Lock()
+# The longest image reference /images/pull takes (server/src/deployTargets.js).
+IMAGE_REF_MAX = 500
+
+
+def _active_preflight_task(run_id) -> dict | None:
+    """The claimed task of an active Preflight run, as the server sent it —
+    never a plan the caller supplies. None when there is no such run."""
+    if not isinstance(run_id, int) or isinstance(run_id, bool):
+        return None
+    try:
+        task = json.loads((QUEUE_DIR / "runs" / "active" / f"{run_id}.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if task.get("run_id") != run_id or (task.get("step") or {}).get("label") != preflight.PREFLIGHT_LABEL:
+        return None
+    return task
+
+
+def _rehearse(task: dict) -> dict:
+    """The rehearsal of the task's plan (farm/rehearsal.py). A tenant Task's
+    clone is its run user's, unreadable here: it rehearses proofs on samples
+    only, with nothing of the tenant's mounted and no value resolved. Any
+    other resolves the plan's `ro_env` names — only those — from Execute's
+    sources. Raises ValueError (a plan that is not the one on record, a cwd
+    refused) or container_runner.Unavailable."""
+    artifact = task.get("plan_artifact") or ""
+    block = run_plan.extract(artifact)
+    if not task.get("plan_hash") or task_job.plan_hash_of(artifact) != task.get("plan_hash"):
+        raise ValueError("the plan is not the plan on record")
+    runner = task.get("runner")
+    item_id = str((task.get("item") or {}).get("id") or "item")
+    if _is_tenant(task):
+        return rehearsal.run(
+            block, plan_hash=task["plan_hash"], scope="samples", repo_dir=None, cwd=None, runner="host",
+            image=rehearsal.image_for("host", None), item_id=item_id,
+        )
+    cwd, venv = job_start.resolve_dirs(
+        task.get("repo_dir"), block["cwd"], runner=runner, venv_dir=task.get("venv_dir"), forbid=str(task_job.HORIZON_ROOT)
+    )
+    ro_env = (block.get("rehearsal") or {}).get("ro_env") or []
+    ro_values = _resolve_job_env(cwd, {name: f"${name}" for name in ro_env}, _job_login_env(task))
+    return rehearsal.run(
+        block,
+        plan_hash=task["plan_hash"],
+        scope="full",
+        repo_dir=task.get("repo_dir"),
+        cwd=cwd,
+        runner=runner,
+        image=rehearsal.image_for(runner, task.get("container_image")),
+        venv_dir=venv,
+        ro_values=ro_values,
+        item_id=item_id,
+        pg_socket=rehearsal.pg_socket_dir(),
+    )
+
+
+@app.post("/internal/rehearsal")
+async def internal_rehearsal(request: Request):
+    """HO-839: {"run_id"} of an active Preflight run -> {"rehearsal": result}.
+    503 sandbox_unavailable when the sandbox cannot start (the step fails;
+    nothing runs unsandboxed), 400 rehearsal_refused, 404 unknown_run, 409
+    rehearsal_in_progress. Reasons name a field or the sandbox, never a value."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    run_id = body.get("run_id") if isinstance(body, dict) else None
+    task = _active_preflight_task(run_id)
+    if task is None:
+        return JSONResponse({"error": "unknown_run"}, status_code=404)
+    with _SANDBOX_LOCK:
+        if run_id in _REHEARSING:
+            return JSONResponse({"error": "rehearsal_in_progress"}, status_code=409)
+        _REHEARSING.add(run_id)
+    try:
+        result = await asyncio.to_thread(_rehearse, task)
+    except container_runner.Unavailable as exc:
+        return JSONResponse({"error": "sandbox_unavailable", "reason": str(exc).splitlines()[0][:200] if str(exc) else "unavailable"}, status_code=503)
+    except run_plan.CwdRefused as exc:
+        return JSONResponse({"error": "rehearsal_refused", "reason": str(exc).splitlines()[0][:200] if str(exc) else "cwd refused"}, status_code=400)
+    except ValueError:
+        return JSONResponse({"error": "rehearsal_refused", "reason": "the run plan could not be read"}, status_code=400)
+    finally:
+        with _SANDBOX_LOCK:
+            _REHEARSING.discard(run_id)
+    print(f"farmd: rehearsal for run {run_id}: {rehearsal.summary(result)}", flush=True)
+    return {"rehearsal": result}
+
+
+def _valid_image_ref(image) -> bool:
+    return isinstance(image, str) and 0 < len(image) <= IMAGE_REF_MAX and not any(ch.isspace() for ch in image)
+
+
+def _pull_image(image: str) -> None:
+    """A pre-pull, under the pull's own cap. Logs a reason id only."""
+    try:
+        container_runner.ensure_image(image, timeout_s=rehearsal.PULL_CAP_S)
+        print("farmd: image pre-pull done", flush=True)
+    except container_runner.Unavailable:
+        print("farmd: image pre-pull failed (image_pull_failed)", flush=True)
+    finally:
+        with _SANDBOX_LOCK:
+            _PULLING.discard(image)
+
+
+@app.post("/images/pull")
+async def images_pull(request: Request):
+    """HO-839: the server's pre-pull when a deploy target's container image
+    changes, so a rehearsal or Execute rarely waits on a pull. 202 queued,
+    200 pull_in_progress, 400 bad_image. The pull runs in the background; a
+    failed one is pulled again by the rehearsal under its own cap."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    image = body.get("image") if isinstance(body, dict) else None
+    if not _valid_image_ref(image):
+        return JSONResponse({"error": "bad_image"}, status_code=400)
+    with _SANDBOX_LOCK:
+        if image in _PULLING:
+            return JSONResponse({"queued": False, "reason": "pull_in_progress"}, status_code=200)
+        _PULLING.add(image)
+    threading.Thread(target=_pull_image, args=(image,), name="image-pull", daemon=True).start()
+    return JSONResponse({"queued": True}, status_code=202)
 
 
 @app.post("/internal/steps/checks")

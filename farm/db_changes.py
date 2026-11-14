@@ -239,3 +239,44 @@ def changes_md(summary: dict | None) -> str:
             f"| {_num(row['inserted'])} | {_num(row['updated'])} | {_num(row['deleted'])} |"
         )
     return "\n".join(lines) + "\n"
+
+
+# HO-839: whether the role behind a rehearsal's read-only connection could
+# write anything at all — a superuser, or INSERT, UPDATE, DELETE or TRUNCATE
+# on any user table. A read-only transaction alone can be undone with SET, so
+# a rehearsal refuses such a role before its first command runs.
+_WRITABLE_ROLE_SQL = """
+SELECT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)
+    OR EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'p')
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg\\_toast%'
+          AND (has_table_privilege(c.oid, 'INSERT') OR has_table_privilege(c.oid, 'UPDATE')
+               OR has_table_privilege(c.oid, 'DELETE') OR has_table_privilege(c.oid, 'TRUNCATE'))
+    )
+"""
+
+
+def role_can_write(conn_value: str | None, *, connect=None) -> bool | None:
+    """True when the connection's role can write, False when it cannot, None
+    when that could not be found out (no value, no driver, no connection).
+    Read-only like snapshot(): its own connection, which refuses writes.
+    Never raises, and never keeps the error's text."""
+    if not conn_value:
+        return None
+    try:
+        conn = (connect or _connect)(conn_value, STATEMENT_TIMEOUT_MS)
+    except Exception:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_WRITABLE_ROLE_SQL)
+            return bool(cur.fetchone()[0])
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

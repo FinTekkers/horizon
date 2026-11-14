@@ -36,6 +36,8 @@ const noop = () => {}
 const returnTo = (key, label, redo) => ({ key, label, action: 'return', isDefault: true, redo, reapprovals: [], stopsRunning: false })
 
 const PREFLIGHT_PASSED = { status: 'passed', unmet: [], runner: 'container', runUser: 'ubuntu', checkedAt: '2026-11-12 10:04:11' }
+// HO-839: the server's view of that plan's rehearsal, run clean.
+const REHEARSAL_CLEAN = { clean: true, reason: null, scope: 'full', seconds: 41, failures: [] }
 
 const taskItem = {
   id: 'TK-1',
@@ -51,8 +53,9 @@ const taskItem = {
   events: [],
   stepOutputs: {},
   activeRun: null,
-  // HO-837: the server's view of a plan whose Preflight passed.
-  runPlan: { commands: 3, budgetMinutes: 20, hash: 'abc123', runner: 'container', imagePinned: true, runnerWarning: null, preflight: PREFLIGHT_PASSED },
+  // HO-837: the server's view of a plan whose Preflight passed. HO-839: and
+  // whose rehearsal ran clean.
+  runPlan: { commands: 3, budgetMinutes: 20, hash: 'abc123', runner: 'container', imagePinned: true, runnerWarning: null, preflight: PREFLIGHT_PASSED, rehearsal: REHEARSAL_CLEAN },
   approvedPlanHash: null,
   moves: servedMoves({
     approve: { key: 'task.approve-run', label: 'Approve the run' },
@@ -161,6 +164,39 @@ test('uncovered metric lines show "metric lines 3, 4 have no proof" and Approve 
   rerender(<Harness item={{ ...taskItem, runPlan: { ...plan, uncoveredLines: [] } }} />)
   expect(warning()).toBeNull()
   expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
+})
+
+// HO-843: after a one-command patch the card shows only that command's
+// diff — "Command 2 of 3 changed", one old line and one new line — in place
+// of the whole plan's summary, and no other command's text. Approve the run
+// still opens the same confirm (and PIN) every approval goes through.
+test('a one-command patch: the card renders only command k\'s diff, never the rest of the plan', () => {
+  const others = ['scripts/a.sh --dry-run', 'scripts/c.sh --verify']
+  const commandPatch = { index: 1, count: 3, before: 'scripts/b.sh --all', after: 'scripts/b.sh --since 2026-11-01', commandHash: 'f'.repeat(64) }
+  const { container, getByRole, getByLabelText } = render(<Harness item={{ ...taskItem, runPlan: { ...taskItem.runPlan, commandPatch } }} />)
+  const card = awaitingCard(container)
+  const diff = within(card).getByTestId('command-patch')
+  expect(within(diff).getByText('Command 2 of 3 changed')).toBeTruthy()
+  expect(getByLabelText('Old command 2').textContent).toBe('− scripts/b.sh --all')
+  expect(getByLabelText('New command 2').textContent).toBe('+ scripts/b.sh --since 2026-11-01')
+  expect(diff.querySelectorAll('.command-patch__line--removed')).toHaveLength(1)
+  expect(diff.querySelectorAll('.command-patch__line--added')).toHaveLength(1)
+  // Only k's diff: no whole-plan summary, and no other command's text.
+  expect(card.querySelector('.step-card__run-plan')).toBeNull()
+  for (const other of others) expect(card.textContent).not.toContain(other)
+  expect(card.textContent).not.toContain('commandHash')
+  expect(card.textContent).not.toContain('f'.repeat(64))
+  expect(card.textContent).toContain('Always a human · even on Autopilot')
+
+  fireEvent.click(getByRole('button', { name: 'Approve the run' }))
+  expect(getByRole('alertdialog').textContent).toContain('Approve this gate?')
+})
+
+test('with no patch waiting the card shows the whole plan\'s summary and no diff', () => {
+  const { container } = render(<Harness item={{ ...taskItem, runPlan: { ...taskItem.runPlan, commandPatch: null } }} />)
+  const card = awaitingCard(container)
+  expect(card.querySelector('[data-testid="command-patch"]')).toBeNull()
+  expect(card.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 3 commands · budget 20 min · Container')
 })
 
 test("a change item's gate card is unchanged: no human-only line, the usual button names", () => {
@@ -274,4 +310,60 @@ test('a stale or missing Preflight says why and keeps Approve disabled; a passed
   expect(awaitingCard(container).querySelector('[data-testid="preflight-passed"]').textContent).toBe('✓ Preflight passed on host as ubuntu')
   expect(getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
   expect(screen.queryByRole('button', { name: 'Re-run preflight' })).toBeNull()
+})
+
+// ---- HO-839: the rehearsal ----
+const withRehearsal = (rehearsal) => ({ ...taskItem, runPlan: { ...taskItem.runPlan, rehearsal } })
+const FAILED = {
+  clean: false,
+  reason: 'rehearsal_parser_failed',
+  scope: 'full',
+  seconds: 12,
+  failures: [{ what: 'proof command 2 (metric line 1)', reason: 'rehearsal_parser_failed', exit: 5 }],
+}
+
+test('a failed rehearsal names its reason and finding, hides Approve the run and Approve with comments, and keeps Send back and Return to…', () => {
+  const onMove = vi.fn()
+  const { container } = render(<Harness item={withRehearsal(FAILED)} onMove={onMove} />)
+  const card = awaitingCard(container)
+  expect(card.querySelector('[data-testid="rehearsal-failed"]').textContent).toContain('Rehearsal failed: rehearsal_parser_failed')
+  expect([...card.querySelectorAll('[data-testid="rehearsal-finding"]')].map((li) => li.textContent)).toEqual([
+    'proof command 2 (metric line 1) — rehearsal_parser_failed (exit 5)',
+  ])
+  expect(within(card).queryByRole('button', { name: 'Approve the run' })).toBeNull()
+  expect(within(card).queryByRole('button', { name: 'Approve with comments' })).toBeNull()
+  fireEvent.click(within(card).getByRole('button', { name: 'Send back to Run plan' }))
+  expect(onMove).toHaveBeenLastCalledWith('TK-1', 'return', 'task.run-plan')
+  fireEvent.click(within(card).getByRole('button', { name: 'Re-run preflight' }))
+  expect(onMove).toHaveBeenLastCalledWith('TK-1', 'return', 'task.preflight')
+  expect(within(card).getByRole('button', { name: 'Return to…' })).toBeTruthy()
+})
+
+test('no rehearsal on record for the plan hides Approve the run and says why; a clean one shows it, enabled', () => {
+  const { container, rerender } = render(<Harness item={withRehearsal(null)} />)
+  expect(awaitingCard(container).querySelector('[data-testid="rehearsal-missing"]').textContent).toContain('No rehearsal on record for this plan')
+  expect(screen.queryByRole('button', { name: 'Approve the run' })).toBeNull()
+
+  rerender(<Harness item={taskItem} />)
+  const card = awaitingCard(container)
+  expect(card.querySelector('[data-testid="rehearsal-clean"]').textContent).toBe('✓ Rehearsal ran clean in 41s in the read-only sandbox')
+  expect(card.querySelector('[data-testid="rehearsal-samples-only"]')).toBeNull()
+  expect(within(card).getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
+})
+
+test("a Tenant Task's card says its proofs were rehearsed on samples only", () => {
+  const { container, rerender } = render(<Harness item={withRehearsal({ ...REHEARSAL_CLEAN, scope: 'samples' })} />)
+  const line = () => awaitingCard(container).querySelector('[data-testid="rehearsal-samples-only"]')
+  expect(line().textContent).toBe('Tenant Task: proofs rehearsed on samples only. The dry run was not rehearsed.')
+  expect(screen.getByRole('button', { name: 'Approve the run' }).disabled).toBe(false)
+  // Failed, it still says so — and Approve is hidden.
+  rerender(<Harness item={withRehearsal({ ...FAILED, scope: 'samples' })} />)
+  expect(line().textContent).toBe('Tenant Task: proofs rehearsed on samples only. The dry run was not rehearsed.')
+  expect(screen.queryByRole('button', { name: 'Approve the run' })).toBeNull()
+})
+
+test('an unmet Preflight shows no rehearsal line: Preflight blocks first', () => {
+  const { container } = render(<Harness item={{ ...taskItem, runPlan: { ...taskItem.runPlan, preflight: { ...PREFLIGHT_PASSED, status: 'unmet', unmet: [{ kind: 'tool', name: 'jq', reason: 'missing' }] }, rehearsal: null } }} />)
+  expect(awaitingCard(container).querySelector('[data-testid^="rehearsal-"]')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Approve the run' }).disabled).toBe(true)
 })

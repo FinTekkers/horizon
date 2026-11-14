@@ -1,0 +1,46 @@
+{
+  "$comment": "HO-839 replay set: a host-runner price load. The dry run previews with REHEARSAL_LIMIT; proof command 2 reads a stored fixture with jq. Rehearses clean.",
+  "files": {
+    "load.sh": "#!/bin/sh\ncase \"$1\" in\n  --dry-run) echo \"would load ${REHEARSAL_LIMIT:-0} prices for 2026-10-09\" ;;\n  *) echo 'the real load is not part of the rehearsal' >&2; exit 1 ;;\nesac\n",
+    "fixtures/day1.json": "{\"day\": \"2026-10-09\", \"priced\": [{\"cusip\": \"912810UT3\"}, {\"cusip\": \"912810US5\"}, {\"cusip\": \"91282CQK0\"}]}\n"
+  },
+  "plan": {
+    "cwd": ".",
+    "commands": [
+      "sh load.sh --day 2026-10-09",
+      "jq -e '.priced | length' fixtures/day1.json"
+    ],
+    "budget_minutes": 5,
+    "runner": "host",
+    "requires": [
+      {
+        "tool": "jq"
+      },
+      {
+        "tool": "sh"
+      },
+      {
+        "path": "load.sh"
+      },
+      {
+        "path": "fixtures/day1.json"
+      }
+    ],
+    "proof": [
+      {
+        "line": 1,
+        "command": 2
+      }
+    ],
+    "rehearsal": {
+      "dry_run": "sh load.sh --dry-run",
+      "limit": 5,
+      "samples": [
+        {
+          "command": 2,
+          "expect": "3"
+        }
+      ]
+    }
+  }
+}
