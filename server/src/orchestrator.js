@@ -4666,7 +4666,8 @@ export async function recheckAndRun(id, { actor, login }) {
   let result = { error: 'failed' }
   let locked = false
   try {
-    if (itemKindOf(item) !== 'task') result = { error: 'not_task' }
+    // Only a Task's lifecycle has Execute (domain/steps.json), so only a Task is re-run.
+    if (!stepsFor(itemKindOf(item)).some((step) => step.index === EXECUTE_STEP_INDEX)) result = { error: 'not_task' }
     else if (rechecking.has(id) || dispatching.has(id) || activeJobRun(id)) result = { error: 'already_running' }
     else {
       rechecking.add(id)
