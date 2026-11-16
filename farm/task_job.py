@@ -283,6 +283,50 @@ def run_job(**kwargs) -> dict:
                 wipe_throwaway(kwargs["state_path"], kwargs["log_path"])
 
 
+# HO-838: the job's prerequisite re-check cap. farmd's dispatch re-check ran
+# moments earlier under the same cap.
+PREREQ_RECHECK_S = 25
+
+
+def _prereq_recheck(task: dict, approved_hash: str) -> list[dict]:
+    """HO-838: the Preflight checks (farm/preflight.py, the one engine) on
+    the approved plan, as this runner is about to run it — the unmet items,
+    [] when every check holds. Read-only; takes no lock of its own. Fails
+    closed: an error or a malformed result is an unmet `probe`, never a pass.
+    The env names and uid are the ones farmd stamped at launch. HO-838: the
+    plan hash was already checked by the double hash gate just before, so a
+    `plan` unmet is dropped here — the hash_mismatch path owns it."""
+    from farm import preflight
+
+    # What farmd stamps at launch, filled from this runner when absent (a
+    # task file farmd did not stamp, or a tenant run user farmd could not
+    # resolve): this process is the one about to run the commands, so its
+    # uid is Execute's, and it runs only because farmd's job lane launched it
+    # with job runs on. Env names are not filled: an unstamped task's env is
+    # checked as the engine always has (farm/run_plan_requires.py).
+    own = {"job_uid": os.geteuid(), "jobs_enabled": True}
+    checked = {**task, **{key: value for key, value in own.items() if task.get(key) is None}, "plan_hash": approved_hash}
+    try:
+        result = preflight.run(checked, deadline=time.monotonic() + PREREQ_RECHECK_S, cap_s=PREREQ_RECHECK_S)
+    except Exception as exc:  # noqa: BLE001 — fail closed, never a pass
+        return [{"kind": "probe", "name": "prerequisite re-check", "reason": f"failed ({type(exc).__name__})"}]
+    raw = result.get("unmet") if isinstance(result, dict) else None
+    if not isinstance(raw, list):
+        return [{"kind": "probe", "name": "prerequisite re-check", "reason": "no result"}]
+    # A malformed entry is an unmet `probe`, never dropped.
+    unmet = [
+        item if isinstance(item, dict) else {"kind": "probe", "name": "prerequisite re-check", "reason": "malformed result"}
+        for item in raw
+        if not (isinstance(item, dict) and item.get("kind") == "plan")
+    ]
+    if unmet:
+        return unmet
+    # Only plan gaps: the hash gate owns those. Otherwise a pass must say so.
+    if raw or result.get("passed") is True:
+        return []
+    return [{"kind": "probe", "name": "prerequisite re-check", "reason": "no result"}]
+
+
 def _hold_clone_lock(stack: contextlib.ExitStack, repo_dir: str | None) -> None:
     """HZ-738: Execute's shared clone_lock, released when `stack` closes. A
     clone that fails the HZ-415 guard is never written to, not even the lock
@@ -317,6 +361,7 @@ def _run_job(
     memory_limit: str | None = None,
     first_line: str | None = None,
     media_roots: tuple = (),
+    prereq_task: dict | None = None,
     approved_command_hashes: list | None = None,
     carry_through: int | None = None,
 ) -> dict:
@@ -368,6 +413,13 @@ def _run_job(
 
     HZ-815: `media_roots`, config.MEDIA_OUTPUT_ROOTS for a farm host run, are
     the dirs besides the checkout a plan's `outputs` may be copied from.
+
+    HO-838: `prereq_task` is the job's task file as farmd stamped it. main()
+    always passes it, so every start re-runs the Preflight checks
+    (_prereq_recheck) once the clone is fast-forwarded and the cwd resolved,
+    before the container or any command. A check that fails, raises or runs
+    out of time ends the job `prereq_refused`, zero commands run. A direct
+    call with no task (a unit test of the run itself) has nothing to check.
 
     HO-843: `approved_command_hashes`, when the server sends them, are the
     approved hash of each command: the second hash check runs zero commands
@@ -501,6 +553,39 @@ def _run_job(
         save_state(state_path, state)
         with log_path.open("a", encoding="utf-8") as log:
             log.write(redact(f"Execute refused: {refusal} — zero commands run\n", secrets))
+            log.flush()
+        nudge()
+        return state["summary"]
+
+    # HO-838: the host may have drifted since approval. Checked after the
+    # fast-forward, so a path the new commit adds is there, and before the
+    # container starts (so no image is pulled) or any command runs.
+    unmet = _prereq_recheck(prereq_task, approved_hash) if prereq_task is not None else []
+    if unmet:
+        from farm import preflight
+
+        refusal = preflight.drift_text(unmet)
+        state = {
+            "run_id": run_id,
+            "item_id": item_id,
+            "status": "prereq_refused",
+            "refusal": refusal.splitlines()[0],
+            "unmet": unmet,
+            "started_at": _now_iso(),
+            "ended_at": _now_iso(),
+            "budget_s": budget_s,
+            "approved_hash": approved_hash,
+            "commands": [
+                dict(prior_done[i])
+                if i in prior_done
+                else {"command": c, "cwd": plan_cwd, "status": "pending", "started_at": None, "ended_at": None, "exit_code": None}
+                for i, c in enumerate(commands)
+            ],
+            "summary": {"run": 0, "passed": 0, "failed": 0, "failing": []},
+        }
+        save_state(state_path, state)
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(redact(f"Execute refused: {refusal}\nzero commands run\n", secrets))
             log.flush()
         nudge()
         return state["summary"]
@@ -1061,6 +1146,8 @@ def main(argv: list[str] | None = None) -> int:
             memory_limit=task.get("memory_limit"),
             first_line=first_line,
             media_roots=() if results_dir else MEDIA_OUTPUT_ROOTS,
+            # HO-838: every start re-checks the prerequisites.
+            prereq_task=task,
             # HO-843: absent from a server before per-command approval.
             approved_command_hashes=task.get("approved_command_hashes"),
             carry_through=task.get("carry_through"),

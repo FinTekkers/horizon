@@ -13,6 +13,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-task-job-verify-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -24,6 +25,8 @@ const REDACTED_LOG = 'db=[redacted]\n$ echo done (cwd=/tmp)\ndone\nexit 0 in 0.1
 
 const dispatches = []
 globalThis.fetch = async (url, opts) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   const u = String(url)
   dispatches.push({ url: u, body: opts?.body ? JSON.parse(opts.body) : null })
   if (u.includes('/jobs/') && u.includes('/log')) {

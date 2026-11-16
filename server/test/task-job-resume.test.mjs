@@ -9,6 +9,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-task-job-resume-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -19,6 +20,8 @@ const dispatches = []
 // HZ-415: item ids whose job dispatch farmd answers with this 400 body.
 const farmRefusals = {}
 globalThis.fetch = async (url, opts) => {
+  const preflight = preflightPass(url)
+  if (preflight) return preflight
   const body = opts?.body ? JSON.parse(opts.body) : null
   dispatches.push({ url: String(url), body })
   const refusal = String(url).includes('/steps/run') && Object.hasOwn(farmRefusals, body?.item?.id ?? '') && farmRefusals[body.item.id]

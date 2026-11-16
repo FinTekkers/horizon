@@ -87,10 +87,12 @@ def _deploy_busy(task: dict) -> str | None:
     return None
 
 
-def _checks(task: dict, deadline: float, unmet: list, progress: dict) -> None:
+def _checks(task: dict, deadline: float, unmet: list, progress: dict, tree: bool = True) -> None:
     """The checks, in order, each appending its unmet items. One that raises
     is an unmet `probe` naming it. `progress["check"]` names the one running,
-    for a timeout."""
+    for a timeout. HO-838: with `tree` False a tenant's task clone is not
+    looked for, so the checks that read it (cwd, login env, requires) do not
+    run — see run()."""
     tenant = credentials.is_tenant_project(task.get("project"))
     runner = task.get("runner")
     state: dict = {}
@@ -132,6 +134,8 @@ def _checks(task: dict, deadline: float, unmet: list, progress: dict) -> None:
             unmet.append(_unmet("run_user", name, refusal))
         if not isinstance(task.get("job_uid"), int):
             unmet.append(_unmet("run_user", name, "the run user's account or session env could not be built"))
+        if not tree:
+            return
         repo = (task.get("item") or {}).get("repo")
         clone = workspaces.tenant_task_clone_path(repo) if isinstance(repo, str) and repo else None
         if clone is None or not (clone / ".git").is_dir():
@@ -223,19 +227,25 @@ def _checks(task: dict, deadline: float, unmet: list, progress: dict) -> None:
     step("requires", requires)
 
 
-def run(task: dict, *, deadline: float) -> dict:
+def run(task: dict, *, deadline: float, tree: bool = True, cap_s: float = CAP_S) -> dict:
     """The preflight result: {passed, runner, run_user, plan_hash, unmet:
     [{kind, name, reason}]}. `deadline` is time.monotonic()-based; when it
     passes, the checks still running are abandoned and the result is unmet
-    `probe` "timed out". Never raises."""
+    `probe` "timed out". Never raises. `cap_s` is the cap that reason
+    names: HO-838's re-checks run under their own, shorter one.
+
+    HO-838: `tree` False is farmd's dispatch re-check of a tenant task. Only
+    the run user can see its own task clone, so farmd checks what it can
+    (runner, jobs switch, run user, container, deploy) and leaves the clone's
+    checks to the re-check inside the tenant job, which runs as the run user."""
     unmet: list[dict] = []
     progress = {"check": "preflight"}
-    worker = threading.Thread(target=_checks, args=(task, deadline, unmet, progress), name="preflight", daemon=True)
+    worker = threading.Thread(target=_checks, args=(task, deadline, unmet, progress, tree), name="preflight", daemon=True)
     worker.start()
     worker.join(max(0.0, deadline - time.monotonic()))
     found = list(unmet)
     if worker.is_alive():
-        found.append(_unmet("probe", progress["check"], f"timed out: preflight has {CAP_S}s"))
+        found.append(_unmet("probe", progress["check"], f"timed out: preflight has {cap_s:g}s"))
     return {
         "passed": not found,
         "runner": task.get("runner"),
@@ -265,6 +275,36 @@ def render(result: dict) -> str:
     if unmet:
         lines += ["", "| Kind | Name | Why |", "| --- | --- | --- |"]
         lines += [f"| {_cell(u['kind'])} | `{_cell(u['name'])}` | {_cell(u['reason'])} |" for u in unmet]
+    return "\n".join(lines)
+
+
+# HO-838: a dispatch re-check's refusal. The first line names the failed
+# checks; one line per unmet item follows. server/src/orchestrator.js
+# refuseOnPrereqDrift writes the same shape for the server's own gate.
+DRIFT_HEADLINE = "prerequisites changed since approval"
+DRIFT_NAMES_MAX = 20
+DRIFT_NAME_MAX = 120
+
+
+def drift_names(unmet: list) -> list[str]:
+    """Each unmet item's name, once, in order, each at most DRIFT_NAME_MAX."""
+    names: list[str] = []
+    for item in unmet or []:
+        name = str((item or {}).get("name") or (item or {}).get("kind") or "check")[:DRIFT_NAME_MAX]
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def drift_text(unmet: list) -> str:
+    """The refusal: `<headline> — failed: A, B` then `- <kind> <name>: <why>`
+    per item, at most DRIFT_NAMES_MAX of each. Names and reasons only."""
+    names = drift_names(unmet)
+    shown = ", ".join(names[:DRIFT_NAMES_MAX]) + (f", +{len(names) - DRIFT_NAMES_MAX} more" if len(names) > DRIFT_NAMES_MAX else "")
+    lines = [f"{DRIFT_HEADLINE} — failed: {shown}"]
+    for item in (unmet or [])[:DRIFT_NAMES_MAX]:
+        item = item or {}
+        lines.append(f"- {str(item.get('kind') or 'check')[:TEXT_MAX]} {str(item.get('name') or '')[:DRIFT_NAME_MAX]}: {str(item.get('reason') or '')[:TEXT_MAX]}")
     return "\n".join(lines)
 
 

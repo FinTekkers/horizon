@@ -199,3 +199,16 @@ test('Show details lists the failing tests above the digest, as plain text, with
   expect(pre.querySelector('a')).toBeNull()
   expect(pre.querySelector('strong')).toBeNull()
 })
+
+test(`a ${REASON.PREREQ_DRIFT} pause shows the failed checks`, () => {
+  const { container } = renderPaused([
+    {
+      text: `agent step failed (${REASON.PREREQ_DRIFT}): prerequisites changed since approval — failed: MY_VAR, no_deploy_running — item paused; resume to retry`,
+      detail: 'prerequisites changed since approval — failed: MY_VAR, no_deploy_running\n- env MY_VAR: not set in the job\'s environment\n- precondition no_deploy_running: a deploy of horizon is deploying',
+    },
+  ])
+  const banner = container.querySelector('.pause-banner')
+  expect(banner.querySelector('.pause-banner__title').textContent).toBe('Run refused: host changed since approval')
+  expect(banner.textContent).toContain('MY_VAR')
+  expect(banner.textContent).toContain('no_deploy_running')
+})

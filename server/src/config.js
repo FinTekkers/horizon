@@ -142,6 +142,10 @@ process.env.HORIZON_DEPLOY_LOCK_TIMEOUT_S = DEPLOY_LOCK_TIMEOUT_S
 // still fails in a bounded window instead of silently burning its full
 // execution budget before ever running.
 export const FARM_QUEUE_TIMEOUT_MS = Number(process.env.FARM_QUEUE_TIMEOUT_MS || 10 * 60 * 1000)
+// HO-838: Execute's dispatch re-check (farmd POST /preflight) waits at most
+// this long; a slower answer refuses dispatch as prereq_drift. farmd caps its
+// own probe run at 25 s inside it. Settable only so a test can time out fast.
+export const FARM_PREFLIGHT_TIMEOUT_MS = Number(process.env.FARM_PREFLIGHT_TIMEOUT_MS || 30 * 1000)
 // HZ-458: the farm pauses a run's step clock while its repo checks run (POST
 // .../checks). This backstop bounds one paused window, so a farm that dies
 // mid-check still fails the run. Derived from the four configurable check

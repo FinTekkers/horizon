@@ -8,6 +8,7 @@ import crypto from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { preflightPass } from './helpers/preflight.mjs'
 
 process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-task-job-budget-')), 'test.db')
 process.env.FARM_URL = 'http://farm.test'
@@ -15,7 +16,7 @@ process.env.FARM_SHARED_SECRET = 'farm-secret-r6'
 process.env.FARM_RUN_STATE_POLL_MS = String(60 * 60 * 1000)
 for (const key of ['GITHUB_WEBHOOK_SECRET', 'FARM_STEP_INDEXES', 'WA_POLL_ENABLED']) delete process.env[key]
 
-globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) })
+globalThis.fetch = async (url) => preflightPass(url) ?? { ok: true, status: 200, json: async () => ({}) }
 
 const { db } = await import('../src/db.js')
 const config = await import('../src/config.js')
