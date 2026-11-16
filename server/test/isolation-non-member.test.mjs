@@ -273,6 +273,8 @@ const WRITE_CASES = {
   'POST /api/test/github-pr': { expect: '404', url: '/api/test/github-pr', body: {}, owner: 200 },
   'POST /api/test/screenshot-snapshot': { expect: '404', url: '/api/test/screenshot-snapshot', body: SCREENSHOTS, owner: 200 },
   'POST /api/test/farm-reachable': { expect: '404', url: '/api/test/farm-reachable', body: { reachable: true }, owner: 200 },
+  // HO-842: clears a canned /preflight answer; nothing was set for ISOA-1.
+  'POST /api/test/recheck-result': { expect: '404', url: '/api/test/recheck-result', body: { itemId: 'ISOA-1', answer: null }, owner: 200 },
   // owner
   'POST /api/admin/deploy-targets': { expect: '404', url: '/api/admin/deploy-targets', body: { key: 'iso-target', ...DEPLOY_TARGET }, owner: 201 },
   'PUT /api/admin/deploy-targets/:key': { expect: '404', url: '/api/admin/deploy-targets/iso-target', body: DEPLOY_TARGET, owner: 200 },
@@ -305,6 +307,8 @@ const WRITE_CASES = {
   // 409 no_job / nothing_to_resume / no_pr: states the seeded item is not in.
   'POST /api/items/:id/job/stop': { expect: '404', url: `${ITEM}/job/stop`, owner: 409 },
   'POST /api/items/:id/job/resume': { expect: '404', url: `${ITEM}/job/resume`, owner: 409 },
+  // HO-842: 409 not_task — the seeded item is a Change.
+  'POST /api/items/:id/job/recheck-run': { expect: '404', url: `${ITEM}/job/recheck-run`, owner: 409 },
   // HO-843: 409 not_a_task — the seeded item is a Change, whose plan is never patched.
   'POST /api/items/:id/run-plan/patch': { expect: '404', url: `${ITEM}/run-plan/patch`, body: { from: 'iso.not-here', planHash: 'iso', index: 0, command: 'make test' }, owner: 409 },
   // HZ-710: 409 stale_step — the owner names a step the item is not at.

@@ -77,7 +77,7 @@ const CASES = {
   isolation: [{ ...base, isolationRefusal: ISOLATION }, ISOLATION, 'Open project settings', 'onOpenProjectSettings', [7]],
 }
 
-const CONTINUE_LABELS = ['Resume', 'Retry', 'Release with PIN', 'Release now', 'Open HD-9', 'Open project settings']
+const CONTINUE_LABELS = ['Resume', 'Retry', 'Re-check and run', 'Release with PIN', 'Release now', 'Open HD-9', 'Open project settings']
 
 function renderTracker(item) {
   const handlers = {

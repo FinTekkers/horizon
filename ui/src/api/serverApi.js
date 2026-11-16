@@ -1026,6 +1026,29 @@ export function resumeJob(id) {
   return postJson(`/items/${id}/job/resume`, {})
 }
 
+// HO-842: Re-check and run, after the dispatch re-check refused — the server
+// re-checks the host and, on a pass, resumes the same approved plan. A browser
+// session and same-origin header only; no PIN. Rejects with Error(<error
+// code>), plus `unmet` ([{ kind, name }], names only) for
+// prerequisites_unmet; on success the answer's item is applied.
+export async function recheckAndRun(id) {
+  const res = await fetch(`${API_BASE}/items/${encodeURIComponent(id)}/job/recheck-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-horizon-csrf': '1' },
+    body: '{}',
+  }).catch(() => null)
+  if (!res) throw new Error('network')
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    if (Array.isArray(data.unmet)) err.unmet = data.unmet
+    throw err
+  }
+  if (data.item) applyActionItem(data.item)
+  return data
+}
+
 // HO-843: the owner's patch of one command (0-based `index`) of a Task's run
 // plan — the approved plan at Execute, the shown one at Approve the run. The
 // item goes back to Run plan. Rejects with Error(<error code>), plus `shapes`

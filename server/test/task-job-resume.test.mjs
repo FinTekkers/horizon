@@ -19,9 +19,20 @@ for (const key of ['GITHUB_WEBHOOK_SECRET', 'FARM_STEP_INDEXES', 'WA_POLL_ENABLE
 const dispatches = []
 // HZ-415: item ids whose job dispatch farmd answers with this 400 body.
 const farmRefusals = {}
+// HO-842: item id -> (request) => farmd's /preflight answer (a fetch-shaped
+// reply, a promise of one, or a throw). Absent: the clean pass. Every
+// /preflight request is recorded, by item.
+const preflightAnswers = {}
+const preflightCalls = []
 globalThis.fetch = async (url, opts) => {
   const preflight = preflightPass(url)
-  if (preflight) return preflight
+  if (preflight) {
+    const body = opts?.body ? JSON.parse(opts.body) : null
+    const itemId = body?.item?.id ?? ''
+    preflightCalls.push({ itemId, body })
+    if (Object.hasOwn(preflightAnswers, itemId)) return preflightAnswers[itemId](body)
+    return preflight
+  }
   const body = opts?.body ? JSON.parse(opts.body) : null
   dispatches.push({ url: String(url), body })
   const refusal = String(url).includes('/steps/run') && Object.hasOwn(farmRefusals, body?.item?.id ?? '') && farmRefusals[body.item.id]
@@ -299,4 +310,360 @@ test('HZ-416: the Run plan and Execute dispatches carry the container image and 
   orchestrator.cancel(id)
   assert.equal(execute.body.container_image, null)
   assert.equal(execute.body.runner, 'host', 'no image pinned: a plan with no runner runs on the host')
+})
+
+// ---- HO-842: Re-check and run ----
+// After the dispatch re-check (HO-838) refused for a missing env var, the
+// fixed host is re-checked and the same approved plan resumes: no PIN, no
+// send-back, one dispatch at a time, one Activity entry per click past auth.
+
+const { loginFixtureToken } = await import('./helpers/session.mjs')
+const MDI = 'MDI_DB_URL'
+const csrfCookie = { ...cookie, 'x-horizon-csrf': '1' }
+const recheckRun = (id, headers = csrfCookie) => app.inject({ method: 'POST', url: `/api/items/${id}/job/recheck-run`, headers, payload: {} })
+const farmReply = (data, status = 200) => ({ ok: status < 300, status, json: async () => data })
+const PREFLIGHT_PASS = { ok: true, failed: [], unmet: [], deferred: [], elapsed_ms: 0 }
+const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+async function until(check, what) {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return
+    await wait(10)
+  }
+  assert.fail(`never happened: ${what}`)
+}
+const approval = (id) => db.prepare('SELECT approved_plan_hash, approved_runner FROM work_item WHERE id = ?').get(id)
+const eventRows = (id) => db.prepare('SELECT who, text, detail, created_at FROM event WHERE item_id = ? ORDER BY id').all(id)
+const recheckEntries = (id) => eventRows(id).filter((e) => e.text.startsWith('Re-check and run by '))
+const preflightCallsFor = (id) => preflightCalls.filter((c) => c.itemId === id).length
+
+// The host as the fake farm sees it: item id -> env names missing there.
+const hostMissing = {}
+function farmChecksHost(id) {
+  preflightAnswers[id] = () => {
+    const missing = hostMissing[id] ?? []
+    if (!missing.length) return farmReply(PREFLIGHT_PASS)
+    return farmReply({ ok: false, failed: missing, unmet: missing.map((name) => ({ kind: 'env', name, reason: "not set in the job's environment" })) })
+  }
+}
+
+// A stopped Task whose Execute dispatch HO-838's re-check refused for a
+// missing MDI_DB_URL: the real refusal, run through refuseUnapprovedRun.
+async function seedRefusedTask(id, { jobView = null } = {}) {
+  seedStoppedTask(id)
+  if (jobView) {
+    db.prepare(
+      "INSERT INTO step_run (item_id, step_index, attempt, agent, status, output, job_view, ended_at) VALUES (?, ?, 1, ?, 'cancelled', 'STOPPED: the run was stopped with 1 command(s) done', ?, datetime('now'))",
+    ).run(id, EXECUTE_STEP_INDEX, STEPS[EXECUTE_STEP_INDEX].agent, JSON.stringify(jobView))
+  }
+  hostMissing[id] = [MDI]
+  farmChecksHost(id)
+  const runId = Number(
+    db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 2, ?, 'active')").run(id, EXECUTE_STEP_INDEX, STEPS[EXECUTE_STEP_INDEX].agent).lastInsertRowid,
+  )
+  const refused = await orchestrator.refuseUnapprovedRun(runId, id, EXECUTE_STEP_INDEX)
+  assert.equal(refused?.error, REASON.PREREQ_DRIFT)
+  assert.equal(store.getItem(id).paused, true)
+}
+
+// Metric 5: exactly one entry for the item's clicks so far — Alice's name as
+// who, her login in the text, and a timestamp from the last minute.
+function assertRecheckEntries(id, patterns) {
+  const entries = recheckEntries(id)
+  assert.equal(entries.length, patterns.length, JSON.stringify(entries))
+  entries.forEach((entry, i) => {
+    assert.equal(entry.who, 'Alice')
+    assert.ok(entry.text.startsWith('Re-check and run by alice@example.com: '), entry.text)
+    assert.match(entry.text, patterns[i])
+    const at = Date.parse(`${entry.created_at.replace(' ', 'T')}Z`)
+    assert.ok(Number.isFinite(at) && Math.abs(Date.now() - at) < 60_000, `recent created_at: ${entry.created_at}`)
+  })
+}
+
+test('HO-842 metric 1: once the var is back, Re-check and run with no PIN dispatches the stored approved_plan_hash on the stored approved_runner', async () => {
+  const id = 'T-842-M1'
+  await seedRefusedTask(id)
+  const before = approval(id)
+  assert.match(alice.pin, /^\d{6}$/, 'alice has a gate PIN, and is not asked for it')
+
+  hostMissing[id] = []
+  const res = await recheckRun(id)
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().ok, true)
+  assert.equal(typeof res.json().runId, 'number')
+  assert.equal(res.json().item.paused, false)
+  await until(() => jobDispatchesFor(id).length === 1, 'the job dispatch')
+  const [dispatch] = jobDispatchesFor(id)
+  assert.equal(dispatch.body.approved_hash, before.approved_plan_hash)
+  assert.equal(dispatch.body.runner, before.approved_runner)
+  assert.equal(dispatch.body.step.index, EXECUTE_STEP_INDEX)
+  // The refusal, the route's re-check, then dispatch's own (refuseUnapprovedRun).
+  assert.equal(preflightCallsFor(id), 3)
+  assertRecheckEntries(id, [/re-check passed — run \d+ started$/])
+  orchestrator.cancel(id)
+})
+
+test('HO-842 metric 1: after the 200 the item is still at Execute — no send-back, approved hash and runner unchanged', async () => {
+  const id = 'T-842-M1-STAY'
+  await seedRefusedTask(id)
+  const before = approval(id)
+  hostMissing[id] = []
+  assert.equal((await recheckRun(id)).statusCode, 200)
+  await until(() => jobDispatchesFor(id).length === 1, 'the job dispatch')
+  assert.equal(store.getItem(id).cursor, EXECUTE_STEP_INDEX)
+  assert.deepEqual(approval(id), before)
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM item_move WHERE item_id = ?').get(id).n, 0)
+  assert.ok(!eventRows(id).some((e) => /moved this item back|sent back|returned/i.test(e.text)), JSON.stringify(eventRows(id)))
+  orchestrator.cancel(id)
+})
+
+test('HO-842 metric 2: a changed run plan is 409 plan_changed with a reason — zero re-checks, zero dispatches, nothing moves', async () => {
+  const id = 'T-842-M2'
+  await seedRefusedTask(id)
+  hostMissing[id] = []
+  doneRun(id, RUN_PLAN_STEP_INDEX, PLAN.replace('scripts/a.sh', 'scripts/edited.sh'))
+  const before = approval(id)
+  const checks = preflightCallsFor(id)
+
+  const res = await recheckRun(id)
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().error, 'plan_changed')
+  assert.match(res.json().message, /changed since it was approved/)
+  await wait(30)
+  assert.equal(preflightCallsFor(id), checks, 'no re-check ran')
+  assert.equal(jobDispatchesFor(id).length, 0)
+  const item = store.getItem(id)
+  assert.equal(item.cursor, EXECUTE_STEP_INDEX)
+  assert.equal(item.paused, true)
+  assert.deepEqual(approval(id), before)
+  assertRecheckEntries(id, [/refused — plan_changed$/])
+})
+
+test('HO-842 metric 3: the var still missing is 409 prerequisites_unmet listing it by name, and zero commands dispatch', async () => {
+  const id = 'T-842-M3'
+  await seedRefusedTask(id)
+  const res = await recheckRun(id)
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().error, 'prerequisites_unmet')
+  assert.deepEqual(res.json().unmet, [{ kind: 'env', name: MDI }])
+  await wait(30)
+  assert.equal(jobDispatchesFor(id).length, 0)
+  assert.equal(store.getItem(id).paused, true)
+  assertRecheckEntries(id, [/refused — prerequisites_unmet — unmet: env MDI_DB_URL$/])
+})
+
+test('HO-842 metric 4: the re-run dispatch equals a plain Resume dispatch on approved_hash, runner, step index and plan — the keys task_job.py skips passed commands on', async () => {
+  const view = {
+    status: 'stopped',
+    elapsedS: 5,
+    budgetS: 1200,
+    commands: [
+      { command: 'scripts/a.sh', status: 'done', exit_code: 0 },
+      { command: 'scripts/b.sh', status: 'stopped', exit_code: null },
+    ],
+    logTail: [],
+  }
+  const id = 'T-842-M4'
+  const twin = 'T-842-M4-RESUME'
+  await seedRefusedTask(id, { jobView: view })
+  seedStoppedTask(twin)
+  hostMissing[id] = []
+  assert.equal((await recheckRun(id)).statusCode, 200)
+  assert.equal((await app.inject({ method: 'POST', url: `/api/items/${twin}/job/resume`, headers: cookie, payload: {} })).statusCode, 200)
+  await until(() => jobDispatchesFor(id).length === 1 && jobDispatchesFor(twin).length === 1, 'both dispatches')
+
+  const [rerun] = jobDispatchesFor(id)
+  const [resumed] = jobDispatchesFor(twin)
+  assert.equal(rerun.body.item.id, id)
+  const keys = ({ run_id: _r, attempt: _a, item: _i, ...rest }) => rest
+  assert.deepEqual(keys(rerun.body), keys(resumed.body))
+  assert.equal(rerun.body.approved_hash, approval(id).approved_plan_hash)
+  assert.equal(rerun.body.runner, approval(id).approved_runner)
+  assert.equal(rerun.body.step.index, EXECUTE_STEP_INDEX)
+  orchestrator.cancel(id)
+  orchestrator.cancel(twin)
+})
+
+test('HO-842 metric 5: a refused click and then a dispatched click each write one entry with the login and a timestamp', async () => {
+  const id = 'T-842-M5'
+  await seedRefusedTask(id)
+  assert.equal((await recheckRun(id)).statusCode, 409)
+  hostMissing[id] = []
+  assert.equal((await recheckRun(id)).statusCode, 200)
+  await until(() => jobDispatchesFor(id).length === 1, 'the job dispatch')
+  assertRecheckEntries(id, [/refused — prerequisites_unmet/, /re-check passed — run \d+ started$/])
+  orchestrator.cancel(id)
+})
+
+test('HO-842 guardrail 2: a token, a cross-site request, a request with no CSRF header and a non-member are refused, write no entry and dispatch nothing; a Change item is 409 not_task', async () => {
+  const id = 'T-842-AUTH'
+  await seedRefusedTask(id)
+  hostMissing[id] = []
+  const checks = preflightCallsFor(id)
+  const token = loginFixtureToken(auth, alice.user, 'ho-842 token')
+  const outsider = loginFixtureUser(auth, config, { email: 'outsider-842@example.com', name: 'Outsider', role: 'member' })
+  const cases = [
+    ['token', { ...token.headers, 'x-horizon-csrf': '1' }, 403, 'session_required'],
+    ['cross-site', { ...csrfCookie, origin: 'https://evil.example' }, 403, 'cross_site_refused'],
+    ['no csrf header', cookie, 403, 'csrf_required'],
+    ['non-member', { cookie: outsider.cookie, 'x-horizon-csrf': '1' }, 404, 'not_found'],
+  ]
+  for (const [name, headers, status, error] of cases) {
+    const res = await recheckRun(id, headers)
+    assert.equal(res.statusCode, status, `${name}: ${res.body}`)
+    assert.equal(res.json().error, error, name)
+  }
+  await wait(30)
+  assert.equal(recheckEntries(id).length, 0)
+  assert.equal(preflightCallsFor(id), checks)
+  assert.equal(jobDispatchesFor(id).length, 0)
+  assert.equal(store.getItem(id).paused, true)
+
+  const change = 'C-842-AUTH'
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, kind, project_id, paused) VALUES (?, 'Change', 'High', ?, 'change', ?, 1)").run(
+    change,
+    DRAFT_PLAN_STEP_INDEX,
+    projectId,
+  )
+  const res = await recheckRun(change)
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().error, 'not_task')
+  assert.equal(preflightCallsFor(change), 0)
+  assert.equal(jobDispatchesFor(change).length, 0)
+  assertRecheckEntries(change, [/refused — not_task$/])
+})
+
+// Plain Resume after a refusal stays open (to tokens too): it reaches
+// dispatch only through refuseUnapprovedRun, whose re-check still refuses
+// while the host misses the var.
+test('HO-842 guardrail 2: a plain Resume after the refusal is accepted, and the dispatch re-check still gates it', async () => {
+  const id = 'T-842-PLAIN'
+  await seedRefusedTask(id)
+  const token = loginFixtureToken(auth, alice.user, 'ho-842 resume token')
+  const res = await app.inject({ method: 'POST', url: `/api/items/${id}/job/resume`, headers: token.headers, payload: {} })
+  assert.equal(res.statusCode, 200, res.body)
+  await until(() => store.getItem(id).paused, 'the dispatch re-check refuses again')
+  assert.equal(jobDispatchesFor(id).length, 0, 'no command dispatched while MDI_DB_URL is missing')
+  assert.equal(eventRows(id).filter((e) => e.text.includes(`(${REASON.PREREQ_DRIFT})`)).length, 2)
+})
+
+test('HO-842 guardrail 1: a re-check that cannot run is 502 recheck_unavailable — fail closed, zero dispatches, one entry', async () => {
+  const id = 'T-842-DOWN'
+  await seedRefusedTask(id)
+  preflightAnswers[id] = () => {
+    throw new TypeError('fetch failed')
+  }
+  const res = await recheckRun(id)
+  assert.equal(res.statusCode, 502)
+  assert.equal(res.json().error, 'recheck_unavailable')
+  await wait(30)
+  assert.equal(jobDispatchesFor(id).length, 0)
+  assert.equal(store.getItem(id).paused, true)
+  assertRecheckEntries(id, [/refused — recheck_unavailable$/])
+})
+
+// The route's re-check is held open until `release()`; dispatch's own re-check after it passes.
+function holdRecheck(id) {
+  let release
+  let calls = 0
+  preflightAnswers[id] = () => (++calls === 1 ? new Promise((resolve) => (release = () => resolve(farmReply(PREFLIGHT_PASS)))) : farmReply(PREFLIGHT_PASS))
+  return { release: () => release(), started: () => calls >= 1 }
+}
+
+test('HO-842 guardrail 3: two clicks at once — one 200, one 409 already_running, one dispatch, two entries', async () => {
+  const id = 'T-842-DOUBLE'
+  await seedRefusedTask(id)
+  const held = holdRecheck(id)
+  const first = recheckRun(id)
+  await until(held.started, 'the first re-check started')
+  const second = await recheckRun(id)
+  assert.equal(second.statusCode, 409)
+  assert.equal(second.json().error, 'already_running')
+  held.release()
+  assert.equal((await first).statusCode, 200)
+  await until(() => jobDispatchesFor(id).length === 1, 'the job dispatch')
+  await wait(30)
+  assert.equal(jobDispatchesFor(id).length, 1)
+  assertRecheckEntries(id, [/refused — already_running$/, /re-check passed — run \d+ started$/])
+  orchestrator.cancel(id)
+})
+
+test('HO-842 guardrail 3: a plain Resume while the re-check is open is 409 already_running — one dispatch in total', async () => {
+  const id = 'T-842-RACE'
+  await seedRefusedTask(id)
+  const held = holdRecheck(id)
+  const first = recheckRun(id)
+  await until(held.started, 'the re-check started')
+  const resume = await app.inject({ method: 'POST', url: `/api/items/${id}/job/resume`, headers: cookie, payload: {} })
+  assert.equal(resume.statusCode, 409)
+  assert.equal(resume.json().error, 'already_running')
+  held.release()
+  assert.equal((await first).statusCode, 200)
+  await until(() => jobDispatchesFor(id).length === 1, 'the job dispatch')
+  await wait(30)
+  assert.equal(jobDispatchesFor(id).length, 1)
+  orchestrator.cancel(id)
+})
+
+test('HO-842 guardrail 3: with an Execute run already active, Re-check and run is 409 already_running — zero re-checks, zero dispatches', async () => {
+  const id = 'T-842-ACTIVE'
+  await seedRefusedTask(id)
+  hostMissing[id] = []
+  db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 3, ?, 'active')").run(id, EXECUTE_STEP_INDEX, STEPS[EXECUTE_STEP_INDEX].agent)
+  const checks = preflightCallsFor(id)
+  const res = await recheckRun(id)
+  assert.equal(res.statusCode, 409)
+  assert.equal(res.json().error, 'already_running')
+  await wait(30)
+  assert.equal(preflightCallsFor(id), checks)
+  assert.equal(jobDispatchesFor(id).length, 0)
+  assertRecheckEntries(id, [/refused — already_running$/])
+  orchestrator.cancel(id)
+})
+
+test('HO-842 guardrail 4: a secret value and file content never reach the log, the response, an entry or a run output', async () => {
+  const MARKER = 'hz842-secret-value-7f3a'
+  const logs = []
+  const logged = buildApp({ logger: { level: 'trace', stream: { write: (line) => logs.push(line) } } })
+  await logged.ready()
+  const original = { log: console.log, warn: console.warn, error: console.error, info: console.info }
+  for (const name of Object.keys(original)) console[name] = (...args) => logs.push(args.map(String).join(' '))
+  process.env.MDI_DB_URL = MARKER
+  try {
+    const id = 'T-842-SECRET'
+    await seedRefusedTask(id)
+    const unmetWithValues = [
+      { kind: 'env', name: MDI, reason: "not set in the job's environment", value: MARKER },
+      { kind: 'file', name: '/etc/fintekkers/creds.json', reason: 'not readable by the run user', content: MARKER },
+    ]
+    preflightAnswers[id] = () => farmReply({ ok: false, failed: [MDI, '/etc/fintekkers/creds.json'], unmet: unmetWithValues, value: MARKER })
+    const post = () => logged.inject({ method: 'POST', url: `/api/items/${id}/job/recheck-run`, headers: csrfCookie, payload: {} })
+    const refused = await post()
+    assert.equal(refused.statusCode, 409)
+    assert.deepEqual(refused.json().unmet, [
+      { kind: 'env', name: MDI },
+      { kind: 'file', name: '/etc/fintekkers/creds.json' },
+    ])
+    farmChecksHost(id)
+    hostMissing[id] = []
+    const passed = await post()
+    assert.equal(passed.statusCode, 200)
+    await until(() => jobDispatchesFor(id).length === 1, 'the job dispatch')
+    orchestrator.cancel(id)
+
+    assert.ok(logs.length > 0, 'the capture logger saw the requests')
+    const outputs = db.prepare('SELECT output FROM step_run WHERE item_id = ?').all(id).map((r) => r.output ?? '')
+    const seen = [
+      ...logs,
+      refused.body,
+      passed.body,
+      ...eventRows(id).flatMap((e) => [e.text, e.detail ?? '']),
+      ...outputs,
+      JSON.stringify(jobDispatchesFor(id)),
+    ]
+    for (const text of seen) assert.ok(!String(text).includes(MARKER), `the marker leaked: ${String(text).slice(0, 300)}`)
+  } finally {
+    Object.assign(console, original)
+    delete process.env.MDI_DB_URL
+    await logged.close()
+  }
 })

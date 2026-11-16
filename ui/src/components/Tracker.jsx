@@ -35,7 +35,7 @@ import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { STEP_HINTS, retryTarget, returnTargets, stepActionFor } from '../domain/stepActions'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, patchRunPlan, setAutopilotOff } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, recheckAndRun, patchRunPlan, setAutopilotOff } from '../api'
 import visualPageRules from '../../../domain/visualPage.json'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
@@ -301,6 +301,30 @@ const PAUSE_ERRORS = {
   gate_step: 'This item is at a gate — approve or send it back there.',
   paused: 'This item is paused — resume it first.',
   isolation_held: "This item's project refuses dispatch — fix its settings first.",
+}
+
+// HO-842: why Re-check and run was refused, keyed by the route's error code.
+// prerequisites_unmet also lists each unmet check by kind and name.
+const RECHECK_RUN_ERRORS = {
+  prerequisites_unmet: 'The host still misses what the run plan needs — no command ran. Fix these, then re-check:',
+  plan_changed: 'The run plan changed since it was approved — approve it again before re-running.',
+  already_running: 'A run for this item is already queued or running.',
+  not_task: 'Re-check and run is only for Task items.',
+  nothing_to_resume: 'This item is not at Execute any more — reload to see where it is.',
+  recheck_unavailable: 'The farm could not run the re-check, so no command ran — try again.',
+  session_required: 'Re-check and run needs you signed in in the browser.',
+  cross_site_refused: 'That request came from another site and was refused.',
+  csrf_required: 'That request was refused — reload the page and try again.',
+  not_found: 'This item is no longer on the board.',
+}
+
+function recheckRunRefusal(id, err) {
+  const code = err?.message ?? ''
+  return {
+    id,
+    message: Object.hasOwn(RECHECK_RUN_ERRORS, code) ? RECHECK_RUN_ERRORS[code] : 'That did not go through — try again.',
+    unmet: code === 'prerequisites_unmet' && Array.isArray(err.unmet) ? err.unmet : [],
+  }
 }
 
 // HZ-185: on an item the latest automated review just rejected, sends it to
@@ -1098,7 +1122,7 @@ function HoldAction({ hold, onClick, busy, extra = {} }) {
 
 // HZ-713: one banner per held item — why it stopped (domain/hold.js) and the
 // one action that continues it. A rule block keeps its own banner below.
-function HoldBanner({ item, hold, onContinue, busy }) {
+function HoldBanner({ item, hold, onContinue, busy, refusal = null }) {
   return (
     <div className="pause-banner" role="status" data-hold-banner={hold.reason} {...(hold.reason === 'isolation' ? { 'data-testid': 'isolation-hold' } : {})}>
       <div className="pause-banner__title">{hold.title}</div>
@@ -1110,6 +1134,21 @@ function HoldBanner({ item, hold, onContinue, busy }) {
       <div className="pause-banner__actions">
         <HoldAction hold={hold} onClick={onContinue} busy={busy} />
       </div>
+      {/* HO-842: a refused Re-check and run — names only, as React text. */}
+      {refusal && (
+        <div className="pause-banner__detail" role="alert" data-testid="recheck-run-refusal">
+          {refusal.message}
+          {refusal.unmet.length > 0 && (
+            <ul className="step-card__preflight-unmet">
+              {refusal.unmet.map((u, i) => (
+                <li key={`${u.kind}:${u.name}:${i}`} data-testid="recheck-run-unmet">
+                  {u.kind} {u.name}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1387,7 +1426,7 @@ function FarmUnreachableBanner({ onOpenFarmHealth }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions = null, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions = null, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onRecheckRun = null, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1424,11 +1463,21 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
       })
   }
   const sendPause = (paused) => sendAction((id) => onTogglePause(id, paused))
+  // HO-842: a refused Re-check and run shows in its banner, with the unmet
+  // checks, kept with the item id like the pause error. `onRecheckRun` is for
+  // tests; the page calls the API, as Stop run and Resume do.
+  const [recheckRefusal, setRecheckRefusal] = useState(null)
+  const sendRecheckRun = () =>
+    sendAction((id) => {
+      setRecheckRefusal(null)
+      return new Promise((resolve) => resolve((onRecheckRun ?? recheckAndRun)(id))).catch((err) => setRecheckRefusal(recheckRunRefusal(id, err)))
+    })
   const pauseBusy = pausePending === item.id
   const hold = abandoned ? null : holdFor(item)
   const continueHold = () => {
     const key = hold.action.key
     if (key === 'resume' || key === 'retry') sendPause(false)
+    else if (key === 'recheckRun') sendRecheckRun()
     else if (key === 'releaseRuleBlock') sendAction((id) => onReleaseRuleBlock(id))
     else if (key === 'releaseUsageWait') sendAction((id) => onReleaseUsageWait(id))
     else if (key === 'openProjectSettings') onOpenProjectSettings?.(item.project_id)
@@ -1551,7 +1600,14 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
           />
         )}
         {hold && hold.reason !== 'ruleBlocked' && (
-          <HoldBanner key={`hold-${hold.reason}-${item.id}`} item={item} hold={hold} onContinue={continueHold} busy={pauseBusy} />
+          <HoldBanner
+            key={`hold-${hold.reason}-${item.id}`}
+            item={item}
+            hold={hold}
+            onContinue={continueHold}
+            busy={pauseBusy}
+            refusal={hold.action.key === 'recheckRun' && recheckRefusal?.id === item.id ? recheckRefusal : null}
+          />
         )}
         {/* HZ-730: work a step said must be filed before this item goes on. */}
         {!abandoned && !closed && <BlockingAsksBanner key={`ask-banner-${item.id}`} item={item} />}

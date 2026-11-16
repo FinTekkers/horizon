@@ -4,7 +4,8 @@
 // the first of these.
 //
 //   ruleBlocked  a rule stopped the run       → Release with PIN
-//   runFailed    a run failed and paused it   → Retry
+//   runFailed    a run failed and paused it   → Retry (HO-842: Re-check and
+//                run when Execute's dispatch re-check refused a Task)
 //   paused       you paused it                → Resume
 //   isolation    its project refuses dispatch → Open project settings
 //   usageLimit   every model is usage-limited → Release now
@@ -15,7 +16,8 @@
 // Read straight off the item, so isRuleBlocked's "paused wins" is not used.
 // Nothing here sets or clears a hold; the server owns every one.
 
-import { isAbandoned, isClosed } from '../../../domain/js/lifecycle.js'
+import { EXECUTE_STEP_INDEX, isAbandoned, isClosed } from '../../../domain/js/lifecycle.js'
+import { REASON } from '../../../domain/js/reasons.js'
 import { pauseReason } from './pauseReason'
 import { isDependencyBlocked } from './status'
 
@@ -28,6 +30,16 @@ function blockerOf(item) {
   return blockers.find((b) => !b.merged && !b.abandoned) ?? blockers[0] ?? null
 }
 
+// HO-842: a Task paused at Execute because the dispatch re-check refused
+// (prereq_drift) offers Re-check and run in place of Retry: one click
+// re-checks the fixed host and resumes the same approved plan. The server
+// enforces who may, and on which items.
+const RECHECK_RUN = Object.freeze({ key: 'recheckRun', label: 'Re-check and run' })
+
+function recheckRunOffered(item, paused) {
+  return paused.category === REASON.PREREQ_DRIFT && item.kind === 'task' && item.cursor === EXECUTE_STEP_INDEX
+}
+
 export function holdFor(item) {
   if (!item || isClosed(item) || isAbandoned(item)) return null
 
@@ -37,7 +49,7 @@ export function holdFor(item) {
 
   const paused = pauseReason(item)
   if (paused && paused.category !== 'manual') {
-    return { reason: 'runFailed', title: paused.label || 'Paused', action: { key: 'retry', label: 'Retry' } }
+    return { reason: 'runFailed', title: paused.label || 'Paused', action: recheckRunOffered(item, paused) ? RECHECK_RUN : { key: 'retry', label: 'Retry' } }
   }
   if (paused) {
     return { reason: 'paused', title: 'Paused by you', detail: 'No agent work runs until you resume it.', action: { key: 'resume', label: 'Resume' } }
