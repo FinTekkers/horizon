@@ -30,7 +30,9 @@ reported, never worked around: task_job ends the job `container_unavailable`
 with zero commands run.
 """
 
+import ipaddress
 import os
+import re
 import shutil
 import subprocess
 
@@ -274,6 +276,91 @@ HOST_TOOL_DIRS = ("/usr", "/bin", "/lib", "/lib64", "/opt")
 READ_ONLY_PGOPTIONS = "-c default_transaction_read_only=on"
 
 
+# HO-866: what a rehearsal caller (HO-840's egress proxy) may add to the
+# sandbox, and nothing else: one network of its own, DNS and host entries on
+# that network, and the proxy variables — by name, as `--env=<NAME>`, the
+# value riding in the podman client's env (rehearsal_proxy_env), never argv.
+REHEARSAL_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+# Network modes with full egress or another namespace's view, never a
+# caller's: podman's default bridge is named `podman`. A `container:` or
+# `ns:` form fails _NETWORK_NAME on its colon.
+REHEARSAL_REFUSED_NETWORKS = frozenset({"host", "none", "pasta", "slirp4netns", "private", "bridge", "podman", "default"})
+_NETWORK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_HOST_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
+
+
+def _ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def rehearsal_extra_flags(flags: list | tuple | None) -> tuple[str | None, list[str], list[str]]:
+    """HO-866: a caller's extra rehearsal flags, checked against the
+    allowlist: (network name or None, `--dns`/`--add-host` flags, proxy env
+    names). Accepted, one token each: `--network=<name>` (at most once, never
+    a refused mode), `--dns=<ip>`, `--add-host=<host>:<ip>` (both only with a
+    caller network — real podman refuses DNS options without one) and
+    `--env=<NAME>` with NAME in REHEARSAL_PROXY_ENV. Anything else raises
+    Unavailable naming the flag's 1-based index only: a flag can carry a
+    proxy address, and the message reaches the owner."""
+    if flags is None:
+        return None, [], []
+    if not isinstance(flags, (list, tuple)):
+        raise Unavailable("caller sandbox flags must be a list")
+    network = None
+    others: list[str] = []
+    env_names: list[str] = []
+    needs_network = []
+    for index, flag in enumerate(flags, 1):
+        refused = Unavailable(f"caller sandbox flag {index} is not allowed")
+        if not isinstance(flag, str):
+            raise refused
+        key, sep, value = flag.partition("=")
+        if not sep:
+            raise refused
+        if key == "--network":
+            if network is not None or not _NETWORK_NAME.match(value) or value.lower() in REHEARSAL_REFUSED_NETWORKS:
+                raise refused
+            network = value
+        elif key == "--dns" and _ip(value):
+            others.append(flag)
+            needs_network.append(index)
+        elif key == "--add-host":
+            host, _, ip = value.partition(":")
+            if not _HOST_NAME.match(host) or not _ip(ip):
+                raise refused
+            others.append(flag)
+            needs_network.append(index)
+        elif key == "--env" and value in REHEARSAL_PROXY_ENV and value not in env_names:
+            env_names.append(value)
+        else:
+            raise refused
+    if needs_network and network is None:
+        raise Unavailable(f"caller sandbox flag {needs_network[0]} is not allowed without a caller --network")
+    return network, others, env_names
+
+
+def rehearsal_proxy_env(flags: list | tuple | None, values: dict | None) -> dict:
+    """HO-866: the caller's proxy values for the podman client's env — each
+    for a name its flags pass as `--env=<NAME>`, a string with no user info
+    (`@`) and no NUL. Raises Unavailable naming the entry's 1-based index
+    only, never its name or value."""
+    _, _, names = rehearsal_extra_flags(flags)
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise Unavailable("caller sandbox env must be a mapping")
+    checked = {}
+    for index, (key, value) in enumerate(values.items(), 1):
+        if key not in names or not isinstance(value, str) or "@" in value or "\x00" in value:
+            raise Unavailable(f"caller sandbox env entry {index} is not allowed")
+        checked[key] = value
+    return checked
+
+
 def host_tool_mounts(venv_dir: str | None = None) -> list:
     """`-v <dir>:<dir>:ro` for each HOST_TOOL_DIRS dir that is a real
     directory here, plus the repo's venv when it is one."""
@@ -296,6 +383,7 @@ def rehearsal_argv(
     pg_socket_dir: str | None,
     limit: int | None = None,
     timeout_s: int,
+    extra_flags: list | None = None,
 ) -> list:
     """HO-839: the `podman run -d` argv of a rehearsal sandbox. No network,
     a read-only image, the checkout (when given) read-only with each `.env`
@@ -306,7 +394,19 @@ def rehearsal_argv(
     passed, as `--env NAME`: the value comes from the podman client's env,
     never argv, and a live `env` name is never one of them (the contract
     refuses the overlap). `--rm` and `--timeout` remove the container even
-    when the step that started it is killed."""
+    when the step that started it is killed.
+
+    HO-866: `extra_flags` (rehearsal_extra_flags' allowlist) only add to
+    that. A caller `--network=<name>` takes the `--network=none` slot, so
+    there is always exactly one; the rest go right after it, before the
+    sandbox flags, the tmpfs and the mounts, so those come last. A proxy
+    name is passed as `--env NAME`, like an `ro_env` name. Without
+    `extra_flags` the argv is HO-839's, unchanged."""
+    network, caller_flags, proxy_env_names = rehearsal_extra_flags(extra_flags)
+    if set(proxy_env_names) & set(ro_env_names or []):
+        raise Unavailable("a caller sandbox env name is also an ro_env name")
+    for env_name in proxy_env_names:
+        caller_flags += ["--env", env_name]
     argv = [
         podman_bin(),
         "run",
@@ -317,7 +417,8 @@ def rehearsal_argv(
         name,
         "--label",
         owner_label(),
-        "--network=none",
+        f"--network={network or 'none'}",
+        *caller_flags,
         *_sandbox_flags(),
         f"--tmpfs={REHEARSAL_TMPFS}",
     ]
