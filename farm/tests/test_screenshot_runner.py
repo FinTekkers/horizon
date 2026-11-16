@@ -362,6 +362,59 @@ def test_a_serve_that_ignores_sigterm_is_killed(tmp_path, monkeypatch):
     assert time.monotonic() - started < 20
 
 
+# ---- HZ-238: _Worker.kill() must leave no tmp dir behind ----
+
+
+class _FakePipe:
+    def close(self):
+        pass
+
+
+class _FakeProc:
+    pid = 2_147_483_647
+
+    def __init__(self, *args, **kwargs):
+        self.stdin = _FakePipe()
+        self.stdout = _FakePipe()
+
+    def poll(self):
+        return 0
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_kill_removes_a_worker_tmp_tree_with_read_only_entries(tmp_path, monkeypatch):
+    """A Chromium profile can hold read-only entries; kill() must still
+    remove the whole horizon-capture-worker-* dir, or the leak guard fails
+    a run whose every test passed."""
+    monkeypatch.setattr(subprocess, "Popen", _FakeProc)
+    monkeypatch.setattr(screenshot_runner, "_group_alive", lambda proc: False)
+    worker = screenshot_runner._Worker({}, tmp_path)
+    locked = Path(worker.tmp) / "profile" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "frozen").write_text("x")
+    os.chmod(locked / "frozen", 0o444)
+    os.chmod(locked, 0o555)
+    worker.kill(0.0)
+    assert not os.path.lexists(worker.tmp)
+
+
+def test_kill_still_removes_the_tmp_dir_when_reaping_the_worker_fails(tmp_path, monkeypatch):
+    """kill() is cleanup: a reaping error must not skip removing the tmp
+    dir, or a dead worker's dir survives into the leak guard's count."""
+
+    class _Unreapable(_FakeProc):
+        def wait(self, timeout=None):
+            raise OSError("already reaped")
+
+    monkeypatch.setattr(subprocess, "Popen", _Unreapable)
+    monkeypatch.setattr(screenshot_runner, "_group_alive", lambda proc: False)
+    worker = screenshot_runner._Worker({}, tmp_path)
+    worker.kill(0.0)
+    assert not os.path.lexists(worker.tmp)
+
+
 # ---- guardrail: test_env_file values are redacted everywhere ----
 
 
