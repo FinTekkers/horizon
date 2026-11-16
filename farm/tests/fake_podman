@@ -25,8 +25,9 @@ every container starts with it, under any `--env`. A bare `--env NAME`
 passes the client's value on, in `run --rm` as in `run -d`.
 HO-840: `network create|rm|ls` keep a record per network under
 $FARM_FAKE_PODMAN_DIR/<name>.network (FAKE_PODMAN_NETWORK_FAIL=1 makes
-`create` fail); `inspect` shows each `--network=<name>` with a fake IP; `logs
-<name>` prints $FARM_FAKE_PODMAN_DIR/<name>.log; `info` names netavark as
+`create` fail); `inspect` shows each `--network=<name>` with a fake IP
+(`inspect --format <template> <name>` prints one "<network> <ip>" line
+each); `logs <name>` prints $FARM_FAKE_PODMAN_DIR/<name>.log; `info` names netavark as
 the network backend. A `run -d` labelled `horizon.egress=1` (the rehearsal's
 egress proxy) sleeps FAKE_PODMAN_EGRESS_DELAY seconds, then runs `sleep
 infinity` instead of its command, its log the proxy's ready line (none with
@@ -249,6 +250,18 @@ def _inspect(name):
     return 0
 
 
+def _inspect_networks(name):
+    """HO-840: `inspect --format <template> <name>`. The only template the farm
+    passes prints one "<network> <ip>" line per network."""
+    rec = _record(name)
+    if not rec:
+        print(f"Error: no such object: \"{name}\"", file=sys.stderr)
+        return 125
+    for network, settings in _networks_of(rec).items():
+        print(network, settings["IPAddress"])
+    return 0
+
+
 def _networks_of(rec) -> dict:
     """HO-840: each `--network=<name>` of the container, with a fake IP."""
     names = [f.split("=", 1)[1] for f in rec.get("flags", []) if f.startswith("--network=")]
@@ -340,6 +353,8 @@ def main(argv):
                 print(path.stem)
         return 0
     if argv[:1] == ["inspect"]:
+        if argv[1] == "--format":
+            return _inspect_networks(argv[3])
         return _inspect(argv[1])
     if argv[:1] == ["info"]:
         print("netavark")  # HO-840: the network backend farmd checks at boot

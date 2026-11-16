@@ -60,6 +60,11 @@ class CapExceeded(Exception):
     """Start-up ran past the rehearsal's deadline."""
 
 
+# One "<network> <ip>" line per network the proxy joined. A Go template, so
+# nothing here parses JSON from a command's output.
+NETWORKS_FORMAT = "{{range $name, $net := .NetworkSettings.Networks}}{{println $name $net.IPAddress}}{{end}}"
+
+
 def proxy_image() -> str:
     """FARM_EGRESS_PROXY_IMAGE, else the image a `host` plan rehearses in —
     already pulled for the rehearsal, and it has python3."""
@@ -286,9 +291,9 @@ class EgressHooks(rehearsal.RehearsalHooks):
     def _address(self, deadline: float) -> str:
         """The proxy's IP on the internal network, from `podman inspect`."""
         try:
-            seen = _run([container_runner.podman_bin(), "inspect", self.proxy_name], deadline)
-            networks = json.loads(seen.stdout)[0]["NetworkSettings"]["Networks"]
-            address = networks[self.internal]["IPAddress"]
+            seen = _run([container_runner.podman_bin(), "inspect", "--format", NETWORKS_FORMAT, self.proxy_name], deadline)
+            networks = dict(line.split(" ", 1) for line in seen.stdout.splitlines() if line.strip())
+            address = networks[self.internal].strip()
             ipaddress.ip_address(address)
             return address
         except CapExceeded:
