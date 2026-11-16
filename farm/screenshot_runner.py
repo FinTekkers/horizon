@@ -73,6 +73,7 @@ INSTALL_HINT = "cd farm/capture && npm ci && npx playwright install chromium"
 SERVE_STOP_GRACE_S = 5.0
 WORKER_LAUNCH_S = 30.0
 WORKER_CLOSE_S = 10.0
+WORKER_KILL_WAIT_S = 5.0
 READY_TIMEOUT_S = 120.0
 READY_POLL_S = 0.25
 MANIFEST_NAME = "manifest.json"
@@ -203,6 +204,32 @@ def _group_alive(proc: subprocess.Popen) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _make_writable(path: str) -> None:
+    """Best-effort chmod so a later removal attempt can take read-only
+    profile entries an earlier attempt could not unlink."""
+    for dirpath, dirnames, filenames in os.walk(path):
+        with contextlib.suppress(OSError):
+            os.chmod(dirpath, 0o700)
+        for name in [*dirnames, *filenames]:
+            with contextlib.suppress(OSError):
+                os.chmod(os.path.join(dirpath, name), 0o700)
+
+
+def _remove_tree(path: str) -> None:
+    """Remove `path`, retrying after making it writable: a browser helper
+    still flushing its profile can recreate entries while the first attempt
+    runs, and a read-only entry blocks the whole removal. Never raises:
+    this is cleanup, and a leftover is reported by the leak guard, not by
+    raising here."""
+    for attempt in range(3):
+        if attempt:
+            _make_writable(path)
+            time.sleep(0.05)
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.lexists(path):
+            return
 
 
 def _stop(proc: subprocess.Popen, grace_s: float | None = None) -> None:
@@ -341,18 +368,27 @@ class _Worker:
 
     def kill(self, grace_s: float = 0.0) -> None:
         """Close stdin (the worker then closes its browser and exits), give it
-        grace_s, then SIGKILL the whole group either way."""
-        with contextlib.suppress(OSError):
-            self.proc.stdin.close()
-        if grace_s:
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                self.proc.wait(timeout=grace_s)
-        _killpg(self.proc, signal.SIGKILL)
-        with contextlib.suppress(OSError):
-            self.proc.stdout.close()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            self.proc.wait(timeout=5)
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        grace_s, then SIGKILL the whole group either way. The tmp dir is
+        removed whatever the reaping does: a leftover dir fails the suite's
+        /tmp leak guard even when every test passed, so removal runs in a
+        finally, waits for the browser's helpers to be gone, and retries
+        with writable permissions."""
+        try:
+            with contextlib.suppress(OSError):
+                self.proc.stdin.close()
+            if grace_s:
+                with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                    self.proc.wait(timeout=grace_s)
+            _killpg(self.proc, signal.SIGKILL)
+            with contextlib.suppress(OSError):
+                self.proc.stdout.close()
+            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                self.proc.wait(timeout=5)
+            end = time.monotonic() + WORKER_KILL_WAIT_S
+            while _group_alive(self.proc) and time.monotonic() < end:
+                time.sleep(0.05)
+        finally:
+            _remove_tree(self.tmp)
 
 
 # HO-862: the public names farm/visual_page.py uses.
