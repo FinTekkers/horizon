@@ -138,6 +138,8 @@ export const REHEARSAL_CAP_S = CONTRACT.rehearsalCapS
 export const COMMAND_CHECK_STAGES = Object.freeze([...CONTRACT.commandCheckStages])
 export const COMMAND_CHECK_REASONS = Object.freeze([...CONTRACT.commandCheckReasons])
 const SERVICE_NAME = new RegExp(CONTRACT.serviceName)
+// HO-840: a `rehearsal.services` host. The pattern is anchored at both ends.
+const SERVICE_HOST = new RegExp(CONTRACT.serviceHost)
 const WRITE_SHAPES = CONTRACT.writeShapes.map((shape) => ({
   name: shape.name,
   pattern: new RegExp(shape.pattern, shape.ignoreCase ? 'i' : ''),
@@ -206,7 +208,28 @@ function rehearsalError(rehearsal, env, commandCount) {
     const clash = roEnv.find((name) => live.has(name))
     if (clash !== undefined) return contractReason('roEnvLive', { name: clash })
   }
-  if (Object.hasOwn(rehearsal, 'samples')) return samplesError(rehearsal.samples, commandCount)
+  if (Object.hasOwn(rehearsal, 'samples')) {
+    const reason = samplesError(rehearsal.samples, commandCount)
+    if (reason) return reason
+  }
+  if (Object.hasOwn(rehearsal, 'services')) return servicesError(rehearsal.services)
+  return null
+}
+
+// HO-840: the same rule as run_plan.py's _check_services — exact, distinct
+// hosts, at most maxServices; `reads` only `allow` or `refuse`; no other key.
+function servicesError(services) {
+  const shape = contractReason('services', { max: CONTRACT.maxServices })
+  if (!Array.isArray(services) || services.length > CONTRACT.maxServices) return shape
+  const hosts = new Set()
+  for (const service of services) {
+    if (!service || typeof service !== 'object' || Array.isArray(service) || !Object.hasOwn(service, 'host')) return shape
+    if (!Object.keys(service).every((key) => key === 'host' || key === 'reads')) return shape
+    if (typeof service.host !== 'string' || !SERVICE_HOST.test(service.host)) return shape
+    if (Object.hasOwn(service, 'reads') && !oneOf(service.reads, CONTRACT.serviceReads)) return shape
+    if (hosts.has(service.host)) return contractReason('servicesDoubled')
+    hosts.add(service.host)
+  }
   return null
 }
 

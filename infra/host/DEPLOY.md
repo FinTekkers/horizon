@@ -1488,6 +1488,51 @@ ever runs unsandboxed.
 - **Roll back**: redeploy the last good tag. The `step_run.rehearsal_json`
   column is additive, and the old code ignores it. Keep the plan field.
 
+## Rehearsal egress proxy: GET and HEAD only (HO-840)
+
+A plan may list the hosts its rehearsal reads in `rehearsal.services`
+(`[{"host": "api.github.com"}, {"host": "hooks.example.com", "reads":
+"refuse"}]`). With none, nothing below starts and the sandbox keeps
+`--network=none`. With some, the rehearsal starts, inside its 210 s cap:
+- a one-day CA made with `openssl` (its key stays in the farm's tmp dir,
+  mode 0700, never mounted), whose nameConstraints allow only the declared
+  names, and one leaf certificate per host;
+- an `--internal --disable-dns` Podman network, the sandbox's only one: no
+  route and no DNS out;
+- the proxy, `farm/egress_proxy.py`, in a sidecar on that network and one
+  outbound network, with no port published to the host.
+
+The sandbox gets `HTTP(S)_PROXY` and the CA (`SSL_CERT_FILE`,
+`REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`). The proxy
+passes GET and HEAD, with no body, to a declared host (exact name, port 80,
+or `CONNECT` to 443, which it decrypts to read the request; it never relays
+a raw tunnel). `reads: refuse` refuses GET and HEAD to that host too. It
+refuses every other verb and host, a method-override header, a name that
+resolves to a private address, and any request it cannot read. It never
+follows a redirect. Each refusal fails the step as `rehearsal_write_refused`.
+farmd's log gets one line per refusal, `farmd: rehearsal egress
+rehearsal_write_refused method=<M> host=<H>`. It never logs a header, body,
+path or reply. The proxy and both networks are removed after each rehearsal.
+farmd removes any left over when it starts.
+
+Prerequisites on the farm host (farmd logs any missing one at boot as
+`farmd: rehearsal egress proxy unavailable on this host: ...`, and a
+rehearsal with services then fails closed, never on a weaker network):
+- **netavark** as Podman's network backend: `podman info --format
+  '{{.Host.NetworkBackend}}'` prints `netavark`.
+- **`openssl`** on the farm user's `PATH`.
+- **The proxy image, pre-pulled.** It runs with `--pull=never`, so a pull
+  never eats the cap. A missing image fails the step (`sandbox_unavailable`).
+  It is `FARM_EGRESS_PROXY_IMAGE` (farm.env) when set, else the
+  `FARM_REHEARSAL_IMAGE` above. It needs `python3` (3.11 or later). Pin it
+  by digest and pull it once as the farm user: `podman pull <image>`.
+- **Gate host check**: run `FARM_REQUIRE_REAL_SANDBOX=1 python -m pytest
+  farm/tests/test_rehearsal_proxy.py` once after installing. It must pass
+  with zero skips.
+- **Roll back**: redeploy the last good tag. Plans without
+  `rehearsal.services` are unaffected. One with it reads as an invalid plan
+  on the old code. Remove the field to run it there.
+
 ## Patch one command with per-command re-approval (HO-843)
 
 No host setup. Approve the run now stores one hash per command

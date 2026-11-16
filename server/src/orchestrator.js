@@ -1967,7 +1967,7 @@ const REHEARSAL_ASKS = {
   rehearsal_dry_run_failed: 'The dry run exited non-zero in the read-only sandbox. Fix `rehearsal.dry_run` so it previews the run without writing.',
   rehearsal_parser_failed: 'A proof command exited non-zero in the read-only sandbox (a broken `jq` path or parser, or a missing file). Fix the command so it reads its source and prints its sample line.',
   rehearsal_sample_mismatch: "A proof command ran but did not print its sample's expected line. Fix the command or its `rehearsal.samples` entry.",
-  rehearsal_write_refused: 'A command tried to write to the database and the read-only transaction refused it. The dry run, proofs and checks must only read.',
+  rehearsal_write_refused: 'A command tried to write: the read-only database transaction refused it, or the egress proxy refused a request (only GET and HEAD, with no body, to a `rehearsal.services` host pass). The dry run, proofs and checks must only read.',
   rehearsal_checkout_write_refused: 'A command tried to write to a read-only filesystem (the checkout, `.git`, the image or a host tool dir). Write only under `/tmp`, and only in the real run.',
   rehearsal_idempotency_write: 'A precondition `check` tried to write. A check must only read.',
   rehearsal_writable_role: 'An `ro_env` connection logs in as a role that can write. Point it at a read-only role (SELECT only, no superuser).',

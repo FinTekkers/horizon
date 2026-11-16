@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, visual_page, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rehearsal_proxy, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, visual_page, workspace_sweep, workspaces
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -249,6 +249,14 @@ def _adopt_jobs() -> None:
     reaped = container_runner.reap_orphans(tmux_mgr.session_exists) if container_runner.available() else []
     if reaped:
         print(f"farmd: removed {len(reaped)} orphaned job container(s): {', '.join(reaped)}", flush=True)
+    # HO-840: a rehearsal's egress proxy and networks live inside farmd's own
+    # run, so at boot any left over are a killed farmd's.
+    if container_runner.available():
+        egress = rehearsal_proxy.reap_orphans()
+        if egress:
+            print(f"farmd: removed {len(egress)} orphaned rehearsal egress container(s)/network(s): {', '.join(egress)}", flush=True)
+        for gap in rehearsal_proxy.host_gaps():
+            print(f"farmd: rehearsal egress proxy unavailable on this host: {gap}", flush=True)
 
 
 # HZ-772: the bodies live in farm/job_env.py, shared with a tenant job's
@@ -3205,6 +3213,9 @@ def _rehearse(task: dict) -> dict:
         ro_values=ro_values,
         item_id=item_id,
         pg_socket=rehearsal.pg_socket_dir(),
+        # HO-840: a plan with `rehearsal.services` reads them through a
+        # GET/HEAD egress proxy; any other keeps `--network=none`.
+        hooks=rehearsal_proxy.hooks_for(block, item_id=item_id),
     )
 
 

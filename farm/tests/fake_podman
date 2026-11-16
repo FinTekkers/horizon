@@ -23,6 +23,14 @@ In an image whose name contains "nobash", `sh -c "command -v bash"` exits 1.
 HZ-769: $FARM_FAKE_PODMAN_IMAGE_ENV, a JSON object, is the image's own `ENV`:
 every container starts with it, under any `--env`. A bare `--env NAME`
 passes the client's value on, in `run --rm` as in `run -d`.
+HO-840: `network create|rm|ls` keep a record per network under
+$FARM_FAKE_PODMAN_DIR/<name>.network (FAKE_PODMAN_NETWORK_FAIL=1 makes
+`create` fail); `inspect` shows each `--network=<name>` with a fake IP; `logs
+<name>` prints $FARM_FAKE_PODMAN_DIR/<name>.log; `info` names netavark as
+the network backend. A `run -d` labelled `horizon.egress=1` (the rehearsal's
+egress proxy) sleeps FAKE_PODMAN_EGRESS_DELAY seconds, then runs `sleep
+infinity` instead of its command, its log the proxy's ready line (none with
+FAKE_PODMAN_EGRESS_NEVER_READY=1) and then FAKE_PODMAN_EGRESS_LOG.
 """
 
 import json
@@ -68,6 +76,7 @@ def _forget(name):
     suite's tmp leak guard names any container a test left behind."""
     (STATE / f"{name}.json").unlink(missing_ok=True)
     (STATE / f"{name}.oom").unlink(missing_ok=True)
+    (STATE / f"{name}.log").unlink(missing_ok=True)
     try:
         STATE.rmdir()
     except OSError:
@@ -161,6 +170,11 @@ def _run(args):
     if _record(name):
         print(f"Error: the container name \"{name}\" is already in use", file=sys.stderr)
         return 125
+    egress = "horizon.egress=1" in opts["labels"]
+    if egress:
+        # HO-840: the egress proxy's sidecar — its start-up, then its log.
+        time.sleep(float(os.environ.get("FAKE_PODMAN_EGRESS_DELAY") or 0))
+        command = ["sleep", "infinity"]
     env = {**BASE_ENV, **_image_env(), "HOSTNAME": name}
     for entry in opts["env"]:
         key, sep, value = entry.partition("=")
@@ -173,6 +187,9 @@ def _run(args):
     )
     starts = {str(proc.pid): _started(proc.pid)}
     _save({**opts, "name": name, "image": image, "pid": proc.pid, "execs": [], "starts": starts, "container_env": env})
+    if egress:
+        ready = "" if os.environ.get("FAKE_PODMAN_EGRESS_NEVER_READY") == "1" else "egress_proxy ready\n"
+        (STATE / f"{name}.log").write_text(ready + (os.environ.get("FAKE_PODMAN_EGRESS_LOG") or ""))
     print(name)
     return 0
 
@@ -227,7 +244,71 @@ def _inspect(name):
         "HostConfig": {"NanoCpus": int(float(rec.get("cpus", "0")) * 1e9), "Memory": mem_bytes},
         "Mounts": [{"Source": m["src"], "Destination": m["dst"], "RW": m["mode"] != "ro"} for m in rec["mounts"]],
         "Config": {"Env": rec["env"], "User": rec.get("user")},
+        "NetworkSettings": {"Networks": _networks_of(rec)},
     }]))
+    return 0
+
+
+def _networks_of(rec) -> dict:
+    """HO-840: each `--network=<name>` of the container, with a fake IP."""
+    names = [f.split("=", 1)[1] for f in rec.get("flags", []) if f.startswith("--network=")]
+    return {n: {"IPAddress": f"10.89.{i}.2"} for i, n in enumerate(names) if n not in ("none", "host")}
+
+
+def _network(argv):
+    """HO-840: `network create [flags] <name>`, `network rm [-f] <name>` and
+    `network ls [--filter label=k=v] [--format ...]`."""
+    if argv[:1] == ["create"]:
+        if os.environ.get("FAKE_PODMAN_NETWORK_FAIL") == "1":
+            print("Error: netavark: unable to create network", file=sys.stderr)
+            return 125
+        args, labels, flags = argv[1:], [], []
+        i = 0
+        while i < len(args) - 1:
+            if args[i] == "--label":
+                labels.append(args[i + 1])
+                i += 2
+                continue
+            flags.append(args[i])
+            i += 1
+        name = args[-1]
+        if (STATE / f"{name}.network").exists():
+            print(f"Error: network name {name} already used", file=sys.stderr)
+            return 125
+        STATE.mkdir(parents=True, exist_ok=True)
+        (STATE / f"{name}.network").write_text(json.dumps({"name": name, "labels": labels, "flags": flags}))
+        print(name)
+        return 0
+    if argv[:1] == ["rm"]:
+        name = argv[-1]
+        path = STATE / f"{name}.network"
+        if not path.exists():
+            print(f"Error: unable to find network with name or ID {name}", file=sys.stderr)
+            return 1
+        path.unlink()
+        try:
+            STATE.rmdir()
+        except OSError:
+            pass
+        return 0
+    if argv[:1] == ["ls"]:
+        wanted = [f[len("label=") :] for f, prev in zip(argv[1:], argv) if prev == "--filter" and f.startswith("label=")]
+        for path in sorted(STATE.glob("*.network")) if STATE.is_dir() else []:
+            rec = json.loads(path.read_text())
+            if all(w in rec.get("labels", []) for w in wanted):
+                print(rec["name"])
+        return 0
+    print(f"fake_podman: unsupported: network {argv}", file=sys.stderr)
+    return 125
+
+
+def _logs(name):
+    """HO-840: a container's log, from $FARM_FAKE_PODMAN_DIR/<name>.log."""
+    if not _record(name):
+        print(f"Error: no container with name or ID \"{name}\" found", file=sys.stderr)
+        return 125
+    path = STATE / f"{name}.log"
+    sys.stdout.write(path.read_text() if path.exists() else "")
     return 0
 
 
@@ -260,6 +341,13 @@ def main(argv):
         return 0
     if argv[:1] == ["inspect"]:
         return _inspect(argv[1])
+    if argv[:1] == ["info"]:
+        print("netavark")  # HO-840: the network backend farmd checks at boot
+        return 0
+    if argv[:1] == ["network"]:
+        return _network(argv[1:])
+    if argv[:1] == ["logs"]:
+        return _logs(argv[-1])
     print(f"fake_podman: unsupported: {argv}", file=sys.stderr)
     return 125
 
