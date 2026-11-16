@@ -600,6 +600,19 @@ export async function setProjectAutopilot(projectId, mode) {
   return data
 }
 
+// HO-862: a project's web-page visuals switch. Same PIN handling as
+// setProjectDefinitionsEnabled; a tenant project's 409 carries its message.
+export async function setProjectVisualPagesEnabled(projectId, enabled) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/visual-pages`, 'POST', { enabled })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // HZ-535: a project's definitions switch. Same PIN handling as
 // setProjectAutopilot, so a 401 carries its status for the Admin message.
 export async function setProjectDefinitionsEnabled(projectId, enabled) {
@@ -808,6 +821,16 @@ export function jobLogUrl(itemId) {
 // the server serves it to members of the item's project only.
 export function mediaUrl(itemId, name) {
   return `${API_BASE}/items/${encodeURIComponent(itemId)}/media/${encodeURIComponent(name)}`
+}
+
+// HO-862: an item's web-page visual — the stable artifact link, opened in a
+// new tab — and one round's screenshot. Members of the item's project only.
+export function pageUrl(itemId) {
+  return `${API_BASE}/items/${encodeURIComponent(itemId)}/page`
+}
+
+export function pageShotUrl(itemId, name) {
+  return `${API_BASE}/items/${encodeURIComponent(itemId)}/page/shots/${encodeURIComponent(name)}`
 }
 
 // A member with no active repo (HZ-661) gets null, never a "null/issues/…" link.

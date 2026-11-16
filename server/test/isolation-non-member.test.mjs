@@ -227,6 +227,9 @@ const READ_CASES = {
   'GET /api/items/:id/job/log': { expect: '404', url: `${ITEM}/job/log`, owner: 404 },
   // HZ-815: 404 no_media for the owner — ISOA-1 has no Execute run, so no media.
   'GET /api/items/:id/media/:name': { expect: '404', url: `${ITEM}/media/cut.mp4`, owner: 404 },
+  // HO-862: 404 no_page / no_shot for the owner — ISOA-1 has no web-page round.
+  'GET /api/items/:id/page': { expect: '404', url: `${ITEM}/page`, owner: 404 },
+  'GET /api/items/:id/page/shots/:name': { expect: '404', url: `${ITEM}/page/shots/page-r1-desktop.png`, owner: 404 },
   'GET /api/items/:id/plan-draft': { expect: '404', url: `${ITEM}/plan-draft`, owner: 404 },
   'GET /api/items/:id/screenshots': { expect: '404', url: `${ITEM}/screenshots`, owner: 200 },
   'GET /api/items/:id/screenshots/:screen/:kind': { expect: '404', url: `${ITEM}/screenshots/home/new`, owner: 200 },
@@ -326,6 +329,7 @@ const WRITE_CASES = {
   'POST /api/projects/:id/activate': { expect: '404', url: `/api/projects/${B}/activate`, owner: 200 },
   'POST /api/projects/:id/autopilot': { expect: '404', url: `/api/projects/${A}/autopilot`, body: { mode: 'off' }, owner: 200 },
   'POST /api/projects/:id/definitions-enabled': { expect: '404', url: `/api/projects/${A}/definitions-enabled`, body: { enabled: false }, owner: 200 },
+  'POST /api/projects/:id/visual-pages': { expect: '404', url: `/api/projects/${A}/visual-pages`, body: { enabled: false }, owner: 200 },
   'POST /api/projects/:id/enabled': { expect: '404', url: `/api/projects/${B}/enabled`, body: { enabled: true }, owner: 200 },
   'PUT /api/projects/:id/repos/checks': { expect: '404', url: `/api/projects/${A}/repos/checks`, body: { repo: REPO_A, test: 'npm test' }, owner: 200 },
   // HZ-697: not_a_tenant_project — ISO Alpha is the owner's internal project.

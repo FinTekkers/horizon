@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<body>
+  <h1>Navigates away once loaded</h1>
+  <script>
+    // The address is split, so no static URL check sees it.
+    const next = 'ht' + 'tps://x.test/next'
+    addEventListener('load', () => { location.href = next })
+  </script>
+</body>
+</html>

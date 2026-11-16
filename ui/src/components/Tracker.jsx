@@ -35,7 +35,8 @@ import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { STEP_HINTS, retryTarget, returnTargets, stepActionFor } from '../domain/stepActions'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, patchRunPlan, setAutopilotOff } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, patchRunPlan, setAutopilotOff } from '../api'
+import visualPageRules from '../../../domain/visualPage.json'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
 import { metricLines } from '../../../domain/js/goldenCases.js'
@@ -489,6 +490,33 @@ function restartSentLabel(item, index, restartSent) {
   return `Sent: attempt ${restartSent.attempt} starting`
 }
 
+// HO-862: the stable link to the item's web page (served sandboxed, opened in
+// a new tab with no opener or referrer) and the latest round's screenshot at
+// each viewport. A later round keeps the same link.
+const PAGE_VIEWPORTS = visualPageRules.viewports.map((v) => v.name)
+
+function VisualPageLink({ itemId, visualPage }) {
+  const latest = visualPage.rounds.at(-1)
+  return (
+    <div className="step-card__visual-page" data-testid="visual-page">
+      <a className="step-card__artifact-link" href={pageUrl(itemId)} target="_blank" rel="noopener noreferrer">
+        View web page ↗
+      </a>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 6, alignItems: 'flex-start' }}>
+        {PAGE_VIEWPORTS.filter((name) => latest.shots?.[name]).map((name) => (
+          <img
+            key={name}
+            src={pageShotUrl(itemId, latest.shots[name])}
+            alt={`Web page round ${latest.round}, ${name} screenshot`}
+            loading="lazy"
+            style={{ width: name === 'phone' ? 80 : 200, maxWidth: '100%', height: 'auto', border: '1px solid var(--border, #d0d7de)', borderRadius: 4 }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
@@ -519,6 +547,9 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // approval, the table's one button is the gate's Approve.
   const goldenCases = item.goldenCases && index === item.goldenCases.gateIndex ? item.goldenCases : null
   const goldenPending = !!goldenCases && !goldenCases.approved && status === 'awaiting'
+  // HO-862: the item's web page belongs to the item, not a step — its link
+  // and the latest round's screenshots show on that round's step card only.
+  const visualPage = !isGate && item.visualPage?.rounds?.length && item.visualPage.rounds.at(-1).stepIndex === index ? item.visualPage : null
   // HZ-711: what a click on this step offers, from the item's snapshot. An
   // Approve the page would not offer now (a gate action runs, or a deploy
   // holds the merge) only selects it.
@@ -711,6 +742,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                 : 'View full artifact ↗'}
             </a>
           )}
+          {visualPage && <VisualPageLink itemId={item.id} visualPage={visualPage} />}
           {ranAhead && (
             <a
               className="step-card__artifact-link"

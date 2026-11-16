@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Checkout flow mock</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; color: #1d2433; }
+    .card { border: 1px solid #c8cfdb; border-radius: 8px; padding: 16px; max-width: 480px; }
+    .bar { height: 12px; background: #3b6fd8; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1 id="marker">Checkout flow — round one</h1>
+  <div class="card">
+    <p>Contact: <span>owner@example.com</span></p>
+    <svg xmlns="http://www.w3.org/2000/svg" width="200" height="40" role="img" aria-label="progress">
+      <rect width="120" height="40" fill="#3b6fd8"></rect>
+    </svg>
+    <div class="bar" id="bar"></div>
+  </div>
+  <script>
+    const bar = document.getElementById('bar')
+    bar.style.width = '60%'
+    document.getElementById('marker').dataset.ready = 'yes'
+  </script>
+</body>
+</html>

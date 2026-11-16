@@ -1,7 +1,7 @@
 import { useId } from 'react'
 import { DEFAULT_PROVIDER, PROVIDERS } from '../../../../domain/js/providers.js'
 import { PROJECT_TABS, adminPath } from './adminRoutes'
-import { ProjectAutopilot, ProjectDefinitions, ProjectEnabledToggle, ProjectStepProviders } from './ProjectControls'
+import { ProjectAutopilot, ProjectDefinitions, ProjectEnabledToggle, ProjectStepProviders, ProjectVisualPages } from './ProjectControls'
 import { AddRepoForm, RepoListRow } from './ProjectsSection'
 import { RepoPage } from './RepoPage'
 
@@ -81,6 +81,7 @@ export function ProjectPage({ project, tab, repo, syncRepos, webhooks, deployTar
               Default provider: <strong>{DEFAULT_PROVIDER_LABEL}</strong>. Steps not listed under Runs on use it.
             </div>
             <ProjectDefinitions project={project} />
+            <ProjectVisualPages project={project} />
             <ProjectStepProviders project={project} onlyOverrides />
           </>
         )}

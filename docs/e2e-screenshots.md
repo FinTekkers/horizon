@@ -254,6 +254,54 @@ check output cuts each reason at 60 characters, so long selectors end in `…`.
 `playwright` to the exact version `e2e/package-lock.json` resolves, so both
 share one Chromium build in `~/.cache/ms-playwright` — bump them together.
 
+### Web-page visual artifacts (HO-862)
+
+The same worker and Chromium render an agent's **web page**: a visual any
+model can make, because it rides in the step's JSON reply. Nothing else is
+needed on a fresh checkout beyond `farm/run.sh prepare` (it installs
+`farm/capture`): no canvas tool, MCP connector, Figma, credential, gateway or
+login change, and the farm still refuses `$ANTHROPIC_API_KEY`.
+
+- **Switch.** Admin → the project → Agents → **Web-page visuals**, PIN-gated
+  and **off** by default (`POST /api/projects/:id/visual-pages`). Off, every
+  prompt and dispatch body is byte-identical to before. Tenant projects show it
+  unavailable: their steps run as another user whose files farmd cannot serve.
+- **Which steps.** `Plan options & trade-offs (pros / cons)`, `Draft
+  implementation plan` and the Plan kind's `Design options & recommendation`
+  (`VISUAL_PAGE_LABELS` in `farm/step_agent.py`). Their prompt ends with
+  `farm/roles/visual_page_addendum.md`. Reviewer, PM and code-run steps get no
+  page prompt, and a `page_html` they return is ignored.
+- **Contract.** The reply may add `page_html`: one complete, self-contained
+  HTML document, inline CSS and JS only. The rules live in
+  `domain/visualPage.json`, read by the farm and the server.
+- **Checks** (`farm/visual_page.py`). Inside the reply's retry envelope: size
+  cap, secret scan (token shapes and host secret values), an email off
+  `example.com`, any external URL, `@import` or off-page `src`/`href`/`url()`,
+  a line over 2,000 chars or a long base64 run. Then the worker renders the
+  page at the `desktop` (1024×640) and `phone` (375×667) viewports, answering
+  the fixed `http://page.invalid/` from the page text under the owner CSP. Any
+  console error, uncaught exception, CSP violation or other request (aborted)
+  fails the step, naming the cause, e.g. `page_html: external request blocked:
+  https://x.test/next`. A failed page stores nothing; the last good round stays.
+- **Rounds.** `FARM_HOME/state/pages/<item>/`: `page.html` is the latest round;
+  each round adds `page-r<N>-desktop.png` and `page-r<N>-phone.png`, never
+  deleted, listed in `manifest.json`. The server records each round in
+  `item_page_round`. A later round replaces `page.html` at the **same** link.
+- **Serving.** The item page shows **View web page ↗** and the latest round's
+  two screenshots on that round's step card. The link is
+  `GET /api/items/:id/page` (members of the item's project only), served with
+  `Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline';
+  style-src 'unsafe-inline'; img-src data:; font-src data:; sandbox
+  allow-scripts` — no `allow-same-origin`, so the page's JS runs in an opaque
+  origin with no Horizon session, cookies or API access — plus `nosniff` and
+  `no-store`. A sandboxed page can still navigate its own tab away; it holds no
+  Horizon data. Screenshots are `GET /api/items/:id/page/shots/:name`.
+- **Logs.** `page_html` never reaches `artifact_md`, `summary` or the posted
+  result (only `artifacts.page`: round, sha256, bytes, shot names). The run log
+  carries the whole reply under the run log's usual redaction, as for every
+  step.
+- **Rollback.** Turn the switch off. `STATE_DIR/pages/` can be deleted by hand.
+
 ### Horizon's own login key: `SCREENSHOT_LOGIN_KEY` (HZ-511)
 
 Horizon's repo row points `test_env_file` at a 0600 host file holding one

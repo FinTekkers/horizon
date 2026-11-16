@@ -5,10 +5,13 @@
 // Protocol, newline-delimited JSON:
 //   out, once at start:  {"ready": true}  (or {"ready": false, "error": "..."})
 //   in, one per shot:    {"url", "width", "height", "theme", "maxHeightPx", "png", "headers",
-//                         "waitFor"?, "mask"?: [selector], "cookies"?: [{"name", "value"}]}
+//                         "waitFor"?, "mask"?: [selector], "cookies"?: [{"name", "value"}],
+//                         "html"?, "csp"?, "blockExternal"?: bool, "consoleErrors"?: bool}
 //   out, one per shot:   {"ok": true, "clipped": bool, "heightPx": n}
 //                        {"ok": false, "error": "..."}
 //                        (HZ-557: `mask "<sel>" matched nothing`, `mask "<sel>" still visible`)
+//                        HO-862: plus "blocked": [url] with blockExternal and
+//                        "consoleErrors": [text] with consoleErrors, on either reply
 //
 // `headers` are sent only to the shot's own origin, so a test key never
 // reaches a third-party host the page loads. Nothing here logs in: the page
@@ -28,6 +31,19 @@
 // match that has a box fails the shot; so does a masked box that is not solid
 // MASK_COLOR in the shot. The shot is taken to a buffer and checked first, so
 // an unmasked element never reaches disk.
+//
+// HO-862 (farm/visual_page.py), every field optional — a shot without them
+// is captured exactly as before:
+//   `html` — the shot's `url` is answered with this body (and `csp` as its
+//     Content-Security-Policy header) instead of being fetched, so the page
+//     runs under the CSP owners get and its fixed host is never resolved.
+//   `blockExternal` — every other request is aborted and its URL recorded in
+//     `blocked` (data: and blob: never reach the network). Without `html`,
+//     only requests to the shot's own origin go through.
+//   `consoleErrors` — console errors, uncaught exceptions and CSP violations
+//     are recorded in `consoleErrors`.
+// Both lists hold at most LIST_MAX entries of ENTRY_MAX chars. A page shot
+// never carries `headers` or `cookies` (its only route is the one above).
 import { writeFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 import { chromium } from 'playwright'
@@ -42,6 +58,8 @@ const LONG_LIVED = new Set(['eventsource', 'websocket'])
 // fetch sets itself (or decodes, for content-encoding).
 const REFETCH_DROP = new Set(['cookie', 'host', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'content-length', 'expect'])
 const REPLY_DROP = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive'])
+const LIST_MAX = 10
+const ENTRY_MAX = 200
 
 function reply(obj) {
   process.stdout.write(`${JSON.stringify(obj)}\n`)
@@ -117,7 +135,39 @@ async function maskBoxes(page, selectors) {
   return { boxes }
 }
 
+function pushCapped(list, text) {
+  if (list.length < LIST_MAX) list.push(String(text).split('\n')[0].slice(0, ENTRY_MAX))
+}
+
+// HO-862: the page shot's one route — its own URL from `html`, every other
+// request aborted and recorded when blockExternal is set.
+async function routePage(context, shot, blocked) {
+  const own = new URL(shot.url)
+  await context.route('**/*', (route) => {
+    const url = route.request().url()
+    if (typeof shot.html === 'string' && url === own.href) {
+      const headers = { 'content-type': 'text/html; charset=utf-8' }
+      if (typeof shot.csp === 'string' && shot.csp) headers['content-security-policy'] = shot.csp
+      return route.fulfill({ status: 200, headers, body: shot.html })
+    }
+    if (!shot.blockExternal) return route.continue()
+    if (typeof shot.html !== 'string' && new URL(url).origin === own.origin) return route.continue()
+    pushCapped(blocked, url)
+    return route.abort('blockedbyclient')
+  })
+}
+
 async function capture(browser, shot) {
+  const extra = {}
+  const blocked = []
+  const errors = []
+  if (shot.blockExternal) extra.blocked = blocked
+  if (shot.consoleErrors) extra.consoleErrors = errors
+  const result = await captureShot(browser, shot, blocked, errors)
+  return { ...result, ...extra }
+}
+
+async function captureShot(browser, shot, blocked, errors) {
   const context = await browser.newContext({
     viewport: { width: shot.width, height: shot.height },
     deviceScaleFactor: 1,
@@ -129,7 +179,9 @@ async function capture(browser, shot) {
         document.documentElement.dataset.theme = theme
       }, shot.theme)
     }
-    const headers = shot.headers || {}
+    const pageShot = typeof shot.html === 'string' || shot.blockExternal === true
+    if (pageShot) await routePage(context, shot, blocked)
+    const headers = pageShot ? {} : shot.headers || {}
     if (Object.keys(headers).length) {
       const origin = new URL(shot.url).origin
       await context.route('**/*', (route) => {
@@ -138,13 +190,19 @@ async function capture(browser, shot) {
         return route.continue({ headers: { ...request.headers(), ...headers } })
       })
     }
-    const cookies = shot.cookies || []
+    const cookies = pageShot ? [] : shot.cookies || []
     if (cookies.length) {
       const app = new URL(shot.url)
       await context.addCookies(cookies.map(({ name, value }) => ({ name, value, url: app.origin })))
       await context.route((url) => url.hostname === app.hostname && url.origin !== app.origin, refetchWithoutCookies)
     }
     const page = await context.newPage()
+    if (shot.consoleErrors) {
+      page.on('console', (msg) => {
+        if (msg.type() === 'error') pushCapped(errors, msg.text())
+      })
+      page.on('pageerror', (err) => pushCapped(errors, err && err.message ? err.message : err))
+    }
     const network = trackRequests(page)
     await page.goto(shot.url, { waitUntil: 'load', timeout: 0 })
     await network.waitForIdle()

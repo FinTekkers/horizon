@@ -72,6 +72,7 @@ from . import (
     task_clone,
     task_job,
     verify_evidence,
+    visual_page,
 )
 from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
 from .config import FARM_PORT, ITEM_LOCK_WAIT_S
@@ -666,6 +667,9 @@ def build_prompt(task: dict) -> str:
     golden = golden_cases_section(task)
     if golden:
         lines += ["", golden]
+    page = visual_page_section(task)
+    if page:
+        lines += ["", page]
     return "\n".join(lines)
 
 
@@ -691,6 +695,64 @@ def golden_cases_section(task: dict) -> str | None:
     if task.get("golden_cases") is True and task["step"].get("label") in GOLDEN_ADDENDUM_LABELS:
         return (ROLES / GOLDEN_CASES_ADDENDUM).read_text().rstrip("\n")
     return None
+
+
+# ---- web-page visuals (HO-862) ----
+# The server sets `visual_pages: true` on a task only when the item's project
+# has its web-page visuals switch on (never a tenant project) and the step is
+# one of these. Without it nothing is appended, so every other prompt is
+# byte-identical, and a `page_html` in the reply is ignored. Reviewer steps
+# are left out on purpose: one page per item, so a review must never replace
+# the page the owner asked for. Only _execute reaches this: PM steps
+# (_execute_pm) and code runs (_execute_code_run) never get a page prompt.
+VISUAL_PAGE_ADDENDUM = "visual_page_addendum.md"
+VISUAL_PAGE_LABELS = frozenset({OPTIONS_LABEL, ENG_PLAN_LABEL, PLAN_DESIGN_LABEL})
+# The capture's whole budget: the worker's start plus one shot per viewport.
+VISUAL_PAGE_CAPTURE_S = screenshot_runner.WORKER_LAUNCH_S + visual_page.SHOT_TIMEOUT_S * len(visual_page.VIEWPORTS)
+
+
+def visual_page_section(task: dict) -> str | None:
+    """The web-page addendum a task's prompt ends with, or None."""
+    if task.get("visual_pages") is not True or is_tenant_project(task.get("project")):
+        return None
+    if task["step"].get("label") not in VISUAL_PAGE_LABELS:
+        return None
+    return (ROLES / VISUAL_PAGE_ADDENDUM).read_text().rstrip("\n")
+
+
+def _page_reply_validator(validate):
+    """`validate` plus the page's static checks, inside the same retry
+    envelope: a bad `page_html` raises AgentError naming the cause (never the
+    page's text), which takes the one retry; a second bad reply fails the step."""
+
+    def check(parsed):
+        parsed = validate(parsed) if validate else parsed
+        if isinstance(parsed, dict) and visual_page.OUTPUT_KEY in parsed:
+            problems = visual_page.static_problems(parsed[visual_page.OUTPUT_KEY])
+            if problems:
+                log(f"page_html refused: {'; '.join(problems)}")
+                raise AgentError(f"{visual_page.OUTPUT_KEY}: {'; '.join(problems)}")
+        return parsed
+
+    return check
+
+
+def _publish_page(item_id: str, parsed: dict) -> dict | None:
+    """Captures and stores the reply's page as the item's next round, or
+    None when the reply has none. A console error, a blocked request or a
+    failed capture fails the step, naming it; nothing is stored then. The
+    static checks run again here: a reply salvaged from an exhausted run
+    never passed through the validator."""
+    if not isinstance(parsed, dict) or visual_page.OUTPUT_KEY not in parsed:
+        return None
+    if problems := visual_page.static_problems(parsed[visual_page.OUTPUT_KEY]):
+        raise AgentError(f"{visual_page.OUTPUT_KEY}: {'; '.join(problems)}")
+    try:
+        return visual_page.publish(
+            item_id, parsed[visual_page.OUTPUT_KEY], deadline=time.monotonic() + VISUAL_PAGE_CAPTURE_S, log=log
+        )
+    except visual_page.VisualPageError as exc:
+        raise AgentError(f"{visual_page.OUTPUT_KEY}: {exc}") from None
 
 
 # ---- screenshot publishing (HZ-63) ----
@@ -3907,6 +3969,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     # always removed.
     bundle, out_of_scope, scope = None, [], []
     contract_gaps = _impact_contract_gaps(kind, label, task)
+    # HO-862: only a step whose prompt asked for a page checks or keeps one.
+    wants_page = wants_artifact and visual_page_section(task) is not None
     try:
         with contextlib.ExitStack() as stack:
             if bundle_step:
@@ -3914,6 +3978,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 scope = [entry["repo"] for entry in entries]
                 stack.enter_context(plan_bundle.scrubbed_stdout(out_of_scope))
             validate = _reply_validator(kind, label, task, scope)
+            if wants_page:
+                validate = _page_reply_validator(validate)
             if bundle_step:
                 bundle = plan_bundle.build(item["id"], task.get("plan_scope"))
                 (allowed_tools, disallowed_tools), cwd = plan_bundle.tool_rules(bundle), str(bundle.root)
@@ -3965,6 +4031,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     summary = (plan_bundle.scrub(summary, out_of_scope) if bundle_step else summary)[:SUMMARY_MAX_CHARS]
     if not summary:
         raise AgentError("agent reply missing 'summary'")
+    page = _publish_page(item["id"], parsed) if wants_page else None
 
     # The feedback that drove a rework is stamped into the record by the
     # script — visible in the activity feed and at the top of the artifact —
@@ -4060,6 +4127,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     shas = dict(bundle.shas) if bundle else pushed_head(ws, item["repo"]) if ws is not None else {}
     if shas:
         result.setdefault("artifacts", {})["source_shas"] = shas
+    # HO-862: the stored round; the page's text itself never leaves the farm.
+    if page:
+        result.setdefault("artifacts", {})["page"] = page
     return result
 
 

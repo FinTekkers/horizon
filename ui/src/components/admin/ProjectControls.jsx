@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react'
-import { setProjectEnabled, setProjectAutopilot, setProjectDefinitionsEnabled, setProjectStepProvider } from '../../api'
+import { setProjectEnabled, setProjectAutopilot, setProjectDefinitionsEnabled, setProjectStepProvider, setProjectVisualPagesEnabled } from '../../api'
 import { ITEM_KINDS, STEPS, itemKindInfo } from '../../../../domain/js/lifecycle.js'
 
 // HZ-208: a project's dispatch on/off switch. Every flip, both ways, is
@@ -106,6 +106,66 @@ export function ProjectDefinitions({ project }) {
         <span>Project definitions</span>
       </label>
       {asking && (
+        <form className="project-block__add" onSubmit={submit}>
+          <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <button type="button" className="composer__cancel" onClick={cancel}>
+            Cancel
+          </button>
+        </form>
+      )}
+      {error && <div className="gh-error">{error}</div>}
+    </div>
+  )
+}
+
+// HO-862: the switch for the project's web-page visuals — agents on the
+// options and plan steps may return a self-contained page, opened from the
+// item page. Off by default; PIN-gated like the definitions switch. A tenant
+// project's steps run as another user whose files the farm cannot serve, so
+// there the switch is shown unavailable.
+export function ProjectVisualPages({ project }) {
+  const [asking, setAsking] = useState(false)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const tenant = project.isolation === 'tenant'
+  const enabled = project.visualPagesEnabled === true
+
+  const cancel = () => {
+    setAsking(false)
+    setError(null)
+  }
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await setProjectVisualPagesEnabled(project.id, !enabled)
+      setAsking(false)
+    } catch (err) {
+      setError(err.message === 'pin_needed' ? 'Gate PIN needed — nothing was saved' : err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="project-visual-pages" style={{ marginBottom: 8 }}>
+      <label className="project-autopilot__row">
+        <input
+          type="checkbox"
+          aria-label={`${project.name} web-page visuals`}
+          checked={enabled && !tenant}
+          disabled={tenant}
+          onChange={() => (asking ? cancel() : setAsking(true))}
+        />
+        <span>Web-page visuals</span>
+      </label>
+      {tenant && <div className="gh-note">Unavailable for tenant projects</div>}
+      {asking && !tenant && (
         <form className="project-block__add" onSubmit={submit}>
           <button type="submit" className="composer__submit" style={{ background: 'var(--primary)' }} disabled={busy}>
             {busy ? 'Saving…' : 'Save'}
