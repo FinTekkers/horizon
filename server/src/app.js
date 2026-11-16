@@ -1752,6 +1752,48 @@ export function buildApp({
     },
   )
 
+  // HO-842: Re-check and run — after the dispatch re-check refused, re-check
+  // the host and, on a pass, resume the same approved plan (orchestrator
+  // recheckAndRun). No PIN and no send-back, but only a browser session of a
+  // member who may act on the item (the guard's 404 for anyone else), same
+  // origin — a token, the test-env login or a cross-site request gets 403. A
+  // refused auth writes nothing; every call past it writes one Activity
+  // entry with the clicking user's login (their email: the user table has no
+  // other login). A plain Resume stays open: refuseUnapprovedRun still
+  // re-checks the host before it dispatches.
+  const RECHECK_RUN_ERRORS = {
+    not_task: [409, 'Re-check and run is only for Task items'],
+    already_running: [409, 'a run for this item is queued or in flight'],
+    nothing_to_resume: [409, 'the item is not at Execute'],
+    plan_changed: [409, 'the run plan changed since it was approved — approve it again before re-running'],
+    prerequisites_unmet: [409, 'the host still misses what the run plan needs — zero commands run'],
+    recheck_unavailable: [502, 'the farm could not run the re-check — zero commands run'],
+    not_found: [404, 'no such item'],
+  }
+  fastify.post(
+    '/api/items/:id/job/recheck-run',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: idParam,
+        response: { 200: OK_OBJECT, 403: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT, 502: ERROR_OBJECT },
+        security: SESSION_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      if (!requireSession(request, reply)) return
+      const origin = sameOrigin(request)
+      if (origin !== 'ok') return reply.code(403).send({ error: origin === 'refused' ? 'cross_site_refused' : 'csrf_required' })
+      const { id } = request.params
+      const result = await orchestrator.recheckAndRun(id, { actor: actorOf(request), login: request.user.email })
+      if (result.error) {
+        const [status, message] = Object.hasOwn(RECHECK_RUN_ERRORS, result.error) ? RECHECK_RUN_ERRORS[result.error] : [409, result.error]
+        return reply.code(status).send({ error: result.error, message, ...(result.unmet ? { unmet: result.unmet } : {}) })
+      }
+      return { ...result, ...actionState(id) }
+    },
+  )
+
   // HO-843: the owner patches one command of a Task's run plan — at Execute
   // with no job running, or at Approve the run. A signed-in human only (no
   // token, WhatsApp or Autopilot); no PIN here, because the patched command
@@ -5889,6 +5931,17 @@ export function buildApp({
       const reachable = request.body?.reachable
       if (typeof reachable !== 'boolean') return reply.code(400).send({ error: 'reachable must be a boolean' })
       orchestrator.setFarmReachableForTest(reachable)
+      return { ok: true }
+    })
+
+    // e2e only (HO-842), same reasoning: with no farm, Re-check and run's
+    // host re-check could never answer. This sets farmd's /preflight answer
+    // for one item (`answer: null` clears it); the session, origin, plan and
+    // lock checks around it all still run.
+    fastify.post('/api/test/recheck-result', { config: { scope: 'test' } }, async (request, reply) => {
+      const { itemId, answer = null } = request.body || {}
+      if (typeof itemId !== 'string' || !itemId) return reply.code(400).send({ error: 'itemId must be a string' })
+      orchestrator.setRecheckResultForTest(itemId, answer)
       return { ok: true }
     })
 

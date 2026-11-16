@@ -4292,46 +4292,70 @@ const DRIFT_NAME_MAX = 120
 // Any failure, timeout or unreachable farm refuses dispatch with PREREQ_DRIFT
 // and runs no command. Text lists failed names only, never a value or file
 // content.
+// HO-842: the farm call is prereqRecheck below, so Re-check and run asks the
+// same question without failing a run.
 export async function refuseOnPrereqDrift(runId, id) {
+  const check = await prereqRecheck(id)
+  if (check.ok) return null
+  failFarmRun(runId, check.text, REASON.PREREQ_DRIFT)
+  return { error: REASON.PREREQ_DRIFT, failed: check.failed }
+}
+
+// HO-842: e2e only — the server has no farm there, so a spec sets farmd's
+// /preflight answer for one item (null clears it). Only the farm's answer is
+// stubbed: every check around it still runs. Set only through
+// /api/test/recheck-result, which exists only with HORIZON_TEST_HOOKS=1.
+const cannedRecheckAnswers = new Map()
+
+export function setRecheckResultForTest(itemId, answer) {
+  if (answer == null) cannedRecheckAnswers.delete(itemId)
+  else cannedRecheckAnswers.set(itemId, answer)
+}
+
+// HO-838/HO-842: farmd POST /preflight on the item's jobRequest, side-effect
+// free. { ok: true } on a pass; otherwise { ok: false, unavailable, failed,
+// unmet, text }: `unavailable` when the re-check could not run (fail closed),
+// `text` the refusal dispatch records. `unmet` is farmd's list as sent; the
+// caller keeps only what it shows.
+export async function prereqRecheck(id) {
+  const couldNotRun = (reason) => ({
+    ok: false,
+    unavailable: true,
+    failed: [],
+    unmet: [],
+    text: `prerequisite re-check could not run: ${reason} — dispatch refused`,
+  })
   let body
   try {
     body = jobRequest(id)
   } catch (exc) {
-    const reason = String(exc).slice(0, 200)
-    const text = `prerequisite re-check could not run: ${reason} — dispatch refused`
-    failFarmRun(runId, text, REASON.PREREQ_DRIFT)
-    return { error: REASON.PREREQ_DRIFT, failed: [] }
+    return couldNotRun(String(exc).slice(0, 200))
   }
   let data
   try {
-    data = await farmFetch('/preflight', body, { timeoutMs: FARM_PREFLIGHT_TIMEOUT_MS })
+    data = cannedRecheckAnswers.has(id)
+      ? cannedRecheckAnswers.get(id)
+      : await farmFetch('/preflight', body, { timeoutMs: FARM_PREFLIGHT_TIMEOUT_MS })
   } catch (err) {
-    const reason = String(err?.message ?? err).slice(0, 200)
-    const text = `prerequisite re-check could not run: ${reason} — dispatch refused`
-    failFarmRun(runId, text, REASON.PREREQ_DRIFT)
-    return { error: REASON.PREREQ_DRIFT, failed: [] }
+    return couldNotRun(String(err?.message ?? err).slice(0, 200))
   }
-  if (!data || typeof data !== 'object' || typeof data.ok !== 'boolean') {
-    const text = `prerequisite re-check could not run: invalid response — dispatch refused`
-    failFarmRun(runId, text, REASON.PREREQ_DRIFT)
-    return { error: REASON.PREREQ_DRIFT, failed: [] }
-  }
-  if (data.ok) return null
+  if (!data || typeof data !== 'object' || typeof data.ok !== 'boolean') return couldNotRun('invalid response')
+  if (data.ok) return { ok: true }
   const failed = Array.isArray(data.failed) ? data.failed : []
+  const unmet = Array.isArray(data.unmet) ? data.unmet : []
   const names = failed.slice(0, DRIFT_NAMES_MAX).map((n) => String(n).slice(0, DRIFT_NAME_MAX))
   const shown = names.length ? names.join(', ') : 'check'
   let text = `prerequisites changed since approval — failed: ${shown}`
-  if (Array.isArray(data.unmet) && data.unmet.length) {
-    const lines = data.unmet.slice(0, DRIFT_NAMES_MAX).map((u) => {
+  if (unmet.length) {
+    const lines = unmet.slice(0, DRIFT_NAMES_MAX).map((u) => {
       const kind = String(u?.kind ?? 'check').slice(0, 200)
       const name = String(u?.name ?? '').slice(0, DRIFT_NAME_MAX)
       const reason = String(u?.reason ?? '').slice(0, 200)
       return `- ${kind} ${name}: ${reason}`
     })
-    if (lines.length) text = `${text}\n${lines.join('\n')}`
+    text = `${text}\n${lines.join('\n')}`
   }
-  failFarmRun(runId, text, REASON.PREREQ_DRIFT)
-  return { error: REASON.PREREQ_DRIFT, failed }
+  return { ok: false, unavailable: false, failed, unmet, text }
 }
 
 // HZ-384: a Task's Execute starts only on the run plan a human approved at
@@ -4588,19 +4612,94 @@ export async function stopJob(id) {
 // plan edited since approval answers plan_changed and asks for re-approval;
 // an already-running job answers already_running; nothing to resume answers
 // nothing_to_resume. The route maps each to 409.
-export function resumeJob(id) {
+// HO-842: also already_running while Re-check and run is checking the host,
+// so the two never dispatch twice. Re-check and run passes `event: false`
+// and writes its own Activity entry instead.
+export function resumeJob(id, { event = true } = {}) {
   const item = getItem(id)
   if (!item) return { error: 'not_found' }
-  if (activeJobRun(id)) return { error: 'already_running' }
+  if (rechecking.has(id) || activeJobRun(id)) return { error: 'already_running' }
   if (item.cursor !== EXECUTE_STEP_INDEX) return { error: 'nothing_to_resume' }
   const check = approvedPlanCheck(id)
   if (check.error) return { error: 'plan_changed' }
   db.prepare("UPDATE work_item SET paused = 0, updated_at = datetime('now') WHERE id = ?").run(id)
-  addEvent(id, { who: 'Horizon', text: 'the run was resumed from the first unfinished command', color: '#5E4380', initials: 'HZ' })
+  if (event) addEvent(id, { who: 'Horizon', text: 'the run was resumed from the first unfinished command', color: '#5E4380', initials: 'HZ' })
   notifyChange()
   kick(id)
   const run = activeJobRun(id)
   return { ok: true, runId: run?.id ?? null }
+}
+
+// HO-842: items whose Re-check and run is checking the host. Taken before
+// the first await, so a second click (or a plain Resume) in that window is
+// already_running. In memory only: a restart drops the request too, and
+// activeJobRun still guards the database.
+const rechecking = new Set()
+
+// HO-842: the unmet list Re-check and run answers and logs — each entry's
+// kind and name only, capped, so no reason text, value or file content farmd
+// sent can pass through. With no `unmet` list, the failed names stand in.
+const RECHECK_UNMET_MAX = 50
+const RECHECK_TEXT_MAX = 200
+export function cleanUnmet(unmet, failed = []) {
+  const text = (v) => String(v ?? '').slice(0, RECHECK_TEXT_MAX)
+  const entries = Array.isArray(unmet) && unmet.length ? unmet : (Array.isArray(failed) ? failed : []).map((name) => ({ kind: 'check', name }))
+  return entries
+    .filter((u) => u && typeof u === 'object')
+    .slice(0, RECHECK_UNMET_MAX)
+    .map((u) => ({ kind: text(u.kind) || 'check', name: text(u.name) }))
+}
+
+// HO-842: Re-check and run, after the dispatch re-check refused for a host
+// that has since been fixed. Checks, in order: a Task, no run queued or in
+// flight, at Execute, the plan still the approved one, then the host (farmd
+// /preflight, the same question HO-838 asks at dispatch). Only on a pass does
+// it call resumeJob, which dispatches the stored approved_plan_hash on the
+// stored approved_runner through refuseUnapprovedRun, re-check included.
+// Resume skips commands that already passed under that hash. No send-back,
+// no PIN — the route requires a browser session. Returns { ok, runId } or
+// { error, unmet? }. Every call writes exactly one Activity entry naming
+// `login`; the unmet list it logs has names only.
+export async function recheckAndRun(id, { actor, login }) {
+  const item = getItem(id)
+  if (!item) return { error: 'not_found' }
+  let result = { error: 'failed' }
+  let locked = false
+  try {
+    // Only a Task's lifecycle has Execute (domain/steps.json), so only a Task is re-run.
+    if (!stepsFor(itemKindOf(item)).some((step) => step.index === EXECUTE_STEP_INDEX)) result = { error: 'not_task' }
+    else if (rechecking.has(id) || dispatching.has(id) || activeJobRun(id)) result = { error: 'already_running' }
+    else {
+      rechecking.add(id)
+      locked = true
+      if (item.cursor !== EXECUTE_STEP_INDEX || isAbandoned(item)) result = { error: 'nothing_to_resume' }
+      else if (approvedPlanCheck(id).error) result = { error: 'plan_changed' }
+      else {
+        const check = await prereqRecheck(id)
+        if (check.ok) {
+          rechecking.delete(id)
+          locked = false
+          result = resumeJob(id, { event: false })
+        } else if (check.unavailable) result = { error: 'recheck_unavailable' }
+        else result = { error: 'prerequisites_unmet', unmet: cleanUnmet(check.unmet, check.failed) }
+      }
+    }
+  } finally {
+    if (locked) rechecking.delete(id)
+    addEvent(id, { who: actor, text: recheckRunText(login, result), color: '#5E4380', initials: 'YOU' })
+    notifyChange()
+  }
+  return result
+}
+
+// The one Activity line of a Re-check and run click. A pass says the run
+// started, not that it ran: the dispatch re-check can still refuse, and logs
+// its own refusal.
+function recheckRunText(login, result) {
+  const by = `Re-check and run by ${String(login ?? '').slice(0, 200)}`
+  if (result.ok) return `${by}: re-check passed — ${result.runId != null ? `run ${result.runId}` : 'the run'} started`
+  const unmet = result.unmet?.length ? ` — unmet: ${result.unmet.map((u) => `${u.kind} ${u.name}`).join(', ')}` : ''
+  return `${by}: refused — ${result.error}${unmet}`
 }
 
 // HZ-346: an implement run that stopped on a rule with no code changes. Not

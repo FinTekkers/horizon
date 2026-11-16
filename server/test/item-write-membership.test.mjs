@@ -151,6 +151,7 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/screenshots/approve': { payload: { commit: 'abc123', all: true } },
   'POST /api/items/:id/job/stop': {},
   'POST /api/items/:id/job/resume': {},
+  'POST /api/items/:id/job/recheck-run': {},
   'POST /api/items/:id/run-plan/patch': { payload: { from: 'task.execute', planHash: 'h', index: 0, command: 'make test' } },
   'POST /api/items/:id/resolve-conflicts': {},
   'POST /api/items/:id/move': { payload: { action: 'retry', from: 'change.implement' } },
@@ -202,7 +203,7 @@ test('metric 1: a non-member gets exactly 404 on every member:item route; nothin
     .filter((r) => r.scope === 'member:item' && r.method !== 'GET' && r.method !== 'HEAD')
     .map((r) => `${r.method} ${r.url}`)
   assert.deepEqual(routes.sort(), Object.keys(MEMBER_ITEM_ROUTES).sort())
-  assert.equal(routes.length, 23)
+  assert.equal(routes.length, 24) // HO-842: + POST /api/items/:id/job/recheck-run
 
   const overlapBefore = overlapCalls
   const before = snapshot()

@@ -578,6 +578,12 @@ export async function resumeJob(id) {
   throw new Error(items.some((x) => x.id === id) ? 'nothing_to_resume' : 'not_found')
 }
 
+// HO-842: mirrors serverApi.recheckAndRun. Mock items never reach Execute's
+// dispatch re-check, so there is never a refusal to re-run.
+export async function recheckAndRun(id) {
+  throw new Error(items.some((x) => x.id === id) ? 'nothing_to_resume' : 'not_found')
+}
+
 // HO-843: mirrors serverApi.patchRunPlan. Mock items have no approved run
 // plan, so there is never one to patch — the refusal the server gives then.
 export async function patchRunPlan(id) {
