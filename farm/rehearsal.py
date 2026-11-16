@@ -35,6 +35,16 @@ Fail closed, never skipped:
   an unsandboxed run;
 - a plan with nothing to rehearse is `rehearsal_missing`.
 
+HO-866: a caller (HO-840's egress proxy) may pass `hooks`, a RehearsalHooks
+(any object with some of its methods). run() owns their order, the cap and
+teardown: `start` runs inside the cap, after the role checks, and its flags
+(container_runner.rehearsal_extra_flags' allowlist) only add to the sandbox;
+`check` runs after the commands, while the container is up, and may fail the
+rehearsal with a `rehearsalReasons` id; `stop` always runs once `start` was
+called. Neither hook moves the deadline fixed at start: one that returns past
+it is `rehearsal_timeout`. A hook is not pre-empted mid-call, so a hook must
+honour the `deadline` it is given in its own timeouts.
+
 Never stored, logged or returned: a command's output, an error's text, a
 secret value or a file's contents. Output is read in memory only, to find
 the expected line and the write refusals; the result holds reason ids
@@ -108,6 +118,96 @@ _PG_KEYWORDS = re.compile(r"(?:^|\s)(?:host|dbname|user|port|service)\s*=", re.I
 
 class _OutOfTime(Exception):
     pass
+
+
+class _HooksLate(Exception):
+    """The hooks' `start` returned past the deadline: the sandbox never starts."""
+
+
+# The `what` of a hook's finding. command_checks' _WHAT (and the server's
+# WHAT) keep only lowercase words, underscores and spaces: no hyphen.
+POST_RUN_CHECK = "post_run check"
+SANDBOX_HOOKS = "sandbox hooks"
+
+
+class RehearsalHooks:
+    """HO-866: what a rehearsal caller may plug into run(). Subclass it, or
+    pass any object with some of these methods: run() looks each up by name,
+    and a missing one does nothing — as these defaults do.
+
+    Order: the pull (outside the cap), the clock starts, the role checks,
+    `start`, `env`, the sandbox starts with the flags, the commands, `check`,
+    the sandbox is removed, `stop`.
+
+    A message a hook raises, and anything it returns, must never hold a flag
+    or env value: run() stores and returns only labels and reason ids, and
+    an Unavailable's message reaches the owner as is."""
+
+    def start(self, deadline: float) -> list[str] | None:
+        """Starts what the sandbox needs (a proxy and its network) and
+        returns extra sandbox flags, e.g. `["--network=<net>"]`. Runs inside
+        the cap: `deadline` is time.monotonic()'s, fixed when the clock
+        started; returning past it is `rehearsal_timeout` and the sandbox
+        never starts. Raise container_runner.Unavailable to fail closed."""
+        return None
+
+    def env(self) -> dict[str, str] | None:
+        """Values for the proxy names `start`'s flags pass as `--env=<NAME>`.
+        They reach the sandbox through the podman client's env, never argv."""
+        return None
+
+    def check(self, name: str, deadline: float) -> str | None:
+        """After the commands, with container `name` still up: a
+        `rehearsalReasons` id that fails the rehearsal (e.g.
+        `rehearsal_write_refused`), or None. Skipped when the commands ran out
+        of time. Any other return raises ValueError; returning past
+        `deadline` is `rehearsal_timeout`."""
+        return None
+
+    def stop(self) -> None:
+        """Tears down what `start` started. Runs whenever `start` was called
+        — on a clean run, a timeout or an error, even after `start` raised
+        partway — so it must be safe after a partial start and safe to call
+        more than once. Teardown is outside the cap and untimed by run()."""
+        return None
+
+
+def _start_hooks(hooks: object, deadline: float) -> tuple[list | None, dict]:
+    """The hooks' `start` and `env`: (extra sandbox flags, proxy values for
+    the podman client's env). Raises _HooksLate when `start` returns past
+    the deadline, and container_runner.Unavailable for a refused value."""
+    start = getattr(hooks, "start", None)
+    flags = None
+    if start is not None:
+        flags = start(deadline)
+        if time.monotonic() >= deadline:
+            raise _HooksLate
+    env_of = getattr(hooks, "env", None)
+    values = env_of() if env_of is not None else None
+    return flags, container_runner.rehearsal_proxy_env(flags, values)
+
+
+def _stop_hooks(hooks: object) -> None:
+    stop = getattr(hooks, "stop", None)
+    if stop is not None:
+        stop()
+
+
+def _post_run_check(hooks: object, name: str, deadline: float) -> list[dict]:
+    """The hooks' `check`, as findings. Raises ValueError on an id outside
+    `rehearsalReasons` — without the value, which may be anything."""
+    check = getattr(hooks, "check", None)
+    if check is None:
+        return []
+    reason = check(name, deadline)
+    found = []
+    if reason is not None:
+        if not isinstance(reason, str) or reason not in REASONS:
+            raise ValueError("the rehearsal's post-run check returned an unknown reason id")
+        found.append(_failure(POST_RUN_CHECK, reason))
+    if time.monotonic() >= deadline:
+        found.append(_failure(SANDBOX_HOOKS, TIMEOUT))
+    return found
 
 
 def image_for(runner: str | None, container_image: str | None) -> str:
@@ -239,13 +339,16 @@ def run(
     cap_s: float = CAP_S,
     pull_cap_s: float = PULL_CAP_S,
     pg_socket: str | None = None,
+    hooks: RehearsalHooks | None = None,
 ) -> dict:
     """The rehearsal result: {clean, reason, scope, seconds, plan_hash,
     failures: [{what, reason, exit}]}. `reason` is the first failure's, or
     None. `ro_values` holds only the plan's `ro_env` names' values, resolved
     by the caller; they reach the sandbox through the podman client's env.
     Raises container_runner.Unavailable when the image or the sandbox cannot
-    be had — the caller fails the step, never runs unsandboxed."""
+    be had — the caller fails the step, never runs unsandboxed. `hooks`
+    (HO-866): see RehearsalHooks; ValueError when its `check` returns an id
+    outside `rehearsalReasons`."""
     if scope not in SCOPES:
         raise ValueError(f"rehearsal scope must be one of {', '.join(SCOPES)}")
     rehearsal = block.get("rehearsal") if isinstance(block.get("rehearsal"), dict) else {}
@@ -290,6 +393,7 @@ def run(
     name = _container_name(item_id)
     scratch = tempfile.mkdtemp(prefix="farm-rehearsal-")
     try:
+        flags, proxy_env = _start_hooks(hooks, deadline)
         mask = container_runner.env_mask_file(os.path.join(scratch, "scratch")) if mounted_repo else None
         argv = container_runner.rehearsal_argv(
             image=image,
@@ -302,9 +406,17 @@ def run(
             pg_socket_dir=pg_socket if full else None,
             limit=rehearsal.get("limit") if full else None,
             timeout_s=int(cap_s) + 10,
+            extra_flags=flags,
         )
-        env = container_runner.client_env(ro_values if full else {})
-        container_runner.start_container(argv, env)
+        env = container_runner.client_env({**(ro_values if full else {}), **proxy_env})
+        try:
+            container_runner.start_container(argv, env)
+        except container_runner.Unavailable:
+            if not flags:
+                raise
+            # Podman's error can echo a caller flag, and this message
+            # reaches the owner: say only that it did not start.
+            raise container_runner.Unavailable("the rehearsal sandbox did not start with the caller's sandbox flags") from None
         try:
             shell = container_runner.container_shell(name)
             commands = block.get("commands") or []
@@ -337,12 +449,24 @@ def run(
                     code, _ = _parse(name, commands[k - 1], env, deadline)
                     if code != 0:
                         failures.append(_failure(what, PARSER_FAILED, code))
+            # Only after commands that finished in time: the container is up.
+            failures += _post_run_check(hooks, name, deadline)
         except _OutOfTime:
             failures.append(_failure("rehearsal", TIMEOUT))
         finally:
             container_runner.stop_and_remove(name)
+    except _HooksLate:
+        failures.append(_failure(SANDBOX_HOOKS, TIMEOUT))
+    except BaseException as exc:
+        # The error already on its way out is the one the caller sees.
+        try:
+            _stop_hooks(hooks)
+        except Exception as stop_exc:
+            exc.add_note(f"the rehearsal hooks' stop() also failed ({type(stop_exc).__name__})")
+        raise
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+    _stop_hooks(hooks)
 
     if snap_conn and before_rows:
         after_rows = _counts(db_changes.snapshot(snap_conn, tables, deadline=time.monotonic() + db_changes.STOP_PHASE_CAP_S))
