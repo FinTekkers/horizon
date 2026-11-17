@@ -33,6 +33,7 @@ from . import workspaces
 from .agent_runner import AgentError
 from .checks import scrub as scrub_secrets
 from .read_only_guard import ReadOnlyViolation, SnapshotFailed, Watch, violation_message
+from .vcs import git as vcs_git
 
 BUNDLE_ROOT = Path("/tmp/horizon-plan")
 BUNDLE_MAX_AGE_S = 24 * 60 * 60
@@ -69,16 +70,7 @@ class _HubState(NamedTuple):
 
 
 def _git(path: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(path), "--no-optional-locks", *args],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=GIT_TIMEOUT_S,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git {args[0]} failed in {path.name}: {result.stderr.strip()[:200]}")
-    return result.stdout
+    return vcs_git.plan_bundle_git(path, *args, timeout=GIT_TIMEOUT_S)
 
 
 def _dirname(repo: str) -> str:
@@ -127,14 +119,14 @@ def _export(entry: dict, root: Path) -> tuple[str, str]:
     if not (hub / ".git").exists():
         raise AgentError(f"{repo} has no workspace on this farm, so it cannot be read — restart the farm with it connected")
     with workspaces.hub_lock(repo):
-        fetch = subprocess.run(["git", "-C", str(hub), "fetch", "--quiet", "origin", "--prune"], capture_output=True, timeout=GIT_TIMEOUT_S)
+        fetch = vcs_git.plan_bundle_fetch(hub, timeout=GIT_TIMEOUT_S)
     branch = entry.get("default_branch")
     if not isinstance(branch, str) or not _BRANCH.match(branch):
         branch = workspaces.default_branch(hub)
     sha = _git(hub, "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}").strip()
     dest = root / _dirname(repo)
     dest.mkdir()
-    archive = subprocess.Popen(["git", "-C", str(hub), "archive", "--format=tar", sha], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    archive = vcs_git.plan_bundle_archive(hub, sha)
     untar = subprocess.run(["tar", "-x", "--no-same-owner", "-C", str(dest)], stdin=archive.stdout, capture_output=True, timeout=GIT_TIMEOUT_S)
     archive.stdout.close()
     if archive.wait(timeout=GIT_TIMEOUT_S) != 0 or untar.returncode != 0:
@@ -323,8 +315,8 @@ def _hub_state(repo: str) -> _HubState:
 def _fast_forward(repo: str, branch: str, old: str, new: str) -> bool:
     hub = workspaces.hub_path(repo)
     with workspaces.hub_lock(repo):
-        subprocess.run(["git", "-C", str(hub), "fetch", "--quiet", "origin", branch], capture_output=True, timeout=GIT_TIMEOUT_S)
-    ancestor = subprocess.run(["git", "-C", str(hub), "merge-base", "--is-ancestor", old, new], capture_output=True, timeout=GIT_TIMEOUT_S)
+        vcs_git.plan_bundle_fetch_branch(hub, branch, timeout=GIT_TIMEOUT_S)
+    ancestor = vcs_git.plan_bundle_is_ancestor(hub, old, new, timeout=GIT_TIMEOUT_S)
     return ancestor.returncode == 0
 
 

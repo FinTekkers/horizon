@@ -62,6 +62,7 @@ from pathlib import Path
 from . import check_slots, run_reaper, workspaces
 from .checks import CHECKS_WAIVERS, CheckFailure, output_tail, run_checks
 from .config import WORKSPACES_DIR
+from .vcs.git import premerge_git as _git
 
 # farm/validate.py (HZ-248) imports _git, _has_commit, _within and
 # _remove_scratch from here: keep their signatures stable.
@@ -126,20 +127,6 @@ def assert_scratch_path(ws: Path) -> None:
         raise PremergeRefused(f"refusing to run pre-merge checks in the running checkout: {resolved}")
     if resolved.parent.parent != root or not resolved.parent.name.endswith("__premerge"):
         raise PremergeRefused(f"pre-merge workspace must be <repo>__premerge/<item> under {root}: {resolved}")
-
-
-def _git(path: Path, *args: str, check: bool = True, timeout: float = 300) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        ["git", "-C", str(path), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=max(timeout, 1),
-    )
-    if check and result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[-300:]}")
-    return result
 
 
 def _has_commit(hub: Path, sha: str) -> bool:

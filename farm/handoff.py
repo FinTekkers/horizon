@@ -29,6 +29,7 @@ from pathlib import Path
 from .agent_runner import provider_resumes_after_exhaustion, run_agent
 from .config import STATE_DIR
 from .providers.base import AgentExhaustedError
+from .vcs import git as vcs_git
 
 HANDOFF_DIR = STATE_DIR / "handoff"
 # Smaller than every step's budget (steps.budget_for_label) — a test pins it.
@@ -103,14 +104,7 @@ def mechanical_note(partial_text: str | None, ws: Path | None) -> str:
         parts.append("The previous attempt ran out of turns before writing any reply text.")
     if ws is not None:
         try:
-            stat = subprocess.run(
-                ["git", "-C", str(ws), "diff", "--stat", "HEAD"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=GIT_TIMEOUT_S,
-            ).stdout.strip()
+            stat = vcs_git.handoff_diff_stat(ws, timeout=GIT_TIMEOUT_S).stdout.strip()
         except (OSError, subprocess.SubprocessError) as exc:
             stat = ""
             _log(f"git diff --stat failed ({exc}) — note has no workspace summary")

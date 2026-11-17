@@ -37,7 +37,6 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import tempfile
 import time
 import uuid
@@ -46,6 +45,7 @@ from typing import NamedTuple
 
 from . import validate, workspaces
 from .checks import _HEADLINE_TITLE_CAPS, HEADLINE_MAX_CHARS, HEADLINE_TESTS_MAX, CheckFailure, _one_line, run_checks
+from .vcs import git as vcs_git
 
 FAILS_ON_MAIN = "fails_on_base"
 PASSES_ON_MAIN = "passes_on_base"
@@ -403,17 +403,7 @@ def _key(row: dict) -> tuple:
 
 
 def _git(path: Path, *args: str) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(path), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=GIT_TIMEOUT_S,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()[-300:]}")
-    return proc.stdout.strip()
+    return vcs_git.base_check_git(path, *args, timeout=GIT_TIMEOUT_S)
 
 
 def _run_id(item_id: str) -> str:

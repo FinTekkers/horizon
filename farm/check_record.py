@@ -17,14 +17,15 @@ and must not fail or slow the check run.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
-import subprocess
+import subprocess  # noqa: F401 -- tests patch check_record.subprocess.run
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .vcs import git as vcs_git
 
 CHECKS_PASSED_SHA_KEY = "checks_passed_sha"
 CHECKS_FINISHED_AT_KEY = "checks_finished_at"
@@ -35,20 +36,7 @@ SNAPSHOT_TIMEOUT_S = 10
 
 
 def _git(ws: Path, *args: str, env: dict | None = None, timeout: float = SNAPSHOT_TIMEOUT_S) -> str:
-    run_env = {**os.environ, **env} if env else None
-    result = subprocess.run(
-        ["git", "-C", str(ws), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=max(timeout, 0.1),
-        env=run_env,
-        stdin=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
-    return result.stdout.strip()
+    return vcs_git.check_record_git(ws, *args, env=env, timeout=timeout)
 
 
 def _snapshot(ws: Path, deadline: float) -> str | None:

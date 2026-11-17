@@ -65,6 +65,7 @@ from . import (
     screenshots_config,
 )
 from .pause import PauseRequested
+from .vcs import git as vcs_git
 from .workspaces import default_branch
 
 # HZ-183: how much of a failing command's output a CheckFailure carries. Lines,
@@ -1330,16 +1331,7 @@ def _main_script_ref(branch: str) -> re.Pattern:
 
 
 def _git_lines(ws: Path, *args: str) -> list[str]:
-    proc = subprocess.run(
-        ["git", "-C", str(ws), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=BRANCH_GIT_TIMEOUT_S,
-        check=True,
-    )
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return vcs_git.checks_git_lines(ws, *args, timeout=BRANCH_GIT_TIMEOUT_S)
 
 
 def branch_script_changes(ws: Path, log) -> set[str]:

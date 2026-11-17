@@ -70,6 +70,7 @@ from .config import CONFLICT_AGENT_TIMEOUT_S, CONFLICT_REVIEW_TIMEOUT_S, CONFLIC
 # in this codebase. step_agent does not import this module, so the dependency
 # stays one-directional; nothing in it is modified by this file.
 from .step_agent import ROLES, _code_review_section as _review_section
+from .vcs import git as vcs_git
 from .workspaces import default_branch, ensure_item_worktree, hub_lock
 
 # Bounded like every other git subprocess in this codebase (step_agent.py,
@@ -245,17 +246,7 @@ def _branch_suffix() -> str:
 
 
 def git(ws: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        ["git", "-C", str(ws), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=GIT_TIMEOUT_S,
-    )
-    if check and result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
-    return result
+    return vcs_git.conflict_resolver_git(ws, *args, check=check, timeout=GIT_TIMEOUT_S)
 
 
 def _unmerged_paths(ws: Path) -> list[str]:
