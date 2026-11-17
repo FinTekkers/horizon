@@ -7,6 +7,7 @@ import { ensureUnlinkedProject, runMembershipMigration } from './membership.js'
 import { ADMIN_EMAIL, ADMIN_EMAILS } from './config.js'
 import { ACCEPT_GATE_INDEX, endIndex, gateStepIndexes, IMPLEMENT_ITEM_KIND, ITEM_KINDS, itemKindOf, PREFLIGHT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
+import { BACKENDS } from './backends/names.js'
 
 const DB_PATH =
   process.env.HORIZON_DB || join(dirname(fileURLToPath(import.meta.url)), '..', 'data', 'horizon.db')
@@ -543,6 +544,30 @@ if (!workItemSql().includes(KIND_CHECK)) {
     db.pragma('foreign_keys = ON')
   }
 }
+// HO-870: the backend each repo and item runs on — 'github' (the default) or
+// 'sl' — built from backends/names.js like KIND_CHECK is from ITEM_KINDS, with
+// the same lowercase-only check before any value reaches SQL. NOT NULL DEFAULT
+// fills every existing row with 'github', so nothing needs a backfill.
+for (const backend of BACKENDS) {
+  if (!/^[a-z]+$/.test(backend)) throw new Error(`db: backend ${JSON.stringify(backend)} is not lowercase letters only`)
+}
+const BACKEND_COLUMN = `backend TEXT NOT NULL DEFAULT 'github' CHECK (backend IN (${BACKENDS.map((backend) => `'${backend}'`).join(',')}))`
+// The item side. task_id / diff_id / landed_hash / landed_at are the sl
+// backend's task, diff and landed commit — nullable, unread until HO-871.
+// This block and its trigger sit AFTER the HZ-446 rebuild above on purpose:
+// that rebuild re-creates indexes but not triggers, so the trigger is created
+// here (IF NOT EXISTS) on every boot and a rebuild can never leave it dropped.
+// An item's backend is set on insert and never changes; the trigger refuses
+// any UPDATE that would change it.
+const workItemColumns = new Set(db.prepare('PRAGMA table_info(work_item)').all().map((column) => column.name))
+for (const column of [BACKEND_COLUMN, 'task_id TEXT', 'diff_id TEXT', 'landed_hash TEXT', 'landed_at TEXT']) {
+  if (!workItemColumns.has(column.split(' ')[0])) db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
+}
+db.exec(`
+  CREATE TRIGGER IF NOT EXISTS work_item_backend_no_update BEFORE UPDATE OF backend ON work_item
+  WHEN NEW.backend IS NOT OLD.backend
+  BEGIN SELECT RAISE(ABORT, 'work_item.backend is immutable'); END;
+`)
 // HZ-443: one-time backfill for items paused before paused_at existed — the
 // newest event mentioning "paused" (every pause path's event text does), else
 // updated_at, which can only understate the wait. Idempotent: it touches only
@@ -1615,6 +1640,9 @@ db.exec(`
 // row; deployQueue.start() fails the batch once it reaches the bound.
 if (!projectRepoColumns.has('default_branch')) db.exec('ALTER TABLE project_repo ADD COLUMN default_branch TEXT')
 if (!projectRepoColumns.has('default_branch_at')) db.exec('ALTER TABLE project_repo ADD COLUMN default_branch_at TEXT')
+// HO-870: the repo's backend, same column as work_item.backend (BACKEND_COLUMN).
+// Existing repos read 'github'. backends/index.js's forRepo dispatches on it.
+if (!projectRepoColumns.has('backend')) db.exec(`ALTER TABLE project_repo ADD COLUMN ${BACKEND_COLUMN}`)
 if (!db.prepare('PRAGMA table_info(deploy_batch)').all().some((column) => column.name === 'start_attempts')) {
   db.exec('ALTER TABLE deploy_batch ADD COLUMN start_attempts INTEGER NOT NULL DEFAULT 0')
 }

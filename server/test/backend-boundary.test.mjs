@@ -35,10 +35,13 @@ import { repoFiles, relative, stripComments, REPO_ROOT } from './helpers/repoFil
 
 const GITHUB_TARGET = 'server/src/github.js'
 
-// Exactly today's 13 importers of server/src/github.js.
+// Exactly today's 14 importers of server/src/github.js. HO-870 added
+// backends/github.js: the GitHub adapters forRepo() hands out are github.js's
+// own functions, so it is the one importer every moved call site routes through.
 const GITHUB_ALLOWLIST = [
   'server/src/app.js',
   'server/src/autoResolve.js',
+  'server/src/backends/github.js',
   'server/src/caretakerRuling.js',
   'server/src/deployQueue.js',
   'server/src/orchestrator.js',
@@ -52,8 +55,9 @@ const GITHUB_ALLOWLIST = [
   'server/src/webhooks.js',
 ]
 
-// No sl module exists yet; HO-868's later items add it and its importers.
-const SL_ALLOWLIST = []
+// HO-870 added server/src/backends/sl.js (placeholder adapters); the registry
+// is its only importer. HO-868's later items add the rest.
+const SL_ALLOWLIST = ['server/src/backends/index.js']
 
 // Matches an `sl` module specifier: ./sl.js, ../sl.js, ./sl/index.js, or a bare
 // `sl`. Not ./slack.js or ./slugify.js.

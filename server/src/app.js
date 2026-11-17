@@ -73,6 +73,7 @@ import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
+import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
 import * as projectDefinitions from './projectDefinitions.js'
@@ -4364,11 +4365,23 @@ export function buildApp({
   // isolation refs and a repo's Admin settings stay the owner's.
   fastify.get('/api/projects', { config: { scope: 'filtered' }, schema: { response: { 200: OK_OBJECT } } }, (request) => {
     const viewer = request.viewer ?? null
-    const projects = store.listProjects({ viewer })
+    const projects = store.listProjects({ viewer, backends: true })
     return { projects: viewer ? projects.map(memberProject) : projects }
   })
 
+  // HO-870: the 409 when a repo's items already carry another backend — it
+  // names both, as text and as fields.
+  const backendConflictBody = ({ itemBackend, backend }) => ({
+    error: `Repository items use ${itemBackend}; cannot connect as ${backend}`,
+    itemBackend,
+    backend,
+  })
+
   // Connect a repo to a project; issues from it start syncing immediately.
+  // HO-870: `backend` is optional and defaults to github. A repo whose items
+  // carry another backend is refused with 409 before any GitHub call. An sl
+  // connect is refused with 400 until its flow exists (validateRepo, pollRepo
+  // and webhooks.ensure below are GitHub-only).
   fastify.post(
     '/api/projects/:id/repos',
     {
@@ -4382,7 +4395,7 @@ export function buildApp({
         body: {
           type: 'object',
           required: ['repo'],
-          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 } },
+          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 }, backend: { type: 'string', enum: [...BACKENDS] } },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
       },
@@ -4394,14 +4407,19 @@ export function buildApp({
           .code(400)
           .send({ error: 'Repository must be owner/name or a github.com URL, e.g. https://github.com/FinTekkers/shoreward' })
       }
+      const backend = request.body.backend ?? DEFAULT_BACKEND
+      const clash = store.backendConflict(repo, backend)
+      if (clash) return reply.code(409).send(backendConflictBody(clash))
+      if (backend !== DEFAULT_BACKEND) return reply.code(400).send({ error: `Connecting an ${backend} repository is not supported yet` })
       const check = await github.validateRepo(repo, getToken())
       if (!check.ok) return reply.code(400).send({ error: check.error })
       const canonical = check.fullName || repo
-      const result = store.addRepoToProject(request.params.id, canonical)
+      const result = store.addRepoToProject(request.params.id, canonical, backend)
       if (result.error === 'project_not_found') return reply.code(404).send({ error: 'Project not found' })
       if (result.error === 'repo_already_connected') {
         return reply.code(409).send({ error: 'That repository is already connected' })
       }
+      if (result.error === 'backend_conflict') return reply.code(409).send(backendConflictBody(result))
       // HZ-425: the default branch came with validateRepo's read.
       store.setDefaultBranch(canonical, check.defaultBranch)
       await github.pollRepo(repo, request.log).catch(() => {})
@@ -5032,6 +5050,8 @@ export function buildApp({
   const TENANT_CONNECT_CONFLICT = {
     repo_already_connected: 'That repository is already connected',
     tenant_project_has_repo: 'This project already has a repository',
+    // HO-870: fixed text — a tenant connect is always github, and sl is the only other backend.
+    backend_conflict: 'Repository items use sl; cannot connect as github',
   }
   const isTenantProject = (id) => db.prepare('SELECT isolation FROM project WHERE id = ?').get(id)?.isolation === 'tenant'
 

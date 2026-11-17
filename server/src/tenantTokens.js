@@ -95,6 +95,7 @@ function tenantProjectToken(row) {
 
 // COLLATE NOCASE, and a tenant row first: a case variant of a tenant's repo
 // must still resolve to the tenant, never fall through to the owner's token.
+// backends/index.js's selectRepoBackend is the same lookup — keep the two in step.
 const selectRepoProject = db.prepare(`
   SELECT p.id, p.isolation, p.github_token_ref FROM project_repo r JOIN project p ON p.id = r.project_id
   WHERE r.repo = ? COLLATE NOCASE ORDER BY p.isolation = 'tenant' DESC LIMIT 1
