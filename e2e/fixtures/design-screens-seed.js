@@ -88,7 +88,7 @@ export function seedDesignScreens(db) {
 
     insertItem(db, {
       id: DS_SKIP_ID,
-      title: 'Prices API: answer in 200 ms',
+      title: 'Prices API: answer faster',
       cursor: FIRST_GATE,
       desc: 'Serve the prices faster.',
       metric: `1. The prices API answers in 200 ms.\ndesign_needed: no — ${DS_SKIP_REASON}`,
