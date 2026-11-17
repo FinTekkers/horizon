@@ -74,7 +74,7 @@ import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
 import { repoLinks } from './links.js'
-import { forKind, forRepo, githubTestHooks } from './backends/index.js'
+import { backendOf, forKind, forRepo, githubTestHooks, screenshotPublisherFor } from './backends/index.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
 import * as projectDefinitions from './projectDefinitions.js'
@@ -1390,18 +1390,22 @@ export function buildApp({
   // the gate itself does. A screen is found only among the item's listed
   // shots, by exact name. Approving never approves the gate or merges.
   const SCREENSHOT_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+  // HO-878: a read that fails names the store it failed on — GitHub, or the
+  // sl backend's file store on this host.
+  const screenshotsUnavailable = (repo) => (backendOf(repo) === 'sl' ? 'store_unavailable' : 'github_unavailable')
 
   // The item's listed shots at Accept the code, or { status, error } to send.
+  // HO-878: read through the Artifact port, so an sl item's come from its store.
   async function acceptScreenshots(id) {
     const item = store.getItem(id)
     if (!item) return { status: 404, error: 'not_found' }
     if (STEPS[item.cursor]?.label !== 'Accept the code') return { status: 409, error: 'not_at_accept_gate' }
     try {
-      const snapshot = item.repo ? await forRepo(item.repo).artifacts.fetchScreenshotSnapshot(item.repo, item) : null
-      return { repo: item.repo, snapshot, shots: screenshots.listedShots(snapshot) }
+      const snapshot = item.repo ? await forRepo(item.repo).artifacts.readArtifacts(item) : null
+      return { item, repo: item.repo, snapshot, shots: screenshots.listedShots(snapshot) }
     } catch (err) {
       fastify.log.warn(`screenshots for ${id} unavailable: ${err.message}`)
-      return { status: 502, error: 'github_unavailable' }
+      return { status: 502, error: screenshotsUnavailable(item.repo) }
     }
   }
 
@@ -1456,10 +1460,10 @@ export function buildApp({
       if (request.headers['if-none-match'] === etag) return reply.code(304).send()
       let bytes
       try {
-        bytes = await forRepo(found.repo).artifacts.fetchBlob(found.repo, image.sha)
+        bytes = await forRepo(found.repo).artifacts.readArtifactBlob(found.item, image.sha)
       } catch (err) {
         fastify.log.warn(`screenshot ${screen}/${kind} for ${id} unavailable: ${err.message}`)
-        return reply.code(502).send({ error: 'github_unavailable' })
+        return reply.code(502).send({ error: screenshotsUnavailable(found.repo) })
       }
       return reply.type('image/png').send(bytes)
     },
@@ -5667,10 +5671,40 @@ export function buildApp({
     },
   )
 
+  // HO-878: an sl item's screenshots ride on its implement result as
+  // artifacts.screenshot_bundle — the sl farm has no ref to push them to (see
+  // farm/step_agent.py's screenshot_bundle). /complete stores the bundle in the
+  // sl Artifact store and takes it off the result, so the run never holds the
+  // bytes. Best-effort, like the farm's GitHub push: a refused bundle is
+  // logged and the result completes as usual. A result without the key is
+  // passed on as the very same object; one for a GitHub item is dropped with
+  // nothing written.
+  const COMPLETE_BODY_LIMIT = 32 * 1024 * 1024
+
+  async function takeScreenshotBundle(runId, body, log) {
+    if (!body.artifacts || !Object.hasOwn(body.artifacts, 'screenshot_bundle')) return body
+    const { screenshot_bundle: bundle, ...artifacts } = body.artifacts
+    const run = db.prepare('SELECT item_id, status FROM step_run WHERE id = ?').get(runId)
+    const item = run?.status === 'active' ? store.getItem(run.item_id) : null
+    const publish = item?.repo ? screenshotPublisherFor(item.repo) : null
+    if (!publish) {
+      log.warn(`run ${runId}: screenshot bundle dropped (${item ? 'not an sl item' : 'no active run'})`)
+    } else {
+      try {
+        const saved = await publish(item, bundle)
+        log.info(`run ${runId}: stored ${saved.shots} screenshot result(s) for ${item.id} (${saved.commit})`)
+      } catch (err) {
+        log.warn(`run ${runId}: screenshot bundle for ${item.id} not stored: ${err.message}`)
+      }
+    }
+    return { ...body, artifacts }
+  }
+
   fastify.post(
     '/api/farm/steps/:runId/complete',
     {
       config: { scope: 'farm' },
+      bodyLimit: COMPLETE_BODY_LIMIT,
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: {
@@ -5696,7 +5730,8 @@ export function buildApp({
       // Stamped before the run closes, so no drain or review sees it done
       // without its upload pending.
       testResults.markUploadPending(request.params.runId, request.body.test_runs_expected)
-      return orchestrator.completeFarmRun(request.params.runId, request.body)
+      const body = await takeScreenshotBundle(request.params.runId, request.body, request.log)
+      return orchestrator.completeFarmRun(request.params.runId, body)
     },
   )
 
