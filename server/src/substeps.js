@@ -1,15 +1,16 @@
 // HZ-538: a project's sub-step definitions (farm/projects/<slug>/steps.json)
 // and the snapshot of the ones that apply to an item, taken once, at intake.
 //
-// Snapshot data only. Nothing here — or anywhere yet — dispatches, runs or
-// prompts a sub-step; dispatch is HZ-539, and it reads work_item.substeps_json,
-// never the files, so there is no second matcher to drift from this one.
+// Snapshot data only. Nothing here dispatches, runs or prompts a sub-step;
+// dispatch reads work_item.substeps_json, never the files, so there is no
+// second matcher to drift from this one.
 //
 // File shape:
 //   { "substeps": [ { id, label, kind, anchor, persona?, output, applies } ] }
 //
 // - kind 'opening' follows a definition step: Change 1 or Task 17. It outputs
-//   'artifact' or 'golden_cases'.
+//   'artifact', 'golden_cases' or 'design' (HO-850: a Studio design canvas,
+//   made and updated by the farm with `meta studio.canvas apply`).
 // - kind 'audit' follows Implement (11) or Execute (24). It outputs 'findings'.
 // - anchor is the global step index the sub-step follows — an index, not a
 //   label, so a label rename cannot silently move a sub-step.
@@ -33,7 +34,7 @@ import { EXECUTE_STEP_INDEX, IMPLEMENT_STEP_INDEX, STEPS } from '../../domain/js
 import { PROJECTS_DIR, slugify } from './definitions.js'
 import { PERSONAS, isPersona } from './personas.js'
 
-export const SUBSTEP_OUTPUTS = Object.freeze(['artifact', 'golden_cases', 'findings'])
+export const SUBSTEP_OUTPUTS = Object.freeze(['artifact', 'golden_cases', 'findings', 'design'])
 // Change "Define how we measure success" and Task "How we'll verify".
 export const OPENING_ANCHORS = Object.freeze([1, 17])
 // "Specialist agent implements" and "Execute". HO-837: derived, so an
@@ -41,7 +42,7 @@ export const OPENING_ANCHORS = Object.freeze([1, 17])
 export const AUDIT_ANCHORS = Object.freeze([IMPLEMENT_STEP_INDEX, EXECUTE_STEP_INDEX])
 
 const KIND_RULES = {
-  opening: { anchors: OPENING_ANCHORS, outputs: ['artifact', 'golden_cases'] },
+  opening: { anchors: OPENING_ANCHORS, outputs: ['artifact', 'golden_cases', 'design'] },
   audit: { anchors: AUDIT_ANCHORS, outputs: ['findings'] },
 }
 const KEYS = new Set(['id', 'label', 'kind', 'anchor', 'persona', 'output', 'applies'])
