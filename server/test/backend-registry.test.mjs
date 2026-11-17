@@ -17,7 +17,7 @@ for (const key of ['FARM_HOME', 'FARM_URL', 'HORIZON_REPO']) delete process.env[
 
 const store = await import('../src/store.js')
 const github = await import('../src/github.js')
-const { forRepo, backendOf } = await import('../src/backends/index.js')
+const { forRepo, forKind, setBackendForTest, backendOf } = await import('../src/backends/index.js')
 const { githubAdapters } = await import('../src/backends/github.js')
 
 store.purgeDemoItems()
@@ -64,6 +64,14 @@ test('an sl repo gets adapters with the same shape whose every method throws bac
       assert.throws(() => fn('acme/sl-app'), /backend_not_implemented: sl/, `${group}.${name}`)
     }
   }
+})
+
+test('forKind and setBackendForTest throw on a name that is not a backend', () => {
+  for (const name of ['nope', '__proto__', 'constructor', null, undefined]) {
+    assert.throws(() => forKind(name), /unknown backend/, `forKind(${name})`)
+    assert.throws(() => setBackendForTest(name, githubAdapters), /unknown backend/, `setBackendForTest(${name})`)
+  }
+  assert.equal(forKind('github'), githubAdapters, 'a rejected setBackendForTest installs nothing')
 })
 
 // ---- guardrail 3: only the listed call sites import the registry ----
