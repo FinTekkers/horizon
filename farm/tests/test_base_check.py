@@ -47,7 +47,7 @@ def push_main(tmp_path, files: dict[str, str]) -> None:
     git(seed, "push", str(tmp_path / "origin.git"), "main")
 
 
-def row(test, classname="tests.test_m", file=None, suite="pytest"):
+def row(test, classname="tests.test_m", file=None, suite="tests.test_m"):
     return {"suite": suite, "file": file, "classname": classname, "test": test, "status": "fail"}
 
 

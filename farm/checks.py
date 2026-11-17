@@ -631,6 +631,18 @@ def screenshots_failure_lines(manifest: dict, shots: list) -> list[str]:
 # as before HZ-327. Any other value, or unset, reruns.
 RERUN_ENV = "FARM_CHECK_RERUN"
 TEST_REPORT_DIR_ENV = "HORIZON_TEST_REPORT_DIR"
+# HO-898: a plain pytest writes no report of its own, so each attempt adds
+# --junitxml=$HORIZON_TEST_REPORT_DIR/pytest.xml to PYTEST_ADDOPTS. pytest
+# expands env vars in that path, so it lands in the attempt's own report dir
+# while the value stays the same on every attempt. Only that env value is
+# read, never the check command. A command's own --junitxml still wins:
+# pytest reads PYTEST_ADDOPTS before the command line. "0" in
+# FARM_CHECK_PYTEST_JUNIT is the rollback switch, read at call time.
+PYTEST_ADDOPTS_ENV = "PYTEST_ADDOPTS"
+PYTEST_JUNIT_ENV = "FARM_CHECK_PYTEST_JUNIT"
+PYTEST_REPORT_NAME = "pytest.xml"
+PYTEST_REPORT = f"${TEST_REPORT_DIR_ENV}/{PYTEST_REPORT_NAME}"
+_JUNIT_FLAGS = ("--junitxml", "--junit-xml")
 # HZ-750: last round's failing tests, one `file` or `file:line` per line, for
 # an opted-in slot's targeted run (farm/targeted_checks.py). Data for the
 # repo's own script, never runner arguments and never in the command line.
@@ -932,9 +944,13 @@ def parse_junit(path: Path, ws: Path) -> list[dict]:
                 )
             elif child.tag == "testcase":
                 case_file = _relative_file(child.get("file") or file, ws)
+                # HO-898: pytest files every case under one suite named
+                # "pytest", so same-named tests in two modules would share an
+                # identity. Its dotted classname names the module instead.
+                case_suite = (child.get("classname") or suite) if suite == "pytest" else suite
                 rows.append(
                     {
-                        "suite": suite[:TEST_NAME_MAX_CHARS] if suite else None,
+                        "suite": case_suite[:TEST_NAME_MAX_CHARS] if case_suite else None,
                         "file": case_file[:TEST_NAME_MAX_CHARS] if case_file else None,
                         "test": (child.get("name") or "(unnamed test)")[:TEST_NAME_MAX_CHARS],
                         # HZ-590: pytest's default xunit2 report has no file,
@@ -1034,17 +1050,50 @@ def _workspace_junit(ws: Path, since: float, log) -> list[dict]:
     return rows
 
 
+def _pytest_addopts(inherited: str | None, report: str) -> str | None:
+    """HO-898: the PYTEST_ADDOPTS value that also writes a JUnit report to
+    `report`, or None to leave the inherited value as it is. Inherited
+    options stay in front. None when the switch is off, the inherited value
+    already names a report or turns the junitxml plugin off, or it does not
+    split (bad quoting is pytest's own error to report)."""
+    if os.environ.get(PYTEST_JUNIT_ENV) == "0":
+        return None
+    try:
+        tokens = shlex.split(inherited or "")
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens):
+        if token in _JUNIT_FLAGS or token.startswith(tuple(f"{flag}=" for flag in _JUNIT_FLAGS)):
+            return None
+        if token == "-pno:junitxml" or (token == "-p" and tokens[index + 1 : index + 2] == ["no:junitxml"]):
+            return None
+    return f"{inherited or ''} --junitxml={shlex.quote(report)}".strip()
+
+
+def _attempt_env(env: dict[str, str], report_dir: Path) -> dict[str, str]:
+    """A new dict for one attempt's command: `env` plus its report dir and,
+    when _pytest_addopts() gives one, a PYTEST_ADDOPTS that writes a pytest
+    report there (PYTEST_REPORT). `env` itself is never changed."""
+    child = {**env, TEST_REPORT_DIR_ENV: str(report_dir)}
+    addopts = _pytest_addopts(env.get(PYTEST_ADDOPTS_ENV), PYTEST_REPORT)
+    if addopts is not None:
+        child[PYTEST_ADDOPTS_ENV] = addopts
+    return child
+
+
 def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], log):
     """One run of one command with its own HORIZON_TEST_REPORT_DIR, outside
     the workspace and removed afterwards. Returns (proc, junit rows); raises
     TimeoutExpired / FileNotFoundError like _run_bounded.
 
     HZ-349: the rows also include the workspace's own reports written during
-    this run (_workspace_junit). A test in both keeps its report-dir row."""
+    this run (_workspace_junit). A test in both keeps its report-dir row.
+
+    HO-898: a plain pytest writes its report there too (_attempt_env)."""
     report_dir = Path(tempfile.mkdtemp(prefix="horizon-test-report-"))
     try:
         since = time.time()
-        proc = _run_bounded(cmd, ws, timeout_s, {**env, TEST_REPORT_DIR_ENV: str(report_dir)})
+        proc = _run_bounded(cmd, ws, timeout_s, _attempt_env(env, report_dir))
         rows = _report_rows(report_dir, ws, log)
         reported = {_identity(row) for row in rows}
         rows.extend(row for row in _workspace_junit(ws, since, log) if _identity(row) not in reported)
