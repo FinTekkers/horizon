@@ -40,7 +40,7 @@ import httpx
 
 from .checks import scrub
 from .egress_proxy import address_allowed
-from .workspaces import hub_lock
+from .workspaces import _git_bytes, hub_lock
 
 SHOTS_TREE = "e2e/__screenshots__"
 CANVAS_MAX_BYTES = 10 * 1024 * 1024
@@ -72,10 +72,8 @@ class Staged:
 
 
 def _git(ws: Path, *args: str) -> bytes:
-    result = subprocess.run(["git", "-C", str(ws), *args], capture_output=True, timeout=GIT_TIMEOUT_S)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.decode("utf-8", "replace").strip()[:200] or f"git {args[0]} failed")
-    return result.stdout
+    # Bytes-safe: stage_shots writes PNG blobs, so no text decoding here.
+    return _git_bytes(ws, *args, timeout=GIT_TIMEOUT_S)
 
 
 def _resolve(host: str) -> list[str]:
