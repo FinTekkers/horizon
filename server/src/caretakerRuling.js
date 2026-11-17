@@ -25,7 +25,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import * as github from './github.js'
+import { forRepo } from './backends/index.js'
 import { farmFetch } from './orchestrator.js'
 import { STEPS, requiredStepIndex, stepKeyAt } from '../../domain/js/lifecycle.js'
 import { operatorDecideLines, redact } from './caretakerRules.js'
@@ -139,7 +139,7 @@ async function ruleOn(c, { gateActions, log, now, propose }) {
   try {
     const request = operatorRequest(c)
     if (!request) return leave('rejected', 'no_request', notRuled('no "Operator must decide:" line could be read'))
-    current = store.parseIssueBody(await github.getIssueBody(item))
+    current = store.parseIssueBody(await forRepo(item.repo).tracker.getIssueBody(item))
     proposal = await propose({ itemId: c.item_id, request, metric: current.metric, guardrails: current.guardrails })
   } catch (err) {
     return leave('failed', 'proposal_failed', notRuled(`could not get a ruling: ${err?.message || err}`))
@@ -159,7 +159,7 @@ async function ruleOn(c, { gateActions, log, now, propose }) {
 
   let issue
   try {
-    issue = await github.patchIssueBodyLines(item, verdict.edits)
+    issue = await forRepo(item.repo).tracker.patchIssueBodyLines(item, verdict.edits)
   } catch (err) {
     const code = err?.code === 'stale_body' ? 'stale_body' : 'patch_failed'
     const why = redact(err?.message || err)

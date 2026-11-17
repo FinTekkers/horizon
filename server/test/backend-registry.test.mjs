@@ -1,8 +1,9 @@
 // HO-870: the backend registry. forRepo(repo) hands a GitHub repo — and any
 // repo it cannot place — the very functions github.js exports; an sl repo gets
-// adapters that throw rather than fall back to GitHub. And no call site has
-// moved onto it yet: nothing outside server/src/backends/ imports the
-// registry, and store.js / db.js import only the leaf backends/names.js.
+// adapters that throw rather than fall back to GitHub. Only the call-site
+// files HO-871 moved onto it import the registry from outside
+// server/src/backends/, and store.js / db.js import only the leaf
+// backends/names.js.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -16,7 +17,7 @@ for (const key of ['FARM_HOME', 'FARM_URL', 'HORIZON_REPO']) delete process.env[
 
 const store = await import('../src/store.js')
 const github = await import('../src/github.js')
-const { forRepo, backendOf } = await import('../src/backends/index.js')
+const { forRepo, forKind, setBackendForTest, backendOf } = await import('../src/backends/index.js')
 const { githubAdapters } = await import('../src/backends/github.js')
 
 store.purgeDemoItems()
@@ -65,7 +66,20 @@ test('an sl repo gets adapters with the same shape whose every method throws bac
   }
 })
 
-// ---- guardrail 3: no call site moved onto forRepo ----
+test('forKind and setBackendForTest throw on a name that is not a backend', () => {
+  for (const name of ['nope', '__proto__', 'constructor', null, undefined]) {
+    assert.throws(() => forKind(name), /unknown backend/, `forKind(${name})`)
+    assert.throws(() => setBackendForTest(name, githubAdapters), /unknown backend/, `setBackendForTest(${name})`)
+  }
+  assert.equal(forKind('github'), githubAdapters, 'a rejected setBackendForTest installs nothing')
+})
+
+// ---- guardrail 3: only the listed call sites import the registry ----
+// HO-871 retired the HO-870 point-in-time check ("nothing outside backends/
+// imports the registry") for this explicit list: the files whose tracker calls
+// moved onto forRepo()/forKind(). A new importer must be added here on purpose.
+
+const REGISTRY_IMPORTERS = ['app.js', 'caretakerRuling.js', 'orchestrator.js', 'server.js', 'spawn.js', 'split.js']
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url))
 const BACKENDS_DIR = join(SRC, 'backends')
@@ -87,13 +101,14 @@ function importsOf(file) {
   return specifiers.map((spec) => resolve(dirname(file), spec))
 }
 
-test('guardrail 3: nothing outside server/src/backends/ imports the registry; store.js and db.js import only backends/names.js', () => {
+test('guardrail 3: outside server/src/backends/ only the listed call sites import the registry; store.js and db.js import only backends/names.js', () => {
   const files = jsFiles(SRC)
   assert.ok(files.length > 50, 'the scan sees server/src')
-  for (const file of files) {
-    if (file.startsWith(BACKENDS_DIR)) continue
-    assert.ok(!importsOf(file).includes(REGISTRY), `${relative(SRC, file)} imports backends/index.js`)
-  }
+  const importers = files
+    .filter((file) => !file.startsWith(BACKENDS_DIR) && importsOf(file).includes(REGISTRY))
+    .map((file) => relative(SRC, file))
+    .sort()
+  assert.deepEqual(importers, REGISTRY_IMPORTERS, 'the files outside backends/ that import backends/index.js')
   for (const name of ['store.js', 'db.js']) {
     const fromBackends = importsOf(join(SRC, name)).filter((target) => target.startsWith(BACKENDS_DIR))
     assert.deepEqual(fromBackends, [NAMES], `${name} imports from backends/`)

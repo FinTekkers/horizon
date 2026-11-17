@@ -15,7 +15,8 @@
 // other URL is never written to.
 
 import { WEBHOOK_SECRET, WEBHOOK_URL } from './config.js'
-import { ghHeaders } from './github.js'
+// HO-871, transitional: HO-872 moves the hook-registration headers onto its port.
+import { ghHeaders } from './backends/github.js'
 import { isTenantRepo, tokenForRepo } from './tenantTokens.js'
 
 // Sorted, so a hook's events compare as a set by joining.

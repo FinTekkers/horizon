@@ -25,7 +25,7 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import * as github from './github.js'
+import { forRepo } from './backends/index.js'
 import { UI_URL } from './config.js'
 import { redact } from './caretakerRules.js'
 import { HOST_PATH } from './planText.js'
@@ -313,9 +313,10 @@ export async function fileApprovedSplit(item, actor = 'You') {
       throw new Error(`${row.target_repo} is no longer connected to this item’s project`)
     }
 
-    let ghIssue = await github.findSplitIssue(row.target_repo, splitMarker(item.id), sinceIso(row.created_at))
+    const { tracker } = forRepo(row.target_repo)
+    let ghIssue = await tracker.findSplitIssue(row.target_repo, splitMarker(item.id), sinceIso(row.created_at))
     if (!ghIssue) {
-      ghIssue = await github.createIssue(row.target_repo, {
+      ghIssue = await tracker.createIssue(row.target_repo, {
         title: split.title,
         outcome: split.description,
         metric: split.metric,
@@ -341,7 +342,7 @@ export async function fileApprovedSplit(item, actor = 'You') {
     const desc = split.remaining_description || item.desc
     const metric = split.remaining_metric || item.metric
     if (split.remaining_description || split.remaining_metric) {
-      if (item.repo && item.issue != null) await github.pushIssueScope(item, { desc, metric })
+      if (item.repo && item.issue != null) await forRepo(item.repo).tracker.pushIssueScope(item, { desc, metric })
       store.applySplitScope(item.id, { desc, metric })
     }
 
