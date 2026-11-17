@@ -66,6 +66,7 @@ import { visualPageFields } from './visualPages.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
+import { DEFAULT_BACKEND, isBackend } from './backends/names.js'
 
 const listeners = new Set()
 
@@ -563,6 +564,8 @@ export function listProjects({ checks = true, viewer = null } = {}) {
       .map((r) => ({
         repo: r.repo,
         prefix: r.prefix,
+        // HO-870: 'github' or 'sl' — outside `checks`, so a member's board has it too.
+        backend: r.backend,
         ...(checks
           ? {
               checks: repoChecks(r),
@@ -1131,14 +1134,27 @@ function generatePrefix(repoFullName) {
   return candidate
 }
 
-export function addRepoToProject(projectId, repoFullName) {
+// HO-870: whether connecting `repoFullName` as `backend` clashes with the
+// backend its items already carry — items outlive a disconnect (they keep
+// work_item.repo), so a reconnect is checked against them. Null when there is
+// no clash, else { itemBackend, backend }. Any letter case of the repo counts.
+export function backendConflict(repoFullName, backend) {
+  const stored = db.prepare('SELECT DISTINCT backend FROM work_item WHERE repo = ? COLLATE NOCASE').all(repoFullName)
+  const other = stored.find((row) => row.backend !== backend)
+  return other ? { itemBackend: other.backend, backend } : null
+}
+
+export function addRepoToProject(projectId, repoFullName, backend = DEFAULT_BACKEND) {
   if (!db.prepare('SELECT id FROM project WHERE id = ?').get(projectId)) return { error: 'project_not_found' }
+  if (!isBackend(backend)) return { error: 'invalid_backend' }
   if (findRepo(repoFullName)) return { error: 'repo_already_connected' }
+  const conflict = backendConflict(repoFullName, backend)
+  if (conflict) return { error: 'backend_conflict', ...conflict }
   const prefix = generatePrefix(repoFullName)
-  db.prepare('INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, ?, ?)').run(projectId, repoFullName, prefix)
+  db.prepare('INSERT INTO project_repo (project_id, repo, prefix, backend) VALUES (?, ?, ?, ?)').run(projectId, repoFullName, prefix, backend)
   purgeDemoItems()
   notify()
-  return { ok: true, repo: repoFullName, prefix }
+  return { ok: true, repo: repoFullName, prefix, backend }
 }
 
 // HZ-697: why a tenant project cannot connect `repoFullName`, or null. One
@@ -1148,6 +1164,8 @@ export function addRepoToProject(projectId, repoFullName) {
 export function tenantConnectRefusal(projectId, repoFullName) {
   if (db.prepare('SELECT 1 FROM project_repo WHERE repo = ? COLLATE NOCASE').get(repoFullName)) return 'repo_already_connected'
   if (db.prepare('SELECT 1 FROM project_repo WHERE project_id = ?').get(projectId)) return 'tenant_project_has_repo'
+  // HO-870: a tenant connect is always GitHub, so items on any other backend refuse it.
+  if (backendConflict(repoFullName, DEFAULT_BACKEND)) return 'backend_conflict'
   return null
 }
 
@@ -3928,7 +3946,7 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       ? null
       : substepsSnapshotter({ project, kind, labels: ghIssue.labels, repo: repoFullName, desc })
     db.prepare(
-      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane, autopilot_off, substeps_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, repo, project_id, cursor, kind, lane, autopilot_off, substeps_json, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(
       id,
       title,
@@ -3944,6 +3962,8 @@ export function upsertFromGithub(ghIssue, repoFullName) {
       laneFromLabels(ghIssue.labels, kind),
       autopilotOff,
       substepsJson,
+      // HO-870: the item takes its repo's backend, on insert only.
+      repoRow.backend,
     )
     addEvent(id, { who: 'GitHub', text: `opened issue #${number}`, color: '#2A2A2E', initials: 'GH' })
     changed = true

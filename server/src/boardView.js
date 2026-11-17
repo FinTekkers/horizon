@@ -22,7 +22,7 @@
 import { planProgress } from './planProgress.js'
 
 const PROJECT_FIELDS = ['id', 'name', 'enabled', 'unlinked', 'autopilot', 'autopilotEvents', 'definitionsEnabled', 'providerDefaults']
-const REPO_FIELDS = ['repo', 'prefix']
+const REPO_FIELDS = ['repo', 'prefix', 'backend']
 
 function pick(source, keys) {
   const out = {}
