@@ -78,8 +78,10 @@ test('forKind and setBackendForTest throw on a name that is not a backend', () =
 // HO-871 retired the HO-870 point-in-time check ("nothing outside backends/
 // imports the registry") for this explicit list: the files whose tracker calls
 // moved onto forRepo()/forKind(). A new importer must be added here on purpose.
+// HO-872 added autoResolve.js and deployQueue.js: their review and vcs calls
+// moved onto forRepo()/forKind() and off github.js.
 
-const REGISTRY_IMPORTERS = ['app.js', 'caretakerRuling.js', 'orchestrator.js', 'server.js', 'spawn.js', 'split.js']
+const REGISTRY_IMPORTERS = ['app.js', 'autoResolve.js', 'caretakerRuling.js', 'deployQueue.js', 'orchestrator.js', 'server.js', 'spawn.js', 'split.js']
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url))
 const BACKENDS_DIR = join(SRC, 'backends')

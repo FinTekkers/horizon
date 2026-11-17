@@ -11,7 +11,6 @@ import { Readable } from 'node:stream'
 import * as store from './store.js'
 import { dismissAsk, fileAsk, releaseAsk } from './asks.js'
 import { linkSpawned, spawnItems } from './spawn.js'
-import * as github from './github.js'
 import * as deploy from './deploy.js'
 import * as orchestrator from './orchestrator.js'
 import { ROUTE_MOVE_ACTIONS, moveKeyOf, planMove } from './moveItem.js'
@@ -74,7 +73,7 @@ import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
-import { forKind, forRepo } from './backends/index.js'
+import { forKind, forRepo, githubTestHooks } from './backends/index.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
 import * as projectDefinitions from './projectDefinitions.js'
@@ -1397,7 +1396,7 @@ export function buildApp({
     if (!item) return { status: 404, error: 'not_found' }
     if (STEPS[item.cursor]?.label !== 'Accept the code') return { status: 409, error: 'not_at_accept_gate' }
     try {
-      const snapshot = item.repo ? await github.fetchScreenshotSnapshot(item.repo, item) : null
+      const snapshot = item.repo ? await forRepo(item.repo).artifacts.fetchScreenshotSnapshot(item.repo, item) : null
       return { repo: item.repo, snapshot, shots: screenshots.listedShots(snapshot) }
     } catch (err) {
       fastify.log.warn(`screenshots for ${id} unavailable: ${err.message}`)
@@ -1456,7 +1455,7 @@ export function buildApp({
       if (request.headers['if-none-match'] === etag) return reply.code(304).send()
       let bytes
       try {
-        bytes = await github.fetchBlob(found.repo, image.sha)
+        bytes = await forRepo(found.repo).artifacts.fetchBlob(found.repo, image.sha)
       } catch (err) {
         fastify.log.warn(`screenshot ${screen}/${kind} for ${id} unavailable: ${err.message}`)
         return reply.code(502).send({ error: 'github_unavailable' })
@@ -1938,7 +1937,7 @@ export function buildApp({
   // marked superseded first (its token rotated, so the run's late writes match
   // nothing and the gate's lock is free at once), then the run's own recorded
   // process group is stopped — only when a row for exactly that PR moved.
-  github.setPrMergedListener((itemId, pr) => {
+  forKind('github').review.setPrMergedListener((itemId, pr) => {
     if (!store.supersedePremerge(itemId, pr)) return
     store.addEvent(itemId, {
       who: 'Horizon',
@@ -1976,8 +1975,8 @@ export function buildApp({
     let head
     let baseSha
     try {
-      head = await github.getPrHead(item)
-      baseSha = await github.getBranchSha(item.repo, head.baseRef)
+      head = await forRepo(item.repo).review.getPrHead(item)
+      baseSha = await forRepo(item.repo).vcs.getBranchSha(item.repo, head.baseRef)
     } catch (err) {
       const error = `pre-merge check failed: ${err.message}`
       return blocked(`could not read the PR to test-merge it: ${err.message}`, error, { state: 'failed', reason: error })
@@ -2081,7 +2080,7 @@ export function buildApp({
     // Same source (GitHub) as the sha the check was given.
     let baseNow
     try {
-      baseNow = await github.getBranchSha(item.repo, head.baseRef)
+      baseNow = await forRepo(item.repo).vcs.getBranchSha(item.repo, head.baseRef)
     } catch (err) {
       const error = `pre-merge check failed: ${err.message}`
       return blocked(`could not re-read ${head.baseRef} after the checks: ${err.message}`, error, { state: 'failed', reason: error })
@@ -2129,8 +2128,9 @@ export function buildApp({
       // HZ-406: a pass recorded beside a failed branch run (before HZ-406
       // made that a failure, or by any path that missed it) is never used.
       if (store.latestBranchRunFailed(item.id)) return { reason: 'newest branch run failed' }
-      if ((await github.isAncestor(item.repo, baseSha, head.sha)) !== true) return { reason: `${head.baseRef} moved since checks` }
-      if ((await github.getBranchSha(item.repo, head.baseRef)) !== baseSha) {
+      const { vcs } = forRepo(item.repo)
+      if ((await vcs.isAncestor(item.repo, baseSha, head.sha)) !== true) return { reason: `${head.baseRef} moved since checks` }
+      if ((await vcs.getBranchSha(item.repo, head.baseRef)) !== baseSha) {
         return { reason: `${head.baseRef} moved during the skip check` }
       }
       return { pass }
@@ -2235,7 +2235,9 @@ export function buildApp({
             outcome = { state: 'superseded', reason: store.PR_MERGED_REASON }
             return { ok: true, superseded: true }
           }
-          await github.mergePr(item, { sha: gate.headSha, approvals, log: fastify.log })
+          // HO-872: the backend's land — for GitHub, mergePr unchanged. Only
+          // here, inside the premerge claim and after the re-check above.
+          const landed = await forRepo(item.repo).vcs.land(item, { sha: gate.headSha, approvals, log: fastify.log })
           outcome = { state: 'merged' }
           store.addEvent(id, {
             who: 'Horizon',
@@ -2245,6 +2247,9 @@ export function buildApp({
           })
           // HZ-467: the code is on main — dependents' implement may start.
           store.markMerged(id)
+          // HO-872: a backend that names the landed commit records it, once.
+          // GitHub's land resolves no hash, so its items keep landed_hash NULL.
+          if (typeof landed?.hash === 'string' && landed.hash.trim()) store.markLanded(id, landed.hash)
         } catch (err) {
           store.addEvent(id, {
             who: 'Horizon',
@@ -2302,8 +2307,8 @@ export function buildApp({
     if (result.error === 'human_pin_required') return { ...result, status: 403 }
     // Approval notes are decisions — mirror them onto the issue thread.
     if (!result.error && notes && item?.repo && item.issue != null) {
-      github
-        .postIssueComment(
+      forRepo(item.repo)
+        .tracker.postIssueComment(
           item,
           `### ✅ Gate approved — ${STEPS[stepIndex].label}\n\n> ${notes}\n\n_${actor} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`,
         )
@@ -2578,8 +2583,8 @@ export function buildApp({
   // note. Shared by /feedback and HZ-790's note-via-whatsapp.
   function mirrorFeedback(id, item, message, who) {
     if (!item?.repo || item.issue == null) return
-    github
-      .postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_${who} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
+    forRepo(item.repo)
+      .tracker.postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_${who} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
       .catch(() => {})
   }
 
@@ -3070,7 +3075,7 @@ export function buildApp({
     if (result.error) return result
     // HZ-513: free the item's screenshots ref, as a PR closed unmerged does.
     // Not awaited and never throws, so it can't block or fail the abandon.
-    if (item?.repo) github.deleteArtifactRef(item.repo, item).catch(() => {})
+    if (item?.repo) forRepo(item.repo).artifacts.deleteArtifactRef(item.repo, item).catch(() => {})
     if (item?.repo && item.issue != null) {
       try {
         await forRepo(item.repo).tracker.closeIssueAsAbandoned(item, reason.trim())
@@ -4321,7 +4326,7 @@ export function buildApp({
     },
     async (request, reply) => {
       const token = request.body.token.trim()
-      const check = await github.validateToken(token)
+      const check = await forKind('github').vcs.validateToken(token)
       if (!check.ok) return reply.code(400).send({ error: check.error })
       setSetting('github_token', token)
       // The token's identity backs the comment-ingestion echo guard: comments
@@ -4402,7 +4407,7 @@ export function buildApp({
       },
     },
     async (request, reply) => {
-      const repo = github.parseRepo(request.body.repo)
+      const repo = forKind('github').vcs.parseRepo(request.body.repo)
       if (!repo) {
         return reply
           .code(400)
@@ -4412,7 +4417,7 @@ export function buildApp({
       const clash = store.backendConflict(repo, backend)
       if (clash) return reply.code(409).send(backendConflictBody(clash))
       if (backend !== DEFAULT_BACKEND) return reply.code(400).send({ error: `Connecting an ${backend} repository is not supported yet` })
-      const check = await github.validateRepo(repo, getToken())
+      const check = await forKind(backend).vcs.validateRepo(repo, getToken())
       if (!check.ok) return reply.code(400).send({ error: check.error })
       const canonical = check.fullName || repo
       const result = store.addRepoToProject(request.params.id, canonical, backend)
@@ -5083,7 +5088,7 @@ export function buildApp({
       if (!humanAuthorized(request, reply)) return
       const projectId = request.params.id
       if (!isTenantProject(projectId)) return reply.code(404).send(TENANT_NOT_FOUND)
-      const parsed = github.parseRepo(request.body.repo)
+      const parsed = forKind('github').vcs.parseRepo(request.body.repo)
       if (!parsed) return reply.code(400).send({ error: 'Repository must be owner/name or a github.com URL' })
       const conflict = (repo) => {
         const refusal = store.tenantConnectRefusal(projectId, repo)
@@ -5831,7 +5836,7 @@ export function buildApp({
     if (!WEBHOOK_SECRET) {
       return reply.code(503).send({ error: 'webhooks_not_configured', hint: 'set GITHUB_WEBHOOK_SECRET' })
     }
-    if (!github.verifySignature(WEBHOOK_SECRET, request.rawBody ?? '', request.headers['x-hub-signature-256'])) {
+    if (!forKind('github').vcs.verifySignature(WEBHOOK_SECRET, request.rawBody ?? '', request.headers['x-hub-signature-256'])) {
       return reply.code(401).send({ error: 'bad_signature' })
     }
     const event = request.headers['x-github-event']
@@ -5849,12 +5854,12 @@ export function buildApp({
     // "Accept the code" approved; closed unmerged → sent back for rework.
     if (event === 'pull_request' && request.body?.action === 'closed' && request.body?.pull_request && repoFullName) {
       const pr = request.body.pull_request
-      github.handlePrStateChange(repoFullName, pr.number, { merged: !!pr.merged, state: pr.state }, request.log)
+      forRepo(repoFullName).review.handlePrStateChange(repoFullName, pr.number, { merged: !!pr.merged, state: pr.state }, request.log)
       // HZ-235: a merge into main may leave other items' PRs conflicted —
       // queue the auto-resolve scan (autoResolve.js). Only merges into main
       // (HZ-425: the repo's default branch) on a connected repo; it never
       // scans inline.
-      const intoDefault = pr.base?.ref === github.defaultBranchOf(repoFullName)
+      const intoDefault = pr.base?.ref === forRepo(repoFullName).vcs.defaultBranchOf(repoFullName)
       if (pr.merged && intoDefault && store.listRepos().some((r) => r.repo === repoFullName)) {
         autoResolve.noteMainMoved(repoFullName, { prs: [pr.number], sha: pr.merge_commit_sha ?? null })
       }
@@ -5982,7 +5987,7 @@ export function buildApp({
     // the farm.premerge run it triggers is the real one, under the e2e
     // server's own throwaway FARM_HOME (playwright.config.js).
     fastify.post('/api/test/github-pr', { config: { scope: 'test' } }, async (request) => {
-      github.setPrStateForTest(request.body?.pr ?? null)
+      githubTestHooks.setPrStateForTest(request.body?.pr ?? null)
       return { ok: true }
     })
 
@@ -5992,8 +5997,8 @@ export function buildApp({
     // maps a blob sha to its base64 bytes. Either may be null to clear it.
     fastify.post('/api/test/screenshot-snapshot', { config: { scope: 'test' } }, async (request) => {
       const { snapshots = null, blobs = null } = request.body || {}
-      github.setScreenshotSnapshotForTest(snapshots)
-      github.setBlobsForTest(
+      githubTestHooks.setScreenshotSnapshotForTest(snapshots)
+      githubTestHooks.setBlobsForTest(
         blobs && Object.fromEntries(Object.entries(blobs).map(([sha, b64]) => [sha, Buffer.from(String(b64), 'base64')])),
       )
       return { ok: true }

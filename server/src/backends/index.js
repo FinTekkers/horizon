@@ -17,6 +17,9 @@ import { githubAdapters } from './github.js'
 import { slAdapters } from './sl.js'
 
 export { BACKENDS, DEFAULT_BACKEND, isBackend }
+// HO-872: GitHub's e2e-only answers, for app.js's /api/test/* routes, so app.js
+// need not import github.js for them.
+export { githubTestHooks } from './github.js'
 
 const ADAPTERS = Object.freeze({ github: githubAdapters, sl: slAdapters })
 

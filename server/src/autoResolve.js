@@ -36,7 +36,7 @@
 // the boot scan. A resolve lock held across a restart is still swept by HZ-216.
 
 import { db } from './db.js'
-import * as github from './github.js'
+import { forKind, forRepo } from './backends/index.js'
 import * as orchestrator from './orchestrator.js'
 import * as store from './store.js'
 import { isAutoResolveOnMain } from './settings.js'
@@ -73,7 +73,8 @@ export function startAutoResolve(logger, { listRepos = store.listRepos } = {}) {
   started = true
   if (!wired) {
     wired = true
-    github.setMainHeadListener(onMainHead)
+    // HO-872: the poll's main-moved hook is GitHub's, for every repo it polls.
+    forKind('github').vcs.setMainHeadListener(onMainHead)
     orchestrator.onStepEnded(recheckItem)
   }
   queueBootScans(listRepos)
@@ -130,8 +131,8 @@ function onMainHead(repo, sha) {
   const previous = lastSeenSha.get(repo)
   lastSeenSha.set(repo, sha)
   if (previous && previous !== sha && lastScannedSha.get(repo) !== sha) {
-    const lookup = github
-      .prsForCommit(repo, sha)
+    const lookup = Promise.resolve()
+      .then(() => forRepo(repo).review.prsForCommit(repo, sha))
       .catch(() => [])
       .then((prs) => noteMainMoved(repo, { prs, sha }))
       .finally(() => lookups.delete(lookup))
@@ -198,7 +199,15 @@ function triggerText({ prs, sha, boot }) {
 }
 
 async function scanRepo(repo, trigger, decided) {
-  const head = await github.getBranchSha(repo, github.defaultBranchOf(repo)).catch(() => null)
+  // A backend without these reads (sl, for now) throws before any promise;
+  // that reads as "head unknown", as a failed GitHub read always has.
+  let head = null
+  try {
+    const { vcs } = forRepo(repo)
+    head = await vcs.getBranchSha(repo, vcs.defaultBranchOf(repo))
+  } catch {
+    head = null
+  }
   const sha = head || trigger.sha
   if (sha) {
     lastScannedSha.set(repo, sha)
@@ -279,7 +288,7 @@ async function decide(item, text) {
   if (result?.error) return `skipped (${result.error.replace(/_/g, ' ')})`
   if (result?.resolved) {
     // Read-only: so the gate shows the resolved PR's new state at once.
-    await github.refreshPrMergeable(id, item.repo, item.pr).catch(() => null)
+    await forRepo(item.repo).review.refreshPrMergeable(id, item.repo, item.pr).catch(() => null)
     return 'started — resolved'
   }
   return 'started — escalated'
@@ -291,7 +300,7 @@ async function waitForMergeable(item) {
   const deadline = Date.now() + AUTO_RESOLVE_MERGEABLE_WAIT_MS
   let delay = 2000
   for (;;) {
-    const flag = await github.refreshPrMergeable(item.id, item.repo, item.pr)
+    const flag = await forRepo(item.repo).review.refreshPrMergeable(item.id, item.repo, item.pr)
     if (flag != null) return flag
     const left = deadline - Date.now()
     if (left <= 0) return null

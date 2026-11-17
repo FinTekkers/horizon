@@ -35,17 +35,20 @@ import { repoFiles, relative, stripComments, REPO_ROOT } from './helpers/repoFil
 
 const GITHUB_TARGET = 'server/src/github.js'
 
-// Exactly today's 10 importers of server/src/github.js. HO-870 added
+// Exactly today's 6 importers of server/src/github.js. HO-870 added
 // backends/github.js: the GitHub adapters forRepo() hands out are github.js's
 // own functions, so it is the one importer every moved call site routes through.
 // HO-871 moved the tracker calls onto forRepo(repo).tracker, so caretakerRuling.js,
-// spawn.js, split.js and webhooks.js left the list.
+// spawn.js, split.js and webhooks.js left the list. HO-872 moved Accept, the
+// deploy queue and auto-resolve onto the Review and VCS ports, so app.js,
+// autoResolve.js, deployQueue.js and orchestrator.js left it.
+//
+// The update rule: a PR whose diff removes a file's last import of github.js
+// removes that file from this list in the same diff. A PR never adds an
+// entry to make this test pass — a new importer routes through
+// backends/index.js instead.
 const GITHUB_ALLOWLIST = [
-  'server/src/app.js',
-  'server/src/autoResolve.js',
   'server/src/backends/github.js',
-  'server/src/deployQueue.js',
-  'server/src/orchestrator.js',
   'server/src/overlapService.js',
   'server/src/projectValidate.js',
   'server/src/screenshots.js',
@@ -193,11 +196,12 @@ test('fixture: a real import survives stripComments with comments around it', ()
 
 test('fixture: a listed file is not flagged, and a listed file without the import is stale', () => {
   // HO-871: split.js left GITHUB_ALLOWLIST, so the stale sample is a file still on it.
-  const files = [fixture('server/src/app.js', `import { x } from './github.js'`), fixture('server/src/tokenCheck.js', `export const y = 1`)]
+  // HO-872: app.js left it too, so the listed sample is server.js, still on it.
+  const files = [fixture('server/src/server.js', `import { x } from './github.js'`), fixture('server/src/tokenCheck.js', `export const y = 1`)]
   const { unlisted, stale } = diffAllowlist(importers(files, importsGithub), GITHUB_ALLOWLIST)
   assert.deepEqual(unlisted, [])
   assert.ok(stale.includes('server/src/tokenCheck.js'), `tokenCheck.js not reported stale: ${stale.join(', ')}`)
-  assert.ok(!stale.includes('server/src/app.js'))
+  assert.ok(!stale.includes('server/src/server.js'))
 })
 
 test('fixture: an unlisted file importing an sl module is flagged', () => {
@@ -216,4 +220,62 @@ test('fixture: an unlisted file importing an sl module is flagged', () => {
 test('fixture: ./slack.js and ./slugify.js are not sl modules', () => {
   const text = `import { a } from './slack.js'\nimport { b } from "./slugify.js"`
   assert.deepEqual(slViolations([fixture('server/src/newThing.js', text)]), [])
+})
+
+// ---- HO-872: the land, review and deploy paths reach GitHub only through the registry ----
+// The five files Accept, the deploy queue, the caretaker and auto-resolve run
+// in import neither server/src/github.js nor the GitHub adapter module
+// (server/src/backends/github.js) directly: they call forRepo(repo).
+
+const LAND_PATH_FILES = [
+  'server/src/app.js',
+  'server/src/orchestrator.js',
+  'server/src/deployQueue.js',
+  'server/src/caretakerRuling.js',
+  'server/src/autoResolve.js',
+]
+const GITHUB_ADAPTER = 'server/src/backends/github.js'
+const REGISTRY = 'server/src/backends/index.js'
+
+const importsGithubOrAdapter = (file, spec) => [GITHUB_TARGET, GITHUB_ADAPTER].includes(resolveSpecifier(file, spec))
+
+test('HO-872 metric 1: the five land/review/deploy files exist, are non-empty, and import neither github.js nor the GitHub adapter', () => {
+  for (const file of LAND_PATH_FILES) {
+    const found = serverSrc.find((f) => f.path === file)
+    assert.ok(found, `${file} was not in the walk`)
+    assert.ok(found.text.length > 0, `${file} is empty`)
+    const hits = specifiers(found.text).filter((spec) => importsGithubOrAdapter(file, spec))
+    assert.deepEqual(hits, [], `${file} imports GitHub directly`)
+  }
+})
+
+test('HO-872 fixture: every import form of ./github.js or ./backends/github.js in a land-path file is flagged', () => {
+  const sources = [
+    `import { mergePr } from './github.js'`,
+    `import './github.js'`,
+    `const gh = await import('./github.js')`,
+    `import { githubAdapters } from './backends/github.js'`,
+    `export { land } from "./backends/github.js"`,
+    'const a = await import(`./backends/github.js`)',
+  ]
+  for (const text of sources) {
+    const hits = specifiers(text).filter((spec) => importsGithubOrAdapter('server/src/app.js', spec))
+    assert.equal(hits.length, 1, text)
+  }
+  const clean = `import { forRepo } from './backends/index.js'\n// import { x } from './github.js'`
+  assert.deepEqual(
+    specifiers(clean).filter((spec) => importsGithubOrAdapter('server/src/app.js', spec)),
+    [],
+  )
+})
+
+test('HO-872 guardrail 2: caretakerAccept.js imports no registry or GitHub module and never lands', () => {
+  const file = 'server/src/caretakerAccept.js'
+  const found = serverSrc.find((f) => f.path === file)
+  assert.ok(found && found.text.length > 0, `${file} was not in the walk`)
+  const targets = specifiers(found.text).map((spec) => resolveSpecifier(file, spec))
+  for (const banned of [GITHUB_TARGET, GITHUB_ADAPTER, REGISTRY]) assert.ok(!targets.includes(banned), `${file} imports ${banned}`)
+  const code = stripComments(found.text)
+  assert.doesNotMatch(code, /\.land\(/)
+  assert.doesNotMatch(code, /mergePr/)
 })

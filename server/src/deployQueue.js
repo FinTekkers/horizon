@@ -28,7 +28,7 @@ import { db } from './db.js'
 import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, DEPLOY_WAITED_ON_CAP_S, FARM_STEP_TIMEOUT_MS } from './config.js'
 import { resolveTarget, deployOutcomeFor, startDeploy } from './deploy.js'
 import { jobBlocksDeploy, heldMsFor, oldestHolds, lastReleasedHold, releaseHold } from './deployHold.js'
-import { getBranchSha, isAncestor, getPrMergeSha, findReleaseByTag, createBatchRelease, defaultBranchStale } from './github.js'
+import { forRepo } from './backends/index.js'
 import { sqlTime, msOf } from './sqlTime.js'
 import { addEvent, getDefaultBranch, itemsComingToDeploy, notifyChange, openDependentsOfAny, runningJobsIn } from './store.js'
 import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
@@ -108,7 +108,9 @@ export async function join(item, now = Date.now()) {
   joining.add(item.id)
   let mergeSha
   try {
-    mergeSha = await getPrMergeSha(item)
+    // HO-872: the PR's merge commit, through the Review port — never the
+    // landed commit store.markLanded records, which a GitHub item never has.
+    mergeSha = await forRepo(item.repo).review.getPrMergeSha(item)
   } catch (err) {
     hooks.fail(item.id, `could not join the ${target.key} deploy queue: ${err.message}`)
     return null
@@ -307,7 +309,7 @@ async function start(open, now) {
   let sha
   try {
     if (!branch) throw new Error('its default branch has not been read from GitHub in the last 24h')
-    sha = await getBranchSha(open.repo, branch)
+    sha = await forRepo(open.repo).vcs.getBranchSha(open.repo, branch)
   } catch (err) {
     const attempts = open.start_attempts + 1
     if (attempts >= DEFAULT_BRANCH_MAX_ATTEMPTS) {
@@ -337,7 +339,7 @@ async function start(open, now) {
 function releaseBranch(repo, now) {
   const cached = getDefaultBranch(repo)
   if (!cached) return 'main'
-  return cached.branch && !defaultBranchStale(cached.at, now) ? cached.branch : null
+  return cached.branch && !forRepo(repo).vcs.defaultBranchStale(cached.at, now) ? cached.branch : null
 }
 
 async function advance(batch, now) {
@@ -351,13 +353,14 @@ const expired = (batch, now) => now - msOf(batch.started_at) - heldMsFor(batch.r
 
 async function publish(batch, now) {
   if (expired(batch, now)) return failBatch(batch, `no release was published within ${DEPLOY_WAIT_MS / 1000}s of its start`)
-  let release = await findReleaseByTag(batch.repo, batch.tag)
+  const { vcs } = forRepo(batch.repo)
+  let release = await vcs.findReleaseByTag(batch.repo, batch.tag)
   if (release && release.target_commitish !== batch.commit_sha) {
     return failBatch(batch, `a release with that tag already exists on ${short(release.target_commitish)}, not ${short(batch.commit_sha)}`)
   }
   if (!release) {
     const items = selectQueuedIn.all(batch.id).map((e) => `- ${e.item_id}${e.pr != null ? ` (PR #${e.pr})` : ''}`)
-    release = await createBatchRelease(batch.repo, {
+    release = await vcs.createBatchRelease(batch.repo, {
       tag: batch.tag,
       sha: batch.commit_sha,
       name: `${batch.target} deploy b${batch.id}`,
@@ -392,7 +395,7 @@ async function verify(batch, now) {
   for (const entry of selectQueuedIn.all(batch.id)) {
     let contained
     try {
-      contained = await isAncestor(batch.repo, entry.merge_sha, batch.commit_sha)
+      contained = await forRepo(batch.repo).vcs.isAncestor(batch.repo, entry.merge_sha, batch.commit_sha)
     } catch (err) {
       console.warn(`deploy queue: ${entry.item_id}: ${err.message}`)
       continue
