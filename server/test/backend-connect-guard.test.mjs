@@ -3,9 +3,9 @@
 // so each case runs the real journey — connect, sync an item, disconnect,
 // reconnect — and checks the 409 or 200 and what is stored afterwards.
 //
-// The owner route is HTTP for github only: an sl connect is refused with 400
-// until its flow exists, so the sl half of "same backend reconnects" is proven
-// at the store (addRepoToProject).
+// HO-879: the owner route stores an sl connect with no GitHub call (below);
+// the sl half of "same backend reconnects" is still proven at the store
+// (addRepoToProject), as HO-870 wrote it.
 //
 // GitHub is a stubbed globalThis.fetch that records every call.
 
@@ -193,12 +193,13 @@ test('guardrail 2: internal is refused by addRepoToProject (no row) and by the r
   assert.deepEqual(calls, [])
 })
 
-test('an sl connect over HTTP with no conflicting items is refused with 400 before any GitHub call', async () => {
+// HO-879: was refused with 400 under HO-870; an owner sl connect now stores sl.
+test('an sl connect over HTTP with no conflicting items stores sl and makes no GitHub call', async () => {
   calls = []
   const res = await connect({ repo: 'acme/new-sl', backend: 'sl' })
-  assert.equal(res.statusCode, 400, res.body)
-  assert.deepEqual(res.json(), { error: 'Connecting an sl repository is not supported yet' })
-  assert.equal(repoRow('acme/new-sl'), null)
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(res.json().backend, 'sl')
+  assert.equal(repoRow('acme/new-sl').backend, 'sl')
   assert.deepEqual(calls, [])
 })
 

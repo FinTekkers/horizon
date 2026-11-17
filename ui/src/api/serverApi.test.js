@@ -7,6 +7,7 @@
 // serverApi code.
 
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { GITHUB_WEB } from '../../../server/src/links.js'
 
 class MockEventSource {
   constructor(url) {
@@ -121,7 +122,7 @@ test('a successful approval parses and returns the response body', async () => {
 test('a non-401 approval failure opens the PR tab and still returns the parsed body', async () => {
   const serverApi = await import('./serverApi')
   serverApi.subscribe(() => {})
-  seedItem({ id: 'X3', cursor: 5, pr_url: 'https://github.com/org/repo/pull/9' })
+  seedItem({ id: 'X3', cursor: 5, pr_url: `${GITHUB_WEB}/org/repo/pull/9` })
   vi.stubGlobal(
     'fetch',
     vi.fn(() =>
@@ -131,13 +132,13 @@ test('a non-401 approval failure opens the PR tab and still returns the parsed b
   const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {})
 
   await expect(serverApi.approveGate('X3', '')).resolves.toEqual({ error: 'merge_conflict' })
-  expect(openSpy).toHaveBeenCalledWith('https://github.com/org/repo/pull/9', '_blank', 'noopener')
+  expect(openSpy).toHaveBeenCalledWith(`${GITHUB_WEB}/org/repo/pull/9`, '_blank', 'noopener')
 })
 
 test('a pre-merge check failure stays on the tracker instead of opening the PR (HZ-183)', async () => {
   const serverApi = await import('./serverApi')
   serverApi.subscribe(() => {})
-  seedItem({ id: 'X4', cursor: 5, pr_url: 'https://github.com/org/repo/pull/9' })
+  seedItem({ id: 'X4', cursor: 5, pr_url: `${GITHUB_WEB}/org/repo/pull/9` })
   const body = { error: 'pre-merge checks failed: npm test --silent', premerge: true }
   vi.stubGlobal(
     'fetch',
@@ -914,7 +915,7 @@ test('an Approve the server held for a deploy marks the item queued in this tab 
   const serverApi = await import('./serverApi')
   const changed = vi.fn()
   serverApi.subscribe(changed)
-  seedItem({ id: 'X5', cursor: 13, pr: 360, pr_url: 'https://github.com/org/repo/pull/360', acceptWaiting: null })
+  seedItem({ id: 'X5', cursor: 13, pr: 360, pr_url: `${GITHUB_WEB}/org/repo/pull/360`, acceptWaiting: null })
   const latestEnd = '2026-10-08T19:37:52.000Z'
   const body = { ok: true, held: true, latestEnd, actor: 'Dana' }
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })))
@@ -1175,15 +1176,15 @@ test('activeProjectId and repoUrl follow the stream: null clears them, a missing
   serverApi.subscribe(() => {})
   expect(serverApi.hasSnapshot()).toBe(false)
   const source = MockEventSource.instances.at(-1)
-  source.dispatch('snapshot', { items: [], projects: [{ id: 3, name: 'Acme' }], activeProjectId: 3, repoUrl: 'https://github.com/acme/web' })
+  source.dispatch('snapshot', { items: [], projects: [{ id: 3, name: 'Acme' }], activeProjectId: 3, repoUrl: `${GITHUB_WEB}/acme/web` })
   expect(serverApi.hasSnapshot()).toBe(true)
   expect(serverApi.getActiveProjectId()).toBe(3)
   const issue = { issue: 9 }
-  expect(serverApi.issueUrl(issue)).toBe('https://github.com/acme/web/issues/9')
+  expect(serverApi.issueUrl(issue)).toBe(`${GITHUB_WEB}/acme/web/issues/9`)
   // A delta about something else keeps both.
   source.dispatch('delta', { upserts: [], removed: [], top: { farm: { status: 'running' } } })
   expect(serverApi.getActiveProjectId()).toBe(3)
-  expect(serverApi.issueUrl(issue)).toBe('https://github.com/acme/web/issues/9')
+  expect(serverApi.issueUrl(issue)).toBe(`${GITHUB_WEB}/acme/web/issues/9`)
   // Removed from the project: the server's nulls replace them, no reload.
   source.dispatch('delta', { upserts: [], removed: [], top: { projects: [], activeProjectId: null, repoUrl: null } })
   expect(serverApi.getActiveProjectId()).toBeNull()

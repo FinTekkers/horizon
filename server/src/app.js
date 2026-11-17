@@ -73,6 +73,7 @@ import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
+import { repoLinks } from './links.js'
 import { forKind, forRepo, githubTestHooks } from './backends/index.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
@@ -1903,6 +1904,8 @@ export function buildApp({
         }
         const strayRepo = scopeRepos?.find((r) => !connected.some((c) => c.repo === r && c.project_id === target.project_id))
         if (strayRepo) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: strayRepo })
+        // HO-879: an sl repo has no issue tracker yet — never file it on GitHub.
+        if ((store.findRepo(target.repo)?.backend ?? 'github') !== 'github') return reply.code(400).send({ error: 'backend_unsupported' })
         let ghIssue
         try {
           ghIssue = await forRepo(target.repo).tracker.createIssue(target.repo, { title, outcome, metric, guardrails, priority, kind })
@@ -4385,9 +4388,11 @@ export function buildApp({
 
   // Connect a repo to a project; issues from it start syncing immediately.
   // HO-870: `backend` is optional and defaults to github. A repo whose items
-  // carry another backend is refused with 409 before any GitHub call. An sl
-  // connect is refused with 400 until its flow exists (validateRepo, pollRepo
-  // and webhooks.ensure below are GitHub-only).
+  // carry another backend is refused with 409 before any GitHub call.
+  // HO-879: an sl connect stores the row and makes no GitHub call at all —
+  // validateRepo, pollRepo and webhooks.ensure below are GitHub-only, and the
+  // poller and createIssue paths skip sl repos. Its default branch and
+  // webhook stay null.
   fastify.post(
     '/api/projects/:id/repos',
     {
@@ -4416,7 +4421,14 @@ export function buildApp({
       const backend = request.body.backend ?? DEFAULT_BACKEND
       const clash = store.backendConflict(repo, backend)
       if (clash) return reply.code(409).send(backendConflictBody(clash))
-      if (backend !== DEFAULT_BACKEND) return reply.code(400).send({ error: `Connecting an ${backend} repository is not supported yet` })
+      if (backend !== DEFAULT_BACKEND) {
+        const stored = store.addRepoToProject(request.params.id, repo, backend)
+        if (stored.error === 'project_not_found') return reply.code(404).send({ error: 'Project not found' })
+        if (stored.error === 'repo_already_connected') return reply.code(409).send({ error: 'That repository is already connected' })
+        if (stored.error === 'backend_conflict') return reply.code(409).send(backendConflictBody(stored))
+        broadcast()
+        return { ...stored, defaultBranch: null, webhook: null }
+      }
       const check = await forKind(backend).vcs.validateRepo(repo, getToken())
       if (!check.ok) return reply.code(400).send({ error: check.error })
       const canonical = check.fullName || repo
@@ -4434,6 +4446,45 @@ export function buildApp({
       const webhook = await webhooks.ensure(canonical).catch(() => ({ status: 'error', lastResponseCode: null, reason: null }))
       broadcast()
       return { ...result, defaultBranch: store.getDefaultBranch(canonical)?.branch ?? null, webhook }
+    },
+  )
+
+  // HO-879: switch a connected repo's backend in place. Owner and gate PIN,
+  // like the other repo writes. 409 backend_locked once the repo has items —
+  // the server enforces this, whatever the UI's picker shows.
+  fastify.put(
+    '/api/projects/:id/repos/backend',
+    {
+      config: { scope: 'owner' },
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'integer', minimum: 1 } },
+        },
+        body: {
+          type: 'object',
+          required: ['repo', 'backend'],
+          properties: { repo: { type: 'string', minLength: 1, maxLength: 300 }, backend: { type: 'string', enum: [...BACKENDS] } },
+        },
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT, 409: ERROR_OBJECT },
+      },
+    },
+    (request, reply) => {
+      if (!humanAuthorized(request, reply)) return
+      const result = store.setRepoBackend(request.params.id, request.body.repo, request.body.backend)
+      if (result.error === 'not_found') return reply.code(404).send({ error: 'not_found' })
+      if (result.error === 'backend_locked') {
+        return reply.code(409).send({
+          error: 'backend_locked',
+          message: 'This repository already has items. Its backend cannot change.',
+          backend: result.backend,
+        })
+      }
+      if (result.error) return reply.code(400).send({ error: result.error })
+      broadcast()
+      return { ...result, url: repoLinks(result.backend, result.repo).url }
     },
   )
 

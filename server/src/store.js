@@ -67,6 +67,7 @@ import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGolde
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
 import { DEFAULT_BACKEND, isBackend } from './backends/names.js'
+import { GITHUB_TOKEN_PAGES, repoLinks } from './links.js'
 
 const listeners = new Set()
 
@@ -536,6 +537,9 @@ function itemGateAction(rows, itemId, cursor) {
 //
 // HO-870: `backends` adds each repo's backend ('github' | 'sl'). Opt-in, so the
 // board and farm snapshots keep their pinned shape; GET /api/projects asks for it.
+// HO-879: with it, each repo also carries its `url` and `itemCount`, and each
+// project its `repoLinks` (projectRepoLinks below) and GitHub's `tokenPages` —
+// the links the UI shows, which the pinned board cannot carry.
 export function listProjects({ checks = true, viewer = null, backends = false } = {}) {
   const unlinked = unlinkedProjectId(db)
   const projects = db
@@ -543,6 +547,8 @@ export function listProjects({ checks = true, viewer = null, backends = false } 
     .all()
     .filter((p) => !viewer || (p.id !== unlinked && viewer.projectIds.has(p.id)))
   const repos = db.prepare('SELECT * FROM project_repo ORDER BY repo').all()
+  const counts = backends ? repoItemCounts() : null
+  const itemRepos = backends ? db.prepare(SELECT_ITEM_REPOS).all() : null
   return projects.map((p) => ({
     id: p.id,
     name: p.name,
@@ -568,7 +574,7 @@ export function listProjects({ checks = true, viewer = null, backends = false } 
         repo: r.repo,
         prefix: r.prefix,
         // Outside `checks`, so a member's project list (boardView REPO_FIELDS) has it too.
-        ...(backends ? { backend: r.backend } : {}),
+        ...(backends ? { backend: r.backend, url: repoLinks(r.backend, r.repo).url, itemCount: counts.get(r.repo.toLowerCase()) ?? 0 } : {}),
         ...(checks
           ? {
               checks: repoChecks(r),
@@ -582,7 +588,33 @@ export function listProjects({ checks = true, viewer = null, backends = false } 
             }
           : {}),
       })),
+    ...(backends ? { repoLinks: projectRepoLinks(p.id, repos, itemRepos), tokenPages: { ...GITHUB_TOKEN_PAGES } } : {}),
   }))
+}
+
+// HO-879: how many items name each repo, keyed by the lowercased repo — any
+// letter case counts as one repo, as in backendConflict. One GROUP BY per call.
+// SQLite's lower() and COLLATE NOCASE both fold ASCII only, so they agree.
+function repoItemCounts() {
+  const rows = db.prepare("SELECT lower(repo) AS key, COUNT(*) AS n FROM work_item WHERE repo IS NOT NULL AND repo != '' GROUP BY lower(repo)").all()
+  return new Map(rows.map((row) => [row.key, row.n]))
+}
+
+const SELECT_ITEM_REPOS = "SELECT DISTINCT project_id, repo, backend FROM work_item WHERE repo IS NOT NULL AND repo != '' ORDER BY repo"
+
+// HO-879: { repo, backend, url, issueUrlTemplate } for every repo the project
+// is connected to or has items from — a disconnected repo's items keep their
+// links. A connected repo uses its row's backend; any other uses its items'
+// (work_item.backend, set on insert and immutable). The UI keys these by the
+// repo's exact name, as items carry it.
+function projectRepoLinks(projectId, repos, itemRepos) {
+  const links = new Map()
+  const add = (repo, backend) => {
+    if (!links.has(repo)) links.set(repo, { repo, backend, ...repoLinks(backend, repo) })
+  }
+  for (const r of repos) if (r.project_id === projectId) add(r.repo, r.backend)
+  for (const row of itemRepos) if (row.project_id === projectId) add(row.repo, row.backend)
+  return [...links.values()]
 }
 
 // HZ-659: the user's own active project — what a member's Activate writes.
@@ -820,8 +852,11 @@ export function implementStartedBefore(itemId, iso) {
   return row?.first != null && row.first < iso
 }
 
-export function listRepos() {
-  return db.prepare('SELECT repo, prefix, project_id FROM project_repo ORDER BY repo').all()
+// HO-879: `backend`, when given, keeps only that backend's repos — the GitHub
+// poller asks for 'github', so an sl repo is never read from GitHub's API.
+export function listRepos({ backend = null } = {}) {
+  const rows = db.prepare('SELECT repo, prefix, project_id, backend FROM project_repo ORDER BY repo').all()
+  return rows.filter((r) => backend == null || r.backend === backend).map(({ repo, prefix, project_id }) => ({ repo, prefix, project_id }))
 }
 
 // ---- HZ-447: a Plan's repo scope ----
@@ -1208,6 +1243,23 @@ export function setTenantConnection(projectId, repoFullName, who) {
     notify()
   }
   return result
+}
+
+// HO-879: switch a connected repo's backend in place. Refused with
+// backend_locked once any item names the repo (any letter case) — the server
+// is the lock; the UI's disabled picker is a convenience only. Picking the
+// backend the repo already has is a no-op success.
+export function setRepoBackend(projectId, repoFullName, backend) {
+  if (!isBackend(backend)) return { error: 'invalid_backend' }
+  const row = db.prepare('SELECT repo, backend FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+  if (!row) return { error: 'not_found' }
+  if (row.backend === backend) return { ok: true, repo: row.repo, backend }
+  if (db.prepare('SELECT 1 FROM work_item WHERE repo = ? COLLATE NOCASE LIMIT 1').get(row.repo)) {
+    return { error: 'backend_locked', backend: row.backend }
+  }
+  db.prepare('UPDATE project_repo SET backend = ? WHERE project_id = ? AND repo = ?').run(backend, projectId, row.repo)
+  notify()
+  return { ok: true, repo: row.repo, backend }
 }
 
 // Disconnecting stops sync for the repo (existing items keep their history;

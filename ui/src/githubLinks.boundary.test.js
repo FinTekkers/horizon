@@ -1,7 +1,11 @@
 // HO-869: hard-coded GitHub link boundary for ui/src. HO-868 puts an `sl`
 // backend beside GitHub, so links to a repo, issue or token page should come
 // from the server, not be baked into the UI. Only the files in ALLOWLIST may
-// contain a github.com/ link today.
+// contain a github.com/ link.
+//
+// HO-879: ALLOWLIST is empty — no ui/src file has a github.com/ link, and
+// every repo, issue and token-page link comes from the server. The fixture case
+// for a listed file uses its own list, so the real ALLOWLIST stays empty.
 //
 // The list is one-way: a new file with a link fails, but a listed file that
 // drops its link does not. Stale entries can linger, so later HO-868 items
@@ -29,20 +33,7 @@ const REPO_ROOT = join(SRC, '..', '..')
 const NEEDLE = 'github' + '.com/'
 const BINARY = /\.(png|jpe?g|gif|ico|svg|woff2?|ttf|pdf)$/i
 
-// Exactly today's 11 files with a github.com/ link: 5 source, 6 test.
-const ALLOWLIST = [
-  'ui/src/App.connectRepo.test.jsx',
-  'ui/src/api/mockApi.js',
-  'ui/src/api/serverApi.js',
-  'ui/src/api/serverApi.test.js',
-  'ui/src/components/GoldenCasesTable.test.jsx',
-  'ui/src/components/Markdown.codeRefs.test.jsx',
-  'ui/src/components/Tracker.codeRefs.test.jsx',
-  'ui/src/components/admin/AccessSections.jsx',
-  'ui/src/components/admin/ProjectsSection.jsx',
-  'ui/src/components/connectRepo.js',
-  'ui/src/components/connectRepo.test.js',
-]
+const ALLOWLIST = []
 
 // Paths of the files that contain a github.com/ link and are not allowlisted.
 function findViolations(files, allowlist) {
@@ -94,7 +85,7 @@ test('fixture: an unlisted .jsx file with a github.com/ link is flagged', () => 
 
 test('fixture: the same link in a listed file is not flagged', () => {
   const files = [{ path: 'ui/src/components/connectRepo.js', text: `export const A = () => ${LINK}` }]
-  expect(findViolations(files, ALLOWLIST)).toEqual([])
+  expect(findViolations(files, ['ui/src/components/connectRepo.js'])).toEqual([])
 })
 
 test('fixture: a file with no github.com/ link is not flagged', () => {

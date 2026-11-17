@@ -77,6 +77,22 @@ function resolveDialogView(dialog, item, pending) {
 }
 
 // HZ-563: one Farm health reading feeds both the page and the menu's dot.
+// HO-879: the board's projects as a store snapshot, so the repo and token
+// links serverApi merges in from GET /api/projects re-render the app — that
+// load changes the projects, not the items. The same array is kept while its
+// elements are the same, so a getProjects that builds a fresh array each call
+// stays a stable snapshot.
+function useProjects() {
+  const last = useRef([])
+  const snapshot = useCallback(() => {
+    const next = api.getProjects()
+    const prev = last.current
+    if (next !== prev && (next.length !== prev.length || next.some((p, i) => p !== prev[i]))) last.current = next
+    return last.current
+  }, [])
+  return useSyncExternalStore(api.subscribe, snapshot)
+}
+
 const FARM_HEALTH_POLL_MS = 10_000
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, target: '' }
@@ -281,7 +297,7 @@ function AuthenticatedApp({ user, onLogout }) {
   }, [isAdmin, loadFarmHealth])
 
   const sync = api.getSync()
-  const projects = api.getProjects()
+  const projects = useProjects()
   const activeProjectId = api.getActiveProjectId()
   const farm = api.getFarm()
   const durationEstimates = api.getDurationEstimates()

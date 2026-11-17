@@ -971,6 +971,24 @@ failing test line, never the whole suite. Nothing runs E2E on `main`
 after a merge; the deploy runs only the smoke check (`e2e/smoke/check.mjs`,
 see "Deep verification beyond the health check").
 
+## 2o. sl repo and item links (HO-879)
+
+The server builds every repo and item link the UI shows, per backend
+(`server/src/links.js`). GitHub links need no setting: they stay
+`https://github.com/<repo>` and `https://github.com/<repo>/issues/<n>`. An
+`sl` repo's links come from two templates on the host. No `sl` or internal
+address is committed to the repo. Names only: the values live on the host.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/server.env` | `HORIZON_SL_REPO_URL_TEMPLATE` | an `sl` repo's web link. `{repo}` is replaced by the repo name. Unset ⇒ an `sl` repo's name shows as plain text, never a guessed link |
+| `/etc/horizon/server.env` | `HORIZON_SL_ISSUE_URL_TEMPLATE` | an `sl` item's web link. `{repo}` is replaced by the repo name and `{n}` by the item's number. Unset, or no `{n}` ⇒ an `sl` item shows no link |
+
+Both are read when the server starts, so restart `horizon-server` after you
+change one. To check: `GET /api/projects` lists each `sl` repo with its `url`
+built from the template, and each project's `repoLinks` entry for that repo
+carries the `issueUrlTemplate`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

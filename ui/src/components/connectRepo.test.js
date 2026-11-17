@@ -7,7 +7,9 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { TOKEN_PAGE, TOKEN_PERMISSIONS, needsRepo, refusalText, tokenPageUrl } from './connectRepo'
+import { BACKENDS, DEFAULT_BACKEND, TOKEN_PERMISSIONS, connectBody, needsRepo, refusalText, tokenPageUrl } from './connectRepo'
+import { GITHUB_TOKEN_PAGES, GITHUB_WEB } from '../../../server/src/links.js'
+import * as serverBackends from '../../../server/src/backends/names.js'
 
 const TOKEN_CHECK = join(dirname(fileURLToPath(import.meta.url)), '../../../server/src/tokenCheck.js')
 
@@ -29,10 +31,14 @@ test('every permission the server checks a token for has a chip the token link p
   }
 })
 
+// HO-879: the page is the server's tokenPages.fineGrained, passed in.
+const TOKEN_PAGE = GITHUB_TOKEN_PAGES.fineGrained
+
 test("the token link is GitHub's fine-grained token page with the owner and every permission pre-filled", () => {
-  const url = new URL(tokenPageUrl('  Acme/site '))
+  const url = new URL(tokenPageUrl('  Acme/site ', TOKEN_PAGE))
   expect(`${url.origin}${url.pathname}`).toBe(TOKEN_PAGE)
-  expect(TOKEN_PAGE).toBe('https://github.com/settings/personal-access-tokens/new')
+  const page = new URL(TOKEN_PAGE)
+  expect([page.protocol, page.host, page.pathname, page.search]).toEqual(['https:', 'github.com', '/settings/personal-access-tokens/new', ''])
   expect(url.searchParams.get('target_name')).toBe('Acme')
   expect(url.searchParams.get('name')).toBe('Horizon')
   expect(Object.fromEntries([...url.searchParams].filter(([k]) => !['name', 'description', 'target_name'].includes(k)))).toEqual({
@@ -43,8 +49,10 @@ test("the token link is GitHub's fine-grained token page with the owner and ever
     actions: 'read',
     metadata: 'read',
   })
-  expect(new URL(tokenPageUrl('https://github.com/Acme/site')).searchParams.get('target_name')).toBe('Acme')
-  expect(new URL(tokenPageUrl('')).searchParams.has('target_name')).toBe(false)
+  expect(new URL(tokenPageUrl(`${GITHUB_WEB}/Acme/site`, TOKEN_PAGE)).searchParams.get('target_name')).toBe('Acme')
+  expect(new URL(tokenPageUrl('', TOKEN_PAGE)).searchParams.has('target_name')).toBe(false)
+  // Until the server has sent the page there is no link, never a guessed one.
+  expect(tokenPageUrl('Acme/site', null)).toBeNull()
 })
 
 test("a refusal shows the server's message as is, else the UI's line for its code", () => {
@@ -69,4 +77,20 @@ test("needsRepo: a member's project with no repository and nothing on its board;
   expect(needsRepo({ ...project, repos: [{ repo: 'Acme/site', prefix: 'AC' }] }, false)).toBe(false)
   expect(needsRepo(project, false, [{ id: 'X-1', project_id: 7 }])).toBe(false)
   expect(needsRepo(project, false, [{ id: 'X-1', project_id: 8 }])).toBe(true)
+})
+
+// ---- HO-879: the connect request's backend ----
+
+test('metric 1: the backend defaults to github, and the choices are the server’s own names', () => {
+  expect(DEFAULT_BACKEND).toBe('github')
+  expect(BACKENDS[0]).toBe(DEFAULT_BACKEND)
+  expect([...BACKENDS]).toEqual([...serverBackends.BACKENDS])
+  expect(DEFAULT_BACKEND).toBe(serverBackends.DEFAULT_BACKEND)
+})
+
+test('metric 1: the connect body carries the chosen backend, and github when none is chosen', () => {
+  expect(connectBody({ repo: 'acme/web' })).toEqual({ repo: 'acme/web', backend: 'github' })
+  expect(connectBody({ repo: 'acme/web', backend: undefined })).toEqual({ repo: 'acme/web', backend: 'github' })
+  expect(connectBody({ repo: 'acme/web', backend: 'github' })).toEqual({ repo: 'acme/web', backend: 'github' })
+  expect(connectBody({ repo: 'acme/web', backend: 'sl' })).toEqual({ repo: 'acme/web', backend: 'sl' })
 })

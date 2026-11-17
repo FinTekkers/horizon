@@ -22,6 +22,7 @@ import Tracker from './Tracker'
 import { itemHref } from './DependencyBadge'
 import { STEPS, FILE_ITEMS_STEP_INDEX, REVIEW_CLOSE_GATE_INDEX, PLAN_INVENTORY_STEP_INDEX, IMPLEMENT_STEP_INDEX } from '../../../domain/js/lifecycle.js'
 import { FENCE_INFO } from '../../../domain/js/planInventory.js'
+import { GITHUB_WEB } from '../../../server/src/links.js'
 
 afterEach(() => cleanup())
 
@@ -92,7 +93,7 @@ function renderPlan() {
 test('the File items tile links a repo reference at its own step’s sha, not the Inventory’s', () => {
   renderPlan()
   expect(screen.getByRole('link', { name: 'horizon:src/x.ts:12' }).getAttribute('href')).toBe(
-    `https://github.com/FinTekkers/horizon/blob/${FILE_SHA}/src/x.ts#L12`,
+    `${GITHUB_WEB}/FinTekkers/horizon/blob/${FILE_SHA}/src/x.ts#L12`,
   )
 })
 
@@ -107,7 +108,7 @@ test('an Inventory row’s bare evidence ref links against that row’s repo at 
   renderPlan()
   const table = screen.getByRole('table', { name: 'Current state per repo' })
   expect(within(table).getByRole('link', { name: 'src/routes/a.ts:4' }).getAttribute('href')).toBe(
-    `https://github.com/FinTekkers/ui-service/blob/${INVENTORY_SHA}/src/routes/a.ts#L4`,
+    `${GITHUB_WEB}/FinTekkers/ui-service/blob/${INVENTORY_SHA}/src/routes/a.ts#L4`,
   )
 })
 

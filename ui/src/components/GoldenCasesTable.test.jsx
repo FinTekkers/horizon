@@ -20,6 +20,7 @@ vi.mock('../api', () => ({
 import GoldenCasesTable from './GoldenCasesTable'
 import Tracker from './Tracker'
 import { requiredStepIndex } from '../../../domain/js/lifecycle.js'
+import { GITHUB_WEB } from '../../../server/src/links.js'
 
 afterEach(() => cleanup())
 
@@ -33,7 +34,7 @@ const CASES = [
     tolerance: { abs: 0.01 },
     source: 'bond-math#accrual',
     sourceIndexed: true,
-    sourceUrl: 'https://github.com/FinTekkers/docs/blob/HEAD/specs/bond-math.pdf#page=4',
+    sourceUrl: `${GITHUB_WEB}/FinTekkers/docs/blob/HEAD/specs/bond-math.pdf#page=4`,
     sourceTitle: '2.1 Accrual',
     sourcePage: 4,
   },
@@ -45,7 +46,7 @@ const CASES = [
     tolerance: { rel: 0.0001 },
     source: 'bond-math#pricing',
     sourceIndexed: true,
-    sourceUrl: 'https://github.com/FinTekkers/docs/blob/HEAD/specs/bond-math.pdf#page=9',
+    sourceUrl: `${GITHUB_WEB}/FinTekkers/docs/blob/HEAD/specs/bond-math.pdf#page=9`,
     sourceTitle: '3 Pricing',
     sourcePage: 9,
   },

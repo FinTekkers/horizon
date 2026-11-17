@@ -3,6 +3,8 @@
 // report whether one is configured.
 
 import { db } from './db.js'
+import { repoLinks } from './links.js'
+import { DEFAULT_BACKEND } from './backends/names.js'
 
 const getStmt = db.prepare('SELECT value FROM setting WHERE key = ?')
 const setStmt = db.prepare(
@@ -25,9 +27,10 @@ export function getToken() {
   return getSetting('github_token') || process.env.GITHUB_TOKEN || null
 }
 
+// HO-879: built by links.js, the server's one link builder — the
+// same https://github.com/<repo> string as before.
 export function getRepoUrl() {
-  const repo = getRepo()
-  return repo ? `https://github.com/${repo}` : 'https://github.com/FinTekkers/horizon'
+  return repoLinks(DEFAULT_BACKEND, getRepo() || 'FinTekkers/horizon').url
 }
 
 // The project the board shows (HZ-207: no longer the only one the farm runs —

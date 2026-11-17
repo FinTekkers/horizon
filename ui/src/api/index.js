@@ -40,6 +40,7 @@ export const {
   saveTenantChecks,
   listProjects,
   disconnectRepo,
+  setRepoBackend,
   saveRepoChecks,
   saveRepoMarks,
   saveRepoTestEnvFile,

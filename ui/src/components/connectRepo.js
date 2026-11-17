@@ -1,5 +1,19 @@
 // HZ-703: the "Connect your repository" card's pure parts — when it shows,
 // the GitHub token page it links to, and what a refusal says.
+// HO-879: plus Admin's connect request body and its backend choice. The token
+// page itself comes from the server (a project's `tokenPages`).
+
+// HO-879: the backends a repo can be connected on, the default first — the
+// same names as server/src/backends/names.js (connectRepo.test.js pins them).
+// Names only: every link for a backend comes from the server.
+export const DEFAULT_BACKEND = 'github'
+export const BACKENDS = Object.freeze([DEFAULT_BACKEND, 'sl'])
+
+// The body of Admin's connect request, POST /api/projects/:id/repos. A
+// missing backend is the default; the server stores what is sent.
+export function connectBody({ repo, backend = DEFAULT_BACKEND }) {
+  return { repo, backend }
+}
 
 // The design's six permission chips. Each one is a GitHub pre-fill parameter
 // at one access level, and `covers` names the server's checks it satisfies
@@ -19,8 +33,6 @@ export const TOKEN_PERMISSIONS = Object.freeze([
   { label: 'Metadata: read', param: 'metadata', level: 'read', covers: ['metadata:read'] },
 ])
 
-export const TOKEN_PAGE = 'https://github.com/settings/personal-access-tokens/new'
-
 // The owner part of `owner/name` (or of a github.com URL), or null.
 function repoOwner(repo) {
   const path = String(repo ?? '')
@@ -32,7 +44,9 @@ function repoOwner(repo) {
 
 // GitHub's new fine-grained token page, with its name, description, resource
 // owner (from what is typed so far) and every chip's permission filled in.
-export function tokenPageUrl(repo) {
+// HO-879: `page` is the server's tokenPages.fineGrained; null until it is known.
+export function tokenPageUrl(repo, page) {
+  if (typeof page !== 'string' || !page) return null
   const params = new URLSearchParams({
     name: 'Horizon',
     description: 'Lets Horizon plan, build and test changes in this repository.',
@@ -40,7 +54,7 @@ export function tokenPageUrl(repo) {
   const owner = repoOwner(repo)
   if (owner) params.set('target_name', owner)
   for (const p of TOKEN_PERMISSIONS) params.set(p.param, p.level)
-  return `${TOKEN_PAGE}?${params}`
+  return `${page}?${params}`
 }
 
 const NOTHING_SAVED = 'Nothing was saved.'

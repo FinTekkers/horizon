@@ -115,6 +115,7 @@ function fixtures(id = P1, slug = SLUG, repo = R1) {
     'POST /api/projects/:id/repos': { url: `${p}/repos`, payload: { repo: 'acme/new-one' } },
     'GET /api/projects/:id/repos/webhooks': { url: `${p}/repos/webhooks` },
     'POST /api/projects/:id/repos/webhook/fix': { url: `${p}/repos/webhook/fix`, payload: { repo } },
+    'PUT /api/projects/:id/repos/backend': { url: `${p}/repos/backend`, payload: { repo, backend: 'github' } },
     'POST /api/projects/:id/activate': { url: `${p}/activate` },
     'POST /api/projects/:id/enabled': { url: `${p}/enabled`, payload: { enabled: true } },
     'POST /api/projects/:id/validate': { url: `${p}/validate`, payload: {} },

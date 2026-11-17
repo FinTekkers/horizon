@@ -190,6 +190,8 @@ async function fileOne(parent, row, spec, waits) {
       return childId
     })()
   }
+  // HO-879: an sl repo has no issue tracker yet — never search or file it on GitHub.
+  if ((store.findRepo(row.target_repo)?.backend ?? 'github') !== 'github') throw new Error(`backend_unsupported: ${row.target_repo} is not a GitHub repository`)
   const { tracker } = forRepo(row.target_repo)
   let ghIssue = await tracker.findSplitIssue(row.target_repo, spawnMarker(parent.id, row.request_key, row.seq), sinceIso(row.created_at))
   if (!ghIssue) {

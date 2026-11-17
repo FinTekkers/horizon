@@ -21,8 +21,12 @@
 
 import { planProgress } from './planProgress.js'
 
-const PROJECT_FIELDS = ['id', 'name', 'enabled', 'unlinked', 'autopilot', 'autopilotEvents', 'definitionsEnabled', 'providerDefaults']
-const REPO_FIELDS = ['repo', 'prefix', 'backend']
+// HO-879: `repoLinks`, `tokenPages` and a repo's `url` are on GET /api/projects
+// only (the board leaves them off — listProjects' `backends`); a member's items
+// and connect card need them too. A repo's `itemCount` stays the owner's: it counts every project's
+// items, so it is not added here.
+const PROJECT_FIELDS = ['id', 'name', 'enabled', 'unlinked', 'autopilot', 'autopilotEvents', 'definitionsEnabled', 'providerDefaults', 'repoLinks', 'tokenPages']
+const REPO_FIELDS = ['repo', 'prefix', 'backend', 'url']
 
 function pick(source, keys) {
   const out = {}

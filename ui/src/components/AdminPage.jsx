@@ -191,7 +191,7 @@ export default function AdminPage({
           )}
           {section === 'flaky' && <FlakyTestsSection data={checkFlakes.data} error={checkFlakes.error} />}
           {section === 'verify' && <VerifyReportSection />}
-          {section === 'github' && <GitHubSection sync={sync} />}
+          {section === 'github' && <GitHubSection sync={sync} tokenPages={projects.find((p) => p.tokenPages)?.tokenPages ?? null} />}
           {section === 'account' && <AccountSection />}
           {section === 'checks' && <TenantChecksSection project={activeProject} />}
         </main>

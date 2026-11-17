@@ -8,11 +8,13 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { memberProject } from '../../server/src/boardView.js'
+import { GITHUB_TOKEN_PAGES } from '../../server/src/links.js'
 
 const OWNER = { name: 'Test User', initials: 'TU', email: 'test@example.com', isAdmin: true }
 const MEMBER = { name: 'Max Member', initials: 'MM', email: 'member@example.com', isAdmin: false }
 // A tenant project as the server stores it; the member's frame drops the rest.
-const STORED = { id: 7, name: 'Acme', enabled: true, isolation: 'tenant', unlinked: false, autopilot: true, repos: [] }
+// HO-879: `tokenPages` as GET /api/projects adds it (serverApi merges it in).
+const STORED = { id: 7, name: 'Acme', enabled: true, isolation: 'tenant', unlinked: false, autopilot: true, repos: [], tokenPages: { ...GITHUB_TOKEN_PAGES } }
 const CONNECTED = { repo: 'Acme/site', prefix: 'ACME', defaultBranch: 'main', githubTokenRef: '$HZ_TENANT_7', runUser: 'acme', webhook: { status: 'ok' } }
 
 let currentUser = MEMBER
@@ -87,7 +89,7 @@ test("metric 4: a member's project with no repository shows the card in place of
   expect(link.getAttribute('target')).toBe('_blank')
   expect(link.getAttribute('rel')).toBe('noopener noreferrer')
   const url = new URL(link.getAttribute('href'))
-  expect(`${url.origin}${url.pathname}`).toBe('https://github.com/settings/personal-access-tokens/new')
+  expect(`${url.origin}${url.pathname}`).toBe(GITHUB_TOKEN_PAGES.fineGrained)
   expect(url.searchParams.get('target_name')).toBe('Acme')
   for (const [param, level] of [
     ['contents', 'write'],
