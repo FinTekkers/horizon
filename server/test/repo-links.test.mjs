@@ -14,7 +14,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loginFixtureUser } from './helpers/session.mjs'
@@ -298,6 +298,22 @@ test('an owner re-POST of a connected repo with items, naming a new backend, ret
   const res = await connect({ repo: 'acme/count', backend: 'sl' })
   assert.equal(res.statusCode, 409, res.body)
   assert.equal(repoBackend('acme/count'), 'github')
+  assert.deepEqual(calls, [])
+})
+
+test('a member sl connect on their tenant project returns 400; no repo row, no token file, no GitHub call', async () => {
+  const T = store.createProject('Links Tenant', { isolation: 'tenant', memberId: member.user.id }).id
+  calls = []
+  const res = await send(
+    member,
+    'POST',
+    `/api/tenant/projects/${T}/repos`,
+    { repo: 'acme/tenant-sl', token: 'github_pat_11HO879TENANTSLtokenVALUE0123456789', backend: 'sl' },
+    { pin: member.pin },
+  )
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(db.prepare('SELECT 1 FROM project_repo WHERE project_id = ? OR repo = ?').get(T, 'acme/tenant-sl'), undefined)
+  assert.equal(existsSync(join(process.env.HORIZON_TENANT_TOKEN_ROOT, String(T))), false)
   assert.deepEqual(calls, [])
 })
 
