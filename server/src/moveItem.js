@@ -47,6 +47,7 @@ import {
   stepsFor,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, decodeMoveKey, encodeMoveKey, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
+import { designSubstepOf, returnTarget } from './designRounds.js'
 
 // The five a human (or the route) can ask for, plus 'close', which only a
 // GitHub issue close makes — the route never offers it.
@@ -76,8 +77,9 @@ export const REVIEW_STATE_COLUMNS = Object.freeze([
 ])
 
 // The columns that say where an item is. Only this module writes them; an
-// agent's patch (orchestrator.js writeWorkItemPatch) drops them.
-export const STEP_COLUMNS = Object.freeze(['cursor', 'substep_cursor'])
+// agent's patch (orchestrator.js writeWorkItemPatch) drops them. HO-851:
+// substep_pending_json, the design round in flight, goes with substep_cursor.
+export const STEP_COLUMNS = Object.freeze(['cursor', 'substep_cursor', 'substep_pending_json'])
 
 // The only other columns a move or a completion may write alongside the step.
 // Anything else is refused, so `fields` cannot become a back door.
@@ -95,6 +97,8 @@ export const MOVE_FIELDS = Object.freeze(
     'forwarded_by',
     'forwarded_sha',
     'substep_cursor',
+    // HO-851: written with substep_cursor (designRounds.js).
+    'substep_pending_json',
   ]),
 )
 
@@ -406,6 +410,10 @@ export function moveItem(
     if (plan.reset.releaseHolds) {
       sets.push('substep_cursor = ?', 'paused = 0')
       values.push(plan.substepId)
+      // HO-851: the design round in flight goes with the sub-step, once,
+      // unless the caller writes a new one (fields) or a retry stays on it.
+      const staysOnSubstep = plan.substepId != null && String(plan.substepId) === String(item.substep_cursor ?? '')
+      if (!Object.hasOwn(fields, 'substep_pending_json') && !staysOnSubstep) sets.push('substep_pending_json = NULL')
       if (isHumanProof(proof)) sets.push('rule_block_json = NULL')
     }
     if (plan.reset.clearReview) sets.push(...REVIEW_STATE_COLUMNS)
@@ -439,14 +447,17 @@ export function moveItem(
 // no item_move row and no reset. Limited to where a finished step can go —
 // its next row; past a lane's checked rows from the first of them (HZ-435);
 // or one of the automated outcomes above — so it is never a second,
-// unchecked mover. Returns { ok } or { error: 'bad_completion' | 'bad_field'
-// | 'not_found' } and writes nothing on a refusal.
+// unchecked mover. HO-851: and the design sub-step's two — its anchor staying
+// put to enter it, and a finished design round going straight back to the
+// gate it was sent back from (designRounds.js). Returns { ok } or { error:
+// 'bad_completion' | 'bad_field' | 'not_found' } and writes nothing on a
+// refusal.
 export function writeStepCompletion(id, toIndex, fields = {}) {
   const item = selectRow.get(id)
   if (!item) return { error: 'not_found' }
   const field = badField(fields)
   if (field) return { error: 'bad_field', field }
-  if (!completionAllowed(item, toIndex)) {
+  if (!completionAllowed(item, toIndex, fields)) {
     console.warn(`step completion refused: ${id} from ${moveKeyOf(item)} to position ${toIndex}`)
     return { error: 'bad_completion' }
   }
@@ -460,9 +471,15 @@ export function writeStepCompletion(id, toIndex, fields = {}) {
   return { ok: true }
 }
 
-function completionAllowed(item, toIndex) {
+function completionAllowed(item, toIndex, fields = {}) {
   if (isAbandoned(item) || isClosed(item)) return false
   if (toIndex === nextCursor(item)) return true
+  // HO-851: the anchor's own run finished and the item enters its design
+  // sub-step, staying on the anchor.
+  if (toIndex === item.cursor && item.substep_cursor == null && fields.substep_cursor != null) {
+    return designSubstepOf(item, item.cursor)?.id === String(fields.substep_cursor)
+  }
+  if (toIndex === returnTarget(item)) return true
   const checked = laneCheckIndexes(item)
   if (checked.has(item.cursor) && toIndex === nextCursor({ ...item, cursor: Math.max(...checked) })) return true
   return AUTOMATED_OUTCOMES.get(item.cursor)?.has(toIndex) === true

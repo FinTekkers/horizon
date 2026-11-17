@@ -669,6 +669,9 @@ def build_prompt(task: dict) -> str:
     golden = golden_cases_section(task)
     if golden:
         lines += ["", golden]
+    verdict = design_verdict_section(task)
+    if verdict:
+        lines += ["", verdict]
     page = visual_page_section(task)
     if page:
         lines += ["", page]
@@ -697,6 +700,24 @@ def golden_cases_section(task: dict) -> str | None:
     if task.get("golden_cases") is True and task["step"].get("label") in GOLDEN_ADDENDUM_LABELS:
         return (ROLES / GOLDEN_CASES_ADDENDUM).read_text().rstrip("\n")
     return None
+
+
+# ---- design verdict (HO-851) ----
+# The server sets `design_verdict: true` on a task only for the metric step of
+# an item whose snapshot has a design sub-step. That step then records one
+# `design_needed: yes|no — <reason>` line, which decides whether "Design the
+# screens" runs (domain/js/designVerdict.js reads it). Without the flag
+# nothing is appended, so every other prompt is byte-identical.
+DESIGN_VERDICT_ADDENDUM = "design_verdict_addendum.md"
+# Change "Define how we measure success" and Task "How we'll verify".
+DESIGN_VERDICT_LABELS = frozenset({"Define how we measure success", "How we'll verify"})
+
+
+def design_verdict_section(task: dict) -> str | None:
+    """The design-verdict text a metric step's prompt ends with, or None."""
+    if task.get("design_verdict") is not True or task["step"].get("label") not in DESIGN_VERDICT_LABELS:
+        return None
+    return (ROLES / DESIGN_VERDICT_ADDENDUM).read_text().rstrip("\n")
 
 
 # ---- web-page visuals (HO-862) ----
@@ -3029,6 +3050,10 @@ def _execute_pm(task: dict) -> dict:
     golden = golden_cases_section(task)
     if golden:
         prompt = f"{prompt}\n\n{golden}"
+    # HO-851: the metric step of an item with a design sub-step records its verdict.
+    verdict = design_verdict_section(task)
+    if verdict:
+        prompt = f"{prompt}\n\n{verdict}"
     # HZ-192: run_agent() resolves the model from who is calling — the step's
     # own domain/steps.json agent (PM, or Architect for "Set guardrails").
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
@@ -3129,6 +3154,9 @@ def design_prompt(task: dict, rules: str, material: str | None) -> str:
     feedback = task.get("feedback") or []
     if feedback:
         lines += ["", "Human feedback to address:", *(f"- {fb.get('message', '')}" for fb in feedback)]
+    round_lines = design_round_lines(task)
+    if round_lines:
+        lines += ["", *round_lines]
     lines += ["", f"## Studio build rules ({design_canvas.DESIGN_SYSTEM})", "", rules]
     if material:
         lines += [
@@ -3141,6 +3169,25 @@ def design_prompt(task: dict, rules: str, material: str | None) -> str:
     else:
         lines += ["", "## The canvas now", "", "There is no canvas yet: this round makes it."]
     return "\n".join(lines)
+
+
+def design_round_lines(task: dict) -> list[str]:
+    """HO-851: a later design round's brief, and the one what-changed line its
+    artifact must carry. [] for a first round or a task without the field."""
+    design_round = task.get("design_round")
+    if not isinstance(design_round, dict):
+        return []
+    n = design_round.get("n")
+    if not isinstance(n, int) or isinstance(n, bool) or n <= 1:
+        return []
+    brief = str(design_round.get("brief") or "").strip() or "(no brief)"
+    return [
+        f"## This round (round {n})",
+        "What the owner asked for this round:",
+        brief,
+        "",
+        "Put exactly one line in your `artifact_md`: `what_changed: <one line on what you changed on the canvas this round>`.",
+    ]
 
 
 def _design_reply_validator(parsed):

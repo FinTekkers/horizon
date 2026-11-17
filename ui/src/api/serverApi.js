@@ -1102,6 +1102,17 @@ export async function acceptWithExceptions(id, exceptions, linesHash) {
   return data
 }
 
+// HO-851: "Design it anyway" — run the design sub-step its verdict skipped,
+// with the owner's reason. Rejects like moveItem: Error('pin_needed'),
+// Error('network'), else Error(<error code>) with `status` (400
+// reason_required, 409 not_skipped / not_at_gate). The answer's item, now at
+// the sub-step, is applied at once.
+export async function forceSubstep(id, substepId, reason) {
+  const data = await gateAction(`/items/${encodeURIComponent(id)}/substeps/${encodeURIComponent(substepId)}/force`, { reason })
+  if (data.item) applyActionItem(data.item, data.restart)
+  return data
+}
+
 // HZ-385: sends the state the button shows, never a flip of this tab's cached
 // item, which a dead stream can leave stale. postJson so a 404 or 409 rejects
 // and the button shows it. The answer's item (HZ-389), or else its `paused`,

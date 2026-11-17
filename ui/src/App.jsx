@@ -720,6 +720,7 @@ function AuthenticatedApp({ user, onLogout }) {
           gateBusy={isGateBusy(selected)}
           onForwardToAccept={(id) => api.forwardToAccept(id)}
           onAcceptWithExceptions={(id, exceptions, linesHash) => api.acceptWithExceptions(id, exceptions, linesHash)}
+          onForceSubstep={(id, substepId, reason) => api.forceSubstep(id, substepId, reason)}
           onTogglePause={api.setPaused}
           onSetPersona={api.setPersona}
           onSetStepProvider={api.setStepProvider}
