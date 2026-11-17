@@ -14,7 +14,7 @@
 import { db } from '../db.js'
 import { BACKENDS, DEFAULT_BACKEND, isBackend } from './names.js'
 import { githubAdapters } from './github.js'
-import { slAdapters } from './sl.js'
+import { slAdapters, slScreenshotPublisher } from './sl.js'
 
 export { BACKENDS, DEFAULT_BACKEND, isBackend }
 // HO-872: GitHub's e2e-only answers, for app.js's /api/test/* routes, so app.js
@@ -48,6 +48,16 @@ function adaptersFor(backend) {
 // The adapters for `repo`: { tracker, review, vcs, artifacts }.
 export function forRepo(repo) {
   return adaptersFor(backendOf(repo))
+}
+
+// HO-878: where an implement result's screenshot bundle goes, for a repo whose
+// backend keeps publishes on this server: sl's file store. null for GitHub,
+// whose farm pushes e2e-artifacts/<id> itself, so the caller drops the bundle.
+const SCREENSHOT_PUBLISHERS = Object.freeze({ sl: slScreenshotPublisher })
+
+export function screenshotPublisherFor(repo) {
+  const backend = backendOf(repo)
+  return Object.hasOwn(SCREENSHOT_PUBLISHERS, backend) ? SCREENSHOT_PUBLISHERS[backend] : null
 }
 
 // The adapters for a backend by name, for calls that serve no one repo — the

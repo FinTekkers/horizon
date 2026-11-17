@@ -38,7 +38,8 @@ import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, recheckAndRun, patchRunPlan, setAutopilotOff } from '../api'
 import visualPageRules from '../../../domain/visualPage.json'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
-import { currentSubstep, substepsAt } from '../../../domain/js/substeps.js'
+import { currentSubstep, skippedText, substepsAt } from '../../../domain/js/substeps.js'
+import DesignAnywayButton from './DesignAnyway.jsx'
 import { metricLines } from '../../../domain/js/goldenCases.js'
 import { parseStoredUtc, runTimeText } from '../../../domain/js/runTime.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
@@ -985,10 +986,12 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
 
 // HZ-540: a sub-step's state, from its newest run and the item's
 // substep_cursor: 'active' while its run runs, 'current' while the item is at
-// it, 'done' once a run finished, else 'pending'.
+// it, 'done' once a run finished, else 'pending'. HO-851: 'skipped' while a
+// design sub-step's latest round is the skip its verdict decided.
 function substepStatus(item, sub) {
   if (sub.run?.status === 'active') return 'active'
   if (currentSubstep(item)?.id === sub.id) return 'current'
+  if (skippedText(sub)) return 'skipped'
   if (sub.run?.status === 'done') return 'done'
   return 'pending'
 }
@@ -1001,6 +1004,7 @@ function substepMeta(item, sub, status) {
     return `In progress… · ${mins < 1 ? 'just started' : `${mins} min`}`
   }
   if (status === 'current') return 'Current sub-step'
+  if (status === 'skipped') return skippedText(sub)
   if (status === 'done') {
     const start = Date.parse(run.startedAt)
     const end = Date.parse(run.endedAt)
@@ -1012,9 +1016,11 @@ function substepMeta(item, sub, status) {
 
 // HZ-540: one sub-step, indented under its global step — from the item's
 // snapshot (item.substeps), never from the project's current definitions.
-function SubstepRow({ item, sub }) {
+function SubstepRow({ item, sub, onForceSubstep = null, gateBusy = false }) {
   const status = substepStatus(item, sub)
   const run = sub.run
+  // HO-851: "Design it anyway" — only on a skipped design row, at a gate after it.
+  const canForce = status === 'skipped' && onForceSubstep && STEPS[item.cursor]?.kind === 'gate' && item.cursor > sub.anchor
   return (
     <div className="step step--sub" data-testid="substep-row" data-substep={sub.id}>
       <div className="step__rail">
@@ -1055,6 +1061,11 @@ function SubstepRow({ item, sub }) {
             >
               View full artifact ↗
             </a>
+          )}
+          {canForce && (
+            <div className="step-card__actions">
+              <DesignAnywayButton itemId={item.id} sub={sub} onSubmit={onForceSubstep} disabled={gateBusy} />
+            </div>
           )}
         </div>
       </div>
@@ -1426,7 +1437,7 @@ function FarmUnreachableBanner({ onOpenFarmHealth }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions = null, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onRecheckRun = null, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions = null, onForceSubstep = null, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onRecheckRun = null, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1698,7 +1709,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                       runTimeZone={runTimeZone}
                     />
                     {substepsAt(item, i).map((sub) => (
-                      <SubstepRow key={sub.id} item={item} sub={sub} />
+                      <SubstepRow key={sub.id} item={item} sub={sub} onForceSubstep={onForceSubstep} gateBusy={gateBusy} />
                     ))}
                   </Fragment>
                 ))}

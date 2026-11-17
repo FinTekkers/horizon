@@ -74,7 +74,7 @@ import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
 import { repoLinks } from './links.js'
-import { forKind, forRepo, githubTestHooks } from './backends/index.js'
+import { backendOf, forKind, forRepo, githubTestHooks, screenshotPublisherFor } from './backends/index.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
 import * as projectDefinitions from './projectDefinitions.js'
@@ -94,6 +94,7 @@ import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
 import { OPEN_LINES_MAX } from './verifyOutcome.js'
 import { REASON_MAX_CHARS, checkAccept as checkExceptionAccept, exceptionKind } from './gateExceptions.js'
+import { SKIP_REASON_MAX_CHARS as DESIGN_SKIP_REASON_MAX_CHARS } from './designSpec.js'
 import {
   PRODUCTIVITY_QUERY_SCHEMA,
   PRODUCTIVITY_RESPONSE_SCHEMA,
@@ -1391,18 +1392,22 @@ export function buildApp({
   // the gate itself does. A screen is found only among the item's listed
   // shots, by exact name. Approving never approves the gate or merges.
   const SCREENSHOT_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+  // HO-878: a read that fails names the store it failed on — GitHub, or the
+  // sl backend's file store on this host.
+  const screenshotsUnavailable = (repo) => (backendOf(repo) === 'sl' ? 'store_unavailable' : 'github_unavailable')
 
   // The item's listed shots at Accept the code, or { status, error } to send.
+  // HO-878: read through the Artifact port, so an sl item's come from its store.
   async function acceptScreenshots(id) {
     const item = store.getItem(id)
     if (!item) return { status: 404, error: 'not_found' }
     if (STEPS[item.cursor]?.label !== 'Accept the code') return { status: 409, error: 'not_at_accept_gate' }
     try {
-      const snapshot = item.repo ? await forRepo(item.repo).artifacts.fetchScreenshotSnapshot(item.repo, item) : null
-      return { repo: item.repo, snapshot, shots: screenshots.listedShots(snapshot) }
+      const snapshot = item.repo ? await forRepo(item.repo).artifacts.readArtifacts(item) : null
+      return { item, repo: item.repo, snapshot, shots: screenshots.listedShots(snapshot) }
     } catch (err) {
       fastify.log.warn(`screenshots for ${id} unavailable: ${err.message}`)
-      return { status: 502, error: 'github_unavailable' }
+      return { status: 502, error: screenshotsUnavailable(item.repo) }
     }
   }
 
@@ -1457,10 +1462,10 @@ export function buildApp({
       if (request.headers['if-none-match'] === etag) return reply.code(304).send()
       let bytes
       try {
-        bytes = await forRepo(found.repo).artifacts.fetchBlob(found.repo, image.sha)
+        bytes = await forRepo(found.repo).artifacts.readArtifactBlob(found.item, image.sha)
       } catch (err) {
         fastify.log.warn(`screenshot ${screen}/${kind} for ${id} unavailable: ${err.message}`)
-        return reply.code(502).send({ error: 'github_unavailable' })
+        return reply.code(502).send({ error: screenshotsUnavailable(found.repo) })
       }
       return reply.type('image/png').send(bytes)
     },
@@ -2158,7 +2163,8 @@ export function buildApp({
   // humanOnly gate refused for want of the proof comes back as a 403.
   // HZ-541: and goldenHash, so a first gate with golden cases refuses every
   // other approver (store.approveGate). HZ-642: and filedAutopilot, Approve &
-  // file's Autopilot choice for the items it files.
+  // file's Autopilot choice for the items it files. HO-852: and designRunId or
+  // designSkipReason, the first gate's design canvas or why there is none.
   //
   // HZ-822: { ok: true, superseded: true } when the PR was merged on GitHub
   // while its pre-merge check was queued or running: the code was accepted
@@ -3140,6 +3146,10 @@ export function buildApp({
             // Approve the run approves, and the hash its card showed.
             commandIndex: { type: 'integer', minimum: 0 },
             commandHash: { type: 'string', maxLength: 128 },
+            // HO-852: the first gate's design — the canvas run the page showed,
+            // or why it approves without design (designSpec.js).
+            designSkipReason: { type: 'string', maxLength: DESIGN_SKIP_REASON_MAX_CHARS },
+            designRunId: { type: 'integer', minimum: 1 },
             // HZ-711: an abandon may drop the links where this item blocks others.
             removeDependentLinks: { type: 'boolean' },
           },
@@ -3193,6 +3203,9 @@ export function buildApp({
           filedAutopilot: body.filedAutopilot || null,
           commandIndex: Number.isInteger(body.commandIndex) ? body.commandIndex : null,
           commandHash: body.commandHash || null,
+          // A blank reason is passed on, so approveGate refuses it.
+          designSkipReason: typeof body.designSkipReason === 'string' ? body.designSkipReason : null,
+          designRunId: Number.isInteger(body.designRunId) ? body.designRunId : null,
         }
         result =
           STEPS[item.cursor].kind === 'gate'
@@ -3209,6 +3222,49 @@ export function buildApp({
       // stream would upsert it, and for a return or retry the attempt starting.
       const restart = action === 'return' || action === 'retry'
       return reply.send({ ...result, ...actionState(id, { restart }), ok: true, move: store.lastMove(id) })
+    },
+  )
+
+  // HO-851: "Design it anyway" — run a design sub-step the step 1 verdict
+  // skipped, with the owner's reason. A browser session with the gate PIN, as
+  // any send-back from a gate. The reason is required and kept: it is the
+  // round's brief and its override reason (store.forceDesign). Answers
+  // { ok, item, restart }: the item at the sub-step, its run starting.
+  fastify.post(
+    '/api/items/:id/substeps/:substepId/force',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'substepId'],
+          properties: { id: { type: 'string', minLength: 1 }, substepId: { type: 'string', pattern: SUBSTEP_ID_PATTERN } },
+        },
+        body: {
+          type: ['object', 'null'],
+          properties: { reason: { type: 'string', maxLength: 500 } },
+        },
+        response: {
+          200: { ...OK_OBJECT, description: '`{ ok, item, restart }` — the item at its design sub-step, the forced round starting.' },
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          403: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+        },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      const { id, substepId } = request.params
+      const reason = typeof request.body?.reason === 'string' ? request.body.reason.trim() : ''
+      if (!reason) return reply.code(400).send({ error: 'reason_required' })
+      const proof = humanAuthorized(request, reply)
+      if (!proof) return
+      const result = store.forceDesign(id, substepId, reason, actorOf(request), { proof })
+      if (result.error === 'unknown_substep') return reply.code(404).send(result)
+      if (result.error) return send(reply, result)
+      return reply.send({ ...actionState(id, { restart: true }), ok: true })
     },
   )
 
@@ -5668,10 +5724,40 @@ export function buildApp({
     },
   )
 
+  // HO-878: an sl item's screenshots ride on its implement result as
+  // artifacts.screenshot_bundle — the sl farm has no ref to push them to (see
+  // farm/step_agent.py's screenshot_bundle). /complete stores the bundle in the
+  // sl Artifact store and takes it off the result, so the run never holds the
+  // bytes. Best-effort, like the farm's GitHub push: a refused bundle is
+  // logged and the result completes as usual. A result without the key is
+  // passed on as the very same object; one for a GitHub item is dropped with
+  // nothing written.
+  const COMPLETE_BODY_LIMIT = 32 * 1024 * 1024
+
+  async function takeScreenshotBundle(runId, body, log) {
+    if (!body.artifacts || !Object.hasOwn(body.artifacts, 'screenshot_bundle')) return body
+    const { screenshot_bundle: bundle, ...artifacts } = body.artifacts
+    const run = db.prepare('SELECT item_id, status FROM step_run WHERE id = ?').get(runId)
+    const item = run?.status === 'active' ? store.getItem(run.item_id) : null
+    const publish = item?.repo ? screenshotPublisherFor(item.repo) : null
+    if (!publish) {
+      log.warn(`run ${runId}: screenshot bundle dropped (${item ? 'not an sl item' : 'no active run'})`)
+    } else {
+      try {
+        const saved = await publish(item, bundle)
+        log.info(`run ${runId}: stored ${saved.shots} screenshot result(s) for ${item.id} (${saved.commit})`)
+      } catch (err) {
+        log.warn(`run ${runId}: screenshot bundle for ${item.id} not stored: ${err.message}`)
+      }
+    }
+    return { ...body, artifacts }
+  }
+
   fastify.post(
     '/api/farm/steps/:runId/complete',
     {
       config: { scope: 'farm' },
+      bodyLimit: COMPLETE_BODY_LIMIT,
       schema: {
         params: { type: 'object', required: ['runId'], properties: { runId: { type: 'integer' } } },
         body: {
@@ -5697,7 +5783,8 @@ export function buildApp({
       // Stamped before the run closes, so no drain or review sees it done
       // without its upload pending.
       testResults.markUploadPending(request.params.runId, request.body.test_runs_expected)
-      return orchestrator.completeFarmRun(request.params.runId, request.body)
+      const body = await takeScreenshotBundle(request.params.runId, request.body, request.log)
+      return orchestrator.completeFarmRun(request.params.runId, body)
     },
   )
 

@@ -2,6 +2,7 @@
 that a dispatched step completes and produces the branch/artifact the Node
 side needs to advance the item ("agents push tasks forward")."""
 
+import base64
 import json
 import os
 import re
@@ -651,6 +652,48 @@ def test_implement_step_publishes_screenshots_without_polluting_the_code_branch(
     assert "e2e/__screenshots__/results.json" in artifact_files(origin)
     assert "results.json" not in code_files
     assert "diff/" not in code_files
+
+
+def _implement_with_shots(tmp_path, monkeypatch, backend):
+    """HO-878: runs implement on a workspace whose agent captured one shot,
+    with the workspace read as `backend`. The rest of implement still needs
+    git (the farm's own commit and push), so the backend is set by patching
+    workspace_backend — a real .sl folder is ignored while .git exists.
+    Returns the execute() result and the publish_screenshots calls."""
+    ws, origin = make_git_workspace(tmp_path)
+    (ws / ".gitignore").write_text("e2e/__screenshots__/\n")
+    write_screenshots_config(ws, CONFIG_SHOTS)
+    subprocess.run(["git", "-C", str(ws), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(ws), "commit", "-m", "add gitignore"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(ws), "push", "origin", "main"], check=True, capture_output=True)
+    monkeypatch.setattr(step_agent, "ensure_item_worktree", lambda repo, item_id: ws)
+    monkeypatch.setattr(step_agent.screenshot_runner, "workspace_backend", lambda path: backend)
+    published = []
+    monkeypatch.setattr(step_agent, "publish_screenshots", lambda *a, **k: published.append(a))
+
+    def fake_run_agent(prompt, **kwargs):
+        (ws / "note.txt").write_text("real code change\n")
+        write_config_shot(ws, "board")
+        return {"result": '{"summary": "did the step"}'}
+
+    monkeypatch.setattr(step_agent, "run_agent", fake_run_agent)
+    result = execute(make_task(11, "Specialist agent implements", repo="acme/demo", checks_waiver=NO_CHECKS))
+    return result, published
+
+
+def test_implement_on_an_sl_workspace_sends_the_shots_on_the_result_and_never_publishes(tmp_path, monkeypatch):
+    result, published = _implement_with_shots(tmp_path, monkeypatch, "sl")
+
+    assert published == []
+    files = {f["path"]: base64.b64decode(f["data"]) for f in result["artifacts"]["screenshot_bundle"]["files"]}
+    assert files == {"board.png": b"\x89PNG\r\n\x1a\nboard"}
+
+
+def test_implement_on_a_git_workspace_publishes_the_shots_and_sends_no_bundle(tmp_path, monkeypatch):
+    result, published = _implement_with_shots(tmp_path, monkeypatch, "github")
+
+    assert len(published) == 1
+    assert "screenshot_bundle" not in result["artifacts"]
 
 
 # ---- persona injection (HZ-4, agent-scoped since HZ-125) ----

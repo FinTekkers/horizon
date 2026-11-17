@@ -11,7 +11,7 @@ import * as store from './store.js'
 import { getToken, getSetting, setSetting } from './settings.js'
 import { isTenantRepo, tokenForRepo } from './tenantTokens.js'
 import { POLL_INTERVAL_MS, UI_URL } from './config.js'
-import { ACCEPT_GATE_INDEX, endIndex, itemKindOf } from '../../domain/js/lifecycle.js'
+import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
 import { PRIORITY_LABEL_RE, priorityLabelName } from './priorityLabels.js'
 import { kindLabelName } from './kindLabels.js'
@@ -19,6 +19,8 @@ import { AUTOPILOT_OFF_LABEL } from './autopilotOffLabel.js'
 import { spliceIssueBody } from './caretakerRulingRules.js'
 import { msOf } from './sqlTime.js'
 import { SCREENSHOT_DIR } from './backends/artifact.js'
+// HO-878: the pure screenshot rules both artifact backends share — moved, unchanged.
+import { artifactPruneReason, isScreenshotResults, promotionEntries } from './backends/artifactRules.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
@@ -445,25 +447,7 @@ export async function fetchScreenshotsMarkdown(repo, ref) {
 // artifact ref as e2e/__screenshots__/results.json, in the same orphan commit
 // as the shots — domain/fixtures/screenshot-results.json is a sample. Nothing
 // here reads e2e-baseline any more; the table only renders what was stored.
-const RESULT_STATUSES = new Set(['changed', 'new', 'removed', 'same'])
-
-function isScreenshotResults(doc) {
-  return (
-    doc !== null &&
-    typeof doc === 'object' &&
-    Array.isArray(doc.shots) &&
-    doc.shots.every(
-      (s) =>
-        s !== null &&
-        typeof s === 'object' &&
-        typeof s.name === 'string' &&
-        RESULT_STATUSES.has(s.status) &&
-        (s.diffRatio == null || typeof s.diffRatio === 'number') &&
-        (s.diff == null || typeof s.diff === 'string') &&
-        (s.error == null || typeof s.error === 'string'),
-    )
-  )
-}
+// HO-878: RESULT_STATUSES and isScreenshotResults live in backends/artifactRules.js.
 
 // The stored results for this item's latest publish, or null when there are
 // none: no publish yet, a publish whose diff step was skipped, bad JSON or a
@@ -662,20 +646,7 @@ const getCursorSyncedAt = db.prepare('SELECT last_synced_at FROM sync_cursor WHE
 const artifactItem = db.prepare(
   'SELECT id, kind, cursor, abandoned_at, merged_at FROM work_item WHERE repo = ? AND lower(id) = ?',
 )
-
-// Why an artifacts ref's item no longer needs it, or null to keep the ref.
-function artifactPruneReason(row) {
-  if (!row) return 'unknown item'
-  if (row.abandoned_at) return 'abandoned'
-  if (row.merged_at) return 'merged'
-  let end
-  try {
-    end = endIndex(itemKindOf(row))
-  } catch {
-    return null // an unrecognised kind: keep rather than guess
-  }
-  return row.cursor >= end ? 'closed' : null
-}
+// HO-878: artifactPruneReason lives in backends/artifactRules.js.
 
 async function listArtifactRefs(repo) {
   const refs = []
@@ -792,7 +763,6 @@ export async function createPrFromBranch(item, branch, { manualChecks = null } =
 // a failure that ref is kept until the daily prune (pruneArtifactRefs) drops
 // it as merged.
 const PROMOTE_ATTEMPTS = 3
-const SHOT_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/
 
 async function ghJson(step, path, options) {
   const res = await gh(path, options)
@@ -800,29 +770,7 @@ async function ghJson(step, path, options) {
   return res.json()
 }
 
-// Pure: the tree entries promoting `approvals` from `results`. `artifactFiles`
-// and `baselineFiles` are path → { sha } maps (baselineFiles null when there
-// is no baseline yet). Returns { entries, skipped }: skipped names an approved
-// changed/new shot whose image is missing from the publish — it keeps its
-// prior baseline blob rather than failing every other shot's promotion.
-function promotionEntries(results, approvals, artifactFiles, baselineFiles) {
-  const entries = []
-  const skipped = []
-  const seen = new Set()
-  for (const shot of results.shots) {
-    if (!approvals.has(shot.name) || seen.has(shot.name) || !SHOT_NAME_RE.test(shot.name)) continue
-    seen.add(shot.name)
-    const path = `${SCREENSHOT_DIR}/${shot.name}.png`
-    if (shot.status === 'changed' || shot.status === 'new') {
-      const blob = artifactFiles.get(path)?.sha
-      if (blob) entries.push({ path, mode: '100644', type: 'blob', sha: blob })
-      else skipped.push(shot.name)
-    } else if (shot.status === 'removed' && baselineFiles?.has(path)) {
-      entries.push({ path, mode: '100644', type: 'blob', sha: null })
-    }
-  }
-  return { entries, skipped }
-}
+// HO-878: SHOT_NAME_RE and promotionEntries live in backends/artifactRules.js.
 
 async function promoteBaseline(item, approvals, log) {
   const repo = item.repo

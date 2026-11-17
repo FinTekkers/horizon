@@ -497,6 +497,24 @@ export async function forwardToAccept(id) {
   return { error: 'review_not_rejected' }
 }
 
+// HO-851: mirrors serverApi.forceSubstep — refused without a reason or unless
+// the design sub-step's latest round is a skip; then the item goes to the
+// sub-step with a forced round, which the demo finishes at once.
+export async function forceSubstep(id, substepId, reason) {
+  const it = items.find((x) => x.id === id)
+  if (!it) throw new Error('not_found')
+  const why = typeof reason === 'string' ? reason.trim() : ''
+  if (!why) throw Object.assign(new Error('reason_required'), { status: 400 })
+  const sub = (it.substeps ?? []).find((s) => s.id === substepId)
+  if (!sub) throw Object.assign(new Error('unknown_substep'), { status: 404 })
+  if (!sub.skip) throw Object.assign(new Error('not_skipped'), { status: 409 })
+  const rounds = [...(sub.rounds ?? [])]
+  rounds.push({ round: rounds.length + 1, kind: 'forced', brief: why, whatChanged: 'Not stated', overrideReason: why, runId: null, createdBy: 'You', createdAt: new Date().toISOString() })
+  update(id, (x) => ({ ...x, substeps: x.substeps.map((s) => (s.id === substepId ? { ...s, rounds, skip: null } : s)) }))
+  pushEvent(id, { who: 'You', text: `Design it anyway: ${why}`, color: '#9C333E', initials: 'YOU' })
+  return { ok: true, item: items.find((x) => x.id === id) }
+}
+
 // HO-844: mirrors serverApi.acceptWithExceptions — refused unless the item's
 // own offer lists exactly these lines, each with a non-blank reason; then the
 // item closes with them as its exceptions.

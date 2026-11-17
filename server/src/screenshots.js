@@ -57,6 +57,71 @@ export function listedShots(snapshot) {
   return shots.sort((a, b) => a.screen.localeCompare(b.screen))
 }
 
+// HO-852: pure — every shot of a publish, `same` ones too (listedShots drops
+// them), sorted by name, for Automated review to compare against the frozen
+// design canvas. The runner names a shot <screen>--<viewport>--<theme>
+// (farm/screenshot_runner.py png_name), so the viewport is its second part.
+// `path` is where its PNG sits in the publish, or null when it has none (a
+// removed shot, or one whose capture failed).
+export function allShots(snapshot) {
+  if (!snapshot?.results) return []
+  const seen = new Set()
+  const shots = []
+  for (const shot of snapshot.results.shots) {
+    if (seen.has(shot.name)) continue
+    seen.add(shot.name)
+    const [screen, viewport = null, theme = null] = shot.name.split('--')
+    const path = shot.status !== 'removed' && snapshot.files?.get(shotPath(shot.name)) ? shotPath(shot.name) : null
+    shots.push({ name: shot.name, screen, viewport, theme, status: shot.status, path })
+  }
+  return shots.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+export const REVIEW_SHOTS_LABEL = 'Screenshots from implement'
+
+// HO-852: the prior-artifact entry Automated review gets beside the frozen
+// canvas — every shot of the item's latest publish, which only Implement
+// makes, named by its commit. It reads only: nothing is approved or promoted
+// (that stays at Accept the code). Never throws: a failed read, or no
+// publish, is said in the entry, and the review still dispatches.
+// { label, content, commit } — commit is null when no shots could be listed.
+export async function reviewShotsInput(item) {
+  let snapshot
+  try {
+    snapshot = item.repo ? await forRepo(item.repo).artifacts.readArtifacts(item) : null
+  } catch (err) {
+    const why = String(err?.message ?? err).slice(0, 300)
+    return {
+      label: REVIEW_SHOTS_LABEL,
+      content: `The implement run's screenshots could not be read: ${why}. Mark every screen not checked.`,
+      commit: null,
+    }
+  }
+  const shots = allShots(snapshot)
+  if (shots.length === 0) {
+    return {
+      label: REVIEW_SHOTS_LABEL,
+      content: 'The implement run published no screenshots for this item. Mark every screen on the canvas not checked.',
+      commit: null,
+    }
+  }
+  const rows = shots.map(
+    (shot) =>
+      `| ${shot.screen} | ${shot.viewport ?? '-'} | ${shot.theme ?? '-'} | ${shot.status} | ${shot.path ? `\`${shot.path}\`` : 'no image'} |`,
+  )
+  return {
+    label: REVIEW_SHOTS_LABEL,
+    content: [
+      `${shots.length} screenshot${shots.length === 1 ? '' : 's'} from the implement run's latest publish, commit \`${snapshot.commit}\`. Every viewport is listed, phone included, and every status, unchanged ones included.`,
+      '',
+      '| Screen | Viewport | Theme | Status | File |',
+      '| --- | --- | --- | --- | --- |',
+      ...rows,
+    ].join('\n'),
+    commit: snapshot.commit ?? null,
+  }
+}
+
 const approvalsOf = (itemId) =>
   db.prepare('SELECT screen, fingerprint, actor, approved_at FROM screenshot_approval WHERE item_id = ?').all(itemId)
 

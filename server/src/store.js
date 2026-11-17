@@ -42,6 +42,7 @@ import {
   defaultReworkTarget,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
+import { DESIGN_OUTPUT, designSubstepOf, encodePending, latestRound, listRounds } from './designRounds.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
@@ -64,6 +65,7 @@ import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks
 import { findTargetByRepo } from './deployTargets.js'
 import { visualPageFields } from './visualPages.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
+import { approveCanvas, checkDesignApproval, clearDesignSpec, designApprovable, designRequired, designSpecFields, skipDesign } from './designSpec.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
 import { DEFAULT_BACKEND, isBackend } from './backends/names.js'
@@ -2816,6 +2818,7 @@ function substepFields(row, overlay) {
       persona,
       personaBadge: agent ? personaDisplay(agent, persona, overlay) : null,
       run: runs.get(s.id) ?? null,
+      ...designRoundFields(row.id, s),
     }
   })
   const current = currentSubstep(row)
@@ -2824,6 +2827,16 @@ function substepFields(row, overlay) {
     substep_cursor: row.substep_cursor == null ? null : String(row.substep_cursor),
     substep: current ? substeps.find((s) => s.id === current.id) : null,
   }
+}
+
+// HO-851: a design sub-step also carries every round (designRounds.js) and,
+// while its latest round is a skip, why — the "Skipped: <reason>" the tracker
+// shows. Any other sub-step carries neither key, so its payload is unchanged.
+function designRoundFields(itemId, sub) {
+  if (sub.output !== DESIGN_OUTPUT) return {}
+  const rounds = listRounds(itemId, sub.id)
+  const latest = rounds.at(-1)
+  return { rounds, skip: latest?.kind === 'skip' ? { reason: latest.brief } : null }
 }
 
 // HZ-709: one kind's steps as the snapshot lists them. Built once per kind —
@@ -2931,6 +2944,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...substepFields(row, overlay),
     // HZ-541: only on an item whose first gate approves golden cases.
     ...goldenCasesFields(row),
+    // HO-852: only on an item whose first gate approves a design canvas.
+    ...designSpecFields(row),
     // HO-862: only on an item with a recorded web-page round.
     ...visualPageFields(row),
     // HO-844: only on a Task — at Review & close on a done_proof_incomplete
@@ -2958,11 +2973,13 @@ function gateExceptionFields(row) {
 // read itself — so a target listed here is one the move route carries out.
 // The approve leaves out what approveGate would refuse: no run plan at
 // Approve the run, golden cases not yet approved at the first gate (the move
-// route sends no golden-cases hash).
+// route sends no golden-cases hash). HO-852: nor a design canvas, for the
+// same reason (designSpec.designApprovable).
 function itemMoveTargets(row, activeRun = selectActiveRun.get(row.id) || null) {
   const approvable =
     !(row.cursor === APPROVE_RUN_GATE_INDEX && !currentRunPlan(row.id)) &&
-    !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesRequired(row) && !approvedGoldenCases(row.id))
+    !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesRequired(row) && !approvedGoldenCases(row.id)) &&
+    !(FIRST_GATE_INDEXES.includes(row.cursor) && !designApprovable(row))
   return moveTargets(row, { running: activeRun != null, enabled: !disabledProject(row), approvable })
 }
 
@@ -3193,7 +3210,18 @@ export function approveGate(
   stepIndex,
   notes,
   actor = 'You',
-  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null, exceptions = null, commandIndex = null, commandHash = null } = {},
+  {
+    proof = null,
+    planHash = null,
+    runner = null,
+    goldenHash = null,
+    filedAutopilot = null,
+    exceptions = null,
+    commandIndex = null,
+    commandHash = null,
+    designSkipReason = null,
+    designRunId = null,
+  } = {},
 ) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
@@ -3344,6 +3372,26 @@ export function approveGate(
       return golden
     }
   }
+  // HO-852: and freezes the design canvas the approver was shown, or records
+  // why it approves without one. Like golden cases, a caller that shows no
+  // canvas (WhatsApp, the caretaker) names no run and gives no reason, so it
+  // is refused — unless the step 1 verdict already skipped the design.
+  let design = null
+  if (FIRST_GATE_INDEXES.includes(stepIndex) && designRequired(it)) {
+    design = checkDesignApproval(it, { skipReason: designSkipReason, runId: designRunId })
+    if (design.error) {
+      if (designRunId == null && designSkipReason == null) {
+        addEvent(id, {
+          who: actor,
+          text: `could not approve “${STEPS[stepIndex].label}”: ${design.message} — the gate stays open`,
+          color: '#9C333E',
+          initials: '✕',
+        })
+        notify()
+      }
+      return design
+    }
+  }
 
   let filed = null
   if (stepIndex === APPROVE_FILE_GATE_INDEX) {
@@ -3385,6 +3433,8 @@ export function approveGate(
       .run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed, approvedCommand?.index ?? null, approvedCommand?.hash ?? null)
     if (excepted) insertExceptions(id, Number(decision.lastInsertRowid), excepted, actor)
     if (golden?.set) approveGoldenCases(id, golden.set, actor)
+    if (design?.canvas) approveCanvas(id, design.canvas, actor)
+    if (design?.skip) skipDesign(id, design.skip.reason, actor)
     if (trimmed) {
       // Approval notes are direction for whoever runs next — queue as feedback
       // so the next dispatched agent step receives and must address them.
@@ -3403,6 +3453,14 @@ export function approveGate(
     color: '#5E4380',
     initials: '✓',
   })
+  if (design?.skip) {
+    addEvent(id, {
+      who: actor,
+      text: `approved without a design${design.skip.verdict ? ' (the step 1 verdict skipped it)' : ''}: ${design.skip.reason}`,
+      color: '#5E4380',
+      initials: '✓',
+    })
+  }
   if (excepted) {
     const lines = excepted.map((row) => row.lineId)
     addEvent(id, {
@@ -3453,7 +3511,12 @@ export function filedAutopilotOff(itemId) {
 // step the item is on — keeping this route's own target rules, refusals and
 // event until "Retire the old move routes". `proof` is the gate PIN's: only
 // a send-back with it releases a rule block (HZ-346).
-export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null, targetSubstepId = null, { proof = null } = {}) {
+//
+// HO-851: a send-back to the item's design sub-step opens a design round
+// (substep_pending_json): its brief is the note, and it names this gate, so
+// the round can come straight back here (designRounds.js). `force` is
+// forceDesign's override: the round is a forced one, with its reason.
+export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null, targetSubstepId = null, { proof = null, force = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -3506,10 +3569,25 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // HZ-541: an approved golden-cases set survives every send-back but one to
   // the sub-step that writes it, which regenerates it for a new approval.
   if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === GOLDEN_CASES_OUTPUT) clearGoldenCases(id)
+  // HO-852: so does a frozen design canvas, sent back to the design sub-step.
+  if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === DESIGN_OUTPUT) clearDesignSpec(id)
 
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
+  const design = substep ? designSubstepOf(it, substep.index) : null
+  const fields =
+    design && design.id === substep.substepId
+      ? {
+          substep_pending_json: encodePending({
+            returnKey: atGate ? stepKeyAt(it.cursor) : null,
+            brief: feedbackText || '(no notes)',
+            kind: force ? 'forced' : 'run',
+            overrideReason: force ? force.reason : null,
+            who: actor,
+          }),
+        }
+      : {}
   const moved = db.transaction(() => {
-    const result = moveItem(id, { ...move, who: actor, note: feedbackText || '', proof })
+    const result = moveItem(id, { ...move, who: actor, note: feedbackText || '', proof, fields })
     if (result.error) return result
     if (atGate) {
       db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
@@ -3538,6 +3616,34 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   })
   notify()
   agentRunner.kick(id)
+  return { ok: true }
+}
+
+// HO-851: "Design it anyway" — the owner runs a design sub-step its verdict
+// skipped, with a reason. From a gate the sub-step is a send-back target of,
+// and only while its latest round is a skip (otherwise a plain send-back is
+// the way). The send-back is requestChanges's, so it checks, cancels, moves,
+// logs and kicks exactly as any other; the reason is its note, the round's
+// brief and its override reason, stored when the round finishes. Refusals:
+// reason_required, not_found, unknown_substep, not_at_gate, not_skipped, and
+// requestChanges's own.
+export function forceDesign(id, substepId, reason, actor = 'You', { proof = null } = {}) {
+  const why = typeof reason === 'string' ? reason.trim() : ''
+  if (!why) return { error: 'reason_required' }
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
+  const sub = designSubstepOf(it)
+  if (!sub || sub.id !== substepId) return { error: 'unknown_substep' }
+  const target = substepReworkTargets(it).find((t) => t.substepId === sub.id && t.index === sub.anchor)
+  if (!target) return { error: 'not_at_gate' }
+  if (latestRound(id, sub.id)?.kind !== 'skip') return { error: 'not_skipped' }
+  const result = requestChanges(id, STEPS[it.cursor].label, why, actor, target.index, sub.id, { proof, force: { reason: why } })
+  if (result.error) return result
+  addEvent(id, { who: actor, text: `Design it anyway: ${why}`, color: '#9C333E', initials: 'YOU' })
+  notify()
   return { ok: true }
 }
 

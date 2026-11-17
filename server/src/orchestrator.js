@@ -116,8 +116,24 @@ import { isolationFields } from './projectIsolation.js'
 import { snapshotSubsteps } from './substeps.js'
 import { currentSubstep, substepsOf } from '../../domain/js/substeps.js'
 import { latestCanvas } from '../../domain/js/designCanvas.js'
+import { parseWhatChanged } from '../../domain/js/designVerdict.js'
+import {
+  GUARDRAILS_STEP_INDEX,
+  NOT_STATED,
+  currentDesignSubstep,
+  decideDesignEntry,
+  designSubstepOf,
+  encodePending,
+  nextRound,
+  readPending,
+  recordGuardrailsInputs,
+  recordRound,
+  returnTarget,
+} from './designRounds.js'
 import { recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
+import { approvedDesign, canvasInput, designRequired } from './designSpec.js'
+import { reviewShotsInput } from './screenshots.js'
 import { forRepo } from './backends/index.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, cleanOpenLines, executeFailed } from './verifyOutcome.js'
@@ -526,6 +542,85 @@ export function substepTaskField(item, stepIndex, substepId) {
     if (previous) field.previous_canvas_url = previous.url
   }
   return field
+}
+
+// HO-851: the design fields of a farm task, or {} — so every other task's body
+// is unchanged. The anchor's own run of an item with a design sub-step is
+// asked for the design_needed verdict; a design run is told its round and its
+// brief (the send-back note, the override reason or the verdict line).
+export function designTaskFields(item, stepIndex, substepId) {
+  const sub = designSubstepOf(item, stepIndex)
+  if (!sub) return {}
+  if (substepId == null) return { design_verdict: true }
+  if (substepId !== sub.id) return {}
+  return { design_round: { n: nextRound(item.id, sub.id), brief: readPending(item)?.brief ?? NOT_STATED } }
+}
+
+// HO-851: where the item goes once a run on its design sub-step's anchor
+// finished — the one helper both completion sites (completeFarmRun and
+// runMockStep) call. Returns true when it moved the item, false when the run
+// has nothing to do with a design sub-step and the caller completes as
+// before.
+//   - The anchor's own run: its artifact's verdict skips the sub-step (`no`
+//     with a reason: a skip round, no run, the item walks on) or enters it
+//     (anything else; a missing or unreadable verdict is logged, never
+//     skipped).
+//   - A design run: its round is stored, and the item goes straight back to
+//     the gate it was sent back from when "Set guardrails" need not re-run
+//     (designRounds.js returnTarget), else walks on.
+export function completeDesignSubstep(id, run, artifactMd) {
+  const item = getItem(id)
+  const sub = item && run ? designSubstepOf(item, run.step_index) : null
+  if (!sub || item.cursor !== run.step_index) return false
+  if (run.substep_id == null) {
+    if (item.substep_cursor != null) return false
+    const entry = decideDesignEntry(artifactMd)
+    if (entry.action === 'skip') {
+      const moved = writeStepCompletion(id, nextCursor(item), { substep_cursor: null, substep_pending_json: null })
+      if (moved.error) return true
+      recordRound(id, sub.id, { kind: 'skip', brief: entry.reason, who: 'Horizon' })
+      addEvent(id, { who: 'Horizon', text: `Skipped “${sub.label}”: ${entry.reason}`, color: '#5E6A75', initials: 'HZ' })
+      return true
+    }
+    const moved = writeStepCompletion(id, run.step_index, {
+      substep_cursor: sub.id,
+      substep_pending_json: encodePending({ brief: entry.brief, kind: 'run' }),
+    })
+    if (moved.error) return true
+    addEvent(id, {
+      who: 'Horizon',
+      text: entry.unreadable
+        ? `“${sub.label}” runs: the design_needed verdict is missing or unreadable (${entry.unreadable}) — it never skips on a guess`
+        : `“${sub.label}” runs: ${entry.brief}`,
+      color: entry.unreadable ? '#9C333E' : '#5E6A75',
+      initials: 'HZ',
+    })
+    return true
+  }
+  if (run.substep_id !== sub.id || currentDesignSubstep(item)?.id !== sub.id) return false
+  const pending = readPending(item)
+  const forced = pending?.kind === 'forced'
+  const back = returnTarget(item)
+  const to = back ?? nextCursor(item)
+  const moved = writeStepCompletion(id, to, { substep_cursor: null, substep_pending_json: null })
+  if (moved.error) return true
+  recordRound(id, sub.id, {
+    kind: forced ? 'forced' : 'run',
+    runId: run.id,
+    brief: pending?.brief || NOT_STATED,
+    whatChanged: parseWhatChanged(artifactMd) ?? NOT_STATED,
+    overrideReason: forced ? (pending?.overrideReason ?? null) : null,
+    who: pending?.who ?? 'Horizon',
+  })
+  if (back != null) {
+    addEvent(id, {
+      who: 'Horizon',
+      text: `“${sub.label}” finished — back to “${STEPS[back].label}”; “${STEPS[GUARDRAILS_STEP_INDEX].label}” inputs are unchanged, so it does not re-run`,
+      color: '#5E6A75',
+      initials: 'HZ',
+    })
+  }
+  return true
 }
 
 // HZ-434: Verify & report is told when its evidence was cut — which section,
@@ -1241,6 +1336,30 @@ const mockRunPlan = (it) => ({
     `## Run plan block\n\`\`\`json run-plan\n${JSON.stringify(mockRunPlanBlock(it))}\n\`\`\``,
 })
 
+// HO-851: the mock's seam for the design verdict. A real "Define how we
+// measure success" writes its design_needed line into its artifact; the mock
+// copies every such line a test seeded into the item's metric (none: no
+// artifact, so the design sub-step runs). Only the mock reads them — the
+// server's decision reads the step's artifact, as it does for the farm.
+const METRIC_STEP_INDEX = requiredStepIndex('Define how we measure success')
+function mockDesignVerdict(metric) {
+  const lines = String(metric ?? '')
+    .split('\n')
+    .filter((text) => /design_needed\s*:/i.test(text))
+    .map((text) => text.trim())
+  return lines.length ? lines.join('\n') : null
+}
+
+// HO-851: the mock "Design the screens" round — no Studio canvas in demo mode.
+// It names what changed from the round's brief, as a real round must.
+function mockDesignRound(it) {
+  const brief = readPending(it)?.brief ?? NOT_STATED
+  return {
+    summary: 'drew the screens (mock — no canvas in demo mode)',
+    artifact_md: `Screens drawn (mock): no canvas in demo mode.\n\nwhat_changed: addressed “${brief.slice(0, 120)}” (mock)`,
+  }
+}
+
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
 // pipeline's step identities are fixed, see domain/steps.json; an insertion
 // elsewhere in STEPS must never repoint one of these at the wrong step).
@@ -1264,13 +1383,17 @@ export const MOCK_STEP_BEHAVIOR = {
     if (Object.keys(result.patch).length === 0) delete result.patch
     return result
   },
-  'Define how we measure success': (it) =>
-    it.metric
+  'Define how we measure success': (it) => {
+    const result = it.metric
       ? { summary: 'validated the success metric is measurable' }
       : {
           summary: 'drafted a success metric for gate review',
           patch: { metric: `Draft — define a measurable target for “${it.title}” (confirm at the gate)` },
-        },
+        }
+    // HO-851: the design verdict, for an item with a design sub-step only.
+    const verdict = designSubstepOf(it, METRIC_STEP_INDEX) ? mockDesignVerdict(it.metric) : null
+    return verdict ? { ...result, artifact_md: verdict } : result
+  },
   'Set guardrails': (it) =>
     it.guardrails
       ? { summary: 'confirmed guardrails; defaults also apply' }
@@ -1602,6 +1725,12 @@ export function kick(id, opts = {}) {
       pick?.fallbackFrom ? new Date(pick.fallbackResetMs).toISOString() : null,
     ).lastInsertRowid
 
+  // HO-851: what "Set guardrails" is dispatched with, for a later design round
+  // to compare against (designRounds.js returnTarget). Taken now, not when it
+  // finishes: an edit while it runs is one it never saw, so it must re-run.
+  if (stepIndex === GUARDRAILS_STEP_INDEX && substepId == null) {
+    recordGuardrailsInputs(runId, item)
+  }
   // HO-837: a Preflight run is bound to the plan it checks — the hash is the
   // server's, written here for the farm and the mock alike, never by the farm.
   if (stepIndex === PREFLIGHT_STEP_INDEX) {
@@ -2404,6 +2533,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       if (!runStillActive(runId)) return
     }
   }
+  // HO-852: and, with a frozen design canvas, every shot of the implement
+  // run's publish — a GitHub read, so awaited before the feedback stamp too.
+  let reviewShots = null
+  if (stepIndex === REVIEW_STEP_INDEX && designRequired(item) && canvasInput(id, stepIndex)) {
+    reviewShots = await reviewShotsInput(item)
+    if (!runStillActive(runId)) return
+  }
 
   // HZ-204: built BEFORE the delivered_at stamp below, so this attempt's own
   // pending feedback rides in `feedback` only, never twice.
@@ -2494,6 +2630,18 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (overlapInput) artifacts.push(overlapInput)
   const goldenInput = goldenCasesInput(id, stepIndex)
   if (goldenInput) artifacts.push(goldenInput)
+  // HO-852: the frozen design canvas, right after golden cases, for Plan
+  // options, Implement and Automated review. Automated review also gets every
+  // shot of the implement run's publish (read above), and the farm stages
+  // both for its role note (design_canvas below). Nothing is approved here.
+  const canvas = designRequired(item) ? canvasInput(id, stepIndex) : null
+  if (canvas) artifacts.push(canvas)
+  let designReview = null
+  if (canvas && reviewShots) {
+    const { commit, ...shotsInput } = reviewShots
+    artifacts.push(shotsInput)
+    designReview = { canvas_url: approvedDesign(id).canvasUrl, shots_commit: commit }
+  }
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
   // HZ-463: a Plan's review steps read the current draft, the Inventory's
   // gaps and the open items in scope. Context only: completeFarmRun decides.
@@ -2581,6 +2729,8 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // HO-850: a sub-step run names its sub-step (id, label, output). Absent on
     // every global run, so their bodies are unchanged.
     ...(substep ? { substep } : {}),
+    // HO-851: only for an item with a design sub-step (designTaskFields).
+    ...designTaskFields(item, stepIndex, runSubstepId),
     // HZ-801: where this step's own artifact will be served.
     artifact_url: artifactUrl(id, stepIndex, substep ? runSubstepId : null),
     ...checkCommandsField(item),
@@ -2590,6 +2740,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // its metric line. Absent on every other step, and for every item without
     // golden cases.
     ...(GOLDEN_PROMPT_STEP_INDEXES.includes(stepIndex) && goldenCasesRequired(item) ? { golden_cases: true } : {}),
+    // HO-852: Automated review of an item with a frozen design canvas — the
+    // farm stages the canvas and the listed commit's shots, and appends the
+    // design review role note. Absent on every other step and item.
+    ...(designReview ? { design_canvas: designReview } : {}),
     // HO-862: the steps that may return a web page, on a project with web-page
     // visuals on (never a tenant). Absent otherwise, so every other body is
     // unchanged.
@@ -4139,8 +4293,9 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     })
   } else {
     // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
-    // back to (store.js requestChanges).
-    writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
+    // back to (store.js requestChanges). HO-851: unless its design sub-step
+    // decides where it goes.
+    if (!completeDesignSubstep(id, run, artifactMd)) writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
     if (impact) {
       addEvent(id, {
         who: 'Horizon',
@@ -4828,7 +4983,12 @@ async function runMockStep(id, stepIndex, runId) {
 
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
-  const behavior = MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
+  // HO-851: a design sub-step run has its own mock, never its anchor's.
+  const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
+  const designRun = run?.substep_id != null && designSubstepOf(item, stepIndex)?.id === run.substep_id
+  const behavior = designRun
+    ? mockDesignRound
+    : MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
   let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview, preflight, rehearsal } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
@@ -4901,7 +5061,8 @@ async function runMockStep(id, stepIndex, runId) {
       runId,
     )
   }
-  writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
+  // HO-851: the same design decision the farm path makes.
+  if (!completeDesignSubstep(id, run, artifactMd)) writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${summary}`,

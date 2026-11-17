@@ -27,6 +27,15 @@ def workspaces_git(path: Path, *args: str, check: bool = True, timeout: int = 30
     return result
 
 
+def workspaces_git_bytes(path: Path, *args: str, check: bool = True, timeout: int = 120) -> bytes:
+    """Like _git, but stdout stays raw bytes (blob contents such as PNGs)."""
+    result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, timeout=timeout)
+    if check and result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"git {' '.join(args)} failed: {stderr[:200]}")
+    return result.stdout
+
+
 def workspaces_clone(url: str, path: Path) -> subprocess.CompletedProcess:
     """ensure()'s hub clone; the caller checks the return code."""
     return subprocess.run(

@@ -31,6 +31,7 @@ from pathlib import Path
 from .config import FARM_HOME, QUEUE_DIR, WORKSPACES_DIR
 from .vcs import git as vcs_git
 from .vcs.git import workspaces_git as _git
+from .vcs.git import workspaces_git_bytes as _git_bytes
 
 # Bounded pool of live item worktrees per repo. Without a bound, every item
 # ever dispatched would keep its own node_modules-sized checkout on disk

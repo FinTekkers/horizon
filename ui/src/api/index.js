@@ -72,6 +72,7 @@ export const {
   resolveConflicts,
   forwardToAccept,
   acceptWithExceptions,
+  forceSubstep,
   setPaused,
   releaseRuleBlock,
   releaseUsageWait,

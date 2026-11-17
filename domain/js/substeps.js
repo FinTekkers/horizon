@@ -99,3 +99,10 @@ export function decodeMoveKey(value) {
   if (at === -1) return { stepKey: value, substepId: null }
   return { stepKey: value.slice(0, at), substepId: value.slice(at + 1) || null }
 }
+
+// HO-851: what a design sub-step its verdict skipped shows — "Skipped:
+// <reason>" from the item payload's `skip` — or null for any other sub-step.
+export function skippedText(sub) {
+  const reason = sub?.skip?.reason
+  return typeof reason === 'string' && reason ? `Skipped: ${reason}` : null
+}

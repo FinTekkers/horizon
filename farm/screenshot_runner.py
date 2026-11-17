@@ -119,6 +119,15 @@ def worker_installed(packages: tuple[str, ...] = ("playwright",)) -> bool:
         return False
 
 
+def workspace_backend(ws: Path) -> str:
+    """HO-878: "sl" for a Sapling workspace (a .sl or .hg folder and no .git),
+    else "github". Read off the filesystem only — no subprocess — because the
+    farm's step request carries no backend field (its body is pinned)."""
+    if (ws / ".git").exists():
+        return "github"
+    return "sl" if (ws / ".sl").is_dir() or (ws / ".hg").is_dir() else "github"
+
+
 def output_dir_ignored(ws: Path, output_dir: str) -> bool:
     """Whether git ignores files in outputDir, so no PNG can land on main."""
     probe = f"{output_dir.rstrip('/')}/{MANIFEST_NAME}"
@@ -547,8 +556,13 @@ def _ms(started: float) -> int:
 
 
 def preflight(ws: Path, cfg: "screenshots_config.Config") -> str | None:
-    """Why the runner cannot run on this host or workspace, or None."""
-    if not output_dir_ignored(ws, cfg.output_dir):
+    """Why the runner cannot run on this host or workspace, or None.
+
+    HO-878: an sl workspace skips the gitignore check — it runs `git`, which
+    an sl workspace cannot answer, and an sl item's shots never reach version
+    control from here: they ride to the server on the implement result
+    (step_agent.screenshot_bundle), not on a pushed ref."""
+    if workspace_backend(ws) != "sl" and not output_dir_ignored(ws, cfg.output_dir):
         return "outputDir must be gitignored"
     if not shutil.which(WORKER_CMD[0]) or not worker_installed():
         return f"farm capture worker not installed (run `{INSTALL_HINT}`)"

@@ -8,6 +8,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 """
 
 import argparse
+import base64
 import contextlib
 import contextvars
 import fnmatch
@@ -46,6 +47,7 @@ from .agent_runner import (
     AgentUsageLimitedError,
     effective_provider,
     parse_agent_reply,
+    reads_add_dirs,
     run_agent,
     salvage_truncated_reply,
     stamp_notes,
@@ -56,6 +58,7 @@ from . import (
     base_check,
     check_record,
     design_canvas,
+    design_review,
     handoff,
     login_env,
     owner_digest,
@@ -643,6 +646,12 @@ def build_prompt(task: dict) -> str:
     golden = golden_cases_section(task)
     if golden:
         lines += ["", golden]
+    design_note = design_review_section(task)
+    if design_note:
+        lines += ["", design_note]
+    verdict = design_verdict_section(task)
+    if verdict:
+        lines += ["", verdict]
     page = visual_page_section(task)
     if page:
         lines += ["", page]
@@ -671,6 +680,42 @@ def golden_cases_section(task: dict) -> str | None:
     if task.get("golden_cases") is True and task["step"].get("label") in GOLDEN_ADDENDUM_LABELS:
         return (ROLES / GOLDEN_CASES_ADDENDUM).read_text().rstrip("\n")
     return None
+
+
+# ---- design verdict (HO-851) ----
+# The server sets `design_verdict: true` on a task only for the metric step of
+# an item whose snapshot has a design sub-step. That step then records one
+# `design_needed: yes|no — <reason>` line, which decides whether "Design the
+# screens" runs (domain/js/designVerdict.js reads it). Without the flag
+# nothing is appended, so every other prompt is byte-identical.
+DESIGN_VERDICT_ADDENDUM = "design_verdict_addendum.md"
+# Change "Define how we measure success" and Task "How we'll verify".
+DESIGN_VERDICT_LABELS = frozenset({"Define how we measure success", "How we'll verify"})
+
+
+def design_verdict_section(task: dict) -> str | None:
+    """The design-verdict text a metric step's prompt ends with, or None."""
+    if task.get("design_verdict") is not True or task["step"].get("label") not in DESIGN_VERDICT_LABELS:
+        return None
+    return (ROLES / DESIGN_VERDICT_ADDENDUM).read_text().rstrip("\n")
+
+
+# ---- design review (HO-852) ----
+# The server sets `design_canvas: {"canvas_url", "shots_commit"}` on a task
+# only for Automated review of an item whose first gate froze a design canvas
+# (server/src/designSpec.js). Both review passes then end with the role note
+# asking for a matching or differing verdict per screen, and the review stages
+# the canvas and the implement run's shots for them (farm/design_review.py).
+# Without the field nothing is appended, so every other prompt is
+# byte-identical.
+DESIGN_REVIEW_ADDENDUM = "design_review_addendum.md"
+
+
+def design_review_section(task: dict) -> str | None:
+    """The design review role note a review prompt ends with, or None."""
+    if not isinstance(task.get("design_canvas"), dict) or task["step"].get("label") != REVIEW_LABEL:
+        return None
+    return (ROLES / DESIGN_REVIEW_ADDENDUM).read_text().rstrip("\n")
 
 
 # ---- web-page visuals (HO-862) ----
@@ -942,6 +987,56 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
                 shutil.rmtree(tmp, ignore_errors=True)
         except OSError as exc:
             log(f"publish_screenshots: could not remove temp index — {exc}")
+
+
+# HO-878: an sl item's screenshots go to the server on the implement result
+# (artifacts.screenshot_bundle, relayed by farmd's /complete) instead of a
+# pushed e2e-artifacts/<id> ref: an sl workspace has no git to push with. The
+# server's sl Artifact store (server/src/backends/slArtifacts.js) validates and
+# stores them and builds results.json. These caps match its BUNDLE_LIMITS and
+# keep the base64 body under /complete's 32 MB limit.
+BUNDLE_MAX_FILES = 200
+BUNDLE_MAX_FILE_BYTES = 10 * 1024 * 1024
+BUNDLE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+
+
+def screenshot_bundle(ws: Path, log=log) -> dict | None:
+    """The workspace's captured shots as {"files": [{"path", "data"}]}: each
+    PNG in outputDir plus its manifest.json, base64-encoded. None when there is
+    nothing to send or the shots are over the caps. Best-effort and file reads
+    only: never raises, never runs a subprocess."""
+    try:
+        cfg = screenshots_config.load_config(ws)
+    except screenshots_config.ConfigError:
+        log("screenshot_bundle: skipped — invalid config")
+        return None
+    if cfg is None:
+        log("screenshot_bundle: skipped — no .horizon/screenshots.json")
+        return None
+    shots_dir = ws / cfg.output_dir
+    pngs = _pngs_in(shots_dir)
+    if not pngs:
+        log("screenshot_bundle: no screenshots to send — skipped")
+        return None
+    manifest = shots_dir / screenshot_runner.MANIFEST_NAME
+    paths = [*pngs, manifest] if manifest.is_file() else pngs
+    try:
+        if len(paths) > BUNDLE_MAX_FILES:
+            raise ValueError(f"{len(paths)} files is over the cap of {BUNDLE_MAX_FILES}")
+        files, total = [], 0
+        for path in paths:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"{path.name} is not a regular file")
+            data = path.read_bytes()
+            total += len(data)
+            if len(data) > BUNDLE_MAX_FILE_BYTES or total > BUNDLE_MAX_TOTAL_BYTES:
+                raise ValueError("the shots are over the bundle cap")
+            files.append({"path": path.name, "data": base64.b64encode(data).decode("ascii")})
+    except (OSError, ValueError) as exc:
+        log(f"screenshot_bundle: skipped — {exc}")
+        return None
+    log(f"screenshot_bundle: {len(pngs)} screenshot(s) ride on the result")
+    return {"files": files}
 
 
 def truncate_diff(diff_full: str) -> tuple[str, str]:
@@ -2953,6 +3048,10 @@ def _execute_pm(task: dict) -> dict:
     golden = golden_cases_section(task)
     if golden:
         prompt = f"{prompt}\n\n{golden}"
+    # HO-851: the metric step of an item with a design sub-step records its verdict.
+    verdict = design_verdict_section(task)
+    if verdict:
+        prompt = f"{prompt}\n\n{verdict}"
     # HZ-192: run_agent() resolves the model from who is calling — the step's
     # own domain/steps.json agent (PM, or Architect for "Set guardrails").
     model_agent = model_agent_for_step(steps.by_kind_label(kind, label)["agent"])
@@ -3053,6 +3152,9 @@ def design_prompt(task: dict, rules: str, material: str | None) -> str:
     feedback = task.get("feedback") or []
     if feedback:
         lines += ["", "Human feedback to address:", *(f"- {fb.get('message', '')}" for fb in feedback)]
+    round_lines = design_round_lines(task)
+    if round_lines:
+        lines += ["", *round_lines]
     lines += ["", f"## Studio build rules ({design_canvas.DESIGN_SYSTEM})", "", rules]
     if material:
         lines += [
@@ -3065,6 +3167,25 @@ def design_prompt(task: dict, rules: str, material: str | None) -> str:
     else:
         lines += ["", "## The canvas now", "", "There is no canvas yet: this round makes it."]
     return "\n".join(lines)
+
+
+def design_round_lines(task: dict) -> list[str]:
+    """HO-851: a later design round's brief, and the one what-changed line its
+    artifact must carry. [] for a first round or a task without the field."""
+    design_round = task.get("design_round")
+    if not isinstance(design_round, dict):
+        return []
+    n = design_round.get("n")
+    if not isinstance(n, int) or isinstance(n, bool) or n <= 1:
+        return []
+    brief = str(design_round.get("brief") or "").strip() or "(no brief)"
+    return [
+        f"## This round (round {n})",
+        "What the owner asked for this round:",
+        brief,
+        "",
+        "Put exactly one line in your `artifact_md`: `what_changed: <one line on what you changed on the canvas this round>`.",
+    ]
 
 
 def _design_reply_validator(parsed):
@@ -3783,8 +3904,16 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             max_turns=max_turns,
             call_agent=call_agent,
         )
-        publish_screenshots(ws, item)
+        # HO-878: an sl workspace sends its shots on the result; a GitHub one
+        # pushes them to e2e-artifacts/<id>, exactly as before.
+        bundle = None
+        if screenshot_runner.workspace_backend(ws) == "sl":
+            bundle = screenshot_bundle(ws)
+        else:
+            publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=lease, checked_sha=checked_sha)
+        if bundle is not None:
+            artifacts["screenshot_bundle"] = bundle
         artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))
@@ -3871,63 +4000,81 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             f"## Commits under review\n\n```\n{commits}\n```\n\n"
             f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```{diff_note}"
         )
+        # HO-852: with a frozen design canvas, both passes compare the screens
+        # against it: the canvas and the implement run's shots are staged
+        # outside the checkout first (the passes are read-only), named in the
+        # prompt and readable through add_dirs; removed however the review ends.
+        base_prompt = build_prompt(task)
+        design_staged = (
+            design_review.stage(ws, item, task["design_canvas"], readable=reads_add_dirs(provider_override))
+            if design_review_section(task)
+            else None
+        )
+        design_dirs = [str(design_staged.root)] if design_staged and design_staged.root else None
+        design_files = f"\n\n{design_review.prompt_section(design_staged)}" if design_staged else ""
         prompt = (
-            build_prompt(task)
+            base_prompt
+            + design_files
             + "\n\n"
             + delta_section
             + diff_section
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        # HZ-387: each review pass is read-only, though the step itself is
-        # workspaceMutating — so each is guarded on its own, after
-        # prepare_branch's scrub, not through READ_ONLY_LABELS.
-        with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
-            code_parsed, code_provenance, code_notes = _run_and_parse(
-                prompt,
-                agent=model_agent,
-                step=label,
-                persona=persona,
-                append_system=role,
-                cwd=str(ws),
-                max_turns=max_turns,
-                timeout_s=timeout_s,
-                allowed_tools=tools,
-                required_keys=("verdict",),
-                item_id=item["id"],
-                guard=guard,
-                provider=provider_override,
-                model_choice=model_choice,
-                provider_locked=provider_locked,
-                overlay=overlay,
-            )
-            watch.provider = code_provenance.get("provider") or watch.provider
+        try:
+            # HZ-387: each review pass is read-only, though the step itself is
+            # workspaceMutating — so each is guarded on its own, after
+            # prepare_branch's scrub, not through READ_ONLY_LABELS.
+            with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
+                code_parsed, code_provenance, code_notes = _run_and_parse(
+                    prompt,
+                    agent=model_agent,
+                    step=label,
+                    persona=persona,
+                    append_system=role,
+                    cwd=str(ws),
+                    max_turns=max_turns,
+                    timeout_s=timeout_s,
+                    allowed_tools=tools,
+                    required_keys=("verdict",),
+                    item_id=item["id"],
+                    guard=guard,
+                    provider=provider_override,
+                    model_choice=model_choice,
+                    provider_locked=provider_locked,
+                    overlay=overlay,
+                    add_dirs=design_dirs,
+                )
+                watch.provider = code_provenance.get("provider") or watch.provider
 
-        # The item's QA persona, never the Eng one the code pass above used
-        # (HZ-125): a reviewer wearing the implementer's specialization reviews
-        # the work as the engineer who wrote it.
-        qa_role = (ROLES / "qa_review.md").read_text()
-        qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT), overlay)
-        with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
-            qa_parsed, qa_provenance, qa_notes = _run_and_parse(
-                prompt,
-                agent=model_agent,
-                step=label,
-                persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas, overlay),
-                append_system=qa_role,
-                cwd=str(ws),
-                max_turns=max_turns,
-                timeout_s=timeout_s,
-                allowed_tools=tools,
-                required_keys=("verdict",),
-                item_id=item["id"],
-                guard=guard,
-                provider=provider_override,
-                model_choice=model_choice,
-                provider_locked=provider_locked,
-                overlay=overlay,
-            )
-            watch.provider = qa_provenance.get("provider") or watch.provider
+            # The item's QA persona, never the Eng one the code pass above used
+            # (HZ-125): a reviewer wearing the implementer's specialization reviews
+            # the work as the engineer who wrote it.
+            qa_role = (ROLES / "qa_review.md").read_text()
+            qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT), overlay)
+            with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
+                qa_parsed, qa_provenance, qa_notes = _run_and_parse(
+                    prompt,
+                    agent=model_agent,
+                    step=label,
+                    persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas, overlay),
+                    append_system=qa_role,
+                    cwd=str(ws),
+                    max_turns=max_turns,
+                    timeout_s=timeout_s,
+                    allowed_tools=tools,
+                    required_keys=("verdict",),
+                    item_id=item["id"],
+                    guard=guard,
+                    provider=provider_override,
+                    model_choice=model_choice,
+                    provider_locked=provider_locked,
+                    overlay=overlay,
+                    add_dirs=design_dirs,
+                )
+                watch.provider = qa_provenance.get("provider") or watch.provider
+        finally:
+            design_review.remove(design_staged)
 
         # HZ-369: one step run records one provider. Passes that name different
         # ones fail the step rather than record a half-true provenance; a pass
