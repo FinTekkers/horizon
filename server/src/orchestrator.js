@@ -132,6 +132,8 @@ import {
 } from './designRounds.js'
 import { recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
+import { approvedDesign, canvasInput, designRequired } from './designSpec.js'
+import { reviewShotsInput } from './screenshots.js'
 import { forRepo } from './backends/index.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, cleanOpenLines, executeFailed } from './verifyOutcome.js'
@@ -2531,6 +2533,13 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
       if (!runStillActive(runId)) return
     }
   }
+  // HO-852: and, with a frozen design canvas, every shot of the implement
+  // run's publish — a GitHub read, so awaited before the feedback stamp too.
+  let reviewShots = null
+  if (stepIndex === REVIEW_STEP_INDEX && designRequired(item) && canvasInput(id, stepIndex)) {
+    reviewShots = await reviewShotsInput(item)
+    if (!runStillActive(runId)) return
+  }
 
   // HZ-204: built BEFORE the delivered_at stamp below, so this attempt's own
   // pending feedback rides in `feedback` only, never twice.
@@ -2621,6 +2630,18 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   if (overlapInput) artifacts.push(overlapInput)
   const goldenInput = goldenCasesInput(id, stepIndex)
   if (goldenInput) artifacts.push(goldenInput)
+  // HO-852: the frozen design canvas, right after golden cases, for Plan
+  // options, Implement and Automated review. Automated review also gets every
+  // shot of the implement run's publish (read above), and the farm stages
+  // both for its role note (design_canvas below). Nothing is approved here.
+  const canvas = designRequired(item) ? canvasInput(id, stepIndex) : null
+  if (canvas) artifacts.push(canvas)
+  let designReview = null
+  if (canvas && reviewShots) {
+    const { commit, ...shotsInput } = reviewShots
+    artifacts.push(shotsInput)
+    designReview = { canvas_url: approvedDesign(id).canvasUrl, shots_commit: commit }
+  }
   if (stepIndex === REVIEW_STEP_INDEX) artifacts.push(buildStoredResultsInput(id))
   // HZ-463: a Plan's review steps read the current draft, the Inventory's
   // gaps and the open items in scope. Context only: completeFarmRun decides.
@@ -2719,6 +2740,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // its metric line. Absent on every other step, and for every item without
     // golden cases.
     ...(GOLDEN_PROMPT_STEP_INDEXES.includes(stepIndex) && goldenCasesRequired(item) ? { golden_cases: true } : {}),
+    // HO-852: Automated review of an item with a frozen design canvas — the
+    // farm stages the canvas and the listed commit's shots, and appends the
+    // design review role note. Absent on every other step and item.
+    ...(designReview ? { design_canvas: designReview } : {}),
     // HO-862: the steps that may return a web page, on a project with web-page
     // visuals on (never a tenant). Absent otherwise, so every other body is
     // unchanged.

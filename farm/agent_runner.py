@@ -74,6 +74,13 @@ def effective_provider(override: str | None) -> str:
     return override or _selected_provider_name()
 
 
+def reads_add_dirs(override: str | None) -> bool:
+    """HO-852: whether the provider run_agent() would pick for this override
+    can be handed add_dirs, so a caller with optional files can leave them
+    out rather than have the call refused."""
+    return bool(getattr(_PROVIDERS.get(effective_provider(override)), "READS_ADD_DIRS", False))
+
+
 # HZ-192: the one emergency override, for every call at once. Read at call
 # time, like FARM_PROVIDER. HZ-398: checked against domain/providers.json, so
 # a typo fails here instead of reaching the CLI, and applied only to calls on

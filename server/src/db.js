@@ -1214,6 +1214,25 @@ db.exec(`
   );
 `)
 
+// HO-852: the design canvas approved at an item's first gate, or the reason it
+// was approved without one, copied out of the design sub-step's run as
+// golden_case_set is, so a later round can never change the spec. One row per
+// item: a frozen canvas has canvas_url and no skip_reason; "Approve without
+// design" has a non-blank skip_reason and no canvas_url. Written and cleared
+// only by server/src/designSpec.js. A new table: nothing to backfill.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS design_spec (
+    item_id       TEXT PRIMARY KEY REFERENCES work_item(id) ON DELETE CASCADE,
+    canvas_url    TEXT,
+    source_run_id INTEGER,
+    skip_reason   TEXT,
+    approved_by   TEXT NOT NULL,
+    approved_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (canvas_url IS NULL OR skip_reason IS NULL),
+    CHECK (skip_reason IS NULL OR length(trim(skip_reason)) > 0)
+  );
+`)
+
 // HZ-270: project_event is the project-level audit trail (event.item_id is
 // NOT NULL, so an Autopilot change cannot live there). caretaker_eval holds one
 // row per gate arrival the caretaker judged; its UNIQUE key is the persisted
