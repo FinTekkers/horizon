@@ -10,6 +10,16 @@
 // test/contracts/tracker.contract.mjs writes that result type down.
 // getSyncState, pollOnce and startPolling cover every connected repo, not the
 // one forRepo() was asked about; callers reach them through forKind('github').
+//
+// HO-872: the review and vcs groups are the Review and VCS ports that Accept,
+// the deploy queue, the caretaker and auto-resolve call. Their contracts are
+// test/contracts/review.contract.mjs and test/contracts/vcs.contract.mjs.
+// vcs.land is github.js's land, mergePr unchanged, resolving { hash: null }.
+// The listeners (setPrMergedListener, setMainHeadListener) and the request
+// helpers that take no repo (parseRepo, validateToken, verifySignature) serve
+// GitHub's poll and webhook as a whole, so callers reach them through
+// forKind('github'), like getSyncState. createMockPr, the issue groups and the
+// release calls are still GitHub-shaped; HO-873 splits them.
 
 import {
   closeIssueAsAbandoned,
@@ -18,7 +28,10 @@ import {
   createBatchRelease,
   createDeployRelease,
   createIssue,
+  createMockPr,
   createPrFromBranch,
+  defaultBranchOf,
+  defaultBranchStale,
   deleteArtifactRef,
   fetchBlob,
   fetchScreenshotResults,
@@ -34,14 +47,18 @@ import {
   getPrMergeSha,
   getRepoPermissions,
   getSyncState,
+  handlePrStateChange,
   ingestComment,
   ingestIssue,
   isAncestor,
+  land,
   mergePr,
+  parseRepo,
   patchIssueBodyLines,
   pollComments,
   pollOnce,
   pollRepo,
+  prsForCommit,
   postIssueComment,
   pruneArtifactRefs,
   pushIssueScope,
@@ -49,17 +66,25 @@ import {
   refreshPrScreenshots,
   screenshotsSection,
   setAutopilotOffLabel,
+  setBlobsForTest,
+  setMainHeadListener,
+  setPrMergedListener,
+  setPrStateForTest,
   setPriorityLabel,
+  setScreenshotSnapshotForTest,
   startPolling,
   syncIssueBodyFields,
   validateRepo,
+  validateToken,
+  verifySignature,
 } from '../github.js'
 
 // HO-871, transitional and not part of any adapter group: the land-path git
 // lookups spawn.js's "is the shipped code live" check runs, and the request
 // headers webhooks.js sends when it registers repo hooks. They let those two
-// files stop importing ../github.js; HO-872 moves them onto its own ports and
-// removes this line.
+// files stop importing ../github.js. HO-872 put the four git lookups on the
+// review and vcs ports below but left spawn.js and webhooks.js (outside its
+// scope) on this line; the item that moves them removes it.
 export { defaultBranchOf, getBranchSha, getPrMergeSha, ghHeaders, isAncestor } from '../github.js'
 
 export const githubAdapters = Object.freeze({
@@ -88,6 +113,7 @@ export const githubAdapters = Object.freeze({
   // Pull requests.
   review: Object.freeze({
     createPrFromBranch,
+    createMockPr,
     getPrHead,
     getPrHeadSha,
     getPrFiles,
@@ -95,12 +121,29 @@ export const githubAdapters = Object.freeze({
     mergePr,
     refreshPrMergeable,
     refreshPrScreenshots,
+    // HO-872: a PR merged or closed on GitHub, and app.js's hook for it.
+    handlePrStateChange,
+    setPrMergedListener,
+    // HO-872: the PRs merged into the default branch by a commit (auto-resolve).
+    prsForCommit,
   }),
   // The repository itself: branches, ancestry, permissions, releases.
   vcs: Object.freeze({
     validateRepo,
     getBranchSha,
     isAncestor,
+    // HO-872: Accept's merge. app.js calls it only inside the premerge claim.
+    land,
+    // HO-872: the cached default branch, and whether its last read is past
+    // GitHub's re-read TTL (the deploy queue releases only a fresh one).
+    defaultBranchOf,
+    defaultBranchStale,
+    // HO-872: auto-resolve's "main moved" hook on the poll.
+    setMainHeadListener,
+    // HO-872: repo, token and webhook-signature checks that take no repo.
+    parseRepo,
+    validateToken,
+    verifySignature,
     getRepoPermissions,
     findReleaseByTag,
     createBatchRelease,
@@ -118,3 +161,7 @@ export const githubAdapters = Object.freeze({
     pruneArtifactRefs,
   }),
 })
+
+// HO-872: the e2e-only answers app.js's /api/test/* routes set while there is
+// no GitHub token. Not an adapter group: no backend but GitHub has them.
+export const githubTestHooks = Object.freeze({ setPrStateForTest, setScreenshotSnapshotForTest, setBlobsForTest })

@@ -1012,6 +1012,16 @@ export async function mergePr(item, { sha, approvals = null, log } = {}) {
   throw new Error(message)
 }
 
+// HO-872: the VCS port's land for GitHub — mergePr, unchanged (same
+// arguments, same errors). It resolves { hash: null } on purpose: GitHub's
+// landed commit is the PR's merge commit, which the deploy queue reads with
+// getPrMergeSha, so app.js records no landed_hash for a GitHub item. `item`
+// fields read: repo, pr and id (the work branch's name).
+export async function land(item, opts) {
+  await mergePr(item, opts)
+  return { hash: null }
+}
+
 // The commit the item's PR head points at right now, or null when the item
 // has no PR (demo mode). HZ-185's forward compares it with the commit the
 // last automated review read. Throws when GitHub can't answer, so a caller
