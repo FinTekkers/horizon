@@ -2,11 +2,11 @@
 // beside GitHub, so new code must not grow fresh direct dependencies on either
 // one. Two rules:
 //
-//   1. Only the files in GITHUB_ALLOWLIST may import server/src/github.js. The
-//      list is two-way strict: a new importer fails, and so does a listed file
-//      that no longer imports it, so the list only ever shrinks on purpose.
-//   2. Only the files in SL_ALLOWLIST may import an `sl` module. No such module
-//      exists yet, so the list starts empty.
+//   1. No file under server/src/ outside server/src/backends/ imports
+//      server/src/github.js. HO-873 moved the last importers onto the registry
+//      and deleted the allowlist this rule used to have. Inside backends/, only
+//      the GitHub adapter module (server/src/backends/github.js) imports it.
+//   2. Only the files in SL_ALLOWLIST may import an `sl` module.
 //
 // Every allowlist entry is an exact repo-relative path — never a glob or a
 // directory prefix. When a later HO-868 item moves a call site, it edits the
@@ -34,27 +34,13 @@ import path from 'node:path'
 import { repoFiles, relative, stripComments, REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const GITHUB_TARGET = 'server/src/github.js'
-
-// Exactly today's 6 importers of server/src/github.js. HO-870 added
-// backends/github.js: the GitHub adapters forRepo() hands out are github.js's
-// own functions, so it is the one importer every moved call site routes through.
-// HO-871 moved the tracker calls onto forRepo(repo).tracker, so caretakerRuling.js,
-// spawn.js, split.js and webhooks.js left the list. HO-872 moved Accept, the
-// deploy queue and auto-resolve onto the Review and VCS ports, so app.js,
-// autoResolve.js, deployQueue.js and orchestrator.js left it.
-//
-// The update rule: a PR whose diff removes a file's last import of github.js
-// removes that file from this list in the same diff. A PR never adds an
-// entry to make this test pass — a new importer routes through
+const BACKENDS_DIR = 'server/src/backends/'
+// HO-870 added backends/github.js: the GitHub adapters forRepo() hands out are
+// github.js's own functions, so it is the one importer every call site routes
+// through. HO-871, HO-872 and HO-873 moved every other importer onto the
+// registry; HO-873 deleted the allowlist. A new importer routes through
 // backends/index.js instead.
-const GITHUB_ALLOWLIST = [
-  'server/src/backends/github.js',
-  'server/src/overlapService.js',
-  'server/src/projectValidate.js',
-  'server/src/screenshots.js',
-  'server/src/server.js',
-  'server/src/tokenCheck.js',
-]
+const GITHUB_ADAPTER = 'server/src/backends/github.js'
 
 // HO-870 added server/src/backends/sl.js (placeholder adapters); the registry
 // is its only importer. HO-868's later items add the rest.
@@ -91,6 +77,7 @@ function resolveSpecifier(file, spec) {
 }
 
 const importsGithub = (file, spec) => resolveSpecifier(file, spec) === GITHUB_TARGET
+const outsideBackends = (file) => !file.startsWith(BACKENDS_DIR)
 const importsSl = (_file, spec) => SL.test(spec)
 
 // Sorted paths of the files that import a specifier `isTarget` accepts.
@@ -118,12 +105,14 @@ test('the server/src walk is not vacuous', () => {
   assert.ok(serverSrc.some((f) => f.path === GITHUB_TARGET), `${GITHUB_TARGET} was not in the walk`)
 })
 
-test('the server/src/github.js importers are exactly GITHUB_ALLOWLIST', () => {
+test('HO-873 metric 1: no file under server/src/ outside server/src/backends/ imports server/src/github.js', () => {
   const found = importers(serverSrc, importsGithub)
-  const { unlisted, stale } = diffAllowlist(found, GITHUB_ALLOWLIST)
-  assert.deepEqual(unlisted, [], `new importer(s) of ${GITHUB_TARGET} — route through a backend, or add to GITHUB_ALLOWLIST in this file: ${unlisted.join(', ')}`)
-  assert.deepEqual(stale, [], `listed in GITHUB_ALLOWLIST but no longer importing ${GITHUB_TARGET} — remove from the list: ${stale.join(', ')}`)
-  assert.deepEqual(found, [...GITHUB_ALLOWLIST].sort())
+  const outside = found.filter(outsideBackends)
+  assert.deepEqual(outside, [], `importer(s) of ${GITHUB_TARGET} outside ${BACKENDS_DIR} — route through backends/index.js: ${outside.join(', ')}`)
+})
+
+test('inside server/src/backends/, only the GitHub adapter imports server/src/github.js', () => {
+  assert.deepEqual(importers(serverSrc, importsGithub), [GITHUB_ADAPTER])
 })
 
 test('the sl module importers are exactly SL_ALLOWLIST', () => {
@@ -132,18 +121,19 @@ test('the sl module importers are exactly SL_ALLOWLIST', () => {
 })
 
 test('every allowlist entry is an exact path to an existing file', () => {
-  for (const entry of [...GITHUB_ALLOWLIST, ...SL_ALLOWLIST]) {
+  for (const entry of SL_ALLOWLIST) {
     assert.ok(!entry.includes('*'), `glob in allowlist: ${entry}`)
     assert.ok(!entry.endsWith('/'), `directory prefix in allowlist: ${entry}`)
     assert.ok(existsSync(path.join(REPO_ROOT, entry)), `allowlist entry does not exist: ${entry}`)
   }
-  assert.equal(new Set(GITHUB_ALLOWLIST).size, GITHUB_ALLOWLIST.length, 'duplicate GITHUB_ALLOWLIST entry')
+  assert.ok(existsSync(path.join(REPO_ROOT, GITHUB_ADAPTER)), `${GITHUB_ADAPTER} does not exist`)
 })
 
 // --- fixture cases: in-memory text, no files written ---
 
 const fixture = (file, text) => ({ path: file, text })
-const githubViolations = (files) => diffAllowlist(importers(files, importsGithub), GITHUB_ALLOWLIST).unlisted
+// Every importer of server/src/github.js but the GitHub adapter module.
+const githubViolations = (files) => importers(files, importsGithub).filter((file) => file !== GITHUB_ADAPTER)
 const slViolations = (files) => diffAllowlist(importers(files, importsSl), SL_ALLOWLIST).unlisted
 
 test('fixture: an unlisted file importing ./github.js is flagged, in every quote style', () => {
@@ -194,14 +184,34 @@ test('fixture: a real import survives stripComments with comments around it', ()
   assert.deepEqual(githubViolations([fixture('server/src/newThing.js', text)]), ['server/src/newThing.js'])
 })
 
-test('fixture: a listed file is not flagged, and a listed file without the import is stale', () => {
-  // HO-871: split.js left GITHUB_ALLOWLIST, so the stale sample is a file still on it.
-  // HO-872: app.js left it too, so the listed sample is server.js, still on it.
-  const files = [fixture('server/src/server.js', `import { x } from './github.js'`), fixture('server/src/tokenCheck.js', `export const y = 1`)]
-  const { unlisted, stale } = diffAllowlist(importers(files, importsGithub), GITHUB_ALLOWLIST)
-  assert.deepEqual(unlisted, [])
-  assert.ok(stale.includes('server/src/tokenCheck.js'), `tokenCheck.js not reported stale: ${stale.join(', ')}`)
-  assert.ok(!stale.includes('server/src/server.js'))
+test('HO-873 fixture: with the allowlist gone, a former allowlist file importing ./github.js is flagged; the GitHub adapter is not', () => {
+  // Replaces HO-869's "a listed file is not flagged, and a listed file without
+  // the import is stale" case: there is no list left to be listed on.
+  const files = [
+    fixture('server/src/server.js', `import * as github from './github.js'`),
+    fixture('server/src/tokenCheck.js', `import { ghHeaders } from './github.js'`),
+    fixture(GITHUB_ADAPTER, `import { mergePr } from '../github.js'`),
+    fixture('server/src/screenshots.js', `import { forRepo } from './backends/index.js'`),
+  ]
+  assert.deepEqual(githubViolations(files), ['server/src/server.js', 'server/src/tokenCheck.js'])
+  assert.deepEqual(importers(files, importsGithub).filter(outsideBackends), ['server/src/server.js', 'server/src/tokenCheck.js'])
+})
+
+test('HO-873 fixture: planted imports outside backends/ are flagged — ../github.js from a subfolder, export * from, await import()', () => {
+  const sources = [
+    ['server/src/newThing.js', `import * as g from './github.js'`],
+    ['server/src/lib/newThing.js', `import { x } from '../github.js'`],
+    ['server/src/newThing.js', `export * from './github.js'`],
+    ['server/src/lib/newThing.js', `export * from "../github.js"`],
+    ['server/src/newThing.js', `const gh = await import('./github.js')`],
+    ['server/src/lib/newThing.js', 'const gh = await import(`../github.js`)'],
+  ]
+  for (const [file, text] of sources) {
+    assert.deepEqual(importers([fixture(file, text)], importsGithub).filter(outsideBackends), [file], text)
+  }
+  // A comment that names github.js is not an import.
+  const comment = fixture('server/src/newThing.js', `// was: import { x } from './github.js'\nexport const y = 1`)
+  assert.deepEqual(importers([comment], importsGithub), [])
 })
 
 test('fixture: an unlisted file importing an sl module is flagged', () => {
@@ -234,7 +244,6 @@ const LAND_PATH_FILES = [
   'server/src/caretakerRuling.js',
   'server/src/autoResolve.js',
 ]
-const GITHUB_ADAPTER = 'server/src/backends/github.js'
 const REGISTRY = 'server/src/backends/index.js'
 
 const importsGithubOrAdapter = (file, spec) => [GITHUB_TARGET, GITHUB_ADAPTER].includes(resolveSpecifier(file, spec))

@@ -16,7 +16,7 @@
 // A refusal's message names the classic token or the missing permission,
 // never the token. Network failures and GitHub 5xx are `github_unreachable`.
 
-import { ghHeaders } from './github.js'
+import { ghHeaders } from './backends/index.js'
 
 const API = 'https://api.github.com'
 

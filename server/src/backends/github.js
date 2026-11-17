@@ -19,7 +19,10 @@
 // helpers that take no repo (parseRepo, validateToken, verifySignature) serve
 // GitHub's poll and webhook as a whole, so callers reach them through
 // forKind('github'), like getSyncState. createMockPr, the issue groups and the
-// release calls are still GitHub-shaped; HO-873 splits them.
+// release calls are still GitHub-shaped; a later item splits them.
+//
+// HO-873: the artifacts group leads with the Artifact port's six methods, each
+// github.js's own one-line wrapper over the existing artifact functions.
 
 import {
   closeIssueAsAbandoned,
@@ -52,18 +55,24 @@ import {
   ingestIssue,
   isAncestor,
   land,
+  listArtifacts,
   mergePr,
   parseRepo,
   patchIssueBodyLines,
   pollComments,
   pollOnce,
   pollRepo,
+  promoteArtifacts,
   prsForCommit,
   postIssueComment,
   pruneArtifactRefs,
+  pruneArtifacts,
   pushIssueScope,
+  readArtifactBlob,
+  readArtifacts,
   refreshPrMergeable,
   refreshPrScreenshots,
+  removeArtifacts,
   screenshotsSection,
   setAutopilotOffLabel,
   setBlobsForTest,
@@ -150,7 +159,16 @@ export const githubAdapters = Object.freeze({
     createDeployRelease,
   }),
   // Screenshots and other artifacts stored as git refs and blobs.
+  // HO-873: the first six are the Artifact port (backends/artifact.js,
+  // test/contracts/artifact.contract.mjs); the rest are GitHub-shaped helpers
+  // app.js and github.js still call.
   artifacts: Object.freeze({
+    readArtifacts,
+    readArtifactBlob,
+    listArtifacts,
+    removeArtifacts,
+    pruneArtifacts,
+    promoteArtifacts,
     fetchScreenshotsMarkdown,
     fetchScreenshotResults,
     compareScreenshotsMarkdown,

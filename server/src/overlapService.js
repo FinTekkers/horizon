@@ -6,7 +6,7 @@
 
 import { db } from './db.js'
 import { getItem, latestArtifact, addDependency, queueFeedbackOnce, overlapLinkRemoval, addEvent } from './store.js'
-import { getPrFiles } from './github.js'
+import { forRepo } from './backends/index.js'
 import { DEPLOY_STEP_INDEX, requiredStepIndex } from '../../domain/js/lifecycle.js'
 import { extractPlanFootprint, footprintFromPrFiles, isEmptyFootprint, decideOverlap, contractText, peerStateOf } from './overlap.js'
 
@@ -56,7 +56,7 @@ export async function footprintOf(row, { preferPr = false } = {}) {
   if (row.pr != null) {
     let files
     try {
-      files = await getPrFiles(row)
+      files = await forRepo(row.repo).review.getPrFiles(row)
     } catch (err) {
       return fromPlan || { reason: `PR #${row.pr}'s file list is unavailable: ${err.message}` }
     }

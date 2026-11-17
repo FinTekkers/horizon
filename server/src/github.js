@@ -18,6 +18,7 @@ import { kindLabelName } from './kindLabels.js'
 import { AUTOPILOT_OFF_LABEL } from './autopilotOffLabel.js'
 import { spliceIssueBody } from './caretakerRulingRules.js'
 import { msOf } from './sqlTime.js'
+import { SCREENSHOT_DIR } from './backends/artifact.js'
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
@@ -406,8 +407,9 @@ export async function createMockPr(item) {
 const BASELINE_REF = 'e2e-baseline'
 const artifactsRef = (item) => `e2e-artifacts/${item.id.toLowerCase()}`
 // Where a publish puts the shots (<name>.png), their diffs (diff/<name>.png)
-// and results.json, on the artifacts ref.
-export const SCREENSHOT_DIR = 'e2e/__screenshots__'
+// and results.json, on the artifacts ref. HO-873: defined by the Artifact port
+// (backends/artifact.js), the same on every backend; re-exported here.
+export { SCREENSHOT_DIR }
 
 // Exported for direct unit testing; pure formatting, no network.
 export function screenshotsMarkdown(files) {
@@ -886,6 +888,42 @@ async function promoteBaseline(item, approvals, log) {
   }
   await deleteArtifactRef(repo, item)
   return { promoted: 0, seeded: false }
+}
+
+// HO-873: the Artifact port (backends/artifact.js) for GitHub — the methods
+// forRepo(repo).artifacts carries. Each one calls the function above it
+// unchanged; listArtifacts applies pruneArtifactRefs's own rule for which refs
+// under ARTIFACTS_PREFIX name an item. The live prune (startPolling) and
+// promotion (mergePr) still call pruneArtifactRefs and promoteBaseline direct.
+export function readArtifacts(item) {
+  return fetchScreenshotSnapshot(item.repo, item)
+}
+
+export function readArtifactBlob(item, sha) {
+  return fetchBlob(item.repo, sha)
+}
+
+export async function listArtifacts(repo) {
+  const ids = []
+  for (const { ref } of await listArtifactRefs(repo)) {
+    if (typeof ref !== 'string' || !ref.startsWith(ARTIFACTS_PREFIX)) continue
+    const suffix = ref.slice(ARTIFACTS_PREFIX.length)
+    if (!suffix || suffix.includes('/')) continue
+    ids.push(suffix)
+  }
+  return ids
+}
+
+export function removeArtifacts(item) {
+  return deleteArtifactRef(item.repo, item)
+}
+
+export function pruneArtifacts({ log, now } = {}) {
+  return pruneArtifactRefs(log, now)
+}
+
+export function promoteArtifacts(item, approvals, { log } = {}) {
+  return promoteBaseline(item, approvals, log)
 }
 
 const SHA_RE = /^[0-9a-f]{40}$/
