@@ -2033,6 +2033,10 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
   border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-alt);
   font: 700 13px var(--font-sans); color: var(--deep); cursor: pointer;
 }
+.autopilot-off-toggle--unavailable {
+  min-height: 0; padding: 8px 14px; border-style: dashed; background: none;
+  font-weight: 500; color: var(--text-secondary); cursor: default;
+}
 .autopilot-off-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--primary-ink); }
 .autopilot-off-toggle__error { font: 600 12px var(--font-sans); color: var(--danger-ink); }
 .autopilot-off-note {

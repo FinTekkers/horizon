@@ -60,13 +60,14 @@ afterEach(() => {
 
 const noop = () => {}
 
-function Page({ id }) {
+function Page({ id, projects }) {
   const items = useSyncExternalStore(serverApi.subscribe, serverApi.getItems)
   const item = items.find((it) => it.id === id)
   if (!item) return null
   return (
     <Tracker
       item={item}
+      projects={projects}
       onBack={noop}
       onApprove={noop}
       onApproveWithComments={noop}
@@ -110,8 +111,8 @@ function atAccept(extra = {}) {
 }
 const answered = (item, autopilotOff) => ({ ...item, autopilotOff, last_activity_at: '2026-10-22 12:00:05' })
 
-function open(item) {
-  const view = render(<Page id={item.id} />)
+function open(item, projects) {
+  const view = render(<Page id={item.id} projects={projects} />)
   act(() => MockEventSource.instances.at(-1).dispatch('snapshot', { items: [item] }))
   return view
 }
@@ -243,3 +244,46 @@ for (const mode of ['shadow', 'off']) {
     expect(view.container.textContent).not.toContain('Autopilot is off for this item.')
   })
 }
+
+// HO-900: the repo's backend comes from the per-repo setting the projects carry
+// (GET /api/projects' repos[].backend), never from the item.
+const projectsWith = (repo, backend) => [{ id: 1, name: 'FinTekkers', repos: [{ repo, backend }] }]
+const SL_REASON = /not available on sl items/
+const noBox = (view, item) => view.queryByRole('checkbox', { name: `Turn off Autopilot for ${item.id}` })
+
+test('an open sl item with no issue in an Autopilot-on project says why, shows no box, and sends nothing', () => {
+  const route = stubRoute(() => reply({ ok: true }))
+  const item = atAccept({ issue: null, repo: 'Org/local' })
+  const view = open(item, projectsWith('Org/local', 'sl'))
+  expect(view.getByText(SL_REASON)).toBeTruthy()
+  expect(noBox(view, item)).toBeNull()
+  expect(route).not.toHaveBeenCalled()
+})
+
+test('an sl item never shows a live box, even when it carries an issue number', () => {
+  const item = atAccept({ issue: 364, repo: 'Org/local' })
+  const view = open(item, projectsWith('Org/local', 'sl'))
+  expect(noBox(view, item)).toBeNull()
+  expect(view.getByText(SL_REASON)).toBeTruthy()
+})
+
+test('a github repo keeps the unticked box and shows no sl reason', () => {
+  const item = atAccept()
+  const view = open(item, projectsWith('FinTekkers/ledger-models', 'github'))
+  expect(box(view, item).checked).toBe(false)
+  expect(view.queryByText(SL_REASON)).toBeNull()
+})
+
+test('a github item with no issue shows neither the box nor the sl reason', () => {
+  const item = atAccept({ issue: null })
+  const view = open(item, projectsWith('FinTekkers/ledger-models', 'github'))
+  expect(noBox(view, item)).toBeNull()
+  expect(view.queryByText(SL_REASON)).toBeNull()
+})
+
+test('a local item with no repo shows neither the box nor the sl reason', () => {
+  const item = atAccept({ issue: null, repo: null })
+  const view = open(item, projectsWith('Org/local', 'sl'))
+  expect(noBox(view, item)).toBeNull()
+  expect(view.queryByText(SL_REASON)).toBeNull()
+})

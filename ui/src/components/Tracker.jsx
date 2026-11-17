@@ -43,6 +43,7 @@ import DesignAnywayButton from './DesignAnyway.jsx'
 import { metricLines } from '../../../domain/js/goldenCases.js'
 import { parseStoredUtc, runTimeText } from '../../../domain/js/runTime.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
+import { repoBackendOf } from './connectRepo'
 import DependencyBadge, { fromPlanLabel, itemHref, openPlanClick, planHref } from './DependencyBadge'
 import AsksPanel from './AsksPanel'
 import BlockingAsksBanner from './BlockingAsksBanner'
@@ -1339,13 +1340,28 @@ const AUTOPILOT_OFF_ERRORS = {
 
 // Shown in an Autopilot-on project, or wherever the label is already on (so it
 // can be taken off); never for a local item, which has no issue to label.
-const autopilotOffToggleShown = (item) => item.issue != null && (item.projectAutopilot === 'on' || !!item.autopilotOff)
+// HO-900: never on an `sl` repo either — the server refuses it (no GitHub
+// issue to label), so the item shows the reason below instead. `backend` is
+// the repo's per-repo setting (repoBackendOf), null when unknown.
+const autopilotOffToggleShown = (item, backend) =>
+  backend !== 'sl' && item.issue != null && (item.projectAutopilot === 'on' || !!item.autopilotOff)
+const autopilotOffUnavailableShown = (item, backend) => backend === 'sl' && item.projectAutopilot === 'on'
 
-function AutopilotOffToggle({ item }) {
+function AutopilotOffToggle({ item, backend }) {
   const [pending, setPending] = useState(null)
   const [error, setError] = useState(null)
   const inFlight = useRef(false)
-  if (!autopilotOffToggleShown(item)) return null
+  if (autopilotOffUnavailableShown(item, backend)) {
+    return (
+      <>
+        <span style={{ flex: 1 }} />
+        <span className="autopilot-off-toggle autopilot-off-toggle--unavailable">
+          Turn off Autopilot is not available on sl items yet — it needs a GitHub issue label.
+        </span>
+      </>
+    )
+  }
+  if (!autopilotOffToggleShown(item, backend)) return null
   const send = (off) => {
     if (inFlight.current) return
     inFlight.current = true
@@ -1385,8 +1401,8 @@ function AutopilotOffToggle({ item }) {
   )
 }
 
-function AutopilotOffNote({ item }) {
-  if (!autopilotOffToggleShown(item)) return null
+function AutopilotOffNote({ item, backend }) {
+  if (!autopilotOffToggleShown(item, backend)) return null
   return (
     <>
       {autopilotOffShown(item) && (
@@ -1450,6 +1466,7 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
   const abandoned = isAbandoned(item)
   const { stepOutputs, settled: outputsSettled } = useStepOutputs(item)
   const linkContextFor = (sourceShas, defaultRepo = null) => itemLinkContext(item, projects, knownItemIds, sourceShas, defaultRepo)
+  const backend = repoBackendOf(projects, item.repo)
   // HZ-385: the button sends the state it shows, once at a time. Busy and the
   // error are kept with the item id, so opening another item drops them.
   const pauseInFlight = useRef(false)
@@ -1557,12 +1574,12 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                   {item.release_tag}
                 </a>
               )}
-              {!abandoned && !closed && <AutopilotOffToggle key={`autopilot-off-${item.id}`} item={item} />}
+              {!abandoned && !closed && <AutopilotOffToggle key={`autopilot-off-${item.id}`} item={item} backend={backend} />}
             </div>
             <div className="tracker__title">{item.title}</div>
             {/* HZ-153: issue bodies are markdown — Markdown renders them as
                 React elements, never as HTML. Same for the two tiles below. */}
-            {!abandoned && !closed && <AutopilotOffNote item={item} />}
+            {!abandoned && !closed && <AutopilotOffNote item={item} backend={backend} />}
             <Markdown className="tracker__desc" text={item.desc} linkContext={linkContextFor(null)} />
           </div>
           <StatusPill status={status} className="tracker__status" />
