@@ -60,7 +60,7 @@ def test_push_with_lease_argv_unchanged(ws_root, monkeypatch):
     assert [(s.argv, s.kwargs) for s in recorder.spawns] == [
         (
             ["git", "-C", str(ws), "push", f"--force-with-lease=refs/heads/{branch}:", "-u", "origin", f"{branch}:refs/heads/{branch}"],
-            {**TEXT, "timeout": 300, "env": None},
+            dict(TEXT, timeout=300, env=None),
         )
     ]
     assert origin_branch_sha(ws_root / "origin.git", branch) == git(ws, "rev-parse", "HEAD").stdout.strip()
@@ -94,7 +94,7 @@ def test_push_guarded_argv_unchanged(ws_root, monkeypatch):
     assert [(s.argv, s.kwargs) for s in recorder.spawns] == [
         (
             ["git", "-C", str(ws), "push", f"--force-with-lease=refs/heads/{branch}:{lease}", "origin", branch],
-            {**TEXT, "timeout": conflict_resolver.GIT_TIMEOUT_S},
+            dict(TEXT, timeout=conflict_resolver.GIT_TIMEOUT_S),
         )
     ]
     assert origin_branch_sha(origin, branch) == git(ws, "rev-parse", "HEAD").stdout.strip()
@@ -132,11 +132,12 @@ def test_premerge_merge_argv_unchanged(ws_root, monkeypatch):
             "merge", "--no-ff", "--no-edit", head,
         ]
     ]
-    kwargs = dict(merges[0].kwargs)
-    timeout = kwargs.pop("timeout")
-    # Computed from the queue deadline at call time, floored at 1 s.
+    kwargs = merges[0].kwargs
+    # The one kwarg beyond TEXT is the timeout, computed from the queue
+    # deadline at call time and floored at 1 s.
+    (timeout,) = [value for key, value in kwargs.items() if key not in TEXT]
     assert isinstance(timeout, float) and timeout >= 1
-    assert kwargs == TEXT
+    assert kwargs == dict(TEXT, timeout=timeout)
 
 
 def test_premerge_merge_issued_from_vcs_git(ws_root, monkeypatch):
@@ -161,7 +162,7 @@ def test_conflict_test_merge_argv_unchanged(ws_root, monkeypatch):
     recorder = _conflict_test_merge(ws_root, monkeypatch)
     ws = workspaces.workspace_path(REPO, "HO-4")
     assert [(s.argv, s.kwargs) for s in recorder.matching("merge", "--no-edit")] == [
-        (["git", "-C", str(ws), "merge", "--no-edit", "origin/main"], {**TEXT, "timeout": conflict_resolver.GIT_TIMEOUT_S})
+        (["git", "-C", str(ws), "merge", "--no-edit", "origin/main"], dict(TEXT, timeout=conflict_resolver.GIT_TIMEOUT_S))
     ]
 
 
@@ -185,11 +186,11 @@ def test_ensure_existing_hub_argv_unchanged(ws_root, monkeypatch):
     h = str(hub)
     # Every kwarg is pinned, so a call that gained cwd= or env= fails here.
     assert [(s.argv, s.kwargs) for s in recorder.spawns] == [
-        (["git", "-C", h, "fetch", "--all", "--prune"], {**TEXT, "timeout": 300}),
-        (["git", "-C", h, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], {**TEXT, "timeout": 300}),
-        (["git", "-C", h, "checkout", "-f", "main"], {**TEXT, "timeout": 300}),
-        (["git", "-C", h, "reset", "--hard", "origin/main"], {**TEXT, "timeout": 300}),
-        (["git", "-C", h, "clean", "-fd"], {**TEXT, "timeout": 300}),
+        (["git", "-C", h, "fetch", "--all", "--prune"], dict(TEXT, timeout=300)),
+        (["git", "-C", h, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], dict(TEXT, timeout=300)),
+        (["git", "-C", h, "checkout", "-f", "main"], dict(TEXT, timeout=300)),
+        (["git", "-C", h, "reset", "--hard", "origin/main"], dict(TEXT, timeout=300)),
+        (["git", "-C", h, "clean", "-fd"], dict(TEXT, timeout=300)),
     ]
 
 
@@ -226,8 +227,8 @@ def test_tenant_clone_argv_unchanged(tmp_path, monkeypatch):
     env = clone.pop("env")
     assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert env == {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    assert clone == {**TEXT, "timeout": workspaces.TENANT_CLONE_TIMEOUT_S, "check": True}
-    assert reset == add == {**TEXT, "timeout": 300}
+    assert clone == dict(TEXT, timeout=workspaces.TENANT_CLONE_TIMEOUT_S, check=True)
+    assert reset == add == dict(TEXT, timeout=300)
 
 
 def test_tenant_clone_issued_from_vcs_git(tmp_path, monkeypatch):

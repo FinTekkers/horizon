@@ -79,7 +79,7 @@ def test_no_backend_clone_argv_unchanged(farm_up, monkeypatch):
     assert [(s.argv, s.kwargs) for s in recorder.spawns] == [
         (
             ["git", "clone", f"https://github.com/{REPO}.git", str(farm_up)],
-            {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace", "timeout": 600},
+            dict(capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600),
         )
     ]
 
