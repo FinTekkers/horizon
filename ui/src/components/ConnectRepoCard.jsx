@@ -19,6 +19,8 @@ export default function ConnectRepoCard({ project, result = null, onConnect, onC
   const [token, setToken] = useState('')
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
+  // HO-879: GitHub's token page as the server sends it on the project.
+  const tokenLink = tokenPageUrl(repo, project?.tokenPages?.fineGrained)
 
   const submit = async (e) => {
     e.preventDefault()
@@ -129,9 +131,11 @@ export default function ConnectRepoCard({ project, result = null, onConnect, onC
             </li>
           ))}
         </ul>
-        <a className="connect-repo__token-link" href={tokenPageUrl(repo)} target="_blank" rel="noopener noreferrer">
-          Create a token on GitHub <span aria-hidden="true">↗</span>
-        </a>
+        {tokenLink && (
+          <a className="connect-repo__token-link" href={tokenLink} target="_blank" rel="noopener noreferrer">
+            Create a token on GitHub <span aria-hidden="true">↗</span>
+          </a>
+        )}
       </div>
 
       <form className="connect-repo__step" onSubmit={submit} noValidate>

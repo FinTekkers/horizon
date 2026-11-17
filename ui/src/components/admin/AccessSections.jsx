@@ -255,7 +255,20 @@ function ApiTokensPanel() {
   )
 }
 
-function TokenPanel({ sync }) {
+// HO-879: `tokenPages` is the server's { fineGrained, classic } GitHub token
+// pages (on every project from GET /api/projects); a link waits for them.
+function TokenLink({ href, className, children }) {
+  return href ? (
+    <a className={className} href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ) : (
+    <span className={className}>{children}</span>
+  )
+}
+
+function TokenPanel({ sync, tokenPages }) {
+  const fineGrained = tokenPages?.fineGrained ?? null
   const [token, setToken] = useState('')
   const [error, setError] = useState(null)
   const [success, setSuccess] = useState(null)
@@ -298,14 +311,9 @@ function TokenPanel({ sync }) {
       <div className="field">
         <div className="field__label field__label--row">
           Access token
-          <a
-            className="field__hint-link"
-            href="https://github.com/settings/personal-access-tokens/new"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
+          <TokenLink className="field__hint-link" href={fineGrained}>
             Create one on GitHub ↗
-          </a>
+          </TokenLink>
         </div>
         <input
           className="field__input"
@@ -322,9 +330,7 @@ function TokenPanel({ sync }) {
         <ol className="howto__steps">
           <li>
             Open{' '}
-            <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">
-              github.com/settings/personal-access-tokens/new
-            </a>{' '}
+            <TokenLink href={fineGrained}>{fineGrained ? fineGrained.replace(/^https:\/\//, '') : "GitHub's new token page"}</TokenLink>{' '}
             (fine-grained personal access token).
           </li>
           <li>
@@ -345,13 +351,7 @@ function TokenPanel({ sync }) {
           <li>
             If the org isn't listed as a resource owner, an org owner must allow fine-grained tokens first (org{' '}
             <strong>Settings → Third-party Access → Personal access tokens</strong>) — or use a{' '}
-            <a
-              href="https://github.com/settings/tokens/new?scopes=repo,workflow"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              classic token
-            </a>{' '}
+            <TokenLink href={tokenPages?.classic ?? null}>classic token</TokenLink>{' '}
             with the <code>repo</code> and <code>workflow</code> scopes.
           </li>
           <li>Generate the token, copy it, and paste it above — it's shown by GitHub only once.</li>
@@ -375,8 +375,8 @@ function TokenPanel({ sync }) {
 }
 
 // HZ-564: Access › GitHub access.
-export function GitHubSection({ sync }) {
-  return <TokenPanel sync={sync} />
+export function GitHubSection({ sync, tokenPages = null }) {
+  return <TokenPanel sync={sync} tokenPages={tokenPages} />
 }
 
 // HZ-564: Access › Your PIN and API tokens.

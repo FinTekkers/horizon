@@ -86,8 +86,6 @@ const SEED_ITEMS = [
   { id: 'BF-090', title: 'Trader-console dark mode', priority: 'Low', cursor: 15, issue: 331, desc: 'Ship an accessible dark theme for the trader console.', metric: 'WCAG AA on all surfaces; opt-in persistence.', guardrails: 'No layout regressions in light mode.' },
 ]
 
-export const REPO_URL = 'https://github.com/FinTekkers/horizon'
-
 export function artifactUrl() {
   return '#'
 }
@@ -116,8 +114,10 @@ export function pageShotUrl() {
   return '#'
 }
 
-export function issueUrl(item) {
-  return `${REPO_URL}/issues/${item.issue}`
+// HO-879: links come from the server, and the mock has none — like the
+// other links here, a demo item's issue link goes nowhere.
+export function issueUrl() {
+  return '#'
 }
 
 export function issueLabel(item) {

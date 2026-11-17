@@ -9,9 +9,11 @@ import { useState } from 'react'
 
 import ConnectRepoCard from './ConnectRepoCard'
 import { API_BASE, connectTenantRepo, setPinRequester } from '../api/serverApi'
+import { GITHUB_TOKEN_PAGES } from '../../../server/src/links.js'
 
 const TOKEN = 'github_pat_11ABCDEFG0secretSECRETsecret42'
-const PROJECT = { id: 7, name: 'Acme', enabled: true, repos: [] }
+// HO-879: `tokenPages` as GET /api/projects sends it.
+const PROJECT = { id: 7, name: 'Acme', enabled: true, repos: [], tokenPages: { ...GITHUB_TOKEN_PAGES } }
 const SUCCESS = {
   ok: true,
   repo: 'Acme/site',
@@ -193,4 +195,17 @@ test('guardrail 4: a refusal message with markup renders as plain text', async (
   const alert = await screen.findByRole('alert')
   expect(alert.querySelector('strong').textContent).toBe('<b>x</b>')
   expect(alert.querySelector('b')).toBeNull()
+})
+
+// HO-879 guardrail 3: the GitHub token page link stays on a member's card,
+// which connects GitHub only — it offers no backend choice. The page is the
+// server's (TOKEN_PAGE before HO-879).
+test('guardrail 3: the token link still points at the GitHub token page, and the card offers no backend picker', () => {
+  render(<Harness />)
+  fireEvent.change(screen.getByLabelText('Repository'), { target: { value: 'Acme/site' } })
+  const link = document.querySelector('.connect-repo__token-link')
+  const url = new URL(link.getAttribute('href'))
+  expect(`${url.origin}${url.pathname}`).toBe(GITHUB_TOKEN_PAGES.fineGrained)
+  expect(url.searchParams.get('target_name')).toBe('Acme')
+  expect(screen.queryByRole('combobox')).toBeNull()
 })

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createProject, addRepoToProject, disconnectRepo, fixRepoWebhook } from '../../api'
 import { WEBHOOK_IMPACT, webhookImpact } from '../../domain/webhookImpact'
+import { BACKENDS, DEFAULT_BACKEND } from '../connectRepo'
 
 // HZ-764: the pieces of a project's pages — ProjectPage.jsx lays out its tabs
 // and RepoPage.jsx one repository; Needs attention reuses FixWebhookForm.
@@ -139,8 +140,42 @@ export function DisconnectForm({ projectId, repo, onCancel, onDisconnected }) {
   )
 }
 
-// The repository page's header row: the GitHub link, prefix, default branch,
-// webhook, sync state, and Disconnect.
+// HO-879: a repo's backend, shown as a picker. Read-only (disabled) once the
+// repo has items — a convenience only: the server refuses a backend change for
+// a repo with items (409), whatever the UI shows. A repo's backend is never
+// switched in place, so with no items a different pick says how to change it.
+export function RepoBackendPicker({ repoConn }) {
+  const [asked, setAsked] = useState(null)
+  const backend = repoConn.backend ?? DEFAULT_BACKEND
+  const locked = (repoConn.itemCount ?? 0) > 0
+  return (
+    <>
+      <select
+        className="field__input repo-row__backend"
+        aria-label={`Backend for ${repoConn.repo}`}
+        title={locked ? 'This repository has items, so its backend cannot change' : undefined}
+        value={backend}
+        disabled={locked}
+        onChange={(e) => setAsked(e.target.value === backend ? null : e.target.value)}
+      >
+        {BACKENDS.map((name) => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+      {asked && (
+        <div className="gh-note repo-row__backend-note">
+          To use {asked}, disconnect {repoConn.repo} and connect it again with Backend: {asked}. Nothing was changed.
+        </div>
+      )}
+    </>
+  )
+}
+
+// The repository page's header row: the repo link, prefix, backend, default
+// branch, webhook, sync state, and Disconnect. HO-879: the link is the
+// server's `url` for the repo's backend; with none, the name is plain text.
 export function RepoRow({ projectId, repoConn, syncRepos, webhook, onDisconnected }) {
   const [asking, setAsking] = useState(false)
   const state = syncRepos?.find((r) => r.repo === repoConn.repo)
@@ -151,10 +186,15 @@ export function RepoRow({ projectId, repoConn, syncRepos, webhook, onDisconnecte
     <>
       <div className="repo-row">
         <SyncDot state={state} />
-        <a className="repo-row__name" href={`https://github.com/${repoConn.repo}`} target="_blank" rel="noopener noreferrer">
-          {repoConn.repo}
-        </a>
+        {repoConn.url ? (
+          <a className="repo-row__name" href={repoConn.url} target="_blank" rel="noopener noreferrer">
+            {repoConn.repo}
+          </a>
+        ) : (
+          <span className="repo-row__name">{repoConn.repo}</span>
+        )}
         <span className="repo-row__prefix">{repoConn.prefix}-*</span>
+        <RepoBackendPicker key={repoConn.backend ?? DEFAULT_BACKEND} repoConn={repoConn} />
         <span className="repo-row__branch">
           default branch: {repoConn.defaultBranch ?? 'not read yet'}
         </span>
@@ -219,8 +259,10 @@ export function RepoListRow({ repoConn, syncRepos, webhook, onOpen }) {
 }
 
 // The Repositories tab's Connect form: adds a repo to this project.
+// HO-879: on the backend picked, github by default.
 export function AddRepoForm({ project }) {
   const [repo, setRepo] = useState('')
+  const [backend, setBackend] = useState(DEFAULT_BACKEND)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
 
@@ -229,7 +271,7 @@ export function AddRepoForm({ project }) {
     setBusy(true)
     setError(null)
     try {
-      await addRepoToProject(project.id, repo.trim())
+      await addRepoToProject(project.id, repo.trim(), backend)
       setRepo('')
     } catch (err) {
       setError(err.message)
@@ -249,6 +291,13 @@ export function AddRepoForm({ project }) {
           onChange={(e) => setRepo(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
         />
+        <select className="field__input repo-add__backend" aria-label="Backend" value={backend} onChange={(e) => setBackend(e.target.value)}>
+          {BACKENDS.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
         <button className="composer__cancel" onClick={submit} disabled={busy}>
           {busy ? 'Connecting…' : 'Connect'}
         </button>

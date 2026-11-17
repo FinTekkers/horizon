@@ -8,6 +8,7 @@ import { render, cleanup, screen, within } from '@testing-library/react'
 
 import Markdown from './Markdown'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
+import { GITHUB_WEB } from '../../../server/src/links.js'
 import fixture from '../../../domain/fixtures/code-ref-cases.json'
 
 afterEach(() => cleanup())
@@ -53,7 +54,7 @@ test('metric 1: a multi-repo reference links at the fixture’s sha; the others 
   const { container } = render(<Markdown text={METRIC_1} linkContext={contextFor('plan', { knownIds: new Set(['US-243']) })} />)
   const link = screen.getByRole('link', { name: 'ui-service:src/routes/treasuries/+page.server.ts:339-342' })
   expect(link.getAttribute('href')).toBe(
-    `https://github.com/FinTekkers/ui-service/blob/${UI_SHA}/src/routes/treasuries/+page.server.ts#L339-L342`,
+    `${GITHUB_WEB}/FinTekkers/ui-service/blob/${UI_SHA}/src/routes/treasuries/+page.server.ts#L339-L342`,
   )
   expect(link.getAttribute('target')).toBe('_blank')
   expect(link.getAttribute('rel')).toContain('noopener')
@@ -69,7 +70,7 @@ test('metric 2: in a single-repo Change a bare path links to the item’s repo, 
   const ctx = contextFor('change', { knownIds: new Set(['US-243']) })
   const { container } = render(<Markdown text={'See `src/x.ts:12`, US-243 and ZZ-9.'} linkContext={ctx} />)
   expect(screen.getByRole('link', { name: 'src/x.ts:12' }).getAttribute('href')).toBe(
-    `https://github.com/FinTekkers/horizon/blob/${HZ_SHA}/src/x.ts#L12`,
+    `${GITHUB_WEB}/FinTekkers/horizon/blob/${HZ_SHA}/src/x.ts#L12`,
   )
   expect(screen.getByRole('link', { name: 'US-243' }).getAttribute('href')).toBe('/horizon/us-243')
   expect(screen.queryByRole('link', { name: 'ZZ-9' })).toBeNull()
@@ -114,7 +115,7 @@ test('HTML in a reference label renders as text, never as an element', () => {
   expect(container.querySelector('img')).toBeNull()
   expect(container.querySelector('b')).toBeNull()
   const link = screen.getByRole('link', { name: 'ui-service:a/<b>.ts:1' })
-  expect(link.getAttribute('href')).toBe(`https://github.com/FinTekkers/ui-service/blob/${UI_SHA}/a/%3Cb%3E.ts#L1`)
+  expect(link.getAttribute('href')).toBe(`${GITHUB_WEB}/FinTekkers/ui-service/blob/${UI_SHA}/a/%3Cb%3E.ts#L1`)
 })
 
 test('with a context but no recorded sha nothing links to GitHub', () => {

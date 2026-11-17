@@ -60,10 +60,19 @@
 //   HORIZON_TENANT_TOKEN_ROOT  where a tenant's own token file is written (HZ-697; default
 //                          /etc/horizon/tenant-tokens). Tests only: the stored file: ref
 //                          always names the default path
+//   HORIZON_SL_REPO_URL_TEMPLATE   an sl repo's web link (HO-879), with {repo} for the repo
+//                          name. Unset ⇒ an sl repo shows as plain text, never a guessed link
+//   HORIZON_SL_ISSUE_URL_TEMPLATE  an sl item's web link, with {repo} and {n} (the item's
+//                          number). Unset, or no {n} ⇒ an sl item shows no link
 
 import { ITEM_KINDS, agentStepIndexes, isServerStep } from '../../domain/js/lifecycle.js'
 
 export const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null
+
+// HO-879: the sl backend's link templates (links.js fills them in).
+// Host values only — no sl or internal address is committed anywhere.
+export const SL_REPO_URL_TEMPLATE = process.env.HORIZON_SL_REPO_URL_TEMPLATE || null
+export const SL_ISSUE_URL_TEMPLATE = process.env.HORIZON_SL_ISSUE_URL_TEMPLATE || null
 
 // Where the Horizon UI lives — used for deep links in GitHub comments/PRs.
 export const UI_URL = (process.env.HORIZON_UI_URL || 'http://localhost:5173').replace(/\/+$/, '')

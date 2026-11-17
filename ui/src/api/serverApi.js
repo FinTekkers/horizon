@@ -5,13 +5,15 @@
 // `snapshot` event on connect, then `delta` events at most once a second).
 
 import { ACCEPT_GATE_INDEX, APPROVE_FILE_GATE_INDEX, APPROVE_RUN_GATE_INDEX, EXECUTE_STEP_INDEX, stepKeyAt } from '../../../domain/js/lifecycle.js'
+import { connectBody } from '../components/connectRepo'
 
 // Every server request goes through this base so the app works both at the
 // dev root (/) and mounted under a subpath in production (vite `base`, e.g.
 // '/horizon/' → '/horizon/api'). BASE_URL always ends with a slash.
 export const API_BASE = `${import.meta.env.BASE_URL}api`
 
-let repoUrl = 'https://github.com/FinTekkers/horizon'
+// The board's global repo link, as the server sends it (HO-879: null until then).
+let repoUrl = null
 let items = []
 let projects = []
 let activeProjectId = null
@@ -543,8 +545,116 @@ export function revokeApiToken(id) {
   return deleteJson(`/tokens/${encodeURIComponent(id)}`)
 }
 
+// HO-879: the board's projects, each with its `tokenPages` and each repo with
+// the `backend`, `url` and `itemCount` GET /api/projects sent once that has
+// loaded. The same
+// array until the board or the links change, so a render loop never sees a
+// new value for nothing.
 export function getProjects() {
-  return projects
+  watchRepoLinks()
+  if (projectsShown.projects !== projects || projectsShown.links !== repoLinks) {
+    projectsShown = { projects, links: repoLinks, value: withRepoLinks(projects) }
+  }
+  return projectsShown.value
+}
+
+// ---- repo and item links (HO-879) ----
+// The server builds every repo and item link, per backend
+// (server/src/links.js). They come from GET /api/projects, because
+// the board's shape is pinned: each repo's `url` and `itemCount`, and each
+// project's `repoLinks` — one { repo, backend, url, issueUrlTemplate } per
+// repo it is connected to or has items from — and GitHub's `tokenPages`.
+// repoLinks is keyed by the lowercased repo and itemRepoLinks by the exact
+// name an item carries (so a case variant keeps its own link); tokenPagesByProject
+// by project id.
+let repoLinks = new Map()
+let itemRepoLinks = new Map()
+let tokenPagesByProject = new Map()
+let repoLinksLoad = null
+// Set when the board changed while a load was in flight: load once more after.
+let repoLinksAgain = false
+// The board's repos and item count the last load was started for.
+let repoLinksKey = null
+// Lowercased repos an item's link has asked a load for.
+const repoLinksAsked = new Set()
+let projectsShown = { projects: null, links: null, value: [] }
+
+function loadRepoLinks() {
+  if (repoLinksLoad) return repoLinksLoad
+  repoLinksLoad = getJson('/projects')
+    .then((data) => {
+      const next = new Map()
+      const exact = new Map()
+      const pages = new Map()
+      for (const project of data.projects || []) {
+        if (project.tokenPages) pages.set(project.id, project.tokenPages)
+        for (const link of project.repoLinks || []) {
+          exact.set(link.repo, link)
+          if (!next.has(link.repo.toLowerCase())) next.set(link.repo.toLowerCase(), link)
+        }
+        for (const r of project.repos || []) {
+          const key = r.repo.toLowerCase()
+          next.set(key, { ...next.get(key), repo: r.repo, backend: r.backend, url: r.url ?? null, itemCount: r.itemCount })
+        }
+      }
+      repoLinks = next
+      itemRepoLinks = exact
+      tokenPagesByProject = pages
+      emit()
+    })
+    .catch((err) => console.error('Failed to load repository links', err))
+    .finally(() => {
+      repoLinksLoad = null
+      if (repoLinksAgain) {
+        repoLinksAgain = false
+        loadRepoLinks()
+      }
+    })
+  return repoLinksLoad
+}
+
+// Reloads the links when the board's projects, their repos or its item count
+// change — a new project, a connect, a disconnect or a new item (which changes
+// a repo's itemCount).
+function watchRepoLinks() {
+  const key = `${projects.map((p) => `${p.id}:${(p.repos || []).map((r) => r.repo).join(',')}`).join('|')}#${items.length}`
+  if (key === repoLinksKey) return
+  repoLinksKey = key
+  if (projects.length === 0) return
+  if (repoLinksLoad) repoLinksAgain = true
+  else loadRepoLinks()
+}
+
+function withRepoLinks(list) {
+  if (repoLinks.size === 0 && tokenPagesByProject.size === 0) return list
+  return list.map((p) => {
+    const tokenPages = tokenPagesByProject.get(p.id)
+    if (!tokenPages && !p.repos?.length) return p
+    return {
+      ...p,
+      ...(tokenPages ? { tokenPages } : {}),
+      ...(p.repos
+        ? {
+            repos: p.repos.map((r) => {
+              const link = repoLinks.get(r.repo.toLowerCase())
+              return link ? { ...r, backend: link.backend, url: link.url ?? null, itemCount: link.itemCount ?? 0 } : r
+            }),
+          }
+        : {}),
+    }
+  })
+}
+
+// The links for an item's `repo`, or null — asking for a load once if it is
+// unknown.
+function repoLinkFor(repo) {
+  const key = repo.toLowerCase()
+  const link = itemRepoLinks.get(repo) ?? repoLinks.get(key)
+  if (!link && !repoLinksAsked.has(key)) {
+    repoLinksAsked.add(key)
+    loadRepoLinks()
+  }
+  return link ?? null
 }
 
 export function getActiveProjectId() {
@@ -713,8 +823,9 @@ export function createProject(name) {
   return postJson('/projects', { name })
 }
 
-export function addRepoToProject(projectId, repo) {
-  return postJson(`/projects/${projectId}/repos`, { repo })
+// HO-879: `backend` is 'github' (the default) or 'sl'.
+export function addRepoToProject(projectId, repo, backend) {
+  return postJson(`/projects/${projectId}/repos`, connectBody({ repo, backend }))
 }
 
 // ---- a member's own repository (HZ-703, over HZ-697's tenant API) ----
@@ -833,9 +944,16 @@ export function pageShotUrl(itemId, name) {
   return `${API_BASE}/items/${encodeURIComponent(itemId)}/page/shots/${encodeURIComponent(name)}`
 }
 
-// A member with no active repo (HZ-661) gets null, never a "null/issues/…" link.
+// HO-879: an item's link is its repo's server-built issueUrlTemplate with the
+// item's number for {n} — null until the links load, and null when the
+// server has no link for that backend. A legacy item with no repo keeps the
+// board's own repo link; a member with no active repo (HZ-661) gets null,
+// never a "null/issues/…" link.
 export function issueUrl(item) {
-  if (item.repo) return `https://github.com/${item.repo}/issues/${item.issue}`
+  if (item.repo) {
+    const template = repoLinkFor(item.repo)?.issueUrlTemplate
+    return typeof template === 'string' && item.issue != null ? template.split('{n}').join(String(item.issue)) : null
+  }
   return repoUrl ? `${repoUrl}/issues/${item.issue}` : null
 }
 

@@ -513,6 +513,11 @@ button { font-family: var(--font-sans); }
 .project-autopilot__row .field__input { width: auto; }
 .project-autopilot__history { margin: 4px 0 0; padding-left: 16px; }
 .project-block__add .field__input { flex: 1; }
+/* HO-879: the backend pickers — sized to their names, not stretched. */
+.project-block__add .repo-add__backend { flex: 0 0 auto; width: auto; }
+.repo-row__backend { width: auto; padding: 2px 6px; font: 500 12px var(--font-sans); border-radius: 6px; }
+.repo-row__backend:disabled { color: var(--muted); cursor: not-allowed; }
+.repo-row__backend-note { flex-basis: 100%; }
 
 .repo-row { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font: 500 13px var(--font-sans); }
 .repo-row__name { color: var(--deep); font-weight: 600; text-decoration: none; }
