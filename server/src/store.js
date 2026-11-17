@@ -42,6 +42,7 @@ import {
   defaultReworkTarget,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
+import { DESIGN_OUTPUT, designSubstepOf, encodePending, latestRound, listRounds } from './designRounds.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
@@ -2816,6 +2817,7 @@ function substepFields(row, overlay) {
       persona,
       personaBadge: agent ? personaDisplay(agent, persona, overlay) : null,
       run: runs.get(s.id) ?? null,
+      ...designRoundFields(row.id, s),
     }
   })
   const current = currentSubstep(row)
@@ -2824,6 +2826,16 @@ function substepFields(row, overlay) {
     substep_cursor: row.substep_cursor == null ? null : String(row.substep_cursor),
     substep: current ? substeps.find((s) => s.id === current.id) : null,
   }
+}
+
+// HO-851: a design sub-step also carries every round (designRounds.js) and,
+// while its latest round is a skip, why — the "Skipped: <reason>" the tracker
+// shows. Any other sub-step carries neither key, so its payload is unchanged.
+function designRoundFields(itemId, sub) {
+  if (sub.output !== DESIGN_OUTPUT) return {}
+  const rounds = listRounds(itemId, sub.id)
+  const latest = rounds.at(-1)
+  return { rounds, skip: latest?.kind === 'skip' ? { reason: latest.brief } : null }
 }
 
 // HZ-709: one kind's steps as the snapshot lists them. Built once per kind —
@@ -3453,7 +3465,12 @@ export function filedAutopilotOff(itemId) {
 // step the item is on — keeping this route's own target rules, refusals and
 // event until "Retire the old move routes". `proof` is the gate PIN's: only
 // a send-back with it releases a rule block (HZ-346).
-export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null, targetSubstepId = null, { proof = null } = {}) {
+//
+// HO-851: a send-back to the item's design sub-step opens a design round
+// (substep_pending_json): its brief is the note, and it names this gate, so
+// the round can come straight back here (designRounds.js). `force` is
+// forceDesign's override: the round is a forced one, with its reason.
+export function requestChanges(id, target, feedbackText, actor = 'You', targetStepIndex = null, targetSubstepId = null, { proof = null, force = null } = {}) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -3508,8 +3525,21 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === GOLDEN_CASES_OUTPUT) clearGoldenCases(id)
 
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
+  const design = substep ? designSubstepOf(it, substep.index) : null
+  const fields =
+    design && design.id === substep.substepId
+      ? {
+          substep_pending_json: encodePending({
+            returnKey: atGate ? stepKeyAt(it.cursor) : null,
+            brief: feedbackText || '(no notes)',
+            kind: force ? 'forced' : 'run',
+            overrideReason: force ? force.reason : null,
+            who: actor,
+          }),
+        }
+      : {}
   const moved = db.transaction(() => {
-    const result = moveItem(id, { ...move, who: actor, note: feedbackText || '', proof })
+    const result = moveItem(id, { ...move, who: actor, note: feedbackText || '', proof, fields })
     if (result.error) return result
     if (atGate) {
       db.prepare('INSERT INTO gate_decision (item_id, step_index, decision, notes, decided_by) VALUES (?, ?, ?, ?, ?)').run(
@@ -3538,6 +3568,34 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   })
   notify()
   agentRunner.kick(id)
+  return { ok: true }
+}
+
+// HO-851: "Design it anyway" — the owner runs a design sub-step its verdict
+// skipped, with a reason. From a gate the sub-step is a send-back target of,
+// and only while its latest round is a skip (otherwise a plain send-back is
+// the way). The send-back is requestChanges's, so it checks, cancels, moves,
+// logs and kicks exactly as any other; the reason is its note, the round's
+// brief and its override reason, stored when the round finishes. Refusals:
+// reason_required, not_found, unknown_substep, not_at_gate, not_skipped, and
+// requestChanges's own.
+export function forceDesign(id, substepId, reason, actor = 'You', { proof = null } = {}) {
+  const why = typeof reason === 'string' ? reason.trim() : ''
+  if (!why) return { error: 'reason_required' }
+  const it = getItem(id)
+  if (!it) return { error: 'not_found' }
+  if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isClosed(it)) return { error: 'closed' }
+  if (isAbandoned(it)) return { error: 'abandoned' }
+  const sub = designSubstepOf(it)
+  if (!sub || sub.id !== substepId) return { error: 'unknown_substep' }
+  const target = substepReworkTargets(it).find((t) => t.substepId === sub.id && t.index === sub.anchor)
+  if (!target) return { error: 'not_at_gate' }
+  if (latestRound(id, sub.id)?.kind !== 'skip') return { error: 'not_skipped' }
+  const result = requestChanges(id, STEPS[it.cursor].label, why, actor, target.index, sub.id, { proof, force: { reason: why } })
+  if (result.error) return result
+  addEvent(id, { who: actor, text: `Design it anyway: ${why}`, color: '#9C333E', initials: 'YOU' })
+  notify()
   return { ok: true }
 }
 

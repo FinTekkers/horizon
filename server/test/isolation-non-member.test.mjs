@@ -322,6 +322,9 @@ const WRITE_CASES = {
     body: { from: 'iso.not-here', linesHash: 'iso', exceptions: [{ lineId: '1', reason: 'iso reason' }] },
     owner: 409,
   },
+  // HO-851: 400 reason_required is answered before anything else; with a
+  // reason, 404 unknown_substep — the seeded item has no design sub-step.
+  'POST /api/items/:id/substeps/:substepId/force': { expect: '404', url: `${ITEM}/substeps/design-screens/force`, body: { reason: 'iso reason' }, owner: 404 },
   'POST /api/items/:id/screenshots/approve': { expect: '404', url: `${ITEM}/screenshots/approve`, body: { commit: SHOT_COMMIT, all: true }, owner: 200 },
   // HZ-712: the retired move routes are 410 stubs, still member:item — the
   // guard's 404 for a non-member, the stub's 410 route_retired for the owner.

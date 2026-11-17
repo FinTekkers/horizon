@@ -3212,6 +3212,49 @@ export function buildApp({
     },
   )
 
+  // HO-851: "Design it anyway" — run a design sub-step the step 1 verdict
+  // skipped, with the owner's reason. A browser session with the gate PIN, as
+  // any send-back from a gate. The reason is required and kept: it is the
+  // round's brief and its override reason (store.forceDesign). Answers
+  // { ok, item, restart }: the item at the sub-step, its run starting.
+  fastify.post(
+    '/api/items/:id/substeps/:substepId/force',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'substepId'],
+          properties: { id: { type: 'string', minLength: 1 }, substepId: { type: 'string', pattern: SUBSTEP_ID_PATTERN } },
+        },
+        body: {
+          type: ['object', 'null'],
+          properties: { reason: { type: 'string', maxLength: 500 } },
+        },
+        response: {
+          200: { ...OK_OBJECT, description: '`{ ok, item, restart }` — the item at its design sub-step, the forced round starting.' },
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          403: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+        },
+        security: HUMAN_GATE_SECURITY,
+      },
+    },
+    async (request, reply) => {
+      const { id, substepId } = request.params
+      const reason = typeof request.body?.reason === 'string' ? request.body.reason.trim() : ''
+      if (!reason) return reply.code(400).send({ error: 'reason_required' })
+      const proof = humanAuthorized(request, reply)
+      if (!proof) return
+      const result = store.forceDesign(id, substepId, reason, actorOf(request), { proof })
+      if (result.error === 'unknown_substep') return reply.code(404).send(result)
+      if (result.error) return send(reply, result)
+      return reply.send({ ...actionState(id, { restart: true }), ok: true })
+    },
+  )
+
   // HO-844: Accept with exceptions at a Task's Review & close, offered while
   // the item's stored Verify outcome is done_proof_incomplete (the item's
   // `acceptWithExceptions`). A browser session with the gate PIN only. The

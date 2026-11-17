@@ -487,6 +487,10 @@ db.exec(`
 // GitHub sync's insert. substep_cursor: reserved for HZ-539's dispatch. Both
 // nullable with no default: existing rows read NULL, and nothing reads either
 // yet, so cursor and every step_index stay exactly as they are.
+// substep_pending_json (HO-851): the design round in flight while the item is
+// at its design sub-step — { returnKey, brief, kind, overrideReason, who }
+// (server/src/designRounds.js). Written and cleared with substep_cursor, by
+// moveItem.js only. NULL everywhere else, so existing rows need no backfill.
 //
 // HZ-446: the kind constraint, built from ITEM_KINDS like PRIORITY_CHECK is
 // from PRIORITIES. Interpolating is safe because every kind is checked against
@@ -495,7 +499,7 @@ for (const kind of ITEM_KINDS) {
   if (!/^[a-z]+$/.test(kind)) throw new Error(`db: item kind ${JSON.stringify(kind)} is not lowercase letters only`)
 }
 const KIND_CHECK = `CHECK (kind IN (${ITEM_KINDS.map((kind) => `'${kind}'`).join(',')}))`
-for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0', 'substeps_json TEXT', 'substep_cursor INTEGER', 'approved_command_hashes_json TEXT', 'approved_frame_hash TEXT', 'command_patch_json TEXT']) {
+for (const column of ['pr INTEGER', 'pr_url TEXT', 'pr_mergeable INTEGER', 'release_tag TEXT', 'release_url TEXT', 'repo TEXT', 'project_id INTEGER', 'persona TEXT', 'personas_json TEXT', 'review_cycle_count INTEGER NOT NULL DEFAULT 0', 'abandoned_at TEXT', 'abandoned_reason TEXT', 'abandoned_by TEXT', 'notified_step INTEGER', 'last_reviewed_sha TEXT', 'fix_pass INTEGER NOT NULL DEFAULT 0', 'fix_findings_json TEXT', 'forwarded_review_run_id INTEGER', 'forwarded_by TEXT', 'forwarded_sha TEXT', 'rule_block_json TEXT', 'provider_choices_json TEXT', `kind TEXT NOT NULL DEFAULT 'change' ${KIND_CHECK}`, 'approved_plan_hash TEXT', 'lane TEXT', 'paused_at TEXT', 'scope_repos_json TEXT', 'approved_runner TEXT', 'autopilot_off INTEGER NOT NULL DEFAULT 0', 'substeps_json TEXT', 'substep_cursor INTEGER', 'approved_command_hashes_json TEXT', 'approved_frame_hash TEXT', 'command_patch_json TEXT', 'substep_pending_json TEXT']) {
   try {
     db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
   } catch {
@@ -688,6 +692,15 @@ try {
   // HZ-538: the sub-step a run is for, beside its unchanged step_index —
   // reserved for HZ-539's dispatch. NULL on every run today.
   db.exec('ALTER TABLE step_run ADD COLUMN substep_id TEXT')
+} catch {
+  // column already exists
+}
+try {
+  // HO-851: what "Set guardrails" was dispatched with — a hash of the item
+  // fields it reads (designRounds.js GUARDRAILS_INPUT_FIELDS), written when
+  // its run is inserted. NULL on every other run and on older rows; a NULL
+  // counts as changed, so a design round never skips a re-run on a guess.
+  db.exec('ALTER TABLE step_run ADD COLUMN inputs_hash TEXT')
 } catch {
   // column already exists
 }
@@ -1866,6 +1879,35 @@ db.exec(`
   CREATE TRIGGER IF NOT EXISTS gate_exception_no_delete BEFORE DELETE ON gate_exception
     WHEN NOT EXISTS (SELECT 1 FROM purge_release WHERE item_id = OLD.item_id)
     BEGIN SELECT RAISE(ABORT, 'gate_exception is append-only'); END;
+`)
+
+// HO-851: every round of an item's design sub-step (server/src/designRounds.js)
+// — a run, a skip the step 1 verdict decided, or a forced run ("Design it
+// anyway"). brief is what the round was asked for: the send-back note, the
+// override reason or the verdict line; what_changed is the round's own note.
+// It lives apart from work_item, so clearing substep_cursor never touches it,
+// and apart from step_run, so a skip is never an agent run. Append-only like
+// gate_exception: a purge (purge_release) is the one delete it allows.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS substep_round (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id         TEXT    NOT NULL REFERENCES work_item(id),
+    substep_id      TEXT    NOT NULL,
+    round           INTEGER NOT NULL,
+    kind            TEXT    NOT NULL CHECK (kind IN ('run','skip','forced')),
+    run_id          INTEGER REFERENCES step_run(id),
+    brief           TEXT    NOT NULL,
+    what_changed    TEXT,
+    override_reason TEXT,
+    created_by      TEXT    NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (item_id, substep_id, round)
+  );
+  CREATE TRIGGER IF NOT EXISTS substep_round_no_update BEFORE UPDATE ON substep_round
+    BEGIN SELECT RAISE(ABORT, 'substep_round is append-only'); END;
+  CREATE TRIGGER IF NOT EXISTS substep_round_no_delete BEFORE DELETE ON substep_round
+    WHEN NOT EXISTS (SELECT 1 FROM purge_release WHERE item_id = OLD.item_id)
+    BEGIN SELECT RAISE(ABORT, 'substep_round is append-only'); END;
 `)
 
 // HO-845: the per-command checks of an owner's one-command patch
