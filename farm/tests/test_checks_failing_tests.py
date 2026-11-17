@@ -6,7 +6,11 @@ The list is built from the JUnit rows run_checks already holds when it
 raises CheckFailure, so it lands in both the message (the build step's /fail
 error) and the tail (pre-merge's gate message)."""
 
+import os
+import shlex
 import subprocess
+import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -293,3 +297,237 @@ def test_parse_junit_keeps_a_valid_line_and_drops_pytests_and_the_stored_rows_ne
     assert lines == {"kept": 12, "word": None, "negative": None, "huge": None, "none": None, "test_y": None, "test_z": None}
     stored = checks._test_rows(rows, "sh -c e2e", 1, 0.1, attempt=1, secrets={})
     assert all("line" not in row for row in stored)
+
+
+# ---- HO-898: a plain pytest gets a JUnit report from the check runner ----
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PY = shlex.quote(sys.executable)
+
+
+def pytest_ws(ws: Path, body: str) -> Path:
+    """A tiny pytest project. The empty pytest.ini pins rootdir to `ws`, so
+    the classname (and so the suite) is `test_m` wherever ws lives."""
+    (ws / "pytest.ini").write_text("")
+    (ws / "test_m.py").write_text(body)
+    return ws
+
+
+FAIL_AND_PASS = "def test_fail():\n    assert 1 == 2\n\n\ndef test_ok():\n    pass\n"
+
+
+def stored_rows(test_runs: list) -> list[dict]:
+    return [row for run in test_runs for row in run["tests"]]
+
+
+def spy(monkeypatch, name: str, record):
+    """Wrap checks.<name>, call through, and hand its arguments to record."""
+    real = getattr(checks, name)
+
+    def wrapper(*args, **kwargs):
+        record(*args, **kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(checks, name, wrapper)
+
+
+def test_r1_a_plain_pytest_stores_a_row_per_test_and_lists_the_failure(ws, monkeypatch):
+    """Metric 1: no report option, one failing and one passing test."""
+    pytest_ws(ws, FAIL_AND_PASS)
+    monkeypatch.setenv("FARM_CHECK_CMD", f"{PY} -m pytest -q")
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    stored = {(row["suite"], row["test"]): row["status"] for row in stored_rows(test_runs)}
+    assert stored == {("test_m", "test_fail"): "fail", ("test_m", "test_ok"): "pass"}
+    assert "failing tests (1):" in str(err.value)
+    assert "\ntest_m › test_fail — assert 1 == 2\n" in str(err.value)
+
+
+def test_r2_a_nested_run_checks_never_writes_over_the_outer_report(tmp_path):
+    """The farm runs Horizon's suite with PYTEST_ADDOPTS naming a report.
+    conftest drops it, so R1's own run_checks keeps its rows and the outer
+    report holds only the outer run's test."""
+    outer = tmp_path / "outer.xml"
+    node = f"{Path(__file__).relative_to(REPO_ROOT)}::test_r1_a_plain_pytest_stores_a_row_per_test_and_lists_the_failure"
+    env = {**os.environ, "PYTEST_ADDOPTS": f"--junitxml={shlex.quote(str(outer))}"}
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    cases = ET.parse(outer).getroot().iter("testcase")
+    assert [case.get("name") for case in cases] == ["test_r1_a_plain_pytest_stores_a_row_per_test_and_lists_the_failure"]
+
+
+def test_r3_a_commands_own_junitxml_wins_and_each_test_is_stored_once(ws, monkeypatch):
+    """Metric 2: the command's --junitxml beats PYTEST_ADDOPTS, so the farm's
+    report is never written and the workspace report is read once."""
+    pytest_ws(ws, FAIL_AND_PASS)
+    monkeypatch.setenv("FARM_CHECK_CMD", f"{PY} -m pytest -q --junitxml=junit.xml")
+    report_dir_files: list = []
+    spy(monkeypatch, "_report_rows", lambda report_dir, *_: report_dir_files.append(sorted(report_dir.iterdir())))
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    assert report_dir_files == [[]]
+    assert sorted(case.get("name") for case in ET.parse(ws / "junit.xml").getroot().iter("testcase")) == [
+        "test_fail",
+        "test_ok",
+    ]
+    identities = [checks._identity(row) for row in stored_rows(test_runs)]
+    assert sorted(identities) == [("test_m", None, "test_fail"), ("test_m", None, "test_ok")]
+
+
+def test_r4_an_inherited_junitxml_passes_through_unchanged(ws, tmp_path, monkeypatch):
+    """Metric 3: the inherited value is kept byte for byte and its report
+    lands where it says. That path is outside every scanned one, so only the
+    command row is stored (the metric 2 path limit)."""
+    pytest_ws(ws, FAIL_AND_PASS)
+    own = tmp_path / "own.xml"
+    inherited = f"--junitxml={own}"
+    monkeypatch.setenv("PYTEST_ADDOPTS", inherited)
+    monkeypatch.setenv("FARM_CHECK_CMD", f"{PY} -m pytest -q")
+    child_envs: list = []
+    spy(monkeypatch, "_run_bounded", lambda cmd, ws, timeout_s, env: child_envs.append(env))
+    report_dir_files: list = []
+    spy(monkeypatch, "_report_rows", lambda report_dir, *_: report_dir_files.append(sorted(report_dir.iterdir())))
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    assert [env["PYTEST_ADDOPTS"] for env in child_envs] == [inherited]
+    assert own.is_file()
+    assert report_dir_files == [[]]
+    stored = stored_rows(test_runs)
+    assert len(stored) == 1 and stored[0]["test"] == stored[0]["command"] and stored[0]["status"] == "fail"
+
+
+def test_r5_inherited_options_still_apply_and_the_supplied_report_is_stored(ws, monkeypatch):
+    """Metric 4 and the env-copy guardrail: inherited -x stops the run at the
+    first failure, and the farm's report is still written and read."""
+    # Order matters: -x stops after test_fail_a, so test_fail_b and test_ok
+    # never run and are not in the report.
+    pytest_ws(
+        ws,
+        "def test_fail_a():\n    assert 1 == 2\n\n\n"
+        "def test_fail_b():\n    assert 3 == 4\n\n\n"
+        "def test_ok():\n    pass\n",
+    )
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
+    monkeypatch.setenv("FARM_CHECK_CMD", f"{PY} -m pytest -q")
+    calls: list = []
+    spy(monkeypatch, "_run_bounded", lambda cmd, ws, timeout_s, env: calls.append((dict(env), env)))
+    parents: list = []
+    real_attempt_env = checks._attempt_env
+
+    def attempt_env(env, report_dir):
+        parents.append((dict(env), env, report_dir))
+        return real_attempt_env(env, report_dir)
+
+    monkeypatch.setattr(checks, "_attempt_env", attempt_env)
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    assert [(row["test"], row["status"]) for row in stored_rows(test_runs)] == [("test_fail_a", "fail")]
+    (child, child_obj), = calls
+    (parent_snapshot, parent_obj, report_dir), = parents
+    assert child["PYTEST_ADDOPTS"] == "-x --junitxml='$HORIZON_TEST_REPORT_DIR/pytest.xml'"
+    assert child["HORIZON_TEST_REPORT_DIR"] == str(report_dir)
+    assert child_obj is not parent_obj and parent_obj == parent_snapshot
+    added = {k: v for k, v in child.items() if parent_snapshot.get(k) != v}
+    assert set(added) == {"HORIZON_TEST_REPORT_DIR", "PYTEST_ADDOPTS"}
+    assert set(parent_snapshot) - set(child) == set()
+    assert os.environ["PYTEST_ADDOPTS"] == "-x"
+
+
+@pytest.mark.parametrize(
+    "inherited",
+    [
+        "--junit-xml=x",
+        "--junit-xml x",
+        "--junitxml x",
+        "--junitxml=x",
+        "-q --junitxml=x -x",
+        "-p no:junitxml",
+        "-pno:junitxml",
+        "-k 'a",
+    ],
+)
+def test_r6_pytest_addopts_leaves_these_inherited_values_alone(inherited, tmp_path, monkeypatch):
+    monkeypatch.delenv(checks.PYTEST_JUNIT_ENV, raising=False)
+    assert checks._pytest_addopts(inherited, str(tmp_path / "pytest.xml")) is None
+
+
+@pytest.mark.parametrize("inherited", [None, "", "  "])
+def test_r6_pytest_addopts_with_nothing_inherited_is_just_the_quoted_flag(inherited, tmp_path, monkeypatch):
+    monkeypatch.delenv(checks.PYTEST_JUNIT_ENV, raising=False)
+    report = str(tmp_path / "with space" / "pytest.xml")
+
+    result = checks._pytest_addopts(inherited, report)
+
+    assert result == f"--junitxml={shlex.quote(report)}"
+    assert shlex.split(result) == [f"--junitxml={report}"]
+
+
+def test_r6_pytest_addopts_keeps_inherited_options_in_front(tmp_path, monkeypatch):
+    monkeypatch.delenv(checks.PYTEST_JUNIT_ENV, raising=False)
+    report = str(tmp_path / "with space" / "pytest.xml")
+
+    result = checks._pytest_addopts("-x -k 'a or b'", report)
+
+    assert result.startswith("-x -k 'a or b' ")
+    assert shlex.split(result) == ["-x", "-k", "a or b", f"--junitxml={report}"]
+
+
+def test_r6_the_kill_switch_turns_the_injection_off(tmp_path, monkeypatch):
+    monkeypatch.setenv(checks.PYTEST_JUNIT_ENV, "0")
+    assert checks._pytest_addopts(None, checks.PYTEST_REPORT) is None
+    assert checks._pytest_addopts("-x", checks.PYTEST_REPORT) is None
+    assert "PYTEST_ADDOPTS" not in checks._attempt_env({"A": "1"}, tmp_path)
+
+
+def test_r6_a_report_dir_with_a_space_still_gets_the_report(ws, tmp_path, monkeypatch):
+    """The injected path is expanded by pytest itself, never split by it, so
+    a report dir with a space in it still receives the report."""
+    spaced = tmp_path / "with space"
+    spaced.mkdir()
+    monkeypatch.setattr(checks.tempfile, "tempdir", str(spaced))
+    pytest_ws(ws, FAIL_AND_PASS)
+    monkeypatch.setenv("FARM_CHECK_CMD", f"{PY} -m pytest -q")
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    assert sorted(row["test"] for row in stored_rows(test_runs)) == ["test_fail", "test_ok"]
+
+
+def test_o1_a_pytest_failure_of_assertions_only_is_not_rerun(ws, monkeypatch):
+    """Flag 2: the new rows reach _rerun_verdict, so an all-assertion pytest
+    failure runs once and logs why."""
+    monkeypatch.delenv(checks.RERUN_ENV, raising=False)
+    pytest_ws(ws, FAIL_AND_PASS)
+    monkeypatch.setenv("FARM_CHECK_CMD", f"{PY} -m pytest -q")
+    logs: list[str] = []
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=logs.append, test_runs=test_runs)
+
+    assert any(line.endswith("failed on assertions in 1 test; not re-running") for line in logs), logs
+    assert not any("re-running it once" in line for line in logs)
+    assert {row["attempt"] for row in stored_rows(test_runs)} == {1}

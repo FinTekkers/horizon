@@ -218,3 +218,26 @@ test('submitting without touching the kind sends kind: change', async () => {
   await vi.waitFor(() => expect(createItem.mock.calls.at(-1)?.[0].title).toBe('A change fixture'))
   expect(createItem.mock.calls.at(-1)[0].kind).toBe('change')
 })
+
+// HO-900: the subtitle names what the repo's backend creates — a Task on `sl`,
+// a GitHub issue otherwise — read from the repo's per-repo `backend` setting.
+const subtitleFor = (repos) =>
+  render(<NewItemModal projects={[{ id: 7, name: 'Backends', enabled: true, repos }]} onClose={noop} onCreated={noop} />)
+    .container.querySelector('.composer__sub').textContent
+
+test('an sl repo says it creates a Task, never a GitHub issue', () => {
+  const text = subtitleFor([{ repo: 'Org/local', backend: 'sl' }])
+  expect(text).toContain('Task')
+  expect(text).not.toMatch(/GitHub/)
+  expect(text).not.toMatch(/issue/i)
+})
+
+test('a github repo keeps the exact GitHub subtitle', () => {
+  expect(subtitleFor([{ repo: 'Org/gh', backend: 'github' }])).toBe(
+    'Creates an issue in Org/gh — GitHub stays the source of truth.',
+  )
+})
+
+test('a project with no repo keeps the local demo subtitle', () => {
+  expect(subtitleFor([])).toBe('Creates a local demo item (connect a repo in Admin to create real issues).')
+})

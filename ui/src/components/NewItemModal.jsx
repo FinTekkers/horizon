@@ -6,6 +6,7 @@ import { createItem } from '../api'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../../domain/js/priorities.js'
 // HZ-382: the kind cards and their copy are domain/steps.json's kinds.
 import { ITEM_KIND_INFO } from '../../../domain/js/lifecycle.js'
+import { repoBackendOf } from './connectRepo'
 
 // The intake form doubles as the spec for "work the bot farm can process":
 // a clear outcome and a measurable success criterion are required before an
@@ -76,9 +77,12 @@ export default function NewItemModal({ projects = [], defaultProjectId = null, o
       <div className="composer__panel composer__panel--wide">
         <div className="composer__title">New work item{project ? ` · ${project.name}` : ''}</div>
         <div className="composer__sub">
-          {repo
-            ? `Creates an issue in ${repo} — GitHub stays the source of truth.`
-            : 'Creates a local demo item (connect a repo in Admin to create real issues).'}
+          {/* HO-900: an `sl` repo files a Task, not a GitHub issue. */}
+          {!repo
+            ? 'Creates a local demo item (connect a repo in Admin to create real issues).'
+            : repoBackendOf(projects, repo) === 'sl'
+              ? `Creates a Task in ${repo} on the sl backend.`
+              : `Creates an issue in ${repo} — GitHub stays the source of truth.`}
         </div>
 
         {projects.length > 1 && (
