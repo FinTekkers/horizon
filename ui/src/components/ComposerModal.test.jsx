@@ -188,3 +188,31 @@ test('amend: while busy, Cancel stays enabled and Esc still cancels', () => {
   fireEvent.keyDown(window, { key: 'Escape' })
   expect(onCancel).toHaveBeenCalledTimes(1)
 })
+
+// HO-853 metric line 5: "Approve without design" cannot be sent until a
+// reason is typed — the button stays disabled for a blank or whitespace-only
+// reason, and neither a click nor ⌘/Ctrl+Enter sends one. A typed reason is
+// sent trimmed.
+const noDesign = { open: true, mode: 'approveNoDesign', itemId: 'HZ-853', target: 'Approve & prioritize this work' }
+
+test('approveNoDesign: Approve stays disabled and nothing is sent until a reason is typed', () => {
+  const onSubmit = vi.fn()
+  const { getByRole, getByLabelText } = render(<ComposerModal composer={noDesign} onSubmit={onSubmit} onCancel={() => {}} />)
+  expect(getByRole('dialog', { name: /Approve without design · HZ-853/ })).toBeTruthy()
+  const submit = getByRole('button', { name: 'Approve without design' })
+  const reason = getByLabelText('Reason to approve without design')
+  expect(submit.disabled).toBe(true)
+  fireEvent.click(submit)
+  fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true })
+  fireEvent.change(reason, { target: { value: '    ' } })
+  expect(submit.disabled).toBe(true)
+  fireEvent.click(submit)
+  fireEvent.keyDown(window, { key: 'Enter', metaKey: true })
+  expect(onSubmit).not.toHaveBeenCalled()
+
+  fireEvent.change(reason, { target: { value: '  Copy-only change  ' } })
+  expect(submit.disabled).toBe(false)
+  fireEvent.click(submit)
+  expect(onSubmit).toHaveBeenCalledTimes(1)
+  expect(onSubmit).toHaveBeenCalledWith('Copy-only change')
+})

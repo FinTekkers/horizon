@@ -429,14 +429,22 @@ function runAgents(id) {
 
 // HZ-642: the Approve & file Autopilot choice is accepted like serverApi's;
 // demo items carry no autopilot-off label, so it changes nothing here.
-export async function approveGate(id, notes, _options = {}) {
+export async function approveGate(id, notes, options = {}) {
   const it = items.find((x) => x.id === id)
   if (!it || isClosed(it) || STEPS[it.cursor].kind !== 'gate') return { ok: false }
+  // HO-853: mirrors the server's "Approve without design" — a blank reason is refused.
+  const skipReason = typeof options?.designSkipReason === 'string' ? options.designSkipReason.trim() : null
+  if (skipReason === '') return { ok: false, error: 'design_skip_reason_empty' }
   const label = STEPS[it.cursor].label.toLowerCase()
-  update(id, (x) => ({ ...x, cursor: x.cursor + 1 }))
+  update(id, (x) => ({
+    ...x,
+    cursor: x.cursor + 1,
+    ...(skipReason && x.designSpec ? { designSpec: { ...x.designSpec, approved: true, skipReason, approvedBy: 'You' } } : {}),
+  }))
   if (notes) {
     pushEvent(id, { who: 'You', text: `approved: ${label} — ${notes}`, color: '#5E4380', initials: '✓' })
   }
+  if (skipReason) pushEvent(id, { who: 'You', text: `approved without a design: ${skipReason}`, color: '#5E4380', initials: '✓' })
   runAgents(id)
   const updated = items.find((x) => x.id === id)
   return { ok: true, closed: isClosed(updated) }

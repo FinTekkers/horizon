@@ -33,13 +33,15 @@ import { pauseReason } from '../domain/pauseReason'
 import { holdFor } from '../domain/hold'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
-import { STEP_HINTS, retryTarget, returnTargets, stepActionFor } from '../domain/stepActions'
+import { STEP_HINTS, retryTarget, returnTargets, stepActionFor, substepReturnTarget } from '../domain/stepActions'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, recheckAndRun, patchRunPlan, setAutopilotOff } from '../api'
 import visualPageRules from '../../../domain/visualPage.json'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, skippedText, substepsAt } from '../../../domain/js/substeps.js'
 import DesignAnywayButton from './DesignAnyway.jsx'
+import DesignPanel from './DesignPanel'
+import { designSubstepFor, latestRoundOf, roundNumberOf, roundsOf, safeCanvasUrl } from '../../../domain/js/designRounds.js'
 import { metricLines } from '../../../domain/js/goldenCases.js'
 import { parseStoredUtc, runTimeText } from '../../../domain/js/runTime.js'
 import StatusPill, { AutopilotOffChip, autopilotOffShown, AUTOPILOT_OFF_GATE_NOTE } from './StatusPill'
@@ -543,7 +545,7 @@ function VisualPageLink({ itemId, visualPage }) {
   )
 }
 
-function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
+function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerName, restartSent, linkContextFor, selected, onStepClick, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions, onRequestDesignChanges, onApproveWithoutDesign, onSetPersona, onSetStepProvider, filedAutopilot, onSetFiledAutopilot, runTimeZone }) {
   const st = STEPS[index]
   const status = stepStatus(item, index)
   const isGate = st.kind === 'gate'
@@ -573,6 +575,16 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   // approval, the table's one button is the gate's Approve.
   const goldenCases = item.goldenCases && index === item.goldenCases.gateIndex ? item.goldenCases : null
   const goldenPending = !!goldenCases && !goldenCases.approved && status === 'awaiting'
+  // HO-853: the first gate of an item with a design (HO-852's item.designSpec)
+  // shows its design panel beside the golden cases. While the gate waits with
+  // no canvas to approve and no verdict skip, plain Approve is hidden — the
+  // server would refuse it — and the panel's two actions are the way on.
+  const designSpec = item.designSpec && index === item.designSpec.gateIndex && status !== 'pending' ? item.designSpec : null
+  const designPending = !!designSpec && !designSpec.approved && status === 'awaiting'
+  const designMissing = designPending && designSpec.pendingRunId == null && !designSpec.verdictSkipReason
+  // A design the step 1 verdict skipped is overridden by HO-851's "Design it
+  // anyway" on its row, which needs a reason — not by Request changes.
+  const designTarget = designPending && !designSpec.verdictSkipReason ? substepReturnTarget(item, designSpec.substepId) : null
   // HO-862: the item's web page belongs to the item, not a step — its link
   // and the latest round's screenshots show on that round's step card only.
   const visualPage = !isGate && item.visualPage?.rounds?.length && item.visualPage.rounds.at(-1).stepIndex === index ? item.visualPage : null
@@ -735,12 +747,34 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               {index === APPROVE_RUN_GATE_INDEX && item.runPlan && preflightPassed(item) && <RehearsalStatus rehearsal={item.runPlan.rehearsal} />}
             </div>
           )}
-          {goldenCases && (
-            <GoldenCasesTable
-              goldenCases={goldenCases}
-              busy={gateBusy}
-              onApproveAll={goldenPending && !mergeQueued ? () => onApprove(item.id, st.label) : null}
-            />
+          {designSpec ? (
+            <div className="step-card__gate-review">
+              {goldenCases && (
+                <GoldenCasesTable
+                  goldenCases={goldenCases}
+                  busy={gateBusy}
+                  onApproveAll={goldenPending && !mergeQueued && !designMissing ? () => onApprove(item.id, st.label) : null}
+                />
+              )}
+              <DesignPanel
+                item={item}
+                spec={designSpec}
+                sub={designSubstepFor(item)}
+                busy={gateBusy}
+                onRequestChanges={designTarget && !mergeQueued && onRequestDesignChanges ? () => onRequestDesignChanges(item.id, designTarget.key) : null}
+                onApproveWithoutDesign={
+                  designPending && !designSpec.verdictSkipReason && !mergeQueued && onApproveWithoutDesign ? () => onApproveWithoutDesign(item.id, st.label) : null
+                }
+              />
+            </div>
+          ) : (
+            goldenCases && (
+              <GoldenCasesTable
+                goldenCases={goldenCases}
+                busy={gateBusy}
+                onApproveAll={goldenPending && !mergeQueued ? () => onApprove(item.id, st.label) : null}
+              />
+            )
           )}
           {/* HZ-462: a Plan's Inventory as tables; the artifact link stays below. */}
           {status === 'done' && index === PLAN_INVENTORY_STEP_INDEX && output?.artifact && (
@@ -901,7 +935,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   The server's 409 stays the real protection. */}
               {!mergeQueued && (
                 <>
-                  {!goldenPending && !rehearsalBlocks && !commandChecksBlock && (
+                  {!goldenPending && !designMissing && !rehearsalBlocks && !commandChecksBlock && (
                     <button
                       className="btn-gate-approve"
                       disabled={gateBusy || preflightBlocks}
@@ -911,7 +945,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                       {humanOnly ? st.label : 'Approve'}
                     </button>
                   )}
-                  {!rehearsalBlocks && !commandChecksBlock && (
+                  {!designMissing && !rehearsalBlocks && !commandChecksBlock && (
                     <button
                       className="btn-gate-feedback"
                       disabled={gateBusy || preflightBlocks}
@@ -1021,7 +1055,17 @@ function SubstepRow({ item, sub, onForceSubstep = null, gateBusy = false }) {
   const status = substepStatus(item, sub)
   const run = sub.run
   // HO-851: "Design it anyway" — only on a skipped design row, at a gate after it.
-  const canForce = status === 'skipped' && onForceSubstep && STEPS[item.cursor]?.kind === 'gate' && item.cursor > sub.anchor
+  // HO-853: and only while the served moves list the sub-step as a send-back
+  // target (the force route refuses it otherwise); a payload with no moves
+  // block at all keeps HO-851's rule.
+  const forceListed = item.moves == null || substepReturnTarget(item, sub.id) != null
+  const canForce = status === 'skipped' && onForceSubstep && STEPS[item.cursor]?.kind === 'gate' && item.cursor > sub.anchor && forceListed
+  // HO-853: a design row names its round — the one in flight, else the latest
+  // — links the latest round's canvas once done, and shows the brief of the
+  // round in flight. Any other sub-step has no rounds and draws as before.
+  const roundNo = roundNumberOf(sub)
+  const latestCanvas = status === 'done' && roundsOf(sub).length > 0 ? safeCanvasUrl(latestRoundOf(sub)?.canvasUrl) : null
+  const pendingBrief = (status === 'current' || status === 'active') && typeof sub.pendingRound?.brief === 'string' ? sub.pendingRound.brief : null
   return (
     <div className="step step--sub" data-testid="substep-row" data-substep={sub.id}>
       <div className="step__rail">
@@ -1037,6 +1081,11 @@ function SubstepRow({ item, sub, onForceSubstep = null, gateBusy = false }) {
         >
           <div className="step-card__head">
             <div className="step-card__label">{sub.label}</div>
+            {roundNo != null && (
+              <span className="step-card__round" data-testid="substep-round">
+                Round {roundNo}
+              </span>
+            )}
             {(sub.personaBadge || sub.persona) && (
               <span className="step-card__agent" style={sub.personaBadge ? { color: sub.personaBadge.color } : undefined}>
                 <span className="step-card__agent-dot" style={{ background: sub.personaBadge?.color ?? 'var(--muted)' }} />
@@ -1048,6 +1097,11 @@ function SubstepRow({ item, sub, onForceSubstep = null, gateBusy = false }) {
             {substepMeta(item, sub, status)}
             {run?.attempt > 1 && ` · attempt ${run.attempt}`}
           </div>
+          {pendingBrief != null && (
+            <div className="step-card__brief" data-testid="substep-brief">
+              Brief: {pendingBrief || '—'}
+            </div>
+          )}
           {run?.id != null && status !== 'pending' && (
             <a className="step-card__output-link" href={runLogViewUrl(run.id)} target="_blank" rel="noopener noreferrer">
               View log ↗
@@ -1061,6 +1115,11 @@ function SubstepRow({ item, sub, onForceSubstep = null, gateBusy = false }) {
               rel="noopener noreferrer"
             >
               View full artifact ↗
+            </a>
+          )}
+          {latestCanvas && (
+            <a className="step-card__artifact-link step-card__canvas-link" href={latestCanvas} target="_blank" rel="noopener noreferrer">
+              Open round {latestRoundOf(sub).round} canvas ↗
             </a>
           )}
           {canForce && (
@@ -1453,7 +1512,7 @@ function FarmUnreachableBanner({ onOpenFarmHealth }) {
   )
 }
 
-export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions = null, onForceSubstep = null, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onRecheckRun = null, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
+export default function Tracker({ item, projects, knownItemIds = null, deployBlock = null, viewerName = null, restartSent = null, planProgress = [], onOpenPlan, onBack, onApprove, onApproveWithComments, onMove, onResolveConflicts, resolving, gateBusy, onForwardToAccept, onAcceptWithExceptions = null, onForceSubstep = null, onRequestDesignChanges = null, onApproveWithoutDesign = null, onTogglePause, onSetPersona, onSetStepProvider, filedAutopilot = 'default', onSetFiledAutopilot, onAbandon, onRemoveDependency, onAddDependency, onAmendRule, onReleaseRuleBlock, onReleaseUsageWait, onRecheckRun = null, onOpenProjectSettings, onOpenItem, farmUnreachable = false, onOpenFarmHealth = null, runTimeZone }) {
   const status = itemStatus(item, true, { deployBlock })
   const activity = buildActivity(item)
   const [activityMin, setActivityMin] = useState(readActivityMin)
@@ -1719,6 +1778,8 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
                       gateBusy={gateBusy}
                       onForwardToAccept={onForwardToAccept}
                       onAcceptWithExceptions={onAcceptWithExceptions}
+                      onRequestDesignChanges={onRequestDesignChanges}
+                      onApproveWithoutDesign={onApproveWithoutDesign}
                       onSetPersona={onSetPersona}
                       onSetStepProvider={onSetStepProvider}
                       filedAutopilot={filedAutopilot}

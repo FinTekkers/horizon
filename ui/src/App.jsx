@@ -96,6 +96,13 @@ function useProjects() {
 const FARM_HEALTH_POLL_MS = 10_000
 
 const CLOSED_COMPOSER = { open: false, mode: null, itemId: null, target: '' }
+// HO-853: MoveDialog's wording for the design panel's "Request changes".
+const DESIGN_CHANGES_DIALOG = Object.freeze({
+  title: 'Request design changes',
+  noteLabel: 'Brief for the next round (required)',
+  submitLabel: 'Request changes',
+  requireNote: true,
+})
 
 // HZ-389: why a move did not go through, in words. HZ-470: Kill (abandon) uses
 // the same map. serverApi.moveItem and abandonItem reject with
@@ -408,7 +415,8 @@ function AuthenticatedApp({ user, onLogout }) {
   }
   // Approving a gate only navigates away when it closed the item — earlier
   // gates leave the user in place since the next agent step starts immediately.
-  const approveAndMaybeClose = async (itemId, notes) => {
+  // HO-853: `designSkipReason` is "Approve without design"'s reason.
+  const approveAndMaybeClose = async (itemId, notes, { designSkipReason = null } = {}) => {
     if (approveInFlight.current.has(itemId)) return
     approveInFlight.current.add(itemId)
     setApprovePending(new Set(approveInFlight.current))
@@ -420,7 +428,9 @@ function AuthenticatedApp({ user, onLogout }) {
       const atFileGate = items.find((it) => it.id === itemId)?.cursor === APPROVE_FILE_GATE_INDEX
       result = atFileGate
         ? await api.approveGate(itemId, notes, { filedAutopilot: filedAutopilotOf(itemId) })
-        : await api.approveGate(itemId, notes)
+        : designSkipReason != null
+          ? await api.approveGate(itemId, notes, { designSkipReason })
+          : await api.approveGate(itemId, notes)
     } finally {
       approveInFlight.current.delete(itemId)
       setApprovePending(new Set(approveInFlight.current))
@@ -531,7 +541,13 @@ function AuthenticatedApp({ user, onLogout }) {
 
   // HZ-711: Return to (stepKey null: the dialog lists the targets) and Retry,
   // from the step list, the item page's menu, a board card or the drawer.
-  const openMove = (itemId, action, stepKey = null) => setMoveDialog({ itemId, action, stepKey, busy: false, error: null })
+  // HO-853: `opts` are MoveDialog's own wording props for a preset shortcut.
+  const openMove = (itemId, action, stepKey = null, opts = null) => setMoveDialog({ itemId, action, stepKey, opts, busy: false, error: null })
+
+  // HO-853: the design panel's "Request changes" — a Return to the design
+  // sub-step the server lists (`stepKey`, from item.moves), whose required
+  // note becomes the next round's brief.
+  const requestDesignChanges = (itemId, stepKey) => openMove(itemId, 'return', stepKey, DESIGN_CHANGES_DIALOG)
 
   // Awaited (HZ-389): a failure keeps the dialog open with the error, its
   // choice and the note; the item's next snapshot shows what it offers now.
@@ -575,6 +591,8 @@ function AuthenticatedApp({ user, onLogout }) {
     }
     // HZ-62: approving the closing gate returns to the board.
     if (itemId && mode === 'approve') approveAndMaybeClose(itemId, text)
+    // HO-853: the composer refuses a blank reason before it gets here.
+    if (itemId && mode === 'approveNoDesign' && text) approveAndMaybeClose(itemId, '', { designSkipReason: text })
     setComposer(CLOSED_COMPOSER)
   }
 
@@ -721,6 +739,8 @@ function AuthenticatedApp({ user, onLogout }) {
           onForwardToAccept={(id) => api.forwardToAccept(id)}
           onAcceptWithExceptions={(id, exceptions, linesHash) => api.acceptWithExceptions(id, exceptions, linesHash)}
           onForceSubstep={(id, substepId, reason) => api.forceSubstep(id, substepId, reason)}
+          onRequestDesignChanges={requestDesignChanges}
+          onApproveWithoutDesign={(id, target) => openComposer('approveNoDesign', id, { target })}
           onTogglePause={api.setPaused}
           onSetPersona={api.setPersona}
           onSetStepProvider={api.setStepProvider}
@@ -770,6 +790,7 @@ function AuthenticatedApp({ user, onLogout }) {
           item={items.find((it) => it.id === moveDialog.itemId)}
           action={moveDialog.action}
           stepKey={moveDialog.stepKey}
+          {...(moveDialog.opts ?? {})}
           busy={moveDialog.busy}
           error={moveDialog.error}
           onConfirm={submitMove}

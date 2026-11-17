@@ -71,6 +71,18 @@ test('metric 1: the move-rule matcher catches every way in, and not a comment', 
   expect(read('domain/lifecycle.js')).toMatch(MOVE_RULE)
 })
 
+// HO-853 guardrail 2: the design panel's shared reader works out no move
+// either — the send-back target is the served item.moves entry, found by
+// stepActions.substepReturnTarget — so it names no move rule, no key encoder
+// and no step table.
+test('HO-853: domain/js/designRounds.js names no move rule, key encoder or step table', () => {
+  const text = readFileSync(join(SRC, '../../domain/js/designRounds.js'), 'utf8')
+  expect(namesMoveRule(text)).toBe(false)
+  expect(stripComments(text)).not.toMatch(/\b(encodeMoveKey|decodeMoveKey|encodeTarget)\b/)
+  expect(text).not.toMatch(/lifecycle(\.js)?['"]/)
+  expect(read('components/DesignPanel.jsx')).not.toMatch(MOVE_RULE)
+})
+
 test('metric 1: no ui/src file outside the tests and mockApi.js names a move rule', () => {
   const scanned = sourceFiles(SRC, { withFixtures: true }).map((f) => relative(SRC, f)).filter((name) => name !== 'api/mockApi.js')
   expect(scanned).toContain('components/fixtures/servedMoves.js')
