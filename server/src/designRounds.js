@@ -93,8 +93,15 @@ export function guardrailsInputsHash(item) {
 }
 
 const selectLastGuardrailsRun = db.prepare(
-  "SELECT inputs_hash FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1",
+  `SELECT i.inputs_hash FROM step_run r LEFT JOIN step_run_inputs i ON i.run_id = r.id
+    WHERE r.item_id = ? AND r.step_index = ? AND r.substep_id IS NULL AND r.status = 'done' ORDER BY r.id DESC LIMIT 1`,
 )
+const insertInputs = db.prepare('INSERT OR REPLACE INTO step_run_inputs (run_id, item_id, inputs_hash) VALUES (?, ?, ?)')
+
+// Stores what a "Set guardrails" run is dispatched with (step_run_inputs).
+export function recordGuardrailsInputs(runId, item) {
+  insertInputs.run(runId, item.id, guardrailsInputsHash(item))
+}
 
 // The inputs hash of the item's last finished "Set guardrails" run, or null
 // (no run, or one from before the hash was stored).

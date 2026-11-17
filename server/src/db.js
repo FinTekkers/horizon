@@ -695,15 +695,18 @@ try {
 } catch {
   // column already exists
 }
-try {
-  // HO-851: what "Set guardrails" was dispatched with — a hash of the item
-  // fields it reads (designRounds.js GUARDRAILS_INPUT_FIELDS), written when
-  // its run is inserted. NULL on every other run and on older rows; a NULL
-  // counts as changed, so a design round never skips a re-run on a guess.
-  db.exec('ALTER TABLE step_run ADD COLUMN inputs_hash TEXT')
-} catch {
-  // column already exists
-}
+// HO-851: what a "Set guardrails" run was dispatched with — a hash of the
+// item fields it reads (designRounds.js GUARDRAILS_INPUT_FIELDS), written when
+// the run is inserted. Its own table, so step_run keeps its columns. A run
+// with no row (any older one) counts as changed, so a design round never
+// skips a re-run on a guess. It goes with its run and its item.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS step_run_inputs (
+    run_id      INTEGER PRIMARY KEY REFERENCES step_run(id) ON DELETE CASCADE,
+    item_id     TEXT    NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    inputs_hash TEXT    NOT NULL
+  );
+`)
 // HZ-539: a sub-step run keeps its anchor's step_index, so every reader of one
 // global step's runs filters `substep_id IS NULL` — else a sub-step row, with
 // the higher id, would shadow its anchor's.

@@ -124,9 +124,9 @@ import {
   decideDesignEntry,
   designSubstepOf,
   encodePending,
-  guardrailsInputsHash,
   nextRound,
   readPending,
+  recordGuardrailsInputs,
   recordRound,
   returnTarget,
 } from './designRounds.js'
@@ -1727,7 +1727,7 @@ export function kick(id, opts = {}) {
   // to compare against (designRounds.js returnTarget). Taken now, not when it
   // finishes: an edit while it runs is one it never saw, so it must re-run.
   if (stepIndex === GUARDRAILS_STEP_INDEX && substepId == null) {
-    db.prepare('UPDATE step_run SET inputs_hash = ? WHERE id = ?').run(guardrailsInputsHash(item), runId)
+    recordGuardrailsInputs(runId, item)
   }
   // HO-837: a Preflight run is bound to the plan it checks — the hash is the
   // server's, written here for the farm and the mock alike, never by the farm.

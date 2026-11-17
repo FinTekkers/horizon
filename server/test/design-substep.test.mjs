@@ -66,7 +66,10 @@ function seed(id, { cursor = METRIC_STEP, metric = '1. The board loads.', desc =
   ).run(id, `Item ${id}`, cursor, projectId, desc, metric, snapshot)
 }
 const row = (id) => db.prepare('SELECT * FROM work_item WHERE id = ?').get(id)
-const runs = (id) => db.prepare('SELECT id, step_index, substep_id, status, inputs_hash FROM step_run WHERE item_id = ? ORDER BY id').all(id)
+const runs = (id) =>
+  db
+    .prepare('SELECT r.id, r.step_index, r.substep_id, r.status, i.inputs_hash FROM step_run r LEFT JOIN step_run_inputs i ON i.run_id = r.id WHERE r.item_id = ? ORDER BY r.id')
+    .all(id)
 const roundRows = (id) => db.prepare('SELECT * FROM substep_round WHERE item_id = ? ORDER BY round').all(id)
 const events = (id) => db.prepare('SELECT text FROM event WHERE item_id = ? ORDER BY id').all(id).map((e) => e.text)
 const guardrailsRuns = (id) => runs(id).filter((r) => r.step_index === GUARDRAILS && r.substep_id === null).length
@@ -161,7 +164,7 @@ test('metric 4: an edited outcome, an edited metric, or no stored inputs re-runs
   const edits = [
     ['DS-EDIT-DESC', (id) => db.prepare("UPDATE work_item SET desc = 'Ship the board and the card.' WHERE id = ?").run(id)],
     ['DS-EDIT-METRIC', (id) => db.prepare("UPDATE work_item SET metric = metric || '\n2. The card loads.' WHERE id = ?").run(id)],
-    ['DS-NULL-HASH', (id) => db.prepare('UPDATE step_run SET inputs_hash = NULL WHERE item_id = ? AND step_index = ?').run(id, GUARDRAILS)],
+    ['DS-NULL-HASH', (id) => db.prepare('DELETE FROM step_run_inputs WHERE run_id IN (SELECT id FROM step_run WHERE item_id = ? AND step_index = ?)').run(id, GUARDRAILS)],
   ]
   for (const [id, edit] of edits) {
     await walkToGate(id, { metric: '1. m\ndesign_needed: no — backend only' })

@@ -156,6 +156,8 @@ const MEMBER_ITEM_ROUTES = {
   'POST /api/items/:id/resolve-conflicts': {},
   'POST /api/items/:id/move': { payload: { action: 'retry', from: 'change.implement' } },
   'POST /api/items/:id/gate/accept-with-exceptions': { payload: { from: 'task.review-close', linesHash: 'h', exceptions: [{ lineId: '1', reason: 'r' }] } },
+  // HO-851: "Design it anyway".
+  'POST /api/items/:id/substeps/:substepId/force': { payload: { reason: 'owner wants screens' } },
   'POST /api/items/:id/feedback': { payload: { message: 'hello' } },
   'POST /api/items/:id/pause': { payload: { paused: true } },
   'POST /api/items/:id/usage-wait/release': { payload: {} },
@@ -178,6 +180,7 @@ const fillUrl = (url, id) =>
     .replace(/:step(?=\/)/, stepKeyAt(PRIORITIZE_GATE))
     .replace(':phase', '1')
     .replace(':askId', '1')
+    .replace(':substepId', 'design-screens')
 
 // An approve at the gate the item is at, through POST /move (HZ-712).
 const approve = (id, who, headers) => post(`/api/items/${id}/move`, who, { action: 'approve', from: stepKeyAt(PRIORITIZE_GATE) }, headers)
@@ -203,7 +206,7 @@ test('metric 1: a non-member gets exactly 404 on every member:item route; nothin
     .filter((r) => r.scope === 'member:item' && r.method !== 'GET' && r.method !== 'HEAD')
     .map((r) => `${r.method} ${r.url}`)
   assert.deepEqual(routes.sort(), Object.keys(MEMBER_ITEM_ROUTES).sort())
-  assert.equal(routes.length, 24) // HO-842: + POST /api/items/:id/job/recheck-run
+  assert.equal(routes.length, 25) // HO-842: + POST /api/items/:id/job/recheck-run; HO-851: + POST /api/items/:id/substeps/:substepId/force
 
   const overlapBefore = overlapCalls
   const before = snapshot()

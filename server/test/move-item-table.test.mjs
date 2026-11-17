@@ -480,10 +480,10 @@ test('writeStepCompletion lets the anchor stay to enter its design sub-step, and
 
   // Returning past "Set guardrails": refused with no stored inputs, or stale ones; allowed on a match.
   assert.deepEqual(writeStepCompletion(id, stepIndexOf(GATE)), { error: 'bad_completion' })
-  const runId = db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, inputs_hash) VALUES (?, ?, 1, 'Architect', 'done', 'stale')").run(id, stepIndexOf('change.set-guardrails')).lastInsertRowid
+  const runId = db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 1, 'Architect', 'done')").run(id, stepIndexOf('change.set-guardrails')).lastInsertRowid
+  db.prepare("INSERT INTO step_run_inputs (run_id, item_id, inputs_hash) VALUES (?, ?, 'stale')").run(runId, id)
   assert.deepEqual(writeStepCompletion(id, stepIndexOf(GATE)), { error: 'bad_completion' })
-  db.prepare('DELETE FROM step_run WHERE id = ?').run(runId)
-  db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, inputs_hash) VALUES (?, ?, 1, 'Architect', 'done', ?)").run(id, stepIndexOf('change.set-guardrails'), guardrailsInputsHash(row(id)))
+  db.prepare('UPDATE step_run_inputs SET inputs_hash = ? WHERE run_id = ?').run(guardrailsInputsHash(row(id)), runId)
   assert.deepEqual(writeStepCompletion(id, stepIndexOf(GATE), { substep_cursor: null, substep_pending_json: null }), { ok: true })
   assert.deepEqual([row(id).cursor, row(id).substep_cursor, row(id).substep_pending_json], [stepIndexOf(GATE), null, null])
   assert.deepEqual(moves(id), [])
