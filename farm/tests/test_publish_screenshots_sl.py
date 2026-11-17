@@ -132,3 +132,40 @@ def test_farmd_relays_the_bundle_on_complete_unchanged(monkeypatch):
     [(url, body)] = posts
     assert url.endswith("/api/farm/steps/9/complete")
     assert body["artifacts"] == {"branch": "b", "screenshot_bundle": bundle}
+
+
+def test_sl_bundle_with_more_than_200_files_is_skipped(tmp_path, git_calls):
+    ws = make_ws(tmp_path, backend="sl")
+    shots = ws / "shots"
+    shots.mkdir()
+    for i in range(step_agent.BUNDLE_MAX_FILES + 1):
+        (shots / f"s{i:03}.png").write_bytes(png(str(i)))
+    lines = []
+    assert step_agent.screenshot_bundle(ws, log=lines.append) is None
+    assert any("over the cap of 200" in line for line in lines), lines
+    assert git_calls == []
+
+
+def test_sl_bundle_with_a_symlinked_png_is_skipped(tmp_path, git_calls):
+    ws = make_ws(tmp_path, backend="sl")
+    shots = ws / "shots"
+    shots.mkdir()
+    (shots / "board.png").write_bytes(png("board"))
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(png("secret"))
+    (shots / "leak.png").symlink_to(outside)
+    lines = []
+    assert step_agent.screenshot_bundle(ws, log=lines.append) is None
+    assert any("leak.png is not a regular file" in line for line in lines), lines
+    assert git_calls == []
+
+
+def test_sl_bundle_with_an_invalid_config_is_skipped(tmp_path, git_calls):
+    ws = make_ws(tmp_path, backend="sl")
+    (ws / screenshots_config.CONFIG_PATH).write_text("{ nope")
+    (ws / "shots").mkdir()
+    (ws / "shots" / "board.png").write_bytes(png("board"))
+    lines = []
+    assert step_agent.screenshot_bundle(ws, log=lines.append) is None
+    assert lines == ["screenshot_bundle: skipped — invalid config"]
+    assert git_calls == []
