@@ -63,3 +63,12 @@ accountPurge.init(fastify.log)
 // Before polling starts, so the first tick already seeds main's head (HZ-235).
 autoResolve.startAutoResolve(fastify.log)
 forKind('github').tracker.startPolling(fastify.log)
+// HO-878: the sl backend's daily artifact sweep (GitHub's runs inside its poll
+// loop). The adapter's own cursor holds it to once per 24h across restarts.
+const SL_ARTIFACTS_PRUNE_TICK_MS = 24 * 60 * 60 * 1000
+const pruneSlArtifacts = () =>
+  forKind('sl')
+    .artifacts.pruneArtifacts({ log: fastify.log })
+    .catch((err) => fastify.log.warn(`sl artifacts prune failed: ${err.message}`))
+pruneSlArtifacts()
+setInterval(pruneSlArtifacts, SL_ARTIFACTS_PRUNE_TICK_MS).unref()

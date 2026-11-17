@@ -8,6 +8,7 @@ item's branch in the workspace; the *script* owns git (branch, commit, push)
 """
 
 import argparse
+import base64
 import contextlib
 import contextvars
 import fnmatch
@@ -967,6 +968,56 @@ def publish_screenshots(ws: Path, item: dict, log=log) -> None:
                 shutil.rmtree(tmp, ignore_errors=True)
         except OSError as exc:
             log(f"publish_screenshots: could not remove temp index — {exc}")
+
+
+# HO-878: an sl item's screenshots go to the server on the implement result
+# (artifacts.screenshot_bundle, relayed by farmd's /complete) instead of a
+# pushed e2e-artifacts/<id> ref: an sl workspace has no git to push with. The
+# server's sl Artifact store (server/src/backends/slArtifacts.js) validates and
+# stores them and builds results.json. These caps match its BUNDLE_LIMITS and
+# keep the base64 body under /complete's 32 MB limit.
+BUNDLE_MAX_FILES = 200
+BUNDLE_MAX_FILE_BYTES = 10 * 1024 * 1024
+BUNDLE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+
+
+def screenshot_bundle(ws: Path, log=log) -> dict | None:
+    """The workspace's captured shots as {"files": [{"path", "data"}]}: each
+    PNG in outputDir plus its manifest.json, base64-encoded. None when there is
+    nothing to send or the shots are over the caps. Best-effort and file reads
+    only: never raises, never runs a subprocess."""
+    try:
+        cfg = screenshots_config.load_config(ws)
+    except screenshots_config.ConfigError:
+        log("screenshot_bundle: skipped — invalid config")
+        return None
+    if cfg is None:
+        log("screenshot_bundle: skipped — no .horizon/screenshots.json")
+        return None
+    shots_dir = ws / cfg.output_dir
+    pngs = _pngs_in(shots_dir)
+    if not pngs:
+        log("screenshot_bundle: no screenshots to send — skipped")
+        return None
+    manifest = shots_dir / screenshot_runner.MANIFEST_NAME
+    paths = [*pngs, manifest] if manifest.is_file() else pngs
+    try:
+        if len(paths) > BUNDLE_MAX_FILES:
+            raise ValueError(f"{len(paths)} files is over the cap of {BUNDLE_MAX_FILES}")
+        files, total = [], 0
+        for path in paths:
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"{path.name} is not a regular file")
+            data = path.read_bytes()
+            total += len(data)
+            if len(data) > BUNDLE_MAX_FILE_BYTES or total > BUNDLE_MAX_TOTAL_BYTES:
+                raise ValueError("the shots are over the bundle cap")
+            files.append({"path": path.name, "data": base64.b64encode(data).decode("ascii")})
+    except (OSError, ValueError) as exc:
+        log(f"screenshot_bundle: skipped — {exc}")
+        return None
+    log(f"screenshot_bundle: {len(pngs)} screenshot(s) ride on the result")
+    return {"files": files}
 
 
 def truncate_diff(diff_full: str) -> tuple[str, str]:
@@ -3808,8 +3859,16 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             max_turns=max_turns,
             call_agent=call_agent,
         )
-        publish_screenshots(ws, item)
+        # HO-878: an sl workspace sends its shots on the result; a GitHub one
+        # pushes them to e2e-artifacts/<id>, exactly as before.
+        bundle = None
+        if screenshot_runner.workspace_backend(ws) == "sl":
+            bundle = screenshot_bundle(ws)
+        else:
+            publish_screenshots(ws, item)
         artifacts = finalize_branch(ws, item, branch, conflicted, lease_sha=lease, checked_sha=checked_sha)
+        if bundle is not None:
+            artifacts["screenshot_bundle"] = bundle
         artifacts.update(check_record.report_fields(ws, checked_tree, check_note, checks_finished_at, log))
         if scope["mode"] == "fix":
             artifacts.update(fix_diff_report(ws, scope.get("base_sha")))

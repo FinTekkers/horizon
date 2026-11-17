@@ -19,6 +19,7 @@ const store = await import('../src/store.js')
 const github = await import('../src/github.js')
 const { forRepo, forKind, setBackendForTest, backendOf } = await import('../src/backends/index.js')
 const { githubAdapters } = await import('../src/backends/github.js')
+const { ARTIFACT_METHODS } = await import('../src/backends/artifact.js')
 
 store.purgeDemoItems()
 
@@ -53,17 +54,42 @@ test('metric 2: forRepo returns the github.js functions for an unknown repo, a r
   }
 })
 
-test('an sl repo gets adapters with the same shape whose every method throws backend_not_implemented', () => {
+// HO-878 (owner ruling): the sl artifacts group's six Artifact port methods
+// are real (the sl file store); every other sl method is still a placeholder.
+// The placeholders keep the HO-870 assertions; the port methods are checked
+// for the port's shape and for not being GitHub's.
+const isPortMethod = (group, name) => group === 'artifacts' && ARTIFACT_METHODS.includes(name)
+
+test('an sl repo gets adapters with the same shape; every method but the six Artifact port methods throws backend_not_implemented', () => {
   assert.equal(backendOf('acme/sl-app'), 'sl')
   const sl = forRepo('acme/sl-app')
   assert.deepEqual(Object.keys(sl), GROUPS)
+  let placeholders = 0
   for (const group of GROUPS) {
     assert.deepEqual(Object.keys(sl[group]), Object.keys(githubAdapters[group]), group)
     for (const [name, fn] of Object.entries(sl[group])) {
       assert.notEqual(fn, github[name], `${group}.${name} is not GitHub's`)
+      if (isPortMethod(group, name)) continue
+      placeholders++
       assert.throws(() => fn('acme/sl-app'), /backend_not_implemented: sl/, `${group}.${name}`)
     }
   }
+  assert.ok(placeholders > 0, 'the still-placeholder methods were checked')
+  assert.ok(Object.keys(sl.artifacts).some((name) => !ARTIFACT_METHODS.includes(name)), 'the artifacts group still has non-port helpers, and they throw')
+})
+
+test('HO-878: the sl artifacts group carries the six Artifact port methods as real functions with the port shape, none of them GitHub’s', async () => {
+  const artifacts = forRepo('acme/sl-app').artifacts
+  for (const name of ARTIFACT_METHODS) {
+    const fn = artifacts[name]
+    assert.equal(typeof fn, 'function', `artifacts.${name} is a function`)
+    assert.notEqual(fn, github[name], `artifacts.${name} is not GitHub's`)
+    assert.notEqual(fn, githubAdapters.artifacts[name], `artifacts.${name} is not the GitHub adapter's`)
+    assert.equal(fn.length, github[name].length, `artifacts.${name} takes the port's arguments`)
+  }
+  // Real, not a placeholder: an item with nothing stored reads null and lists nothing.
+  assert.equal(await artifacts.readArtifacts({ id: 'SL-1', repo: 'acme/sl-app' }), null)
+  assert.deepEqual(await artifacts.listArtifacts('acme/sl-app'), [])
 })
 
 test('forKind and setBackendForTest throw on a name that is not a backend', () => {
