@@ -53,6 +53,8 @@
     {"name": "asks-item-banner", "path": "/as-730", "waitFor": ".ask-banner .ask-card__verdict:has-text(\"Reviewer: accept\")"},
     {"name": "asks-approvals", "path": "/?approvals", "waitFor": ".approval--ask .ask-card__title:has-text(\"Publish script must use the bot identity\")"},
     {"name": "asks-follow-ups", "path": "/follow-ups", "waitFor": ".follow-ups__group .ask-card__amended"},
+    {"name": "design-gate", "path": "/ds-gate", "viewports": ["desktop", "phone"], "waitFor": ".design-panel:has-text(\"Round 2\")"},
+    {"name": "design-gate-skipped", "path": "/ds-skip", "viewports": ["desktop", "phone"], "waitFor": "[data-testid=substep-row]:has-text(\"Skipped: backend only\")"},
     {"name": "journey-farm-health", "path": "/farm-health", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": "[aria-label=\"Overall\"][data-state=\"red\"]", "mask": [".farm-health__refresh", ".farm-health__overall-meta", ".farm-health__card--box", ".farm-health__svc-count", ".farm-health__services", ".farm-health__event-at"]}
   ]
 }

@@ -7,8 +7,10 @@
 // Driven through the real App, serverApi and PIN dialog (fixtures/stepControl).
 
 import { afterEach, expect, test, vi } from 'vitest'
-import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { GATE_ITEM, PIN, RUNNING_ITEM, mountApp, stubServer } from './fixtures/stepControl'
+import { servedMoves } from './fixtures/servedMoves'
+import MoveDialog from './MoveDialog'
 
 afterEach(() => {
   cleanup()
@@ -127,3 +129,64 @@ for (const [status, error, message] of [
     expect(radios[0].checked).toBe(true)
   })
 }
+
+// HO-853 metric lines 3 and 4: the design panel's "Request changes" opens this
+// dialog preset to the server's design target, and its note is required — a
+// blank or whitespace-only note sends nothing, by click or ⌘/Ctrl+Enter. Once
+// typed, onConfirm gets the served key and the trimmed note.
+const DESIGN_KEY = 'change.metric#design-screens'
+const DESIGN_ITEM = {
+  ...GATE_ITEM,
+  id: 'HZ-953',
+  cursor: 3,
+  currentStepKey: 'change.approve',
+  moves: servedMoves({
+    approve: null,
+    targets: [
+      {
+        key: DESIGN_KEY,
+        label: 'Design the screens',
+        action: 'return',
+        isDefault: false,
+        redo: 'Runs “Design the screens” again, then comes back here.',
+        reapprovals: [],
+        stopsRunning: false,
+      },
+    ],
+    canAbandon: true,
+  }),
+}
+const DESIGN_DIALOG = { title: 'Request design changes', noteLabel: 'Brief for the next round (required)', submitLabel: 'Request changes', requireNote: true }
+
+test('HO-853: requireNote keeps Request changes unsent until the note has text, by click or ⌘/Ctrl+Enter', () => {
+  const onConfirm = vi.fn()
+  render(<MoveDialog item={DESIGN_ITEM} action="return" stepKey={DESIGN_KEY} onConfirm={onConfirm} onCancel={() => {}} {...DESIGN_DIALOG} />)
+  const dialog = within(screen.getByRole('dialog', { name: /Request design changes · HZ-953/ }))
+  const submit = dialog.getByRole('button', { name: 'Request changes' })
+  const note = dialog.getByLabelText('Brief for the next round (required)')
+  expect(dialog.queryByRole('group', { name: 'Return to' })).toBeNull()
+  expect(submit.disabled).toBe(true)
+  fireEvent.click(submit)
+  fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true })
+  fireEvent.change(note, { target: { value: '   \n  ' } })
+  expect(submit.disabled).toBe(true)
+  fireEvent.click(submit)
+  fireEvent.keyDown(window, { key: 'Enter', metaKey: true })
+  expect(onConfirm).not.toHaveBeenCalled()
+
+  fireEvent.change(note, { target: { value: '  Make the empty state friendlier  ' } })
+  expect(submit.disabled).toBe(false)
+  fireEvent.click(submit)
+  expect(onConfirm).toHaveBeenCalledTimes(1)
+  expect(onConfirm).toHaveBeenCalledWith('return', DESIGN_KEY, 'Make the empty state friendlier')
+})
+
+test('HO-853: without the new props the dialog reads and sends exactly as before', () => {
+  const onConfirm = vi.fn()
+  render(<MoveDialog item={DESIGN_ITEM} action="return" stepKey={DESIGN_KEY} onConfirm={onConfirm} onCancel={() => {}} />)
+  const dialog = within(screen.getByRole('dialog'))
+  expect(dialog.getByText('Return to an earlier step · HZ-953', { exact: false })).toBeTruthy()
+  expect(dialog.getByLabelText('Note for the step (optional)')).toBeTruthy()
+  fireEvent.click(dialog.getByRole('button', { name: 'Return here' }))
+  expect(onConfirm).toHaveBeenCalledWith('return', DESIGN_KEY, '')
+})

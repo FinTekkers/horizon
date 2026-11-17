@@ -8,7 +8,24 @@ import { returnTargets, targetFor } from '../domain/stepActions'
 // Return to…), it lists the snapshot's return targets with the gate's default
 // chosen. It reads `item` live, so a newer snapshot shows its targets; a
 // failed move keeps the dialog, its choice and the note.
-export default function MoveDialog({ item, action, stepKey = null, busy = false, error = null, onConfirm, onCancel }) {
+//
+// HO-853: a shortcut that presets the step can also name its own title, note
+// label and submit label, and require the note (`requireNote`): then nothing
+// is sent — by click or ⌘/Ctrl+Enter — until the note has text. The defaults
+// keep every other caller as it was.
+export default function MoveDialog({
+  item,
+  action,
+  stepKey = null,
+  busy = false,
+  error = null,
+  onConfirm,
+  onCancel,
+  title = null,
+  noteLabel = null,
+  submitLabel = null,
+  requireNote = false,
+}) {
   const picker = action === 'return' && stepKey == null
   const choices = picker ? returnTargets(item) : []
   const fallback = (choices.find((t) => t.isDefault) ?? choices[0])?.key ?? null
@@ -17,6 +34,7 @@ export default function MoveDialog({ item, action, stepKey = null, busy = false,
   const chosen = picker ? (choices.some((t) => t.key === picked) ? picked : fallback) : stepKey
   const [note, setNote] = useState('')
   const target = chosen ? targetFor(item, action, chosen) : null
+  const noteMissing = requireNote && note.trim() === ''
   const noteRef = useRef(null)
 
   // Focus goes back to whatever opened the dialog when it closes.
@@ -29,7 +47,7 @@ export default function MoveDialog({ item, action, stepKey = null, busy = false,
   }, [])
 
   const confirm = () => {
-    if (busy || !target) return
+    if (busy || !target || noteMissing) return
     onConfirm(action, target.key, note.trim())
   }
 
@@ -53,7 +71,7 @@ export default function MoveDialog({ item, action, stepKey = null, busy = false,
       <div className="composer__scrim" onClick={onCancel} />
       <div className="composer__panel move-dialog" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title" aria-describedby="move-dialog-sub">
         <div className="composer__title" id="move-dialog-title">
-          {retry ? 'Retry this step' : 'Return to an earlier step'} · {item.id}
+          {title ?? (retry ? 'Retry this step' : 'Return to an earlier step')} · {item.id}
         </div>
         <div className="composer__sub" id="move-dialog-sub">
           {item.title}
@@ -100,13 +118,14 @@ export default function MoveDialog({ item, action, stepKey = null, busy = false,
           </div>
         )}
         <label className="composer__field">
-          <span className="composer__field-label">Note for the step (optional)</span>
+          <span className="composer__field-label">{noteLabel ?? 'Note for the step (optional)'}</span>
           <textarea
             ref={noteRef}
             className="composer__input"
             value={note}
             maxLength={2000}
             placeholder="What should change this time?"
+            required={requireNote || undefined}
             onChange={(e) => setNote(e.target.value)}
           />
         </label>
@@ -119,12 +138,16 @@ export default function MoveDialog({ item, action, stepKey = null, busy = false,
           <button
             type="button"
             className="composer__submit"
-            style={{ background: retry ? 'var(--warning)' : 'var(--danger)', ...(retry && { color: 'var(--on-warning)' }) }}
-            disabled={busy || !target}
+            style={{
+              // A named shortcut (HO-853's Request changes) is not a red "Return here".
+              background: submitLabel ? 'var(--primary)' : retry ? 'var(--warning)' : 'var(--danger)',
+              ...(retry && !submitLabel && { color: 'var(--on-warning)' }),
+            }}
+            disabled={busy || !target || noteMissing}
             aria-busy={busy || undefined}
             onClick={confirm}
           >
-            {retry ? 'Retry' : 'Return here'}
+            {submitLabel ?? (retry ? 'Retry' : 'Return here')}
           </button>
         </div>
       </div>
