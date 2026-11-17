@@ -8,9 +8,9 @@
 // link is null — never a guessed link. A member sees the links but not
 // `itemCount`.
 //
-// The owner connect route is HTTP for github only (HO-870 refuses an sl
-// connect with 400), so an sl repo is connected at the store. GitHub is a
-// stubbed globalThis.fetch.
+// An owner sl connect stores the row and makes no GitHub call. A repo's
+// backend switches in place through PUT /api/projects/:id/repos/backend until
+// the repo has items, then 409. GitHub is a stubbed globalThis.fetch.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -174,11 +174,17 @@ test('a connect that names github stores github', async () => {
   assert.equal(repo.url, 'https://github.com/acme/named')
 })
 
-test('an sl connect is still refused with 400, stores nothing and calls no GitHub', async () => {
+test('an sl connect stores sl, reads it back from GET /api/projects, and calls no GitHub', async () => {
   calls = []
-  const res = await connect({ repo: 'acme/refused', backend: 'sl' })
-  assert.equal(res.statusCode, 400, res.body)
-  assert.equal(db.prepare('SELECT 1 FROM project_repo WHERE repo = ?').get('acme/refused'), undefined)
+  const res = await connect({ repo: 'acme/sl-app', backend: 'sl' })
+  assert.equal(res.statusCode, 200, res.body)
+  const body = res.json()
+  assert.deepEqual(
+    { ok: body.ok, repo: body.repo, backend: body.backend, defaultBranch: body.defaultBranch, webhook: body.webhook },
+    { ok: true, repo: 'acme/sl-app', backend: 'sl', defaultBranch: null, webhook: null },
+  )
+  assert.equal(db.prepare('SELECT backend FROM project_repo WHERE repo = ?').get('acme/sl-app').backend, 'sl')
+  assert.equal((await repoAs(owner, 'acme/sl-app')).backend, 'sl')
   assert.deepEqual(calls, [])
 })
 
@@ -198,7 +204,6 @@ test('itemCount counts every item that names the repo, in any letter case (COLLA
 })
 
 test('an sl repo carries the server-built sl links and no github.com', async () => {
-  assert.equal(store.addRepoToProject(P, 'acme/sl-app', 'sl').ok, true)
   const repo = await repoAs(owner, 'acme/sl-app')
   assert.equal(repo.backend, 'sl')
   assert.equal(repo.url, 'https://sl.example.test/acme/sl-app')
@@ -241,6 +246,79 @@ test('the board snapshot does not carry the new link fields (its shape stays pin
   for (const repo of project.repos) {
     for (const key of ['backend', 'url', 'itemCount']) assert.equal(Object.hasOwn(repo, key), false, key)
   }
+})
+
+// ---- the backend lock (PUT /api/projects/:id/repos/backend and connect) ----
+
+const repoBackend = (repo) => db.prepare('SELECT backend FROM project_repo WHERE repo = ?').get(repo)?.backend
+const putBackend = (payload, { pin = owner.pin } = {}) => send(owner, 'PUT', `/api/projects/${P}/repos/backend`, payload, { pin })
+
+test('PUT backend switches a repo with 0 items in place, and back; GET /api/projects reads the new backend and link', async () => {
+  assert.equal((await connect({ repo: 'acme/switch' })).statusCode, 200)
+  calls = []
+  const res = await putBackend({ repo: 'acme/switch', backend: 'sl' })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json(), { ok: true, repo: 'acme/switch', backend: 'sl', url: 'https://sl.example.test/acme/switch' })
+  assert.equal(repoBackend('acme/switch'), 'sl')
+  assert.equal((await repoAs(owner, 'acme/switch')).url, 'https://sl.example.test/acme/switch')
+  assert.deepEqual(calls, [])
+  const back = await putBackend({ repo: 'acme/switch', backend: 'github' })
+  assert.equal(back.statusCode, 200, back.body)
+  assert.equal(back.json().url, 'https://github.com/acme/switch')
+  assert.equal(repoBackend('acme/switch'), 'github')
+})
+
+test('PUT backend returns 409 backend_locked for a repo with items, github → sl and sl → github; nothing changes', async () => {
+  // acme/count has two github items (above).
+  const locked = await putBackend({ repo: 'acme/count', backend: 'sl' })
+  assert.equal(locked.statusCode, 409, locked.body)
+  assert.equal(locked.json().error, 'backend_locked')
+  assert.equal(repoBackend('acme/count'), 'github')
+  // The architecture review's case: an sl repo row with one sl item.
+  insertItem.run('SL-1', 'Sl item', 'acme/sl-app', 1, P, 'sl')
+  const slLocked = await putBackend({ repo: 'acme/sl-app', backend: 'github' })
+  assert.equal(slLocked.statusCode, 409, slLocked.body)
+  assert.equal(slLocked.json().error, 'backend_locked')
+  assert.equal(repoBackend('acme/sl-app'), 'sl')
+  // Picking the backend it already has is a no-op, items or not.
+  const same = await putBackend({ repo: 'acme/count', backend: 'github' })
+  assert.equal(same.statusCode, 200, same.body)
+})
+
+test('PUT backend: 404 for a repo not on the project, 400 for an unknown backend, 401 with no PIN', async () => {
+  assert.equal((await putBackend({ repo: 'acme/nowhere', backend: 'sl' })).statusCode, 404)
+  assert.equal((await putBackend({ repo: 'acme/switch', backend: 'internal' })).statusCode, 400)
+  const noPin = await send(owner, 'PUT', `/api/projects/${P}/repos/backend`, { repo: 'acme/switch', backend: 'sl' })
+  assert.equal(noPin.statusCode, 401, noPin.body)
+  assert.equal(repoBackend('acme/switch'), 'github')
+})
+
+test('an owner re-POST of a connected repo with items, naming a new backend, returns 409; nothing changes', async () => {
+  calls = []
+  const res = await connect({ repo: 'acme/count', backend: 'sl' })
+  assert.equal(res.statusCode, 409, res.body)
+  assert.equal(repoBackend('acme/count'), 'github')
+  assert.deepEqual(calls, [])
+})
+
+test('creating an item on an sl repo returns 400 backend_unsupported and calls no GitHub', async () => {
+  db.prepare('UPDATE project SET enabled = 1 WHERE id = ?').run(P)
+  calls = []
+  const res = await send(owner, 'POST', '/api/items', { title: 'On sl', outcome: 'An outcome', metric: 'A metric', repo: 'acme/sl-app', projectId: P })
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(res.json().error, 'backend_unsupported')
+  assert.deepEqual(calls, [])
+})
+
+test('the GitHub poller never reads an sl repo: listRepos({ backend: github }) leaves it out', async () => {
+  assert.ok(store.listRepos().some((r) => r.repo === 'acme/sl-app'))
+  assert.equal(store.listRepos({ backend: 'github' }).some((r) => r.repo === 'acme/sl-app'), false)
+  assert.ok(store.listRepos({ backend: 'github' }).some((r) => r.repo === 'acme/web'))
+  const github = await import('../src/github.js')
+  calls = []
+  await github.pollOnce(null)
+  assert.ok(calls.some((c) => c.includes('/repos/acme/web')), 'the github repos are polled')
+  assert.equal(calls.filter((c) => c.includes('acme/sl-app')).length, 0, calls.join('\n'))
 })
 
 test('infra/host/DEPLOY.md documents both sl link template settings', () => {

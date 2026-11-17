@@ -852,8 +852,11 @@ export function implementStartedBefore(itemId, iso) {
   return row?.first != null && row.first < iso
 }
 
-export function listRepos() {
-  return db.prepare('SELECT repo, prefix, project_id FROM project_repo ORDER BY repo').all()
+// HO-879: `backend`, when given, keeps only that backend's repos — the GitHub
+// poller asks for 'github', so an sl repo is never read from GitHub's API.
+export function listRepos({ backend = null } = {}) {
+  const rows = db.prepare('SELECT repo, prefix, project_id, backend FROM project_repo ORDER BY repo').all()
+  return rows.filter((r) => backend == null || r.backend === backend).map(({ repo, prefix, project_id }) => ({ repo, prefix, project_id }))
 }
 
 // ---- HZ-447: a Plan's repo scope ----
@@ -1240,6 +1243,23 @@ export function setTenantConnection(projectId, repoFullName, who) {
     notify()
   }
   return result
+}
+
+// HO-879: switch a connected repo's backend in place. Refused with
+// backend_locked once any item names the repo (any letter case) — the server
+// is the lock; the UI's disabled picker is a convenience only. Picking the
+// backend the repo already has is a no-op success.
+export function setRepoBackend(projectId, repoFullName, backend) {
+  if (!isBackend(backend)) return { error: 'invalid_backend' }
+  const row = db.prepare('SELECT repo, backend FROM project_repo WHERE project_id = ? AND repo = ?').get(projectId, repoFullName)
+  if (!row) return { error: 'not_found' }
+  if (row.backend === backend) return { ok: true, repo: row.repo, backend }
+  if (db.prepare('SELECT 1 FROM work_item WHERE repo = ? COLLATE NOCASE LIMIT 1').get(row.repo)) {
+    return { error: 'backend_locked', backend: row.backend }
+  }
+  db.prepare('UPDATE project_repo SET backend = ? WHERE project_id = ? AND repo = ?').run(backend, projectId, row.repo)
+  notify()
+  return { ok: true, repo: row.repo, backend }
 }
 
 // Disconnecting stops sync for the repo (existing items keep their history;

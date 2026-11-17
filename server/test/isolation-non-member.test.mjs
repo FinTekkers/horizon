@@ -285,6 +285,7 @@ const WRITE_CASES = {
   'POST /api/projects/:id/repos': { expect: '404', url: `/api/projects/${A}/repos`, body: { repo: 'iso-org/new-app' }, owner: 400 }, // GitHub is unreachable here: validateRepo fails
   'PUT /api/projects/:id/repos/test-env': { expect: '404', url: `/api/projects/${A}/repos/test-env`, body: { repo: REPO_A, path: '/tmp/iso-alpha-test.env' }, owner: 200 },
   'POST /api/projects/:id/repos/webhook/fix': { expect: '404', url: `/api/projects/${A}/repos/webhook/fix`, body: { repo: REPO_A }, owner: 503 }, // webhook_url_not_public: the test UI_URL is localhost
+  'PUT /api/projects/:id/repos/backend': { expect: '404', url: `/api/projects/${A}/repos/backend`, body: { repo: REPO_A, backend: 'github' }, owner: 200 }, // HO-879: the backend it already has, so nothing changes
   'POST /api/sync/token': { expect: '404', url: '/api/sync/token', body: { token: 'iso-not-a-real-token' }, owner: 400 }, // GitHub is unreachable here
   // member:*
   'POST /api/items': { expect: '404', url: '/api/items', body: { title: 'Iso new item', outcome: 'An outcome', metric: 'A metric', repo: REPO_A }, owner: 502 }, // GitHub is unreachable: no issue is created

@@ -885,6 +885,23 @@ export async function disconnectRepo(projectId, repo) {
   return data
 }
 
+// HO-879: switch a connected repo's backend in place. Owner and gate PIN, like
+// disconnectRepo. Rejects with `status` and the server's message — a 409 means
+// the repo has items. A switch leaves the board unchanged, so the repo links
+// reload here.
+export async function setRepoBackend(projectId, repo, backend) {
+  const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/repos/backend`, 'PUT', { repo, backend })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.message || data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  if (repoLinksLoad) repoLinksAgain = true
+  else loadRepoLinks()
+  return data
+}
+
 // HZ-244: each connected repo's GitHub webhook status, read live by the server.
 export function getRepoWebhooks(projectId) {
   return getJson(`/projects/${encodeURIComponent(projectId)}/repos/webhooks`)

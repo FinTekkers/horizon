@@ -14,6 +14,7 @@ vi.mock('../../api', () => ({
   addRepoToProject: vi.fn(async () => ({ ok: true })),
   disconnectRepo: vi.fn(),
   fixRepoWebhook: vi.fn(),
+  setRepoBackend: vi.fn(async () => ({ ok: true })),
 }))
 
 import * as api from '../../api'
@@ -81,13 +82,22 @@ test('metric 3: an sl repo with items shows sl, disabled', () => {
   expect(rowPicker('acme/sl-app').disabled).toBe(true)
 })
 
-test('with no items a different pick changes nothing in place: it says how to reconnect', () => {
+test('with no items a different pick saves through setRepoBackend', async () => {
   renderRow({ itemCount: 0 })
   fireEvent.change(rowPicker(), { target: { value: 'sl' } })
-  expect(screen.getByText(/To use sl, disconnect acme\/web and connect it again with Backend: sl\. Nothing was changed\./)).toBeTruthy()
+  await waitFor(() => expect(api.setRepoBackend).toHaveBeenCalledTimes(1))
+  expect(api.setRepoBackend).toHaveBeenCalledWith(7, 'acme/web', 'sl')
+  await waitFor(() => expect(rowPicker().disabled).toBe(false))
+  expect(rowPicker().value).toBe('sl')
+})
+
+test('a 409 from a stale tab shows the server’s refusal and the picker goes back to the stored backend', async () => {
+  const refusal = Object.assign(new Error('This repository already has items. Its backend cannot change.'), { status: 409 })
+  api.setRepoBackend.mockRejectedValueOnce(refusal)
+  renderRow({ itemCount: 0 })
+  fireEvent.change(rowPicker(), { target: { value: 'sl' } })
+  expect(await screen.findByText('This repository already has items. Its backend cannot change.')).toBeTruthy()
   expect(rowPicker().value).toBe('github')
-  expect(api.addRepoToProject).not.toHaveBeenCalled()
-  expect(api.disconnectRepo).not.toHaveBeenCalled()
 })
 
 // ---- metric 4: the repo link ----

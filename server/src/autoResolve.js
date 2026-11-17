@@ -66,8 +66,9 @@ let chain = Promise.resolve()
 
 // Synchronous: wires the listeners and queues the boot scans, which run only
 // when the debounce fires — nothing here reads GitHub or scans items.
-// `listRepos` is injectable for tests.
-export function startAutoResolve(logger, { listRepos = store.listRepos } = {}) {
+// `listRepos` is injectable for tests. HO-879: GitHub repos only — an sl repo
+// is never read from GitHub.
+export function startAutoResolve(logger, { listRepos = () => store.listRepos({ backend: 'github' }) } = {}) {
   log = logger
   if (started) return
   started = true

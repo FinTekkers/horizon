@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { createProject, addRepoToProject, disconnectRepo, fixRepoWebhook } from '../../api'
+import { createProject, addRepoToProject, disconnectRepo, fixRepoWebhook, setRepoBackend } from '../../api'
 import { WEBHOOK_IMPACT, webhookImpact } from '../../domain/webhookImpact'
 import { BACKENDS, DEFAULT_BACKEND } from '../connectRepo'
 
@@ -142,21 +142,40 @@ export function DisconnectForm({ projectId, repo, onCancel, onDisconnected }) {
 
 // HO-879: a repo's backend, shown as a picker. Read-only (disabled) once the
 // repo has items — a convenience only: the server refuses a backend change for
-// a repo with items (409), whatever the UI shows. A repo's backend is never
-// switched in place, so with no items a different pick says how to change it.
-export function RepoBackendPicker({ repoConn }) {
-  const [asked, setAsked] = useState(null)
-  const backend = repoConn.backend ?? DEFAULT_BACKEND
+// a repo with items (409), whatever the UI shows. A pick saves through
+// setRepoBackend; a refusal shows the server's message and the picker goes
+// back to the stored backend.
+export function RepoBackendPicker({ projectId, repoConn }) {
+  const stored = repoConn.backend ?? DEFAULT_BACKEND
+  const [value, setValue] = useState(stored)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
   const locked = (repoConn.itemCount ?? 0) > 0
+
+  const change = async (next) => {
+    if (busy || next === value) return
+    setValue(next)
+    setBusy(true)
+    setError(null)
+    try {
+      await setRepoBackend(projectId, repoConn.repo, next)
+    } catch (err) {
+      setValue(stored)
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
       <select
         className="field__input repo-row__backend"
         aria-label={`Backend for ${repoConn.repo}`}
         title={locked ? 'This repository has items, so its backend cannot change' : undefined}
-        value={backend}
-        disabled={locked}
-        onChange={(e) => setAsked(e.target.value === backend ? null : e.target.value)}
+        value={value}
+        disabled={locked || busy}
+        onChange={(e) => change(e.target.value)}
       >
         {BACKENDS.map((name) => (
           <option key={name} value={name}>
@@ -164,11 +183,7 @@ export function RepoBackendPicker({ repoConn }) {
           </option>
         ))}
       </select>
-      {asked && (
-        <div className="gh-note repo-row__backend-note">
-          To use {asked}, disconnect {repoConn.repo} and connect it again with Backend: {asked}. Nothing was changed.
-        </div>
-      )}
+      {error && <div className="gh-error repo-row__backend-note">{error}</div>}
     </>
   )
 }
@@ -194,7 +209,7 @@ export function RepoRow({ projectId, repoConn, syncRepos, webhook, onDisconnecte
           <span className="repo-row__name">{repoConn.repo}</span>
         )}
         <span className="repo-row__prefix">{repoConn.prefix}-*</span>
-        <RepoBackendPicker key={repoConn.backend ?? DEFAULT_BACKEND} repoConn={repoConn} />
+        <RepoBackendPicker key={repoConn.backend ?? DEFAULT_BACKEND} projectId={projectId} repoConn={repoConn} />
         <span className="repo-row__branch">
           default branch: {repoConn.defaultBranch ?? 'not read yet'}
         </span>

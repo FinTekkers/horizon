@@ -27,6 +27,9 @@ const setCursor = db.prepare(`
   ON CONFLICT(key) DO UPDATE SET etag = excluded.etag, last_synced_at = excluded.last_synced_at
 `)
 
+// HO-879: the connected repos the GitHub poller reads — never an sl repo.
+const githubRepos = () => store.listRepos({ backend: 'github' })
+
 // Last poll outcome per repo, surfaced to the UI via the SSE snapshot.
 const lastByRepo = {}
 
@@ -687,10 +690,10 @@ async function listArtifactRefs(repo) {
 export async function pruneArtifactRefs(log, now = Date.now()) {
   const last = getCursorSyncedAt.get(ARTIFACTS_PRUNE_KEY)?.last_synced_at
   if (last && now - msOf(last) < ARTIFACTS_PRUNE_MS) return null
-  if (store.listRepos().length === 0) return null
+  if (githubRepos().length === 0) return null
   setCursor.run(ARTIFACTS_PRUNE_KEY, null)
   let deleted = 0
-  for (const { repo } of store.listRepos()) {
+  for (const { repo } of githubRepos()) {
     let refs
     try {
       refs = await listArtifactRefs(repo)
@@ -1491,7 +1494,7 @@ export function defaultBranchStale(at, now = Date.now()) {
 // One GET /repos/:r per connected repo whose branch is unread or stale. A
 // failed read logs and keeps the old value; the next poll tries again.
 export async function refreshDefaultBranches(log, now = Date.now()) {
-  for (const { repo } of store.listRepos()) {
+  for (const { repo } of githubRepos()) {
     if (!defaultBranchStale(store.getDefaultBranch(repo)?.at, now)) continue
     try {
       const res = await gh(`/repos/${repo}`)
@@ -1536,7 +1539,7 @@ async function pollPrStates(log) {
 export async function pollOnce(log) {
   let changed = 0
   await refreshDefaultBranches(log)
-  for (const { repo } of store.listRepos()) {
+  for (const { repo } of githubRepos()) {
     try {
       const result = await pollRepo(repo, log)
       changed += result.changed
@@ -1549,7 +1552,7 @@ export async function pollOnce(log) {
   }
   changed += await pollPrStates(log) // PRs merged/closed directly on GitHub
   if (mainHeadListener) {
-    for (const { repo } of store.listRepos()) {
+    for (const { repo } of githubRepos()) {
       const sha = await getBranchSha(repo, defaultBranchOf(repo)).catch(() => null)
       if (sha) mainHeadListener(repo, sha)
     }
@@ -1558,12 +1561,12 @@ export async function pollOnce(log) {
 }
 
 export function startPolling(log) {
-  if (store.listRepos().length === 0) log.info('GitHub sync not configured — connect repos from the Admin page')
+  if (githubRepos().length === 0) log.info('GitHub sync not configured — connect repos from the Admin page')
   // Backfill the token identity for the comment echo guard on older installs.
   ensureGithubLogin().catch((err) => log.warn(`could not resolve the GitHub login: ${err.message}`))
   let inFlight = false
   const tick = async () => {
-    if (inFlight || store.listRepos().length === 0) return
+    if (inFlight || githubRepos().length === 0) return
     inFlight = true
     try {
       const result = await pollOnce(log)

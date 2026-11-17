@@ -312,6 +312,8 @@ export async function fileApprovedSplit(item, actor = 'You') {
     if (!repoRow || repoRow.project_id !== item.project_id) {
       throw new Error(`${row.target_repo} is no longer connected to this item’s project`)
     }
+    // HO-879: an sl repo has no issue tracker yet — never search or file it on GitHub.
+    if ((store.findRepo(row.target_repo)?.backend ?? 'github') !== 'github') throw new Error(`backend_unsupported: ${row.target_repo} is not a GitHub repository`)
 
     let ghIssue = await github.findSplitIssue(row.target_repo, splitMarker(item.id), sinceIso(row.created_at))
     if (!ghIssue) {
