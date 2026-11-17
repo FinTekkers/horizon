@@ -20,6 +20,7 @@ import { db } from './db.js'
 import { PARENT_ABANDONED_REASON, PARENT_CLOSED_REASON, dismissSoftAsksForParent } from './asks.js'
 import { isHumanProof } from './humanProof.js'
 import { clearGoldenCases } from './goldenCases.js'
+import { clearDesignSpec } from './designSpec.js'
 import {
   ACCEPT_GATE_INDEX,
   APPROVE_FILE_GATE_INDEX,
@@ -428,6 +429,8 @@ export function moveItem(
     }
     db.prepare(`UPDATE work_item SET ${sets.join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(...values, id)
     if (plan.reset.clearGolden) clearGoldenCases(id)
+    // HO-852: the frozen design canvas is approved at the same first gate.
+    if (plan.reset.clearGolden) clearDesignSpec(id)
 
     const text = String(note ?? '')
     const moveId = insertMove.run(id, who, plan.fromKey, plan.toKey, action, text).lastInsertRowid

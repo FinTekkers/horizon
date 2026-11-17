@@ -47,6 +47,7 @@ from .agent_runner import (
     AgentUsageLimitedError,
     effective_provider,
     parse_agent_reply,
+    reads_add_dirs,
     run_agent,
     salvage_truncated_reply,
     stamp_notes,
@@ -57,6 +58,7 @@ from . import (
     base_check,
     check_record,
     design_canvas,
+    design_review,
     handoff,
     login_env,
     owner_digest,
@@ -669,6 +671,9 @@ def build_prompt(task: dict) -> str:
     golden = golden_cases_section(task)
     if golden:
         lines += ["", golden]
+    design_note = design_review_section(task)
+    if design_note:
+        lines += ["", design_note]
     verdict = design_verdict_section(task)
     if verdict:
         lines += ["", verdict]
@@ -718,6 +723,24 @@ def design_verdict_section(task: dict) -> str | None:
     if task.get("design_verdict") is not True or task["step"].get("label") not in DESIGN_VERDICT_LABELS:
         return None
     return (ROLES / DESIGN_VERDICT_ADDENDUM).read_text().rstrip("\n")
+
+
+# ---- design review (HO-852) ----
+# The server sets `design_canvas: {"canvas_url", "shots_commit"}` on a task
+# only for Automated review of an item whose first gate froze a design canvas
+# (server/src/designSpec.js). Both review passes then end with the role note
+# asking for a matching or differing verdict per screen, and the review stages
+# the canvas and the implement run's shots for them (farm/design_review.py).
+# Without the field nothing is appended, so every other prompt is
+# byte-identical.
+DESIGN_REVIEW_ADDENDUM = "design_review_addendum.md"
+
+
+def design_review_section(task: dict) -> str | None:
+    """The design review role note a review prompt ends with, or None."""
+    if not isinstance(task.get("design_canvas"), dict) or task["step"].get("label") != REVIEW_LABEL:
+        return None
+    return (ROLES / DESIGN_REVIEW_ADDENDUM).read_text().rstrip("\n")
 
 
 # ---- web-page visuals (HO-862) ----
@@ -4002,63 +4025,81 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             f"## Commits under review\n\n```\n{commits}\n```\n\n"
             f"## Code diff under review\n\n```\n{diff_stat}\n```\n\n```diff\n{diff_text}\n```{diff_note}"
         )
+        # HO-852: with a frozen design canvas, both passes compare the screens
+        # against it: the canvas and the implement run's shots are staged
+        # outside the checkout first (the passes are read-only), named in the
+        # prompt and readable through add_dirs; removed however the review ends.
+        base_prompt = build_prompt(task)
+        design_staged = (
+            design_review.stage(ws, item, task["design_canvas"], readable=reads_add_dirs(provider_override))
+            if design_review_section(task)
+            else None
+        )
+        design_dirs = [str(design_staged.root)] if design_staged and design_staged.root else None
+        design_files = f"\n\n{design_review.prompt_section(design_staged)}" if design_staged else ""
         prompt = (
-            build_prompt(task)
+            base_prompt
+            + design_files
             + "\n\n"
             + delta_section
             + diff_section
             + "\n\nRespond with ONLY the JSON object described in your role instructions."
         )
 
-        # HZ-387: each review pass is read-only, though the step itself is
-        # workspaceMutating — so each is guarded on its own, after
-        # prepare_branch's scrub, not through READ_ONLY_LABELS.
-        with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
-            code_parsed, code_provenance, code_notes = _run_and_parse(
-                prompt,
-                agent=model_agent,
-                step=label,
-                persona=persona,
-                append_system=role,
-                cwd=str(ws),
-                max_turns=max_turns,
-                timeout_s=timeout_s,
-                allowed_tools=tools,
-                required_keys=("verdict",),
-                item_id=item["id"],
-                guard=guard,
-                provider=provider_override,
-                model_choice=model_choice,
-                provider_locked=provider_locked,
-                overlay=overlay,
-            )
-            watch.provider = code_provenance.get("provider") or watch.provider
+        try:
+            # HZ-387: each review pass is read-only, though the step itself is
+            # workspaceMutating — so each is guarded on its own, after
+            # prepare_branch's scrub, not through READ_ONLY_LABELS.
+            with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
+                code_parsed, code_provenance, code_notes = _run_and_parse(
+                    prompt,
+                    agent=model_agent,
+                    step=label,
+                    persona=persona,
+                    append_system=role,
+                    cwd=str(ws),
+                    max_turns=max_turns,
+                    timeout_s=timeout_s,
+                    allowed_tools=tools,
+                    required_keys=("verdict",),
+                    item_id=item["id"],
+                    guard=guard,
+                    provider=provider_override,
+                    model_choice=model_choice,
+                    provider_locked=provider_locked,
+                    overlay=overlay,
+                    add_dirs=design_dirs,
+                )
+                watch.provider = code_provenance.get("provider") or watch.provider
 
-        # The item's QA persona, never the Eng one the code pass above used
-        # (HZ-125): a reviewer wearing the implementer's specialization reviews
-        # the work as the engineer who wrote it.
-        qa_role = (ROLES / "qa_review.md").read_text()
-        qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT), overlay)
-        with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
-            qa_parsed, qa_provenance, qa_notes = _run_and_parse(
-                prompt,
-                agent=model_agent,
-                step=label,
-                persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas, overlay),
-                append_system=qa_role,
-                cwd=str(ws),
-                max_turns=max_turns,
-                timeout_s=timeout_s,
-                allowed_tools=tools,
-                required_keys=("verdict",),
-                item_id=item["id"],
-                guard=guard,
-                provider=provider_override,
-                model_choice=model_choice,
-                provider_locked=provider_locked,
-                overlay=overlay,
-            )
-            watch.provider = qa_provenance.get("provider") or watch.provider
+            # The item's QA persona, never the Eng one the code pass above used
+            # (HZ-125): a reviewer wearing the implementer's specialization reviews
+            # the work as the engineer who wrote it.
+            qa_role = (ROLES / "qa_review.md").read_text()
+            qa_role = compose_role(qa_role, REVIEW_QA_PERSONA_AGENT, personas.get(REVIEW_QA_PERSONA_AGENT), overlay)
+            with read_only_guard.guard(ws, effective_provider(provider_override)) as watch:
+                qa_parsed, qa_provenance, qa_notes = _run_and_parse(
+                    prompt,
+                    agent=model_agent,
+                    step=label,
+                    persona=model_persona(REVIEW_QA_PERSONA_AGENT, personas, overlay),
+                    append_system=qa_role,
+                    cwd=str(ws),
+                    max_turns=max_turns,
+                    timeout_s=timeout_s,
+                    allowed_tools=tools,
+                    required_keys=("verdict",),
+                    item_id=item["id"],
+                    guard=guard,
+                    provider=provider_override,
+                    model_choice=model_choice,
+                    provider_locked=provider_locked,
+                    overlay=overlay,
+                    add_dirs=design_dirs,
+                )
+                watch.provider = qa_provenance.get("provider") or watch.provider
+        finally:
+            design_review.remove(design_staged)
 
         # HZ-369: one step run records one provider. Passes that name different
         # ones fail the step rather than record a half-true provenance; a pass

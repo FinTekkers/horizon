@@ -94,6 +94,7 @@ import * as checkFlakes from './checkFlakes.js'
 import * as testResults from './testResults.js'
 import { OPEN_LINES_MAX } from './verifyOutcome.js'
 import { REASON_MAX_CHARS, checkAccept as checkExceptionAccept, exceptionKind } from './gateExceptions.js'
+import { SKIP_REASON_MAX_CHARS as DESIGN_SKIP_REASON_MAX_CHARS } from './designSpec.js'
 import {
   PRODUCTIVITY_QUERY_SCHEMA,
   PRODUCTIVITY_RESPONSE_SCHEMA,
@@ -2162,7 +2163,8 @@ export function buildApp({
   // humanOnly gate refused for want of the proof comes back as a 403.
   // HZ-541: and goldenHash, so a first gate with golden cases refuses every
   // other approver (store.approveGate). HZ-642: and filedAutopilot, Approve &
-  // file's Autopilot choice for the items it files.
+  // file's Autopilot choice for the items it files. HO-852: and designRunId or
+  // designSkipReason, the first gate's design canvas or why there is none.
   //
   // HZ-822: { ok: true, superseded: true } when the PR was merged on GitHub
   // while its pre-merge check was queued or running: the code was accepted
@@ -3144,6 +3146,10 @@ export function buildApp({
             // Approve the run approves, and the hash its card showed.
             commandIndex: { type: 'integer', minimum: 0 },
             commandHash: { type: 'string', maxLength: 128 },
+            // HO-852: the first gate's design — the canvas run the page showed,
+            // or why it approves without design (designSpec.js).
+            designSkipReason: { type: 'string', maxLength: DESIGN_SKIP_REASON_MAX_CHARS },
+            designRunId: { type: 'integer', minimum: 1 },
             // HZ-711: an abandon may drop the links where this item blocks others.
             removeDependentLinks: { type: 'boolean' },
           },
@@ -3197,6 +3203,9 @@ export function buildApp({
           filedAutopilot: body.filedAutopilot || null,
           commandIndex: Number.isInteger(body.commandIndex) ? body.commandIndex : null,
           commandHash: body.commandHash || null,
+          // A blank reason is passed on, so approveGate refuses it.
+          designSkipReason: typeof body.designSkipReason === 'string' ? body.designSkipReason : null,
+          designRunId: Number.isInteger(body.designRunId) ? body.designRunId : null,
         }
         result =
           STEPS[item.cursor].kind === 'gate'

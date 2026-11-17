@@ -169,6 +169,19 @@ def _git(path: Path, *args: str, check: bool = True, timeout: int = 300) -> subp
     return result
 
 
+def _git_bytes(path: Path, *args: str, check: bool = True, timeout: int = 120) -> bytes:
+    """Like _git, but stdout stays raw bytes (blob contents such as PNGs).
+
+    Interim: repoint callers at farm/vcs/git.py's step_agent_git_bytes once
+    HO-874 lands.
+    """
+    result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, timeout=timeout)
+    if check and result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"git {' '.join(args)} failed: {stderr[:200]}")
+    return result.stdout
+
+
 SET_HEAD_TIMEOUT_S = 10
 _ORIGIN_PREFIX = "refs/remotes/origin/"
 

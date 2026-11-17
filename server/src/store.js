@@ -65,6 +65,7 @@ import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks
 import { findTargetByRepo } from './deployTargets.js'
 import { visualPageFields } from './visualPages.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
+import { approveCanvas, checkDesignApproval, clearDesignSpec, designApprovable, designRequired, designSpecFields, skipDesign } from './designSpec.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
 import { DEFAULT_BACKEND, isBackend } from './backends/names.js'
@@ -2943,6 +2944,8 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...substepFields(row, overlay),
     // HZ-541: only on an item whose first gate approves golden cases.
     ...goldenCasesFields(row),
+    // HO-852: only on an item whose first gate approves a design canvas.
+    ...designSpecFields(row),
     // HO-862: only on an item with a recorded web-page round.
     ...visualPageFields(row),
     // HO-844: only on a Task — at Review & close on a done_proof_incomplete
@@ -2970,11 +2973,13 @@ function gateExceptionFields(row) {
 // read itself — so a target listed here is one the move route carries out.
 // The approve leaves out what approveGate would refuse: no run plan at
 // Approve the run, golden cases not yet approved at the first gate (the move
-// route sends no golden-cases hash).
+// route sends no golden-cases hash). HO-852: nor a design canvas, for the
+// same reason (designSpec.designApprovable).
 function itemMoveTargets(row, activeRun = selectActiveRun.get(row.id) || null) {
   const approvable =
     !(row.cursor === APPROVE_RUN_GATE_INDEX && !currentRunPlan(row.id)) &&
-    !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesRequired(row) && !approvedGoldenCases(row.id))
+    !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesRequired(row) && !approvedGoldenCases(row.id)) &&
+    !(FIRST_GATE_INDEXES.includes(row.cursor) && !designApprovable(row))
   return moveTargets(row, { running: activeRun != null, enabled: !disabledProject(row), approvable })
 }
 
@@ -3205,7 +3210,18 @@ export function approveGate(
   stepIndex,
   notes,
   actor = 'You',
-  { proof = null, planHash = null, runner = null, goldenHash = null, filedAutopilot = null, exceptions = null, commandIndex = null, commandHash = null } = {},
+  {
+    proof = null,
+    planHash = null,
+    runner = null,
+    goldenHash = null,
+    filedAutopilot = null,
+    exceptions = null,
+    commandIndex = null,
+    commandHash = null,
+    designSkipReason = null,
+    designRunId = null,
+  } = {},
 ) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
@@ -3356,6 +3372,26 @@ export function approveGate(
       return golden
     }
   }
+  // HO-852: and freezes the design canvas the approver was shown, or records
+  // why it approves without one. Like golden cases, a caller that shows no
+  // canvas (WhatsApp, the caretaker) names no run and gives no reason, so it
+  // is refused — unless the step 1 verdict already skipped the design.
+  let design = null
+  if (FIRST_GATE_INDEXES.includes(stepIndex) && designRequired(it)) {
+    design = checkDesignApproval(it, { skipReason: designSkipReason, runId: designRunId })
+    if (design.error) {
+      if (designRunId == null && designSkipReason == null) {
+        addEvent(id, {
+          who: actor,
+          text: `could not approve “${STEPS[stepIndex].label}”: ${design.message} — the gate stays open`,
+          color: '#9C333E',
+          initials: '✕',
+        })
+        notify()
+      }
+      return design
+    }
+  }
 
   let filed = null
   if (stepIndex === APPROVE_FILE_GATE_INDEX) {
@@ -3397,6 +3433,8 @@ export function approveGate(
       .run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed, approvedCommand?.index ?? null, approvedCommand?.hash ?? null)
     if (excepted) insertExceptions(id, Number(decision.lastInsertRowid), excepted, actor)
     if (golden?.set) approveGoldenCases(id, golden.set, actor)
+    if (design?.canvas) approveCanvas(id, design.canvas, actor)
+    if (design?.skip) skipDesign(id, design.skip.reason, actor)
     if (trimmed) {
       // Approval notes are direction for whoever runs next — queue as feedback
       // so the next dispatched agent step receives and must address them.
@@ -3415,6 +3453,14 @@ export function approveGate(
     color: '#5E4380',
     initials: '✓',
   })
+  if (design?.skip) {
+    addEvent(id, {
+      who: actor,
+      text: `approved without a design${design.skip.verdict ? ' (the step 1 verdict skipped it)' : ''}: ${design.skip.reason}`,
+      color: '#5E4380',
+      initials: '✓',
+    })
+  }
   if (excepted) {
     const lines = excepted.map((row) => row.lineId)
     addEvent(id, {
@@ -3523,6 +3569,8 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   // HZ-541: an approved golden-cases set survives every send-back but one to
   // the sub-step that writes it, which regenerates it for a new approval.
   if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === GOLDEN_CASES_OUTPUT) clearGoldenCases(id)
+  // HO-852: so does a frozen design canvas, sent back to the design sub-step.
+  if (substep && substepsOf(it).find((s) => s.id === substep.substepId)?.output === DESIGN_OUTPUT) clearDesignSpec(id)
 
   const reworkAgent = STEPS[reworkIdx].kind === 'agent' ? STEPS[reworkIdx].agent : null
   const design = substep ? designSubstepOf(it, substep.index) : null
