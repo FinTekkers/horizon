@@ -2,7 +2,6 @@
 // orchestrator and GitHub sync loops.
 
 import { buildApp } from './app.js'
-import * as github from './github.js'
 import { forKind } from './backends/index.js'
 import * as orchestrator from './orchestrator.js'
 import * as gateNotifier from './gateNotifier.js'
@@ -46,7 +45,7 @@ caretaker.init(fastify.log)
 // gateActions the UI routes call. Registered AFTER caretaker.init so, on any
 // change, the decision row is written before this looks for it. HZ-296: the
 // gate-13 pass re-reads an unknown mergeability through the existing helper.
-caretakerActor.init(fastify.log, { gateActions: fastify.gateActions, refreshMergeable: github.refreshPrMergeable })
+caretakerActor.init(fastify.log, { gateActions: fastify.gateActions, refreshMergeable: forKind('github').review.refreshPrMergeable })
 // HZ-273: rules on 'Operator must decide:' arrivals at gates 5 and 10 for
 // Autopilot 'on' projects — edits only the named issue-body lines, then sends
 // back with a note through the same gateActions.

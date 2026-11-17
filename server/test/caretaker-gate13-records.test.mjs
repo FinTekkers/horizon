@@ -219,12 +219,15 @@ test('mergeable NULL on arrival, then GitHub reports clean: re-read, Accept, mer
   assert.equal(prFetches(pr), 2)
 })
 
+// HO-873: server.js reaches github.refreshPrMergeable through the registry —
+// forKind('github').review.refreshPrMergeable is that very function
+// (test/backend-registry.test.mjs pins it).
 test('R1: server.js hands the real github.refreshPrMergeable to caretakerActor.init', () => {
   const source = readFileSync(join(REPO_ROOT, 'server/src/server.js'), 'utf8')
-  assert.match(source, /^import \* as github from '\.\/github\.js'$/m)
+  assert.match(source, /^import \{ forKind \} from '\.\/backends\/index\.js'$/m)
   assert.match(
     source,
-    /caretakerActor\.init\(fastify\.log, \{ gateActions: fastify\.gateActions, refreshMergeable: github\.refreshPrMergeable \}\)/,
+    /caretakerActor\.init\(fastify\.log, \{ gateActions: fastify\.gateActions, refreshMergeable: forKind\('github'\)\.review\.refreshPrMergeable \}\)/,
   )
 })
 

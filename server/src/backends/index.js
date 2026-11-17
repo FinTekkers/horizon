@@ -6,9 +6,9 @@
 // that is not a string, not connected or has no row falls back to the default
 // (GitHub) — exactly as tokenForRepo falls back to settings.getToken().
 //
-// HO-871 moved the tracker call sites here; HO-872 moves the rest. Outside
-// backends/, only the call-site files test/backend-registry.test.mjs lists may
-// import this file. store.js and db.js must never import it (it loads
+// HO-871 moved the tracker call sites here; HO-872 and HO-873 moved the rest.
+// Outside backends/, only the call-site files test/backend-registry.test.mjs
+// lists may import this file. store.js and db.js must never import it (it loads
 // github.js, which imports store.js) — they read the value set from ./names.js.
 
 import { db } from '../db.js'
@@ -20,6 +20,9 @@ export { BACKENDS, DEFAULT_BACKEND, isBackend }
 // HO-872: GitHub's e2e-only answers, for app.js's /api/test/* routes, so app.js
 // need not import github.js for them.
 export { githubTestHooks } from './github.js'
+// HO-873: GitHub's request headers, for tokenCheck.js, which only ever checks
+// a GitHub token against GitHub's API, so need not import github.js for them.
+export { ghHeaders } from './github.js'
 
 const ADAPTERS = Object.freeze({ github: githubAdapters, sl: slAdapters })
 

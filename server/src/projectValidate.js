@@ -29,7 +29,7 @@ import { listTargetStatuses } from './deploy.js'
 import * as deployDryRun from './deployDryRun.js'
 import { findTargetByRepo, listTargets } from './deployTargets.js'
 import { resolveRules } from './definitions.js'
-import * as github from './github.js'
+import { forRepo } from './backends/index.js'
 import * as premerge from './premerge.js'
 import { servedRulesFor } from './rulesStore.js'
 import { loadSubsteps } from './substeps.js'
@@ -63,9 +63,9 @@ const FARM_DIR = process.env.HORIZON_FARM_DIR || path.resolve(import.meta.dirnam
 // The test seam: every external dependency, replaceable one by one (the
 // premerge.runner pattern).
 export const deps = {
-  getRepoPermissions: (repo) => github.getRepoPermissions(repo),
+  getRepoPermissions: (repo) => forRepo(repo).vcs.getRepoPermissions(repo),
   inspectWebhook: (repo) => webhooks.inspect(repo),
-  getBranchSha: (repo, branch) => github.getBranchSha(repo, branch),
+  getBranchSha: (repo, branch) => forRepo(repo).vcs.getBranchSha(repo, branch),
   spawn: (args, opts) => premerge.runner.spawn(args, opts),
   checkCommands: (repo) => store.getRepoCheckCommands(repo),
   repoConfig: (repo) => store.getRepoConfig(repo),
@@ -289,7 +289,7 @@ export async function validateProject(
     runId: `v${project?.id}-${startedMs}`,
     // Fetched once per repo, shared by check_commands and drift.
     mainSha: (repo) => {
-      if (!shas.has(repo)) shas.set(repo, Promise.resolve().then(() => deps.getBranchSha(repo, github.defaultBranchOf(repo))))
+      if (!shas.has(repo)) shas.set(repo, Promise.resolve().then(() => deps.getBranchSha(repo, forRepo(repo).vcs.defaultBranchOf(repo))))
       return shas.get(repo)
     },
   }

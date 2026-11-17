@@ -1,6 +1,6 @@
 // HZ-509: the screenshots the owner reviews at Accept the code, and their
 // per-screen approvals. The shots come from the item's latest publish
-// (github.fetchScreenshotSnapshot: results.json plus the commit's tree); only
+// (forRepo(repo).artifacts.readArtifacts: results.json plus its files); only
 // the changed, new and removed ones are listed. Every image is named by a blob
 // sha read from that tree, at a path built from results.json's own names — a
 // request only ever picks one of these listed rows by its exact screen name,
@@ -13,7 +13,8 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { SCREENSHOT_DIR, fetchScreenshotSnapshot } from './github.js'
+import { SCREENSHOT_DIR } from './backends/artifact.js'
+import { forRepo } from './backends/index.js'
 
 // The path-parameter shape of a screen name; anything else cannot be listed.
 export const SCREEN_RE = /^[A-Za-z0-9._-]{1,100}$/
@@ -107,7 +108,7 @@ export function recordApprovals(itemId, shots, actor) {
 // promotion closed (logged, artifacts ref kept) and never the merge.
 export async function mergeApprovals(item) {
   try {
-    const snapshot = item.repo ? await fetchScreenshotSnapshot(item.repo, item) : null
+    const snapshot = item.repo ? await forRepo(item.repo).artifacts.readArtifacts(item) : null
     return new Set(approvalState(item.id, listedShots(snapshot)).filter((shot) => shot.approved).map((shot) => shot.screen))
   } catch {
     return null
