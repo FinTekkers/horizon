@@ -1,9 +1,12 @@
 {
-  "$comment": "HO-835: the one declaration of a Task run plan's v2 contract rules — `requires` `service` and `precondition` entries, a `file` entry's `access`, and the top-level `rehearsal` block — plus every reason text they fail with. HO-839: `rehearsalCapS`, `rehearsalScopes` and `rehearsalReasons` are what a rehearsal of that block may take and say: farm/rehearsal.py emits only these reason ids and server/src/orchestrator.js stores only these, so the two cannot drift. HO-845: `commandCheckStages` are the per-command checks of a one-command patch, in the order they run, and `commandCheckReasons` the only reason ids farm/command_checks.py reports and server/src/commandChecks.js stores for one. Ids only, never copy. Read by domain/py/run_plan.py (the farm's validate() and unrehearsed()) and domain/js/runPlan.js (runPlanError(), the Approve the run card), so both bindings give the same words. A reason's `{slot}` is filled by each binding with a name, an index or a shape name, never a value from the plan. Each `writeShapes` pattern compiles in both Python `re` and JS `RegExp`; `ignoreCase` maps to re.I and the `i` flag; `unquotedOnly` tests the command with its quoted spans removed. The write-shape check is best-effort: it refuses obvious writes and cannot prove a command read-only. Nothing here ever runs a command.",
+  "$comment": "HO-835: the one declaration of a Task run plan's v2 contract rules — `requires` `service` and `precondition` entries, a `file` entry's `access`, and the top-level `rehearsal` block — plus every reason text they fail with. HO-839: `rehearsalCapS`, `rehearsalScopes` and `rehearsalReasons` are what a rehearsal of that block may take and say: farm/rehearsal.py emits only these reason ids and server/src/orchestrator.js stores only these, so the two cannot drift. HO-840: `rehearsal.services` are the hosts a rehearsal may read through farm/egress_proxy.py — GET and HEAD only, a list fixed in that file, never here. `serviceHost` is the exact name shape (no wildcard, IP literal, port or trailing dot), `maxServices` how many, and `serviceReads` `refuse` refuses GET and HEAD too: no field can add a verb. farm/rehearsal_proxy.py re-checks each host with the same pattern. HO-845: `commandCheckStages` are the per-command checks of a one-command patch, in the order they run, and `commandCheckReasons` the only reason ids farm/command_checks.py reports and server/src/commandChecks.js stores for one. Ids only, never copy. Read by domain/py/run_plan.py (the farm's validate() and unrehearsed()) and domain/js/runPlan.js (runPlanError(), the Approve the run card), so both bindings give the same words. A reason's `{slot}` is filled by each binding with a name, an index or a shape name, never a value from the plan. Each `writeShapes` pattern compiles in both Python `re` and JS `RegExp`; `ignoreCase` maps to re.I and the `i` flag; `unquotedOnly` tests the command with its quoted spans removed. The write-shape check is best-effort: it refuses obvious writes and cannot prove a command read-only. Nothing here ever runs a command.",
   "preconditionKinds": ["lock_free", "no_deploy_running", "row_exists", "account_exists", "artifact_exists"],
   "fileAccess": ["r", "w"],
   "serviceName": "^[A-Za-z0-9][A-Za-z0-9._+-]*$",
-  "rehearsalKeys": ["dry_run", "limit", "ro_env", "samples"],
+  "rehearsalKeys": ["dry_run", "limit", "ro_env", "samples", "services"],
+  "serviceHost": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+  "serviceReads": ["allow", "refuse"],
+  "maxServices": 8,
   "maxSampleLength": 200,
   "rehearsalCapS": 210,
   "rehearsalScopes": ["full", "samples"],
@@ -52,6 +55,8 @@
     "samplesCommand": "run_plan 'rehearsal.samples' command must be a 1-based index into 'commands'",
     "samplesDoubled": "run_plan 'rehearsal.samples' names command {n} more than once",
     "samplesExpect": "run_plan 'rehearsal.samples' expect must be one non-blank line of at most {max} characters",
+    "services": "run_plan 'rehearsal.services' must be a list of at most {max} {\"host\": \"<name>\", \"reads\": \"allow\" or \"refuse\"} objects, each host an exact lowercase DNS name with no wildcard, IP, port or trailing dot",
+    "servicesDoubled": "run_plan 'rehearsal.services' names one host more than once",
     "unrehearsed": "rehearsal.samples has no entry for proof {commands}"
   }
 }

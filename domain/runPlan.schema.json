@@ -77,7 +77,7 @@
       }
     },
     "rehearsal": {
-      "$comment": "HO-835: the plan's rehearsal, kept apart from the live `commands`. `dry_run` is the command that previews the run (the `--dry-run` form); `limit` caps what a rehearsal touches; `ro_env` names the read-only variables a rehearsal or a precondition `check` uses — variable names with no `$`, never a live `env` key or a name an `env` value references; `samples` holds one expected line per `proof` command, `command` a 1-based index into `commands`. Names, paths and read-only commands only: never a secret value, file contents or live row data. Every key is optional; an unknown key fails. Rules and reason texts are declared once in domain/runPlanContract.json and asserted by both bindings. farm/step_agent.py requires a sample for each `proof` command only when a Run plan reply is written (run_plan.unrehearsed()), so a plan stored before this block still validates.",
+      "$comment": "HO-835: the plan's rehearsal, kept apart from the live `commands`. `dry_run` is the command that previews the run (the `--dry-run` form); `limit` caps what a rehearsal touches; `ro_env` names the read-only variables a rehearsal or a precondition `check` uses — variable names with no `$`, never a live `env` key or a name an `env` value references; `samples` holds one expected line per `proof` command, `command` a 1-based index into `commands`; `services` (HO-840) the hosts it may read through the GET/HEAD egress proxy. Names, paths and read-only commands only: never a secret value, file contents or live row data. Every key is optional; an unknown key fails. Rules and reason texts are declared once in domain/runPlanContract.json and asserted by both bindings. farm/step_agent.py requires a sample for each `proof` command only when a Run plan reply is written (run_plan.unrehearsed()), so a plan stored before this block still validates.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -93,6 +93,19 @@
             "properties": {
               "command": { "type": "integer", "minimum": 1 },
               "expect": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "services": {
+          "$comment": "HO-840: the hosts the rehearsal may read through the egress proxy (farm/egress_proxy.py), which passes GET and HEAD only — a list fixed in code, never here. `host` is an exact lowercase DNS name matching domain/runPlanContract.json `serviceHost`: no wildcard, IP literal, port or trailing dot. Distinct hosts, at most `maxServices`. `reads`: `refuse` refuses GET and HEAD to that host too (a GET that is not safe there); `allow`, or no `reads`, passes them. No field can add a verb. Without `services` no proxy starts and the sandbox keeps `--network=none`. Asserted by both bindings.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["host"],
+            "additionalProperties": false,
+            "properties": {
+              "host": { "type": "string", "minLength": 1 },
+              "reads": { "type": "string", "enum": ["allow", "refuse"] }
             }
           }
         }

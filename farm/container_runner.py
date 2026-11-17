@@ -281,6 +281,13 @@ READ_ONLY_PGOPTIONS = "-c default_transaction_read_only=on"
 # that network, and the proxy variables — by name, as `--env=<NAME>`, the
 # value riding in the podman client's env (rehearsal_proxy_env), never argv.
 REHEARSAL_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+# HO-840: the egress proxy decrypts HTTPS to see the verb, so the sandbox
+# trusts the rehearsal's own one-day CA: its certificate (never its key),
+# read-only at REHEARSAL_CA_MOUNT, as `--volume=<host file>:<mount>:ro` — the
+# only volume a caller may add — and these names pointing at it, passed like
+# the proxy names.
+REHEARSAL_CA_MOUNT = "/egress/ca.pem"
+REHEARSAL_CA_ENV = ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE")
 # Network modes with full egress or another namespace's view, never a
 # caller's: podman's default bridge is named `podman`. A `container:` or
 # `ns:` form fails _NETWORK_NAME on its colon.
@@ -297,15 +304,32 @@ def _ip(value: str) -> bool:
     return True
 
 
+def _ca_volume(value: str) -> bool:
+    """HO-840: `<host file>:REHEARSAL_CA_MOUNT:ro` — an absolute path to a
+    regular file (no symlink, no `:` or `,`), mounted read-only there only."""
+    source, sep, rest = value.partition(":")
+    return (
+        bool(sep)
+        and rest == f"{REHEARSAL_CA_MOUNT}:ro"
+        and os.path.isabs(source)
+        and "," not in source
+        and os.path.normpath(source) == source
+        and os.path.isfile(source)
+        and not os.path.islink(source)
+    )
+
+
 def rehearsal_extra_flags(flags: list | tuple | None) -> tuple[str | None, list[str], list[str]]:
     """HO-866: a caller's extra rehearsal flags, checked against the
     allowlist: (network name or None, `--dns`/`--add-host` flags, proxy env
     names). Accepted, one token each: `--network=<name>` (at most once, never
     a refused mode), `--dns=<ip>`, `--add-host=<host>:<ip>` (both only with a
     caller network — real podman refuses DNS options without one) and
-    `--env=<NAME>` with NAME in REHEARSAL_PROXY_ENV. Anything else raises
-    Unavailable naming the flag's 1-based index only: a flag can carry a
-    proxy address, and the message reaches the owner."""
+    `--env=<NAME>` with NAME in REHEARSAL_PROXY_ENV. HO-840 adds, also only
+    with a caller network: one `--volume=<file>:REHEARSAL_CA_MOUNT:ro` (the
+    egress CA certificate) and `--env=<NAME>` with NAME in REHEARSAL_CA_ENV.
+    Anything else raises Unavailable naming the flag's 1-based index only: a
+    flag can carry a proxy address, and the message reaches the owner."""
     if flags is None:
         return None, [], []
     if not isinstance(flags, (list, tuple)):
@@ -314,6 +338,7 @@ def rehearsal_extra_flags(flags: list | tuple | None) -> tuple[str | None, list[
     others: list[str] = []
     env_names: list[str] = []
     needs_network = []
+    ca_volume = False
     for index, flag in enumerate(flags, 1):
         refused = Unavailable(f"caller sandbox flag {index} is not allowed")
         if not isinstance(flag, str):
@@ -336,6 +361,13 @@ def rehearsal_extra_flags(flags: list | tuple | None) -> tuple[str | None, list[
             needs_network.append(index)
         elif key == "--env" and value in REHEARSAL_PROXY_ENV and value not in env_names:
             env_names.append(value)
+        elif key == "--env" and value in REHEARSAL_CA_ENV and value not in env_names:
+            env_names.append(value)
+            needs_network.append(index)
+        elif key == "--volume" and not ca_volume and _ca_volume(value):
+            ca_volume = True
+            others.append(flag)
+            needs_network.append(index)
         else:
             raise refused
     if needs_network and network is None:
@@ -346,8 +378,9 @@ def rehearsal_extra_flags(flags: list | tuple | None) -> tuple[str | None, list[
 def rehearsal_proxy_env(flags: list | tuple | None, values: dict | None) -> dict:
     """HO-866: the caller's proxy values for the podman client's env — each
     for a name its flags pass as `--env=<NAME>`, a string with no user info
-    (`@`) and no NUL. Raises Unavailable naming the entry's 1-based index
-    only, never its name or value."""
+    (`@`) and no NUL — and a REHEARSAL_CA_ENV name's value is
+    REHEARSAL_CA_MOUNT itself (HO-840). Raises Unavailable naming the entry's
+    1-based index only, never its name or value."""
     _, _, names = rehearsal_extra_flags(flags)
     if values is None:
         return {}
@@ -355,7 +388,7 @@ def rehearsal_proxy_env(flags: list | tuple | None, values: dict | None) -> dict
         raise Unavailable("caller sandbox env must be a mapping")
     checked = {}
     for index, (key, value) in enumerate(values.items(), 1):
-        if key not in names or not isinstance(value, str) or "@" in value or "\x00" in value:
+        if key not in names or not isinstance(value, str) or "@" in value or "\x00" in value or (key in REHEARSAL_CA_ENV and value != REHEARSAL_CA_MOUNT):
             raise Unavailable(f"caller sandbox env entry {index} is not allowed")
         checked[key] = value
     return checked
@@ -439,6 +472,55 @@ def rehearsal_argv(
         argv += ["--env", str(env_name)]
     argv += ["-w", workdir, image, "sleep", "infinity"]
     return argv
+
+
+# HO-840: the egress proxy's sidecar (farm/rehearsal_proxy.py). Its name
+# prefix — never NAME_PREFIX or REHEARSAL_PREFIX — is also its networks', and
+# EGRESS_LABEL marks all three for rehearsal_proxy.reap_orphans().
+EGRESS_PREFIX = "farm-egress-"
+EGRESS_LABEL = "horizon.egress=1"
+EGRESS_SCRIPT_MOUNT = "/proxy/egress_proxy.py"
+EGRESS_CONF_MOUNT = "/proxy/conf"
+EGRESS_MEMORY = "128m"
+
+
+def egress_proxy_argv(*, image: str, name: str, internal: str, egress: str, script: str, conf_dir: str, timeout_s: int) -> list:
+    """HO-840: the `podman run -d` argv of a rehearsal's egress proxy. On two
+    networks of its own — `internal` (the sandbox's only one) and `egress`
+    (its way out) — and no port published to the host. The image is never
+    pulled here (`--pull=never`: a pull must not eat the rehearsal's cap); the
+    sandbox flags plus no capability, no privilege gain and a memory cap; the
+    script and its config dir read-only. `--rm` and `--timeout` remove it
+    even when the rehearsal that started it is killed."""
+    return [
+        podman_bin(),
+        "run",
+        "-d",
+        "--rm",
+        f"--timeout={int(timeout_s)}",
+        "--pull=never",
+        "--name",
+        name,
+        "--label",
+        owner_label(),
+        "--label",
+        EGRESS_LABEL,
+        f"--network={internal}",
+        f"--network={egress}",
+        *_sandbox_flags(),
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        f"--memory={EGRESS_MEMORY}",
+        "-v",
+        f"{script}:{EGRESS_SCRIPT_MOUNT}:ro",
+        "-v",
+        f"{conf_dir}:{EGRESS_CONF_MOUNT}:ro",
+        image,
+        "python3",
+        "-I",
+        EGRESS_SCRIPT_MOUNT,
+        f"{EGRESS_CONF_MOUNT}/config.json",
+    ]
 
 
 # Not walked for .env files: nothing farmd reads lives there, and they can

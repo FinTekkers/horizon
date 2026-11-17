@@ -178,6 +178,9 @@ def _check_requires(requires: object) -> None:
 # only: no `check`, `version_cmd`, `dry_run` or sample is ever run here.
 CONTRACT: dict = json.loads((Path(__file__).resolve().parent.parent / "runPlanContract.json").read_text())
 SERVICE_NAME = re.compile(CONTRACT["serviceName"])
+# HO-840: a `rehearsal.services` host, matched whole (farm/rehearsal_proxy.py
+# re-checks each host a proxy is started for with it).
+SERVICE_HOST = re.compile(CONTRACT["serviceHost"])
 WRITE_SHAPES: tuple[tuple[str, re.Pattern, bool], ...] = tuple(
     (shape["name"], re.compile(shape["pattern"], re.I if shape["ignoreCase"] else 0), shape["unquotedOnly"])
     for shape in CONTRACT["writeShapes"]
@@ -271,6 +274,31 @@ def _check_rehearsal(rehearsal: object, env: dict, command_count: int) -> None:
                 raise ValueError(_reason("roEnvLive", name=name))
     if "samples" in rehearsal:
         _check_samples(rehearsal["samples"], command_count)
+    if "services" in rehearsal:
+        _check_services(rehearsal["services"])
+
+
+def _check_services(services: object) -> None:
+    """HO-840: each host the rehearsal's egress proxy may pass GET and HEAD
+    to — exact names, distinct, at most `maxServices`; `reads` may only be
+    `allow` or `refuse`, and no other key (no verb list) is accepted."""
+    shape = _reason("services", max=CONTRACT["maxServices"])
+    if not isinstance(services, list) or len(services) > CONTRACT["maxServices"]:
+        raise ValueError(shape)
+    hosts: set[str] = set()
+    for service in services:
+        if (
+            not isinstance(service, dict)
+            or "host" not in service
+            or not set(service) <= {"host", "reads"}
+            or not isinstance(service["host"], str)
+            or not SERVICE_HOST.fullmatch(service["host"])
+            or ("reads" in service and not _one_of(service["reads"], CONTRACT["serviceReads"]))
+        ):
+            raise ValueError(shape)
+        if service["host"] in hosts:
+            raise ValueError(_reason("servicesDoubled"))
+        hosts.add(service["host"])
 
 
 def _check_samples(samples: object, command_count: int) -> None:
