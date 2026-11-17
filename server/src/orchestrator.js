@@ -115,7 +115,8 @@ import { isolationFields } from './projectIsolation.js'
 import { snapshotSubsteps } from './substeps.js'
 import { recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
-import { createMockPr, createDeployRelease, postIssueComment, syncIssueBodyFields, createPrFromBranch, getPrHeadSha, getIssueBody } from './github.js'
+import { createMockPr, createDeployRelease, createPrFromBranch, getPrHeadSha } from './github.js'
+import { forRepo } from './backends/index.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, cleanOpenLines, executeFailed } from './verifyOutcome.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -1727,7 +1728,7 @@ async function runLaneCheck(id, stepIndex) {
   try {
     missing =
       item.repo && item.issue != null
-        ? missingPlanSections(await getIssueBody(item))
+        ? missingPlanSections(await forRepo(item.repo).tracker.getIssueBody(item))
         : PLAN_SECTIONS.filter((name) => !String(item[LOCAL_PLAN_FIELDS[name]] || '').trim())
   } catch (err) {
     console.warn(`lane check: ${id} could not read its issue: ${err.message}`)
@@ -3147,7 +3148,7 @@ function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artif
   if (!item.repo || item.issue == null) return
   const touchesBody = !isMock && patch && BODY_FIELDS.some((f) => typeof patch[f] === 'string')
   const bodySynced = touchesBody
-    ? syncIssueBodyFields(item).catch((err) => {
+    ? forRepo(item.repo).tracker.syncIssueBodyFields(item).catch((err) => {
         addEvent(item.id, {
           who: 'Horizon',
           text: `could not update issue #${item.issue}'s body with the refined fields: ${err.message}`,
@@ -3156,7 +3157,7 @@ function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artif
         })
       })
     : Promise.resolve()
-  bodySynced.then(() => postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd))).catch((err) => {
+  bodySynced.then(() => forRepo(item.repo).tracker.postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd))).catch((err) => {
     addEvent(item.id, {
       who: 'Horizon',
       text: `could not post the step result to issue #${item.issue}: ${err.message}`,

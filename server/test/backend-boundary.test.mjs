@@ -35,24 +35,22 @@ import { repoFiles, relative, stripComments, REPO_ROOT } from './helpers/repoFil
 
 const GITHUB_TARGET = 'server/src/github.js'
 
-// Exactly today's 14 importers of server/src/github.js. HO-870 added
+// Exactly today's 10 importers of server/src/github.js. HO-870 added
 // backends/github.js: the GitHub adapters forRepo() hands out are github.js's
 // own functions, so it is the one importer every moved call site routes through.
+// HO-871 moved the tracker calls onto forRepo(repo).tracker, so caretakerRuling.js,
+// spawn.js, split.js and webhooks.js left the list.
 const GITHUB_ALLOWLIST = [
   'server/src/app.js',
   'server/src/autoResolve.js',
   'server/src/backends/github.js',
-  'server/src/caretakerRuling.js',
   'server/src/deployQueue.js',
   'server/src/orchestrator.js',
   'server/src/overlapService.js',
   'server/src/projectValidate.js',
   'server/src/screenshots.js',
   'server/src/server.js',
-  'server/src/spawn.js',
-  'server/src/split.js',
   'server/src/tokenCheck.js',
-  'server/src/webhooks.js',
 ]
 
 // HO-870 added server/src/backends/sl.js (placeholder adapters); the registry
@@ -194,10 +192,11 @@ test('fixture: a real import survives stripComments with comments around it', ()
 })
 
 test('fixture: a listed file is not flagged, and a listed file without the import is stale', () => {
-  const files = [fixture('server/src/app.js', `import { x } from './github.js'`), fixture('server/src/split.js', `export const y = 1`)]
+  // HO-871: split.js left GITHUB_ALLOWLIST, so the stale sample is a file still on it.
+  const files = [fixture('server/src/app.js', `import { x } from './github.js'`), fixture('server/src/tokenCheck.js', `export const y = 1`)]
   const { unlisted, stale } = diffAllowlist(importers(files, importsGithub), GITHUB_ALLOWLIST)
   assert.deepEqual(unlisted, [])
-  assert.ok(stale.includes('server/src/split.js'), `split.js not reported stale: ${stale.join(', ')}`)
+  assert.ok(stale.includes('server/src/tokenCheck.js'), `tokenCheck.js not reported stale: ${stale.join(', ')}`)
   assert.ok(!stale.includes('server/src/app.js'))
 })
 

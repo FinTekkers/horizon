@@ -74,6 +74,7 @@ import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
+import { forKind, forRepo } from './backends/index.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
 import * as projectDefinitions from './projectDefinitions.js'
@@ -335,7 +336,7 @@ function buildBoard({ scope = 'active', estimates = true, checks = true, stepOut
     projects: store.listProjects({ checks }),
     activeProjectId: getActiveProjectId(),
     farm: orchestrator.getFarmState(),
-    sync: github.getSyncState(),
+    sync: forKind('github').tracker.getSyncState(),
     deployBlock: deployDrain.deployBlock(),
     items,
     ...(estimates ? { durationEstimates: store.durationEstimates() } : {}),
@@ -1905,7 +1906,7 @@ export function buildApp({
         if (strayRepo) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: strayRepo })
         let ghIssue
         try {
-          ghIssue = await github.createIssue(target.repo, { title, outcome, metric, guardrails, priority, kind })
+          ghIssue = await forRepo(target.repo).tracker.createIssue(target.repo, { title, outcome, metric, guardrails, priority, kind })
         } catch (err) {
           return reply.code(502).send({ error: err.message })
         }
@@ -2271,7 +2272,7 @@ export function buildApp({
       item.repo
     ) {
       try {
-        await github.closeIssueWithSummary(item)
+        await forRepo(item.repo).tracker.closeIssueWithSummary(item)
         store.addEvent(id, {
           who: 'Horizon',
           text: `closed issue #${item.issue} on GitHub with a summary`,
@@ -2973,7 +2974,7 @@ export function buildApp({
     const item = store.getItem(id)
     const result = store.setPriority(id, priority)
     if (!result.error && !result.unchanged && item?.repo && item.issue != null) {
-      github.setPriorityLabel(item, priority).catch(() => {})
+      forRepo(item.repo).tracker.setPriorityLabel(item, priority).catch(() => {})
     }
     return result
   }
@@ -3012,7 +3013,7 @@ export function buildApp({
       if (!item.repo || item.issue == null) return reply.code(409).send({ error: 'no_github_issue' })
       let issue
       try {
-        issue = await github.setAutopilotOffLabel(item, off)
+        issue = await forRepo(item.repo).tracker.setAutopilotOffLabel(item, off)
       } catch (err) {
         return reply.code(502).send({ error: err?.message || 'GitHub refused the label change' })
       }
@@ -3072,7 +3073,7 @@ export function buildApp({
     if (item?.repo) github.deleteArtifactRef(item.repo, item).catch(() => {})
     if (item?.repo && item.issue != null) {
       try {
-        await github.closeIssueAsAbandoned(item, reason.trim())
+        await forRepo(item.repo).tracker.closeIssueAsAbandoned(item, reason.trim())
         store.addEvent(id, {
           who: 'Horizon',
           text: `closed issue #${item.issue} on GitHub as not planned`,
@@ -4302,7 +4303,7 @@ export function buildApp({
 
   // ---- GitHub sync configuration (from the UI) ----
 
-  fastify.get('/api/sync/status', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => github.getSyncState())
+  fastify.get('/api/sync/status', { config: { scope: 'owner' }, schema: { response: { 200: OK_OBJECT } } }, () => forKind('github').tracker.getSyncState())
 
   // Save the shared GitHub token (validated before persisting).
   fastify.post(
@@ -4326,7 +4327,7 @@ export function buildApp({
       // The token's identity backs the comment-ingestion echo guard: comments
       // authored by this login are Horizon's own mirrors, never feedback.
       setSetting('github_login', check.login)
-      await github.pollOnce(request.log)
+      await forKind('github').tracker.pollOnce(request.log)
       broadcast()
       return { ok: true, login: check.login }
     },
@@ -4422,7 +4423,7 @@ export function buildApp({
       if (result.error === 'backend_conflict') return reply.code(409).send(backendConflictBody(result))
       // HZ-425: the default branch came with validateRepo's read.
       store.setDefaultBranch(canonical, check.defaultBranch)
-      await github.pollRepo(repo, request.log).catch(() => {})
+      await forRepo(repo).tracker.pollRepo(repo, request.log).catch(() => {})
       // HZ-244: set up the repo's GitHub webhook. Never fails the connect — the
       // outcome rides along as `webhook` for Admin to show.
       const webhook = await webhooks.ensure(canonical).catch(() => ({ status: 'error', lastResponseCode: null, reason: null }))
@@ -5125,7 +5126,7 @@ export function buildApp({
       }
 
       store.setDefaultBranch(repo, check.defaultBranch)
-      await github.pollRepo(repo, request.log).catch(() => {})
+      await forRepo(repo).tracker.pollRepo(repo, request.log).catch(() => {})
       const webhook = await webhooks.ensure(repo).catch(() => ({ status: 'error', lastResponseCode: null, reason: null }))
       orchestrator.kickProjectItems(projectId)
       broadcast()
@@ -5836,13 +5837,13 @@ export function buildApp({
     const event = request.headers['x-github-event']
     const repoFullName = request.body?.repository?.full_name
     if (event === 'issues' && request.body?.issue && repoFullName) {
-      store.upsertFromGithub(request.body.issue, repoFullName) // no-op for unconnected repos
+      forRepo(repoFullName).tracker.ingestIssue(request.body.issue, repoFullName) // no-op for unconnected repos
     }
     // Issue comments are the GitHub leg of feedback: "users interact mostly by
     // GH comments". Edits are deliberately not re-ingested (the comment id is
     // already recorded).
     if (event === 'issue_comment' && request.body?.action === 'created' && request.body?.comment && repoFullName) {
-      github.ingestComment(repoFullName, request.body.issue?.number, request.body.comment, request.log)
+      forRepo(repoFullName).tracker.ingestComment(repoFullName, request.body.issue?.number, request.body.comment, request.log)
     }
     // PRs decided directly on GitHub flow back into the lifecycle: merged →
     // "Accept the code" approved; closed unmerged → sent back for rework.

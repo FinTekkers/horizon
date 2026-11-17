@@ -3,6 +3,7 @@
 
 import { buildApp } from './app.js'
 import * as github from './github.js'
+import { forKind } from './backends/index.js'
 import * as orchestrator from './orchestrator.js'
 import * as gateNotifier from './gateNotifier.js'
 import * as caretaker from './caretaker.js'
@@ -62,4 +63,4 @@ caretakerAsks.init(fastify.log, { spawnItems, linkSpawned })
 accountPurge.init(fastify.log)
 // Before polling starts, so the first tick already seeds main's head (HZ-235).
 autoResolve.startAutoResolve(fastify.log)
-github.startPolling(fastify.log)
+forKind('github').tracker.startPolling(fastify.log)

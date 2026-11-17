@@ -28,7 +28,9 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import * as github from './github.js'
+import { forRepo } from './backends/index.js'
+// HO-871, transitional: the land-path git lookups below. HO-872 moves them onto its ports.
+import { defaultBranchOf, getBranchSha, getPrMergeSha, isAncestor } from './backends/github.js'
 import { UI_URL } from './config.js'
 import { redact } from './caretakerRules.js'
 import { HOST_PATH } from './split.js'
@@ -188,9 +190,10 @@ async function fileOne(parent, row, spec, waits) {
       return childId
     })()
   }
-  let ghIssue = await github.findSplitIssue(row.target_repo, spawnMarker(parent.id, row.request_key, row.seq), sinceIso(row.created_at))
+  const { tracker } = forRepo(row.target_repo)
+  let ghIssue = await tracker.findSplitIssue(row.target_repo, spawnMarker(parent.id, row.request_key, row.seq), sinceIso(row.created_at))
   if (!ghIssue) {
-    ghIssue = await github.createIssue(row.target_repo, {
+    ghIssue = await tracker.createIssue(row.target_repo, {
       title,
       outcome: spec.outcome,
       metric: spec.metric,
@@ -296,9 +299,9 @@ export function hasSpawned(parentId) {
 // ---- is the shipped code live ----
 
 const defaultGit = {
-  getPrMergeSha: (item) => github.getPrMergeSha(item),
-  isAncestor: (repo, base, head) => github.isAncestor(repo, base, head),
-  getBranchSha: (repo, branch) => github.getBranchSha(repo, branch),
+  getPrMergeSha: (item) => getPrMergeSha(item),
+  isAncestor: (repo, base, head) => isAncestor(repo, base, head),
+  getBranchSha: (repo, branch) => getBranchSha(repo, branch),
   resolveTarget: (repo) => resolveTarget(repo),
 }
 let git = defaultGit
@@ -319,7 +322,7 @@ const short = (sha) => String(sha).slice(0, 7)
 // branch's head. { sha } or { reason }.
 async function deployedHead(repo) {
   const target = git.resolveTarget(repo)
-  if (!target) return { sha: await git.getBranchSha(repo, github.defaultBranchOf(repo)) }
+  if (!target) return { sha: await git.getBranchSha(repo, defaultBranchOf(repo)) }
   const live = selectLiveBatch.get(target.key)
   return live ? { sha: live.commit_sha } : { reason: `nothing is live on ${target.key} yet` }
 }
