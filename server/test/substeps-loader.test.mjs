@@ -35,7 +35,8 @@ test('the four anchors still point at the steps they name, in the kind they belo
   assert.deepEqual(pin(25), { label: 'Execute', itemKind: 'task' })
   assert.deepEqual([...substeps.OPENING_ANCHORS], [1, 17])
   assert.deepEqual([...substeps.AUDIT_ANCHORS], [11, 25])
-  assert.deepEqual([...SUBSTEP_OUTPUTS], ['artifact', 'golden_cases', 'findings'])
+  // HO-850: plus design, a Studio canvas.
+  assert.deepEqual([...SUBSTEP_OUTPUTS], ['artifact', 'golden_cases', 'findings', 'design'])
 })
 
 test('a valid file loads with no errors, normalized, persona optional', () => {
@@ -50,7 +51,7 @@ const BAD = {
   'audit anchor 12': [{ id: 'bad-audit-12', kind: 'audit', anchor: 12, output: 'findings' }, /audit anchor must be one of 11, 25, got 12/],
   'cross-kind opening anchor 11': [{ id: 'opening-at-implement', kind: 'opening', anchor: 11, output: 'artifact' }, /opening anchor must be one of 1, 17, got 11/],
   'cross-kind audit anchor 17': [{ id: 'audit-at-verify', kind: 'audit', anchor: 17, output: 'findings' }, /audit anchor must be one of 11, 25, got 17/],
-  'output outside the three': [{ id: 'bad-output', kind: 'opening', anchor: 1, output: 'report' }, /output must be one of artifact, golden_cases, findings, got "report"/],
+  'output outside the four': [{ id: 'bad-output', kind: 'opening', anchor: 1, output: 'report' }, /output must be one of artifact, golden_cases, findings, design, got "report"/],
   'audit output artifact': [{ id: 'audit-artifact', kind: 'audit', anchor: 11, output: 'artifact' }, /audit output must be findings, got artifact/],
   'audit gate "required"': [{ id: 'audit-gate-required', kind: 'audit', anchor: 11, output: 'findings', gate: 'required' }, /no gate of its own/],
   'opening gate "optional"': [{ id: 'opening-gate-optional', kind: 'opening', anchor: 17, output: 'artifact', gate: 'optional' }, /no gate of its own/],

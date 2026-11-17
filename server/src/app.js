@@ -67,7 +67,7 @@ import {
   stepKeyAt,
 } from '../../domain/js/lifecycle.js'
 import { REASON } from '../../domain/js/reasons.js'
-import { SUBSTEP_ID_PATTERN, decodeMoveKey, stepLabel, substepsOf } from '../../domain/js/substeps.js'
+import { SUBSTEP_ID_PATTERN, currentSubstep, decodeMoveKey, stepLabel, substepsOf } from '../../domain/js/substeps.js'
 import { intakeFields } from '../../domain/js/fields.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
 import { choiceValues } from '../../domain/js/providers.js'
@@ -995,7 +995,8 @@ export function buildApp({
     const step = STEPS[item.cursor]
     if (!restart || step?.kind !== 'agent' || step.runsIn === 'none') return { item }
     const run = item.activeRun?.step_index === item.cursor ? item.activeRun : null
-    const attempt = run ? run.attempt : store.nextStepAttempt(id, item.cursor).attempt
+    // HO-850: a sub-step restart names that sub-step's own attempt.
+    const attempt = run ? run.attempt : store.nextStepAttempt(id, item.cursor, currentSubstep(item)?.id ?? null).attempt
     return { item, restart: { stepIndex: item.cursor, stepKey: stepKeyAt(item.cursor), attempt } }
   }
 

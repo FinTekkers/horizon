@@ -1941,13 +1941,21 @@ const selectLastStepRun = db.prepare(
   'SELECT attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL ORDER BY id DESC LIMIT 1',
 )
 const selectNextAttempt = db.prepare('SELECT COALESCE(MAX(attempt), 0) + 1 AS n FROM step_run WHERE item_id = ? AND step_index = ? AND substep_id IS NULL')
+// HO-850: a sub-step's runs count their own attempts, 1, 2, … — the artifact
+// routes find a sub-step round by its attempt (app.js). Read by sub-step id
+// and filtered to the anchor here, as substepDoneRuns does.
+const selectSubstepAttemptRuns = db.prepare(
+  'SELECT step_index, attempt, auto_retry_count, deploy_interrupted, rule_blocked, usage_limit_hit FROM step_run WHERE item_id = ? AND substep_id = ? ORDER BY id',
+)
 
-export function nextStepAttempt(id, stepIndex) {
-  const last = selectLastStepRun.get(id, stepIndex)
+export function nextStepAttempt(id, stepIndex, substepId = null) {
+  const subRuns = substepId == null ? null : selectSubstepAttemptRuns.all(id, substepId).filter((row) => row.step_index === stepIndex)
+  const last = subRuns ? subRuns.at(-1) : selectLastStepRun.get(id, stepIndex)
   // HZ-422: nor is a run a usage limit stopped — it re-runs on the next model.
   const keepsAttempt = last?.deploy_interrupted === 1 || last?.rule_blocked === 1 || last?.usage_limit_hit === 1
+  const next = () => (subRuns ? Math.max(0, ...subRuns.map((row) => row.attempt)) + 1 : selectNextAttempt.get(id, stepIndex).n)
   return {
-    attempt: keepsAttempt ? last.attempt : selectNextAttempt.get(id, stepIndex).n,
+    attempt: keepsAttempt ? last.attempt : next(),
     keepsAttempt,
     autoRetryCount: keepsAttempt ? last.auto_retry_count : null,
   }

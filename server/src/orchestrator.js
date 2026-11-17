@@ -96,6 +96,7 @@ import {
   runningDeployFor,
   defaultRunnerFor,
   latestArtifact,
+  substepDoneRuns,
   latestExecuteJobView,
   activeJobRun,
   nextStepAttempt,
@@ -113,6 +114,8 @@ import {
 import { projectPersonaOverlay } from './definitions.js'
 import { isolationFields } from './projectIsolation.js'
 import { snapshotSubsteps } from './substeps.js'
+import { currentSubstep, substepsOf } from '../../domain/js/substeps.js'
+import { latestCanvas } from '../../domain/js/designCanvas.js'
 import { recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { forRepo } from './backends/index.js'
@@ -502,9 +505,27 @@ function allocateBudget(rows, reserveChars) {
 }
 
 // HZ-801: the full URL of a step's artifact page (app.js's ARTIFACT_ROUTE).
-// UI_URL never ends in a slash (config.js strips it).
-export function artifactUrl(itemId, stepIndex) {
-  return `${UI_URL}/api/items/${itemId}/artifacts/${stepIndex}`
+// UI_URL never ends in a slash (config.js strips it). HO-850: a sub-step
+// run's page is the same route with ?substep=<id>.
+export function artifactUrl(itemId, stepIndex, substepId = null) {
+  const query = substepId == null ? '' : `?substep=${encodeURIComponent(substepId)}`
+  return `${UI_URL}/api/items/${itemId}/artifacts/${stepIndex}${query}`
+}
+
+// HO-850: the `substep` field of a sub-step run's farm task — the snapshot's
+// id, label and output — or null for a global run, whose body is unchanged.
+// A design sub-step also names the canvas its last round made, so the farm
+// updates that canvas rather than starting another (domain/js/designCanvas.js).
+export function substepTaskField(item, stepIndex, substepId) {
+  if (substepId == null) return null
+  const sub = substepsOf(item).find((s) => s.id === substepId && s.anchor === stepIndex)
+  if (!sub) return null
+  const field = { id: sub.id, label: sub.label, output: sub.output ?? null }
+  if (sub.output === 'design') {
+    const previous = latestCanvas(substepDoneRuns(item.id, stepIndex, sub.id))
+    if (previous) field.previous_canvas_url = previous.url
+  }
+  return field
 }
 
 // HZ-434: Verify & report is told when its evidence was cut — which section,
@@ -1535,9 +1556,15 @@ export function kick(id, opts = {}) {
 
   const stepIndex = item.cursor
   const step = STEPS[stepIndex]
+  // HO-850: the sub-step the item was sent back to, if any. Only its run
+  // writes substep_id, and it counts its own attempts; every other run keeps
+  // substep_id NULL, which is what every global reader filters on. A job
+  // (Execute) stays a global run even at an audit sub-step: Stop, the Full log
+  // link and the deploy hold find the item's job by substep_id IS NULL.
+  const substepId = step.runsIn === 'job' ? null : (currentSubstep(item)?.id ?? null)
   // HZ-321/HZ-346: a run a self-deploy stopped or a rule blocked keeps its
   // attempt and auto-retry count (store.nextStepAttempt, shared with /reject).
-  const next = nextStepAttempt(id, stepIndex)
+  const next = nextStepAttempt(id, stepIndex, substepId)
   const attempt = next.attempt
   const autoRetryCount = next.keepsAttempt ? next.autoRetryCount : opts.autoRetryCount || 0
   const toFarm = FARM_URL && FARM_STEP_INDEXES.has(stepIndex)
@@ -1560,11 +1587,12 @@ export function kick(id, opts = {}) {
   }
   const runId = db
     .prepare(
-      'INSERT INTO step_run (item_id, step_index, attempt, agent, auto_retry_count, scope_json, runs_on, fallback_from, fallback_reset_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO step_run (item_id, step_index, substep_id, attempt, agent, auto_retry_count, scope_json, runs_on, fallback_from, fallback_reset_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .run(
       id,
       stepIndex,
+      substepId,
       attempt,
       step.agent,
       autoRetryCount,
@@ -2488,6 +2516,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
   // 0 is "GitHub reports conflicts", null is unknown.
   const mergeMain = stepIndex === IMPLEMENT_STEP_INDEX && item.pr_mergeable === 0
   warnStaleStepChoice(id, stepIndex, item, project)
+  // HO-850: read off the run, as dispatch stored it — never re-derived from
+  // the item, whose substep_cursor may have moved since (HZ-182's rule).
+  const runSubstepId = db.prepare('SELECT substep_id FROM step_run WHERE id = ?').get(runId)?.substep_id ?? null
+  const substep = substepTaskField(item, stepIndex, runSubstepId)
   const truncatedLabels = budgeted.filter((a) => a.truncated).map((a) => a.label)
   if (truncatedLabels.length > 0) {
     addEvent(id, {
@@ -2546,8 +2578,11 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // HZ-379: the deployed commit a step that waited for spawned code runs on.
     ...(checkoutSha ? { checkout_sha: checkoutSha } : {}),
     ...(projectContext ? { project_context: projectContext } : {}),
+    // HO-850: a sub-step run names its sub-step (id, label, output). Absent on
+    // every global run, so their bodies are unchanged.
+    ...(substep ? { substep } : {}),
     // HZ-801: where this step's own artifact will be served.
-    artifact_url: artifactUrl(id, stepIndex),
+    artifact_url: artifactUrl(id, stepIndex, substep ? runSubstepId : null),
     ...checkCommandsField(item),
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
