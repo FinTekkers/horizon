@@ -7,10 +7,17 @@
 // are real — the file store in backends/slArtifacts.js. Its GitHub-shaped
 // helpers still throw. slScreenshotPublisher stores the screenshot bundle an
 // sl item's implement result carries (the sl farm pushes no ref).
+//
+// HO-875: the tracker group's twelve Tracker port methods (backends/tracker.js)
+// are real too — Tasks through farmd, in backends/slTracker.js. The six
+// GitHub-shaped tracker helpers (issue bodies and labels) still throw; their
+// call sites run only for an item with a GitHub issue.
 
 import { githubAdapters } from './github.js'
 import { ARTIFACT_METHODS } from './artifact.js'
+import { TRACKER_PORT_METHODS } from './tracker.js'
 import * as slArtifacts from './slArtifacts.js'
+import * as slTracker from './slTracker.js'
 
 function notImplemented(group, name) {
   return function slNotImplemented() {
@@ -18,7 +25,9 @@ function notImplemented(group, name) {
   }
 }
 
-const implemented = (group, name) => group === 'artifacts' && ARTIFACT_METHODS.includes(name)
+// group → [the port methods that are real, the module that implements them]
+const REAL = Object.freeze({ artifacts: [ARTIFACT_METHODS, slArtifacts], tracker: [TRACKER_PORT_METHODS, slTracker] })
+const realMethod = (group, name) => (Object.hasOwn(REAL, group) && REAL[group][0].includes(name) ? REAL[group][1][name] : null)
 
 export const slAdapters = Object.freeze(
   Object.fromEntries(
@@ -26,7 +35,7 @@ export const slAdapters = Object.freeze(
       group,
       Object.freeze(
         Object.fromEntries(
-          Object.keys(methods).map((name) => [name, implemented(group, name) ? slArtifacts[name] : notImplemented(group, name)]),
+          Object.keys(methods).map((name) => [name, realMethod(group, name) ?? notImplemented(group, name)]),
         ),
       ),
     ]),

@@ -20,6 +20,7 @@ const github = await import('../src/github.js')
 const { forRepo, forKind, setBackendForTest, backendOf } = await import('../src/backends/index.js')
 const { githubAdapters } = await import('../src/backends/github.js')
 const { ARTIFACT_METHODS } = await import('../src/backends/artifact.js')
+const { TRACKER_PORT_METHODS } = await import('../src/backends/tracker.js')
 
 store.purgeDemoItems()
 
@@ -58,9 +59,31 @@ test('metric 2: forRepo returns the github.js functions for an unknown repo, a r
 // are real (the sl file store); every other sl method is still a placeholder.
 // The placeholders keep the HO-870 assertions; the port methods are checked
 // for the port's shape and for not being GitHub's.
-const isPortMethod = (group, name) => group === 'artifacts' && ARTIFACT_METHODS.includes(name)
+// HO-875 (owner ruling), the same shape: the sl tracker group's twelve
+// Tracker port methods are real (Tasks through farmd). The six Tracker
+// helpers, review, vcs and the non-port artifacts helpers still throw.
+const TRACKER_PORT_TWELVE = [
+  'createIssue',
+  'postIssueComment',
+  'closeIssueWithSummary',
+  'closeIssueAsAbandoned',
+  'findSplitIssue',
+  'pollRepo',
+  'pollComments',
+  'ingestIssue',
+  'ingestComment',
+  'pollOnce',
+  'startPolling',
+  'getSyncState',
+]
+const isPortMethod = (group, name) =>
+  (group === 'artifacts' && ARTIFACT_METHODS.includes(name)) || (group === 'tracker' && TRACKER_PORT_METHODS.includes(name))
 
-test('an sl repo gets adapters with the same shape; every method but the six Artifact port methods throws backend_not_implemented', () => {
+test('HO-875: the named Tracker port list is exactly the twelve the owner ruled real', () => {
+  assert.deepEqual([...TRACKER_PORT_METHODS], TRACKER_PORT_TWELVE)
+})
+
+test('an sl repo gets adapters with the same shape; every method but the six Artifact and twelve Tracker port methods throws backend_not_implemented', () => {
   assert.equal(backendOf('acme/sl-app'), 'sl')
   const sl = forRepo('acme/sl-app')
   assert.deepEqual(Object.keys(sl), GROUPS)
@@ -76,6 +99,9 @@ test('an sl repo gets adapters with the same shape; every method but the six Art
   }
   assert.ok(placeholders > 0, 'the still-placeholder methods were checked')
   assert.ok(Object.keys(sl.artifacts).some((name) => !ARTIFACT_METHODS.includes(name)), 'the artifacts group still has non-port helpers, and they throw')
+  // HO-875: the six Tracker helpers are among the placeholders that threw above.
+  const helpers = Object.keys(sl.tracker).filter((name) => !TRACKER_PORT_METHODS.includes(name))
+  assert.deepEqual(helpers, ['syncIssueBodyFields', 'pushIssueScope', 'getIssueBody', 'patchIssueBodyLines', 'setPriorityLabel', 'setAutopilotOffLabel'])
 })
 
 test('HO-878: the sl artifacts group carries the six Artifact port methods as real functions with the port shape, none of them GitHub’s', async () => {
@@ -90,6 +116,28 @@ test('HO-878: the sl artifacts group carries the six Artifact port methods as re
   // Real, not a placeholder: an item with nothing stored reads null and lists nothing.
   assert.equal(await artifacts.readArtifacts({ id: 'SL-1', repo: 'acme/sl-app' }), null)
   assert.deepEqual(await artifacts.listArtifacts('acme/sl-app'), [])
+})
+
+test('HO-875: the sl tracker group carries the twelve Tracker port methods as real functions with the port shape, none of them GitHub’s', async () => {
+  const tracker = forRepo('acme/sl-app').tracker
+  assert.equal(forKind('sl').tracker, tracker)
+  for (const name of TRACKER_PORT_METHODS) {
+    const fn = tracker[name]
+    assert.equal(typeof fn, 'function', `tracker.${name} is a function`)
+    assert.notEqual(fn, github[name], `tracker.${name} is not GitHub's`)
+    assert.notEqual(fn, githubAdapters.tracker[name], `tracker.${name} is not the GitHub adapter's`)
+    assert.equal(fn.length, github[name].length, `tracker.${name} takes the port's arguments`)
+    // Async where the port's method is async, sync where it is sync (the
+    // ingest calls and the poll starter answer at once).
+    assert.equal(fn.constructor.name, github[name].constructor.name, `tracker.${name} is ${github[name].constructor.name}`)
+  }
+  // Real, not a placeholder: with no farm configured nothing is sent, the
+  // poll and sync status answer, and the ingest calls are no-ops.
+  assert.deepEqual(await tracker.pollOnce(null), { changed: 0 })
+  assert.deepEqual(tracker.getSyncState(), { farmConfigured: false, repos: [{ repo: 'acme/sl-app', prefix: store.findRepo('acme/sl-app').prefix, project_id: project, last: null }] })
+  assert.equal(tracker.ingestIssue({ number: 1, state: 'closed' }, 'acme/sl-app'), false)
+  assert.equal(tracker.ingestComment('acme/sl-app', 1, { id: 1, body: 'hello' }, null), false)
+  await assert.rejects(() => tracker.createIssue('acme/sl-app', { title: 't', outcome: 'o', metric: 'm', guardrails: '', priority: 'Medium' }), /Task create failed: no farm is configured/)
 })
 
 test('forKind and setBackendForTest throw on a name that is not a backend', () => {

@@ -188,6 +188,7 @@ import {
 } from './storedTestResults.js'
 import { declares } from '../../domain/js/providers.js'
 import { chainHead, effectiveChain, entryKey, entryLabel, formatResetTime, pickModel, resetMs } from './usageLimits.js'
+import { hasGithubIssue, hasTrackerRef, trackerRefText } from './trackerRefs.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -3332,9 +3333,11 @@ export function stepCommentBody(item, stepIndex, attempt, summary, patch, isMock
 // Body text first, then the comment: the comment's webhook re-reads the body,
 // so a refinement must already be in it (see syncIssueBodyFields).
 const BODY_FIELDS = ['desc', 'metric', 'guardrails']
+// HO-875: an sl item's step results go to its Task; its body is never synced
+// (body sync is a GitHub-only helper), so only a GitHub issue's is.
 function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artifactMd) {
-  if (!item.repo || item.issue == null) return
-  const touchesBody = !isMock && patch && BODY_FIELDS.some((f) => typeof patch[f] === 'string')
+  if (!item.repo || !hasTrackerRef(item)) return
+  const touchesBody = hasGithubIssue(item) && !isMock && patch && BODY_FIELDS.some((f) => typeof patch[f] === 'string')
   const bodySynced = touchesBody
     ? forRepo(item.repo).tracker.syncIssueBodyFields(item).catch((err) => {
         addEvent(item.id, {
@@ -3348,7 +3351,7 @@ function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artif
   bodySynced.then(() => forRepo(item.repo).tracker.postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd))).catch((err) => {
     addEvent(item.id, {
       who: 'Horizon',
-      text: `could not post the step result to issue #${item.issue}: ${err.message}`,
+      text: `could not post the step result to ${trackerRefText(item)}: ${err.message}`,
       color: '#9C333E',
       initials: 'HZ',
     })
