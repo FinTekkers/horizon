@@ -1015,6 +1015,16 @@ export async function mergePr(item, { sha, approvals = null, log } = {}) {
   throw new Error(message)
 }
 
+// HO-872: the VCS port's land for GitHub — mergePr, unchanged (same
+// arguments, same errors). It resolves { hash: null } on purpose: GitHub's
+// landed commit is the PR's merge commit, which the deploy queue reads with
+// getPrMergeSha, so app.js records no landed_hash for a GitHub item. `item`
+// fields read: repo, pr and id (the work branch's name).
+export async function land(item, opts) {
+  await mergePr(item, opts)
+  return { hash: null }
+}
+
 // The commit the item's PR head points at right now, or null when the item
 // has no PR (demo mode). HZ-185's forward compares it with the commit the
 // last automated review read. Throws when GitHub can't answer, so a caller
@@ -1283,6 +1293,14 @@ export function isOwnComment(comment) {
   return false
 }
 
+// HO-871: the tracker port's `ingestIssue` — one GitHub issue payload (a
+// webhook's or a poll page's) into the store. A thin wrapper with no logic of
+// its own: the same arguments and result as store.upsertFromGithub, which it
+// calls. Returns true when the item changed; a no-op for unconnected repos.
+export function ingestIssue(ghIssue, repoFullName) {
+  return store.upsertFromGithub(ghIssue, repoFullName)
+}
+
 // Returns true when the comment produced a new feedback row.
 export function ingestComment(repoFullName, issueNumber, comment, log) {
   if (!comment?.body || issueNumber == null) return false
@@ -1389,7 +1407,7 @@ export async function pollRepo(repo, log) {
   const issues = await res.json()
   let changed = 0
   for (const issue of issues) {
-    if (store.upsertFromGithub(issue, repo)) changed++
+    if (ingestIssue(issue, repo)) changed++
   }
   setCursor.run(`issues:${repo}`, res.headers.get('etag'))
   lastByRepo[repo] = { at: new Date().toISOString(), status: 200, changed, error: null }

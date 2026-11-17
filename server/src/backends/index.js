@@ -6,9 +6,10 @@
 // that is not a string, not connected or has no row falls back to the default
 // (GitHub) — exactly as tokenForRepo falls back to settings.getToken().
 //
-// No call site uses this yet; HO-871 and HO-872 move them over. store.js and
-// db.js must never import this file (it loads github.js, which imports
-// store.js) — they read the value set from ./names.js.
+// HO-871 moved the tracker call sites here; HO-872 moves the rest. Outside
+// backends/, only the call-site files test/backend-registry.test.mjs lists may
+// import this file. store.js and db.js must never import it (it loads
+// github.js, which imports store.js) — they read the value set from ./names.js.
 
 import { db } from '../db.js'
 import { BACKENDS, DEFAULT_BACKEND, isBackend } from './names.js'
@@ -16,6 +17,9 @@ import { githubAdapters } from './github.js'
 import { slAdapters } from './sl.js'
 
 export { BACKENDS, DEFAULT_BACKEND, isBackend }
+// HO-872: GitHub's e2e-only answers, for app.js's /api/test/* routes, so app.js
+// need not import github.js for them.
+export { githubTestHooks } from './github.js'
 
 const ADAPTERS = Object.freeze({ github: githubAdapters, sl: slAdapters })
 
@@ -31,7 +35,29 @@ export function backendOf(repo) {
   return isBackend(backend) ? backend : DEFAULT_BACKEND
 }
 
+// HO-871: test-only replacements, by backend name. Empty in production.
+const testOverrides = {}
+
+function adaptersFor(backend) {
+  return Object.hasOwn(testOverrides, backend) ? testOverrides[backend] : ADAPTERS[backend]
+}
+
 // The adapters for `repo`: { tracker, review, vcs, artifacts }.
 export function forRepo(repo) {
-  return ADAPTERS[backendOf(repo)]
+  return adaptersFor(backendOf(repo))
+}
+
+// The adapters for a backend by name, for calls that serve no one repo — the
+// GitHub poll loop and its sync status. Throws on a name that is not a backend.
+export function forKind(backend) {
+  if (!isBackend(backend)) throw new Error(`unknown backend: ${backend}`)
+  return adaptersFor(backend)
+}
+
+// Test seam: forRepo() and forKind() hand out `adapters` for `backend` until
+// it is called again with null, which restores the real ones.
+export function setBackendForTest(backend, adapters) {
+  if (!isBackend(backend)) throw new Error(`unknown backend: ${backend}`)
+  if (adapters == null) delete testOverrides[backend]
+  else testOverrides[backend] = adapters
 }

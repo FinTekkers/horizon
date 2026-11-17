@@ -3965,6 +3965,22 @@ export function markMerged(id) {
   return true
 }
 
+// HO-872: the commit the item's change landed as, written once. Accept calls
+// it only when the backend's vcs.land resolves a hash — GitHub's never does,
+// so a GitHub item keeps landed_hash NULL and the deploy queue reads its PR's
+// merge commit instead. A second call never moves the first hash or time.
+// Returns whether this call wrote; false for an unknown id or a hash already
+// recorded. Throws on a hash that is not a non-empty string.
+export function markLanded(id, hash) {
+  if (typeof hash !== 'string' || !hash.trim()) throw new Error('markLanded: hash must be a non-empty string')
+  const result = db
+    .prepare(`UPDATE work_item SET landed_hash = ?, landed_at = datetime('now'), ${touch} WHERE id = ? AND landed_hash IS NULL`)
+    .run(hash, id)
+  if (result.changes === 0) return false
+  notify()
+  return true
+}
+
 // ---- GitHub sync ----
 // Shared upsert used by both the webhook handler and the poller. GitHub owns
 // title/description/priority/open-closed; the lifecycle state (cursor, flags,
