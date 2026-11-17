@@ -4365,7 +4365,7 @@ export function buildApp({
   // isolation refs and a repo's Admin settings stay the owner's.
   fastify.get('/api/projects', { config: { scope: 'filtered' }, schema: { response: { 200: OK_OBJECT } } }, (request) => {
     const viewer = request.viewer ?? null
-    const projects = store.listProjects({ viewer })
+    const projects = store.listProjects({ viewer, backends: true })
     return { projects: viewer ? projects.map(memberProject) : projects }
   })
 

@@ -533,7 +533,10 @@ function itemGateAction(rows, itemId, cursor) {
 // HZ-659: `viewer` is access.viewerFor(request). null (the owner, and every
 // internal caller) lists every project; { projectIds } lists only those, and
 // never `Unlinked items`, which only the owner sees.
-export function listProjects({ checks = true, viewer = null } = {}) {
+//
+// HO-870: `backends` adds each repo's backend ('github' | 'sl'). Opt-in, so the
+// board and farm snapshots keep their pinned shape; GET /api/projects asks for it.
+export function listProjects({ checks = true, viewer = null, backends = false } = {}) {
   const unlinked = unlinkedProjectId(db)
   const projects = db
     .prepare('SELECT * FROM project ORDER BY name')
@@ -564,8 +567,8 @@ export function listProjects({ checks = true, viewer = null } = {}) {
       .map((r) => ({
         repo: r.repo,
         prefix: r.prefix,
-        // HO-870: 'github' or 'sl' — outside `checks`, so a member's board has it too.
-        backend: r.backend,
+        // Outside `checks`, so a member's project list (boardView REPO_FIELDS) has it too.
+        ...(backends ? { backend: r.backend } : {}),
         ...(checks
           ? {
               checks: repoChecks(r),
