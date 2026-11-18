@@ -2185,6 +2185,68 @@ export function buildApp({
     }
   }
 
+  // HO-877: the sl half of Accept, inside the premerge claim `token`. Lands
+  // the pinned diff through the backend's vcs.land, which checks the claim,
+  // the gate, landed_hash and the diff's review status before any land
+  // request. Resolves { outcome } — what the claim finishes as — plus
+  // { error, status } when the gate must stay open. A refusal is 409 with
+  // its reason on the item; a refusal that only means "not Accepted yet" is
+  // recorded so caretakerAccept.js waits on it rather than stopping.
+  // HO-890: the approved screens are read, and promoted after the land,
+  // through the item's Artifact port, as for GitHub.
+  async function acceptSl(id, item, token) {
+    const say = (text, color) => store.addEvent(id, { who: 'Horizon', text, color, initials: 'HZ' })
+    const failed = (text, error) => {
+      say(`${text} — the gate stays open`, '#9C333E')
+      store.notifyChange()
+      return { error, status: 502, outcome: { state: 'failed', reason: error } }
+    }
+    // HZ-510: only the screens approved at this gate reach the baseline.
+    const approvals = await screenshots.mergeApprovals(item)
+    let landed
+    try {
+      landed = await forRepo(item.repo).vcs.land(item, {
+        claim: { token },
+        log: fastify.log,
+        checkCommands: store.getRepoCheckCommands(item.repo),
+        checksWaiver: orchestrator.checksWaiverFor(item),
+        testEnvFile: store.getRepoTestEnvFile(item.repo),
+      })
+    } catch (err) {
+      return failed(`could not land ${item.diff_id ?? 'the diff'}: ${err.message}`, `land failed: ${err.message}`)
+    }
+    const diff = landed?.diff ?? item.diff_id ?? 'the diff'
+    if (landed?.refused) {
+      const { code, reason } = landed.refused
+      say(`did not land ${diff}: ${reason}. The gate stays open.`, '#9C333E')
+      store.notifyChange()
+      return { error: `did not land ${diff}: ${reason}`, status: 409, premerge: true, outcome: { state: 'blocked', reason: `${code}: ${reason}` } }
+    }
+    // backends/sl/vcs.js always names the landed commit; the VCS port allows
+    // a land that resolves { hash: null }, which records none.
+    const hash = typeof landed?.hash === 'string' && landed.hash.trim() ? landed.hash : null
+    // The landed hash first: it is what makes every later Accept a no-op. A
+    // failure here leaves the claim failed and nothing marked merged; the next
+    // Accept finds the commit through farmd's status and records it, unpushed.
+    if (hash) {
+      try {
+        store.markLanded(id, hash)
+      } catch (err) {
+        return failed(`landed ${diff} as ${hash.slice(0, 12)} but could not record it: ${err.message}`, `land not recorded: ${err.message}`)
+      }
+    }
+    const as = hash ? ` as ${hash.slice(0, 12)}` : ''
+    say(landed?.alreadyLanded ? `recorded landed ${diff}${as} (already on master — nothing pushed)` : `landed ${diff}${as}`, '#0E6E74')
+    // HZ-467: the code is on main — dependents' implement may start. A second
+    // call (merged_at already set) is a no-op.
+    store.markMerged(id)
+    // HO-890: best-effort, as for GitHub — a failure is logged and the land counts.
+    await Promise.resolve()
+      .then(() => forRepo(item.repo).artifacts.promoteArtifacts(item, approvals, { log: fastify.log }))
+      .catch((err) => fastify.log.warn(`baseline promotion failed for ${item.id}: ${err?.message ?? err}`))
+    return { outcome: { state: 'merged' } }
+  }
+
   // Shared by the session/gate-PIN browser route, the WhatsApp-concierge
   // route and the WhatsApp poll vote below — same merge/close/approve
   // sequence, only the actor label and the auth check at the call site
@@ -2229,7 +2291,39 @@ export function buildApp({
         return { error: narrowing.reason, status: 409, narrowing: true }
       }
     }
-    if (
+    // HO-877: an sl item's Accept lands its pinned diff (work_item.diff_id)
+    // through farmd — forRepo(item.repo).vcs.land, backends/sl/vcs.js — inside
+    // the same premerge claim GitHub's merge holds below. No pre-merge run here:
+    // farmd's land runs the sl test rebase itself, and preMergeChecks reads a
+    // GitHub PR and runs farm/premerge.py. The GitHub branch is its `else`, so
+    // it never runs for an sl repo's item — not even one carrying a PR number —
+    // and an sl item never passes Accept without a land.
+    if (item && item.cursor === stepIndex && STEPS[stepIndex]?.label === 'Accept the code' && item.repo && backendOf(item.repo) === 'sl') {
+      // heldAccept keeps a PR number per hold, so an sl Accept is refused, not
+      // held, while a self-deploy drains — and nothing lands meanwhile.
+      if (deployDrain.isDeployBlocked()) {
+        return { error: 'Horizon is deploying — press Accept again once the deploy ends', status: 409, premerge: true }
+      }
+      const claim = store.claimGateAction(id, 'premerge', {
+        detail: `reading ${item.diff_id ?? 'the diff'}`,
+        timeoutMs: PREMERGE_QUEUE_TIMEOUT_MS,
+      })
+      if (!claim) {
+        const running = store.getGateAction(id, 'premerge')
+        const orphaned = running?.startedBeforeRestart
+          ? ` (it started before the server restarted — the gate re-opens by ${running.deadline})`
+          : ''
+        return { error: `a land is already running for this item — wait for it to finish${orphaned}`, status: 409, premerge: true }
+      }
+      let outcome = { state: 'failed', reason: 'the land stopped unexpectedly' }
+      try {
+        const landed = await acceptSl(id, item, claim.token)
+        outcome = landed.outcome
+        if (landed.error) return landed
+      } finally {
+        store.finishGateAction(id, 'premerge', claim.token, outcome)
+      }
+    } else if (
       item &&
       item.cursor === stepIndex &&
       STEPS[stepIndex]?.label === 'Accept the code' &&

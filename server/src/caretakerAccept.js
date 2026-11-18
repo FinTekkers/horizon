@@ -46,6 +46,14 @@
 //
 // HZ-731: an open blocking ask is a wait, not a stop, so the pass presses
 // Accept on the next tick after the ask is filed or dismissed.
+//
+// HO-877: an sl item is a candidate by its pinned diff (work_item.diff_id)
+// instead of a PR. It is accepted once its diff's recorded review status
+// (work_item.diff_status) is Accepted, and waits otherwise. While it waits the
+// pass asks the injected reviewStatus(itemId, repo) to re-read that status
+// (server.js hands in the registry's refreshReviewStatus — for sl, one farmd
+// request), so this module never calls sl. An sl Accept refused only because
+// the diff or gate was not Accepted yet is a wait, not a pre-merge block.
 
 import { db } from './db.js'
 import * as store from './store.js'
@@ -58,6 +66,7 @@ import { itemAutopilotOff } from './caretakerItemOff.js'
 import { openBlockingAsks } from './asks.js'
 // HO-880: an imported item is read-only, so its PR is never accepted or merged here.
 import { notImportedSql } from './importedItem.js'
+import { ACCEPTED as DIFF_ACCEPTED, WAIT_REFUSALS } from './landRules.js'
 
 const HOUR_MS = 60 * 60 * 1000
 const GATE_LABEL = STEPS[ACCEPT_GATE_INDEX].label
@@ -76,12 +85,12 @@ export const ACCEPT_STOP_TEXT = {
 // the same key caretaker.js judges an arrival by. Oldest arrival first, so
 // items are accepted in the order they reached the gate.
 const selectCandidates = db.prepare(`
-  SELECT w.id AS item_id, w.project_id, w.repo, w.pr, w.pr_mergeable, w.forwarded_review_run_id, p.name AS project_name,
+  SELECT w.id AS item_id, w.project_id, w.repo, w.pr, w.pr_mergeable, w.diff_id, w.diff_status, w.forwarded_review_run_id, p.name AS project_name,
          COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
                AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0) AS arrival_run_id
     FROM work_item w JOIN project p ON p.id = w.project_id
    WHERE p.autopilot = 'on' AND p.enabled = 1 AND w.cursor = ${ACCEPT_GATE_INDEX}
-     AND w.abandoned_at IS NULL AND w.pr IS NOT NULL AND w.repo IS NOT NULL AND w.autopilot_off = 0
+     AND w.abandoned_at IS NULL AND (w.pr IS NOT NULL OR w.diff_id IS NOT NULL) AND w.repo IS NOT NULL AND w.autopilot_off = 0
      AND ${notImportedSql('w')}
    ORDER BY arrival_run_id, w.id`)
 // An escalated resolve sends the item back to implement, so it is no longer a
@@ -93,7 +102,7 @@ const selectEscalated = db.prepare(`
     FROM gate_action g JOIN work_item w ON w.id = g.item_id JOIN project p ON p.id = w.project_id
    WHERE g.kind = 'resolve' AND g.state = 'escalated' AND p.autopilot = 'on' AND p.enabled = 1
      AND w.abandoned_at IS NULL AND w.cursor <> ${ACCEPT_GATE_INDEX} AND w.autopilot_off = 0`)
-const selectGateActions = db.prepare('SELECT kind, state, epoch FROM gate_action WHERE item_id = ?')
+const selectGateActions = db.prepare('SELECT kind, state, epoch, reason FROM gate_action WHERE item_id = ?')
 const selectClaims = db.prepare('SELECT action, outcome FROM caretaker_accept_action WHERE item_id = ? AND arrival_run_id = ?')
 const selectMode = db.prepare('SELECT autopilot FROM project WHERE id = ?')
 // One caretaker Accept in flight per project: its own pending claim, or any
@@ -146,6 +155,9 @@ const selectRecentLimitPing = db.prepare(
 const epochRun = (epoch) => Number(String(epoch ?? '').split(':')[1]) || 0
 const reviewPassed = (row) => passedReview(row.arrival_run_id, row.forwarded_review_run_id)
 export const MERGEABLE_UNKNOWN = 'GitHub has not reported whether the PR merges'
+export const DIFF_NOT_ACCEPTED = 'the diff is not Accepted yet'
+// app.js records an sl refusal as `<code>: <reason>` on a blocked premerge row.
+const isWaitRefusal = (row) => row?.state === 'blocked' && WAIT_REFUSALS.some((code) => String(row.reason ?? '').startsWith(`${code}:`))
 
 // What decideAcceptGate() looks at, all read from the DB.
 export function gatherAcceptFacts(row) {
@@ -156,8 +168,11 @@ export function gatherAcceptFacts(row) {
   return {
     reviewPassed: reviewPassed(row),
     mergeable: row.pr_mergeable ?? null,
+    // HO-877: an sl item's diff review status, or null for a PR item.
+    diff: row.diff_id ? (row.diff_status ?? 'Unknown') : null,
     running: rows.some((r) => r.state === 'running'),
     premerge: current('premerge')?.state ?? null,
+    landRefusedForNow: row.diff_id ? isWaitRefusal(current('premerge')) : false,
     resolve: current('resolve')?.state ?? null,
     acceptClaim: claim('accept'),
     resolveClaim: claim('resolve'),
@@ -173,14 +188,21 @@ export function decideAcceptGate(f) {
   if (f.running) return { kind: 'wait', reason: 'a pre-merge or Resolve-conflicts run is in progress' }
   // A forwarded failing review (or none on record) is a human's call.
   if (!f.reviewPassed) return { kind: 'wait', reason: 'the automated review did not pass' }
-  if (f.premerge === 'blocked') return { kind: 'stop', reason: 'premerge_blocked' }
-  if (['failed', 'timed_out', 'interrupted'].includes(f.premerge)) return { kind: 'stop', reason: 'premerge_failed' }
-  if (f.premerge === 'merged') return { kind: 'wait', reason: 'the PR is already merged' }
+  // HO-877: an sl Accept refused because the diff (or gate) was not Accepted
+  // yet blocked nothing; the diff rule below decides.
+  const premerge = f.landRefusedForNow ? null : f.premerge
+  if (premerge === 'blocked') return { kind: 'stop', reason: 'premerge_blocked' }
+  if (['failed', 'timed_out', 'interrupted'].includes(premerge)) return { kind: 'stop', reason: 'premerge_failed' }
+  if (premerge === 'merged') return { kind: 'wait', reason: 'the PR is already merged' }
   if (f.resolve === 'escalated') return { kind: 'stop', reason: 'resolve_escalated' }
   if (f.acceptClaim === 'failed' || f.acceptClaim === 'interrupted') return { kind: 'stop', reason: 'accept_failed' }
   if (f.acceptClaim) return { kind: 'wait', reason: 'Accept already pressed for this review' }
   if (['failed', 'timed_out', 'interrupted'].includes(f.resolve) || f.resolveClaim === 'failed' || f.resolveClaim === 'interrupted') {
     return { kind: 'stop', reason: 'resolve_failed' }
+  }
+  // HO-877: an sl diff has no mergeability; its review status decides.
+  if (f.diff != null) {
+    return f.diff === DIFF_ACCEPTED ? { kind: 'accept', reason: 'automated review passed, diff Accepted' } : { kind: 'wait', reason: DIFF_NOT_ACCEPTED }
   }
   if (f.mergeable === 0) {
     // One run per review result, whoever started it (autoResolve.js included).
@@ -227,6 +249,32 @@ function probeMergeable(row, nowMs, refreshMergeable, log) {
         log?.error?.(`caretaker: ${row.item_id} re-read could not be recorded: ${redact(err?.message)}`)
       }
     })
+  return true
+}
+
+// HO-877: one re-read of a waiting sl diff's review status, at most once per
+// STATUS_READ_INTERVAL_MS per item. Unlike the mergeable probe this is not a
+// claimed, bounded DB row: a diff review can take days, so the reads never
+// stop while the item waits, and a status read is idempotent, so an in-memory
+// throttle is enough — a restart or a second pass costs at most one extra read.
+// The call runs on; a recorded change notifies (sl/review.js records it) and
+// the next pass decides on it.
+export const STATUS_READ_INTERVAL_MS = 60 * 1000
+const lastStatusRead = new Map()
+
+function readDiffStatus(row, nowMs, reviewStatus, log) {
+  const last = lastStatusRead.get(row.item_id)
+  if (last != null && nowMs - last < STATUS_READ_INTERVAL_MS) return false
+  // Entries past the interval throttle nothing; drop them so the map stays small.
+  for (const [itemId, at] of lastStatusRead) if (nowMs - at >= STATUS_READ_INTERVAL_MS) lastStatusRead.delete(itemId)
+  lastStatusRead.set(row.item_id, nowMs)
+  let pending
+  try {
+    pending = Promise.resolve(reviewStatus(row.item_id, row.repo))
+  } catch (err) {
+    pending = Promise.reject(err)
+  }
+  pending.catch((err) => log?.warn?.(`caretaker: review status read of ${row.diff_id} for ${row.item_id} failed: ${redact(err?.message || String(err))}`))
   return true
 }
 
@@ -313,9 +361,11 @@ function settle(claimId, row, action, call, log) {
 // can interleave between a read and a claim. Do not add an await here.
 //
 // `refreshMergeable(itemId, repo, pr)` re-reads one PR's mergeability. Without
-// it, mergeability unknown is a plain wait.
-export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner = () => null, limit, refreshMergeable } = {}) {
-  const counts = { accepted: 0, resolving: 0, stopped: 0, waited: 0, probed: 0 }
+// it, mergeability unknown is a plain wait. HO-877: `reviewStatus(itemId,
+// repo)` re-reads one sl diff's review status the same way; without it, a
+// diff not Accepted is a plain wait.
+export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner = () => null, limit, refreshMergeable, reviewStatus } = {}) {
+  const counts = { accepted: 0, resolving: 0, stopped: 0, waited: 0, probed: 0, statusReads: 0 }
   let changed = false
   const waiting = new Set()
   try {
@@ -338,6 +388,7 @@ export function actOnAcceptGate({ gateActions, actor, log, now = Date.now, owner
         if (decision.kind === 'wait') {
           counts.waited++
           if (decision.reason === MERGEABLE_UNKNOWN && refreshMergeable && probeMergeable(row, nowMs, refreshMergeable, log)) counts.probed++
+          if (decision.reason === DIFF_NOT_ACCEPTED && reviewStatus && readDiffStatus(row, nowMs, reviewStatus, log)) counts.statusReads++
           continue
         }
         // HZ-360: a human Approve held through a deploy owns this merge.

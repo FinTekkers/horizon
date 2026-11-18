@@ -527,6 +527,14 @@ export function failInterruptedActions() {
     .run().changes
 }
 
+// HO-877: the sl diff review-status read the gate-13 pass calls while an sl
+// item waits for its diff to be Accepted — the registry's refreshReviewStatus,
+// set by server.js before init(). Unset, that is a plain wait.
+let reviewStatus = null
+export function setReviewStatus(fn) {
+  reviewStatus = typeof fn === 'function' ? fn : null
+}
+
 // server.js calls this AFTER caretaker.init(), so on any one change the
 // caretaker's listener has recorded its decision before this one looks.
 // Change signals are coalesced onto the next turn of the event loop, so an
@@ -550,6 +558,7 @@ export function init(log, { gateActions, refreshMergeable, ...opts } = {}) {
       owner: opts.owner ?? ownerJid,
       limit: opts.limit ?? CARETAKER_HOURLY_LIMIT,
       refreshMergeable,
+      reviewStatus,
     })
     return actOnDecisions({ gateActions, log, ...opts })
   }

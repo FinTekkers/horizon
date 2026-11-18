@@ -137,6 +137,22 @@ class DiffChanged(SlError):
     http = 409
 
 
+class DiffMismatch(SlError):
+    """HO-877: the server pinned the item to one diff (work_item.diff_id) and
+    the checkout carries another. Raised before any push."""
+
+    error = "diff_mismatch"
+    http = 409
+
+    def __init__(self, expected: str, found: str):
+        self.expected = expected
+        self.found = found
+        super().__init__(f"the item checkout carries {found}, not the pinned {expected}: nothing was pushed")
+
+    def payload(self) -> dict:
+        return {**super().payload(), "expected": self.expected, "found": self.found}
+
+
 class NotAccepted(SlError):
     error = "not_accepted"
     http = 409
@@ -483,12 +499,21 @@ def landed_commit(ws: Path, diff: str) -> str | None:
     return None
 
 
-def review_status(ws: Path) -> dict:
+def _assert_expected_diff(diff: str, expected_diff: str | None) -> None:
+    """HO-877: when the caller names the diff it pinned (D<n>), the checkout's
+    diff must be that one."""
+    if expected_diff is not None and f"D{diff}" != expected_diff:
+        raise DiffMismatch(expected_diff, f"D{diff}")
+
+
+def review_status(ws: Path, expected_diff: str | None = None) -> dict:
     """The item's diff, its review status, and its master commit as of the
-    checkout's last pull (None when not landed)."""
+    checkout's last pull (None when not landed). HO-877: with expected_diff,
+    a checkout on any other diff raises DiffMismatch."""
     diff = diff_number(ws)
     if diff is None:
         raise NoDiff("the item commit has no Differential Revision line")
+    _assert_expected_diff(diff, expected_diff)
     return {"diff": f"D{diff}", "status": phab_status(ws), "landed_commit": landed_commit(ws, diff)}
 
 
@@ -576,9 +601,13 @@ def land(
     checks_waiver: str | None = None,
     test_env_file: str | None = None,
     log: Callable[[str], None] = print,
+    expected_diff: str | None = None,
 ) -> dict:
-    """Land the item's diff on master. Already landed returns that commit and
-    pushes nothing; not Accepted raises NotAccepted and pushes nothing. Then
+    """Land the item's diff on master. HO-877: with expected_diff (the D<n>
+    the server pinned at submit), a checkout on any other diff raises
+    DiffMismatch before anything else, so nothing is pushed. Already landed
+    returns that commit and pushes nothing; not Accepted raises NotAccepted
+    and pushes nothing. Then
     `jf sync`, strip any Reviewed By line, test-rebase, and push the item
     checkout's `.` with `sl push -r . --to master`."""
     item_id = item["id"]
@@ -586,6 +615,7 @@ def land(
     diff = diff_number(ws)
     if diff is None:
         raise NoDiff("the item commit has no Differential Revision line")
+    _assert_expected_diff(diff, expected_diff)
     landed = landed_commit(ws, diff)
     if landed is not None:
         return {"diff": f"D{diff}", "commit": landed, "already_landed": True, "note": f"D{diff} is already on {MASTER}; nothing pushed"}

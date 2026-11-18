@@ -2460,6 +2460,21 @@ async def _vcs_request(request: Request) -> tuple[dict, str, dict] | JSONRespons
     return body, repo, item
 
 
+# HO-877: the diff the server pinned at submit (work_item.diff_id).
+_PINNED_DIFF_RE = re.compile(r"^D\d+$")
+
+
+def _pinned_diff(body: dict) -> str | None | JSONResponse:
+    """HO-877: the optional `diff` a review-status or land request names. The
+    server always sends it; a request without it behaves as in HO-876."""
+    diff = body.get("diff")
+    if diff is None:
+        return None
+    if not isinstance(diff, str) or not _PINNED_DIFF_RE.fullmatch(diff):
+        return JSONResponse({"error": "bad_diff", "detail": "diff must be D<number>"}, status_code=400)
+    return diff
+
+
 def _vcs_locked(repo: str, item_id: str, action):
     """action(ws) in the item's sl checkout, under its sl lock. An expected
     sl failure answers its own code; anything else is a 500 crash."""
@@ -2497,8 +2512,11 @@ async def vcs_review_status(request: Request):
     parsed = await _vcs_request(request)
     if isinstance(parsed, JSONResponse):
         return parsed
-    _, repo, item = parsed
-    return await asyncio.to_thread(_vcs_locked, repo, item["id"], sl_vcs.review_status)
+    body, repo, item = parsed
+    diff = _pinned_diff(body)
+    if isinstance(diff, JSONResponse):
+        return diff
+    return await asyncio.to_thread(_vcs_locked, repo, item["id"], lambda ws: sl_vcs.review_status(ws, expected_diff=diff))
 
 
 @app.post("/vcs/land")
@@ -2506,11 +2524,16 @@ async def vcs_land(request: Request):
     """HO-876: land the item's diff on master. Already there: 200 with that
     commit and already_landed, nothing pushed. Not Accepted: 409
     not_accepted, nothing pushed. Else jf sync, the test rebase and
-    `sl push --to master`; 200 {ok, diff, commit, already_landed, note}."""
+    `sl push --to master`; 200 {ok, diff, commit, already_landed, note}.
+    HO-877: a `diff` other than the checkout's is 409 diff_mismatch, nothing
+    pushed."""
     parsed = await _vcs_request(request)
     if isinstance(parsed, JSONResponse):
         return parsed
     body, repo, item = parsed
+    diff = _pinned_diff(body)
+    if isinstance(diff, JSONResponse):
+        return diff
     timeout_s = body.get("timeout_s")
     if timeout_s is None:
         timeout_s = sl_vcs.DEFAULT_LAND_TIMEOUT_S
@@ -2528,6 +2551,7 @@ async def vcs_land(request: Request):
             checks_waiver=body.get("checks_waiver"),
             test_env_file=body.get("test_env_file"),
             log=lambda msg: print(f"farmd: /vcs/land {item['id']}: {msg}", flush=True),
+            expected_diff=diff,
         )
         return {"ok": True, **result}
 

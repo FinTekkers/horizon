@@ -15,6 +15,10 @@
 // backend_not_implemented placeholder and nothing falls back to GitHub. The
 // six GitHub-shaped tracker helpers (issue bodies and labels) always throw;
 // their call sites run only for an item with a GitHub issue.
+//
+// HO-877: vcs.land on a server with a farm is backends/sl/vcs.js. Only the
+// registry may import backends/sl/ (test/backend-boundary.test.mjs), so
+// backends/index.js puts it in place of this placeholder.
 
 import { githubAdapters } from './github.js'
 import { ARTIFACT_METHODS } from './artifact.js'
