@@ -6,6 +6,11 @@
 // and the store a fresh folder beside it. The harness seeds a publish through
 // the store's own write (publishArtifacts), as the farm's bundle reaches it,
 // and reads the baseline straight off the disk.
+//
+// HO-893 metric 4: the child_process and fetch recorders go in before any
+// server module loads. After every case, the harness's violations() lists any
+// `git` spawn or api.github.com request made during that case, and the
+// contract requires it to be empty.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,6 +19,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { runArtifactContract } from './contracts/artifact.contract.mjs'
+import { installRecorders } from './helpers/noGitNoGithub.mjs'
+
+const recorders = installRecorders()
 
 const DATA_DIR = mkdtempSync(join(tmpdir(), 'horizon-artifact-contract-sl-'))
 process.env.HORIZON_DB = join(DATA_DIR, 'test.db')
@@ -50,6 +58,7 @@ function makeHarness() {
   assert.equal(store.addRepoToProject(project, REPO, 'sl').ok, true)
   assert.equal(backendOf(REPO), 'sl')
   const projectDir = join(DATA_DIR, 'artifacts', `p${project}`)
+  const since = recorders.mark()
   return {
     artifacts: forRepo(REPO).artifacts,
     repo: REPO,
@@ -75,6 +84,7 @@ function makeHarness() {
       return files
     },
     pruneIntervalMs: slArtifacts.SL_ARTIFACTS_PRUNE_MS,
+    violations: () => recorders.violations(since),
     restore() {
       db.prepare('DELETE FROM work_item WHERE repo = ?').run(REPO)
       db.prepare('DELETE FROM project_repo WHERE project_id = ?').run(project)
@@ -84,6 +94,10 @@ function makeHarness() {
     },
   }
 }
+
+test('metric 4: positive control — every child_process entry point and fetch are recorded before the contract runs', async () => {
+  await recorders.selfTest()
+})
 
 const contractCases = runArtifactContract('sl', makeHarness)
 
@@ -95,4 +109,10 @@ test('metric 1: the contract registered every case — read, list, remove, prune
 test('metric 1: the contract has no skip, todo or only, so no case can be dropped for sl', () => {
   const text = readFileSync(new URL('./contracts/artifact.contract.mjs', import.meta.url), 'utf8')
   for (const banned of [/\bskip\b/, /\btodo\b/, /\.only\b/, /\bonly\s*:/]) assert.doesNotMatch(text, banned)
+})
+
+test('metric 4: across every sl contract case, zero git spawns and zero api.github.com requests', () => {
+  assert.deepEqual(recorders.gitSpawns(), [])
+  assert.deepEqual(recorders.githubRequests(), [])
+  recorders.restore()
 })

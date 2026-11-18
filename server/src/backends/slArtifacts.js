@@ -690,7 +690,11 @@ const projectItem = db.prepare(`
 
 export async function pruneArtifacts({ log, now = Date.now() } = {}) {
   const last = getCursor.get(PRUNE_KEY)?.last_synced_at
-  if (last && now - msOf(last) < SL_ARTIFACTS_PRUNE_MS) return null
+  // HO-893: a sweep inside the window deletes nothing and says so.
+  if (last && now - msOf(last) < SL_ARTIFACTS_PRUNE_MS) {
+    log?.info(`sl artifacts prune: skipped — the last sweep ran at ${last}`)
+    return null
+  }
   const projects = slProjects.all().map((row) => row.project_id)
   if (projects.length === 0) return null
   setCursor.run(PRUNE_KEY, sqlTime(now))
