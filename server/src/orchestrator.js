@@ -167,6 +167,7 @@ import * as deployQueue from './deployQueue.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { listTargetStatuses } from './deploy.js'
 import { deploySkipArtifact, deploySkipReason } from './deploySkip.js'
+import { slImplementReason } from './implementSkip.js'
 import { servedRulesFor } from './rulesStore.js'
 import { DIGEST_STEP_INDEX, OPTIONS_STEP_INDEX, proposeSplit } from './split.js'
 import { ingestAsks, recordSplitAsk } from './asks.js'
@@ -1506,6 +1507,9 @@ export const MOCK_STEP_BEHAVIOR = {
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
   'Specialist agent implements': async (it) => {
+    // HO-902: an sl item opens no PR — say so, naming the item, by backend.
+    const slReason = slImplementReason(it, backendOf(it.repo), { done: 'implementation complete' })
+    if (slReason) return { summary: slReason }
     if (!hasGithubIssue(it)) {
       return { summary: 'implementation complete on a feature branch; all checks green (no GitHub — PR skipped)' }
     }
@@ -4062,10 +4066,21 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   if (typeof artifacts?.branch === 'string' && item.repo && backendOf(item.repo) === 'sl' && hasTrackerRef(item)) {
     try {
       const { diff } = await submitDiff(item, { summary: text, testPlan: manualChecks ?? '' })
-      text = `${text} — submitted ${diff}${artifacts.files_changed ? ` (${artifacts.files_changed})` : ''}`.slice(0, 700)
+      // HO-902: the summary ends by naming the item and saying no PR is
+      // created; the cap trims the text before it, never the reason.
+      const noPr = ` — ${slImplementReason(item, 'sl')}`
+      text = `${text} — submitted ${diff}${artifacts.files_changed ? ` (${artifacts.files_changed})` : ''}`.slice(0, 700 - noPr.length) + noPr
     } catch (err) {
       return failFarmRun(runId, `code pushed to ${artifacts.branch} but the diff could not be submitted: ${err.message}`)
     }
+  } else if (typeof artifacts?.branch === 'string' && item.repo && backendOf(item.repo) === 'sl') {
+    // HO-902: an sl item with no tracker record has no diff to submit, and an
+    // sl item never opens a PR. Fail with a reason that names the item — no
+    // retry tag, so it pauses for a human instead of looping.
+    return failFarmRun(
+      runId,
+      `${slImplementReason(item, 'sl', { done: `code pushed to ${artifacts.branch}` })}, and with no Task there is no diff to submit`,
+    )
   } else if (typeof artifacts?.branch === 'string' && hasGithubIssue(item)) {
     try {
       const pr = await forRepo(item.repo).review.createPrFromBranch(item, artifacts.branch, { manualChecks })
