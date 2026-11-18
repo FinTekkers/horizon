@@ -20,7 +20,6 @@ Hashes made in a checkout (drafts, amends, rebases) are local only: `sl pull
 """
 
 import itertools
-import json
 import os
 import re
 import subprocess
@@ -311,14 +310,19 @@ class FakeSl:
         if rev == "draft() & ::." and template == "{node}\n":
             return 0, "".join(f"{c.node}\n" for c in wc.drafts), ""
         m = re.fullmatch(r"D(\d+) & ::remote/master", rev)
-        if m and template == "json":
+        if m and template == "{node}\n":
             # Deliberately loose (a prefix either way), so the adapter's own
             # exact re-check is what keeps D12 from answering for D123.
             want = m.group(1)
             hits = [
-                {"node": c.node, "desc": c.desc}
+                c.node
                 for c in reversed(self.master)
                 if (d := _diff_of(c.desc)) and (d.startswith(want) or want.startswith(d))
             ]
-            return 0, json.dumps(hits), ""
+            return 0, "".join(f"{h}\n" for h in hits), ""
+        if template == "{desc}":
+            # A master commit by hash, as the adapter's re-check reads it.
+            for c in self.master:
+                if c.node == rev:
+                    return 0, c.desc, ""
         return None

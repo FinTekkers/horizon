@@ -27,7 +27,6 @@ the rebase. It exists only in that checkout, which is why the test rebase
 runs there and not in a fresh scratch clone (one could never pull it).
 """
 
-import json
 import os
 import re
 import shutil
@@ -63,6 +62,8 @@ LOCK_PREFIX = "sl:"
 REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*$")
 ITEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*$")
 
+# A full commit hash, as `sl log -T '{node}'` prints it.
+NODE_RE = re.compile(r"[0-9a-f]{40}")
 # `Differential Revision: https://.../D123`; D12 never matches D123.
 DIFF_TRAILER_RE = re.compile(r"^Differential Revision:[^\n]*?\bD(\d+)[ \t]*$", re.M)
 REVIEWED_BY_RE = re.compile(r"^[ \t]*Reviewed[ \t]+By[ \t]*:.*(?:\n|$)", re.M | re.I)
@@ -472,17 +473,12 @@ def landed_commit(ws: Path, diff: str) -> str | None:
     """The commit on remote/master whose own message carries D<diff>, or None.
     The revset finds candidates; each is re-checked here, so a lookup that
     also returned D12 for D123 can never answer for it."""
-    argv = ["sl", "log", "-r", f"D{diff} & ::{REMOTE_MASTER}", "-T", "json"]
-    out = run(argv, cwd=ws).stdout
-    try:
-        entries = json.loads(out or "[]")
-    except json.JSONDecodeError:
-        raise SlCommandFailed(argv, 0, _scrub(out[-TAIL_CHARS:])) from None
-    for entry in entries if isinstance(entries, list) else []:
-        if not isinstance(entry, dict):
-            continue
-        commit, desc = entry.get("node"), entry.get("desc")
-        if isinstance(commit, str) and isinstance(desc, str) and diff_number_in(desc) == diff:
+    candidates = _log(ws, f"D{diff} & ::{REMOTE_MASTER}", "{node}\n").split()
+    for commit in candidates:
+        if not NODE_RE.fullmatch(commit):
+            argv = ["sl", "log", "-r", f"D{diff} & ::{REMOTE_MASTER}", "-T", "{node}\n"]
+            raise SlCommandFailed(argv, 0, _scrub(commit[-TAIL_CHARS:]))
+        if diff_number_in(_log(ws, commit, "{desc}")) == diff:
             return commit
     return None
 
