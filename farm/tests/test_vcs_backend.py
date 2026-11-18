@@ -9,10 +9,19 @@ something.
 
 The `..._argv_unchanged` test names no farm.vcs module (the registry test
 imports it locally), so it also passes on the tree before the move.
+
+HO-909: the registry test checks farm/vcs/ against the owner-approved set of
+backends, so HO-876 can add farm/vcs/sl.py without editing the registry test.
+Exact `{git, sl}` equality is proven on a temp copy of farm/vcs/, since this
+item may not add sl.py itself.
 """
 
 import json
+import re
+import shutil
+from collections.abc import Mapping
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +36,9 @@ REPO = "acme/ho874-vcs"
 RUN_ID = 87401
 FARM_DIR = Path(__file__).resolve().parent.parent
 QUEUE_DIRS = ("pm", "runs", "runs/active", "jobs/active")
+
+# Owner ruling (HO-909): approved VCS backends are exactly `git` and `sl`.
+APPROVED_BACKENDS = frozenset({"git", "sl"})
 
 
 def request_body(**extra):
@@ -110,8 +122,55 @@ def test_unknown_backend_is_refused_with_zero_spawns(farm_up, monkeypatch):
     assert not (farm_up / ".git").exists()
 
 
-def test_only_git_is_registered():
+def _backend_modules(vcs_dir: Path) -> set[str]:
+    """The backend module names in `vcs_dir`: its `*.py` stems, minus `__init__`."""
+    return {p.stem for p in vcs_dir.glob("*.py")} - {"__init__"}
+
+
+def _assert_approved(vcs_dir: Path, registry: Mapping[str, ModuleType]) -> None:
+    """Every backend module on disk and every registered backend is approved,
+    git is among them, and nothing is registered without a module on disk."""
+    modules = _backend_modules(vcs_dir)
+    extras = modules - APPROVED_BACKENDS
+    assert not extras, f"unapproved backend modules: {sorted(extras)}"
+    assert "git" in modules, f"git backend module missing: {sorted(modules)}"
+    unapproved = set(registry) - APPROVED_BACKENDS
+    assert not unapproved, f"unapproved registered backends: {sorted(unapproved)}"
+    missing = set(registry) - modules
+    assert not missing, f"registered backends with no module: {sorted(missing)}"
+
+
+@pytest.fixture
+def vcs_copy(tmp_path) -> Path:
+    """A copy of farm/vcs/ with a stub sl.py, the tree HO-876 will create."""
+    copy = tmp_path / "vcs"
+    shutil.copytree(FARM_DIR / "vcs", copy, ignore=shutil.ignore_patterns("__pycache__"))
+    (copy / "sl.py").write_text('"""Stub sl backend (HO-909 test)."""\n')
+    return copy
+
+
+def test_only_approved_backends_are_present():
     from farm import vcs
 
-    assert vcs.BACKENDS == {"git": vcs.git}
-    assert sorted(p.name for p in (FARM_DIR / "vcs").glob("*.py")) == ["__init__.py", "git.py"]
+    assert vcs.BACKENDS["git"] is vcs.git
+    _assert_approved(FARM_DIR / "vcs", vcs.BACKENDS)
+
+
+def test_sl_stub_makes_backend_set_equal_git_and_sl(vcs_copy):
+    from farm import vcs
+
+    assert _backend_modules(vcs_copy) == {"git", "sl"}
+    _assert_approved(vcs_copy, vcs.BACKENDS)
+
+    registry = {"git": vcs.git, "sl": ModuleType("sl")}
+    assert set(registry) == {"git", "sl"}
+    _assert_approved(vcs_copy, registry)
+
+
+def test_unapproved_backend_module_is_rejected(vcs_copy):
+    from farm import vcs
+
+    (vcs_copy / "hg.py").write_text('"""Unapproved backend (HO-909 test)."""\n')
+
+    with pytest.raises(AssertionError, match=re.escape("unapproved backend modules: ['hg']")):
+        _assert_approved(vcs_copy, vcs.BACKENDS)
