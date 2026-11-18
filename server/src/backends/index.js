@@ -16,7 +16,7 @@ import { BACKENDS, DEFAULT_BACKEND, isBackend } from './names.js'
 import { githubAdapters } from './github.js'
 import { slAdapters, slScreenshotPublisher } from './sl.js'
 import { createSlVcs } from './sl/vcs.js'
-import { refreshDiffStatus } from './sl/review.js'
+import { refreshDiffStatus, submitDiff as submitSlDiff } from './sl/review.js'
 import { FARM_URL } from '../config.js'
 
 export { BACKENDS, DEFAULT_BACKEND, isBackend }
@@ -73,6 +73,15 @@ export function screenshotPublisherFor(repo) {
 // (backends/sl/review.js); any other repo has no diff, so it resolves null.
 export function refreshReviewStatus(itemId, repo) {
   return backendOf(repo) === 'sl' ? refreshDiffStatus(itemId) : Promise.resolve(null)
+}
+
+// HO-877: submits an sl item's implemented change as its one diff and pins it
+// on the item (work_item.diff_id) — the only diff Accept will ever land. For
+// orchestrator.js's implement result; resolves { diff, commit, updated }. Any
+// other repo opens a PR instead, so this rejects for it.
+export function submitDiff(item, opts) {
+  if (backendOf(item?.repo) !== 'sl') return Promise.reject(new Error(`${item?.repo} is not an sl repo: it opens a PR, not a diff`))
+  return submitSlDiff(item, opts)
 }
 
 // The adapters for a backend by name, for calls that serve no one repo — the

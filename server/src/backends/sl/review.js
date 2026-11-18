@@ -106,3 +106,9 @@ const slReview = createSlReview()
 export function refreshDiffStatus(itemId) {
   return slReview.refreshStatus(itemId)
 }
+
+// The registry's submitDiff for an sl item: orchestrator.js's implement
+// result submits the change and pins the diff farmd names.
+export function submitDiff(item, opts) {
+  return slReview.submit(item, opts)
+}

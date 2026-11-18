@@ -134,7 +134,7 @@ import { recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { approvedDesign, canvasInput, designRequired } from './designSpec.js'
 import { reviewShotsInput } from './screenshots.js'
-import { forRepo } from './backends/index.js'
+import { backendOf, forRepo, submitDiff } from './backends/index.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, cleanOpenLines, executeFailed } from './verifyOutcome.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -4040,7 +4040,17 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     typeof artifacts?.manual_checks === 'string' && artifacts.manual_checks.trim()
       ? artifacts.manual_checks.trim().slice(0, MANUAL_CHECKS_MAX_CHARS)
       : null
-  if (typeof artifacts?.branch === 'string' && item.repo && item.issue != null) {
+  // HO-877: an sl item's change is one Phabricator diff, not a PR. Submitting
+  // it pins work_item.diff_id — the one diff Accept lands. If the submit
+  // fails, the step fails — no diff, no advance.
+  if (typeof artifacts?.branch === 'string' && item.repo && backendOf(item.repo) === 'sl' && hasTrackerRef(item)) {
+    try {
+      const { diff } = await submitDiff(item, { summary: text, testPlan: manualChecks ?? '' })
+      text = `${text} — submitted ${diff}${artifacts.files_changed ? ` (${artifacts.files_changed})` : ''}`.slice(0, 700)
+    } catch (err) {
+      return failFarmRun(runId, `code pushed to ${artifacts.branch} but the diff could not be submitted: ${err.message}`)
+    }
+  } else if (typeof artifacts?.branch === 'string' && item.repo && item.issue != null) {
     try {
       const pr = await forRepo(item.repo).review.createPrFromBranch(item, artifacts.branch, { manualChecks })
       db.prepare("UPDATE work_item SET pr = ?, pr_url = ?, updated_at = datetime('now') WHERE id = ?").run(
