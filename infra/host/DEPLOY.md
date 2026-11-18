@@ -989,6 +989,37 @@ change one. To check: `GET /api/projects` lists each `sl` repo with its `url`
 built from the template, and each project's `repoLinks` entry for that repo
 carries the `issueUrlTemplate`.
 
+## 2p. sl items as Tasks through farmd (HO-875)
+
+An `sl` repo's items are Tasks. The server never talks to the Task service:
+its `sl` tracker (`server/src/backends/slTracker.js`) calls farmd's
+`/api/farm/tasks` routes (`farm/farmd.py`), and farmd calls a Task driver
+(`farm/task_driver.py`). Each new item, a Plan-filed child included, makes one
+Task create; the Task's number is stored in `work_item.task_id`, `issue` stays
+empty, and the item's id is `<prefix>-<n>` from the prefix's own sequence
+(`tracker_sequence`). Comments, the final-gate close (with a summary) and the
+abandon close go to the Task. `server.js` polls every `sl` repo's Tasks on
+the `POLL_INTERVAL_MS` cadence (the `sl` tracker's `pollOnce`): a Task closed
+or reopened outside Horizon closes or reopens its item, and a comment on it
+becomes feedback. With `FARM_URL` unset or no repo on `sl`, the poll sends
+nothing.
+
+| File | Var | Notes |
+|---|---|---|
+| `/etc/horizon/farm.env` | `TASK_DRIVER` | the driver farmd's Task routes use. Only `stub` exists today: an in-memory driver that forgets every Task when farmd restarts. Unset (the default) ⇒ every Task route answers **503** `task_driver_not_configured`, and an `sl` item create answers **502** `Task create failed: task_driver_not_configured` with nothing written |
+
+- **Auth.** The server sends the existing `FARM_SHARED_SECRET` (already in
+  both env files) as `x-farm-secret`; farmd refuses any Task call without it
+  (**401**), because agent sessions share this host. No Task-service
+  credential goes in `server.env`, and neither process logs the secret.
+- **No farm, no `sl` items.** With `FARM_URL` unset, creating an item on an
+  `sl` repo answers **400** `backend_unsupported`, and nothing is sent.
+- **Do not switch a real repo to `sl` yet.** The real Task-service driver is
+  a later item, and so are the `sl` PR, land and release steps. Until they
+  land, an `sl` item past Plan acts like a demo item: the release and PR steps
+  skip because it has no GitHub issue, so it can look shipped when nothing
+  shipped. Use `sl` only for test repos with `TASK_DRIVER=stub`.
+
 ## 3. Confirm the repo is pull-only
 
 `/opt/horizon` must be able to `git fetch`/`checkout` from `origin`, but must

@@ -312,9 +312,7 @@ export async function fileApprovedSplit(item, actor = 'You') {
     if (!repoRow || repoRow.project_id !== item.project_id) {
       throw new Error(`${row.target_repo} is no longer connected to this item’s project`)
     }
-    // HO-879: an sl repo has no issue tracker yet — never search or file it on GitHub.
-    if ((store.findRepo(row.target_repo)?.backend ?? 'github') !== 'github') throw new Error(`backend_unsupported: ${row.target_repo} is not a GitHub repository`)
-
+    // HO-875: an sl repo files through its own tracker (Tasks via farmd), never GitHub.
     const { tracker } = forRepo(row.target_repo)
     let ghIssue = await tracker.findSplitIssue(row.target_repo, splitMarker(item.id), sinceIso(row.created_at))
     if (!ghIssue) {
@@ -330,9 +328,9 @@ export async function fileApprovedSplit(item, actor = 'You') {
     setTargetIssue.run(ghIssue.number, row.id)
 
     // The webhook may have synced it already; either way the item is looked
-    // up by repo and issue, never built from the prefix by hand.
-    store.upsertFromGithub(ghIssue, row.target_repo)
-    const target = store.findItemByIssue(row.target_repo, ghIssue.number)
+    // up by repo and issue (HO-875: an sl repo's, by Task), never built from
+    // the prefix by hand.
+    const target = store.recordFiled(ghIssue, row.target_repo)
     if (!target) throw new Error(`${row.target_repo}#${ghIssue.number} did not sync in as an item`)
 
     const dep = store.addDependency(...edge(target.id), 'Horizon')

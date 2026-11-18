@@ -1,0 +1,70 @@
+{
+  "about": "HO-875: farmd's /api/farm/tasks wire contract. farm/tests/test_farmd_tasks.py replays `steps` against the real routes with the stub driver; server/test/helpers/farmTasksStub.mjs (the server tests' farmd) must answer the same. Each step sends x-farm-secret unless it says \"secret\": false. Replay in order on a fresh driver.",
+  "steps": [
+    {
+      "name": "create files a Task",
+      "request": { "method": "POST", "path": "/api/farm/tasks", "body": { "repo": "acme/sl-app", "title": "Fixture task", "body": "## Outcome\nIt works.", "labels": ["priority: medium"], "idempotency_key": "item:fixture-1" } },
+      "response": { "status": 201, "body": { "number": 1, "url": "stub://acme/sl-app/tasks/1", "title": "Fixture task", "body": "## Outcome\nIt works.", "labels": ["priority: medium"], "state": "open", "created": true } }
+    },
+    {
+      "name": "create with the same key answers the first Task",
+      "request": { "method": "POST", "path": "/api/farm/tasks", "body": { "repo": "acme/sl-app", "title": "Fixture task", "body": "## Outcome\nIt works.", "labels": ["priority: medium"], "idempotency_key": "item:fixture-1" } },
+      "response": { "status": 200, "body": { "number": 1, "url": "stub://acme/sl-app/tasks/1", "title": "Fixture task", "body": "## Outcome\nIt works.", "labels": ["priority: medium"], "state": "open", "created": false } }
+    },
+    {
+      "name": "comment",
+      "request": { "method": "POST", "path": "/api/farm/tasks/1/comments", "body": { "repo": "acme/sl-app", "body": "A note." } },
+      "response": { "status": 201, "body": { "id": 1, "task": 1, "body": "A note.", "author": "horizon" } }
+    },
+    {
+      "name": "list with every comment",
+      "request": { "method": "GET", "path": "/api/farm/tasks?repo=acme%2Fsl-app&after_comment=0" },
+      "response": { "status": 200, "body": { "tasks": [{ "number": 1, "url": "stub://acme/sl-app/tasks/1", "title": "Fixture task", "body": "## Outcome\nIt works.", "labels": ["priority: medium"], "state": "open" }], "comments": [{ "id": 1, "task": 1, "body": "A note.", "author": "horizon" }] } }
+    },
+    {
+      "name": "list after the last comment",
+      "request": { "method": "GET", "path": "/api/farm/tasks?repo=acme%2Fsl-app&after_comment=1" },
+      "response": { "status": 200, "body": { "tasks": [{ "number": 1, "url": "stub://acme/sl-app/tasks/1", "title": "Fixture task", "body": "## Outcome\nIt works.", "labels": ["priority: medium"], "state": "open" }], "comments": [] } }
+    },
+    {
+      "name": "another repo sees none of it",
+      "request": { "method": "GET", "path": "/api/farm/tasks?repo=acme%2Fother&after_comment=0" },
+      "response": { "status": 200, "body": { "tasks": [], "comments": [] } }
+    },
+    {
+      "name": "close needs a summary",
+      "request": { "method": "POST", "path": "/api/farm/tasks/1/close", "body": { "repo": "acme/sl-app", "summary": "  ", "reason": "completed" } },
+      "response": { "status": 400, "body": { "error": "summary_required" } }
+    },
+    {
+      "name": "close",
+      "request": { "method": "POST", "path": "/api/farm/tasks/1/close", "body": { "repo": "acme/sl-app", "summary": "Closed via Horizon after the final review gate.", "reason": "completed" } },
+      "response": { "status": 200, "body": { "number": 1, "state": "closed", "reason": "completed", "already_closed": false } }
+    },
+    {
+      "name": "close again is a no-op",
+      "request": { "method": "POST", "path": "/api/farm/tasks/1/close", "body": { "repo": "acme/sl-app", "summary": "Closed via Horizon after the final review gate.", "reason": "completed" } },
+      "response": { "status": 200, "body": { "number": 1, "state": "closed", "reason": "completed", "already_closed": true } }
+    },
+    {
+      "name": "an unknown Task",
+      "request": { "method": "POST", "path": "/api/farm/tasks/99/comments", "body": { "repo": "acme/sl-app", "body": "Hello?" } },
+      "response": { "status": 404, "body": { "error": "task_not_found" } }
+    },
+    {
+      "name": "a Task in another repo is unknown here",
+      "request": { "method": "POST", "path": "/api/farm/tasks/1/close", "body": { "repo": "acme/other", "summary": "Nope.", "reason": "completed" } },
+      "response": { "status": 404, "body": { "error": "task_not_found" } }
+    },
+    {
+      "name": "no secret",
+      "secret": false,
+      "request": { "method": "POST", "path": "/api/farm/tasks", "body": { "repo": "acme/sl-app", "title": "Sneaky", "body": "", "labels": [], "idempotency_key": "item:sneaky" } },
+      "response": { "status": 401, "body": { "error": "unauthorized" } }
+    }
+  ],
+  "not_configured": {
+    "request": { "method": "POST", "path": "/api/farm/tasks", "body": { "repo": "acme/sl-app", "title": "No driver", "body": "", "labels": [], "idempotency_key": "item:none" } },
+    "response": { "status": 503, "body": { "error": "task_driver_not_configured" } }
+  }
+}

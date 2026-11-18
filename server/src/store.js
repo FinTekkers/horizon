@@ -3688,6 +3688,10 @@ export function moveByHuman(id, { action, toKey = null, note = '', who = 'You', 
   if (action === 'reopen' && it.repo && it.issue != null) {
     return { error: 'reopen_on_github', hint: `Reopen issue #${it.issue} on GitHub; Horizon follows it.` }
   }
+  // HO-875: the same for an sl item: its Task is the source of truth.
+  if (action === 'reopen' && it.repo && it.task_id != null) {
+    return { error: 'reopen_on_task', hint: `Reopen Task ${it.task_id}; Horizon follows it.` }
+  }
   const trimmed = (note || '').trim()
   if (action !== 'reopen') agentRunner.cancel(id, 'superseded')
   const moved = db.transaction(() => {
@@ -3880,7 +3884,8 @@ export function abandonItem(id, reason, actor = 'You', { removeDependentLinks = 
 // up all undelivered rows. Rejection feedback still flows via requestChanges.
 // `actor` names who left it in the event log (HZ-790: "<name> via WhatsApp");
 // without one the event says 'You', or 'GitHub' for an ingested comment.
-export function addFeedback(id, { message, target = '', source = 'ui', ghCommentId = null, actor = null }) {
+// HO-875: `taskCommentId` is an sl Task comment's id, deduped like ghCommentId.
+export function addFeedback(id, { message, target = '', source = 'ui', ghCommentId = null, taskCommentId = null, actor = null }) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
@@ -3891,23 +3896,29 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
     const seen = db.prepare('SELECT id FROM feedback WHERE gh_comment_id = ?').get(ghCommentId)
     if (seen) return { ok: true, duplicate: true }
   }
+  if (taskCommentId != null) {
+    const seen = db.prepare('SELECT id FROM feedback WHERE item_id = ? AND task_comment_id = ?').get(id, taskCommentId)
+    if (seen) return { ok: true, duplicate: true }
+  }
 
   const text = String(message || '').trim().slice(0, 2000)
   if (!text) return { error: 'empty_message' }
   const step = STEPS[it.cursor]
-  db.prepare('INSERT INTO feedback (item_id, target, message, source, gh_comment_id) VALUES (?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO feedback (item_id, target, message, source, gh_comment_id, task_comment_id) VALUES (?, ?, ?, ?, ?, ?)').run(
     id,
     target || (step?.kind === 'agent' ? (step.agent ?? '') : ''),
     text,
     source,
     ghCommentId,
+    taskCommentId,
   )
   const fromGithub = source === 'github'
+  const fromTask = source === 'sl' // HO-875: an ingested sl Task comment
   addEvent(id, {
-    who: actor ?? (fromGithub ? 'GitHub' : 'You'),
+    who: actor ?? (fromGithub ? 'GitHub' : fromTask ? 'Task' : 'You'),
     text: `left feedback: ${text.slice(0, 200)}`,
-    color: fromGithub ? '#2A2A2E' : '#5E4380',
-    initials: fromGithub ? 'GH' : 'YOU',
+    color: fromGithub || fromTask ? '#2A2A2E' : '#5E4380',
+    initials: fromGithub ? 'GH' : fromTask ? 'TK' : 'YOU',
   })
 
   if (step?.kind === 'agent' && !it.paused) {
@@ -4010,6 +4021,28 @@ export function missingPlanSections(body) {
 export function findItemByIssue(repoFullName, issue) {
   const row = db.prepare('SELECT id FROM work_item WHERE repo = ? AND issue = ?').get(repoFullName, issue)
   return row ? getItem(row.id) : null
+}
+
+// HO-875: the sl item backed by this repo's Task `taskNumber`, or null.
+export function findItemByTask(repoFullName, taskNumber) {
+  const ref = taskRef(taskNumber)
+  if (ref == null || typeof repoFullName !== 'string') return null
+  const row = db.prepare('SELECT id FROM work_item WHERE repo = ? AND task_id = ?').get(repoFullName, ref)
+  return row ? getItem(row.id) : null
+}
+
+// HO-875: what forRepo(repo).tracker.createIssue or findSplitIssue just
+// filed or found, into the store; returns its item, or null. A GitHub issue
+// syncs through upsertFromGithub and is looked up by issue, as the filing
+// call sites always did; an sl repo's Task is recorded by recordTask (its own
+// <prefix>-<n> id) and looked up by Task.
+export function recordFiled(issue, repoFullName) {
+  if (findRepo(repoFullName)?.backend === 'sl') {
+    recordTask(issue, repoFullName)
+    return findItemByTask(repoFullName, issue?.number)
+  }
+  upsertFromGithub(issue, repoFullName)
+  return findItemByIssue(repoFullName, issue.number)
 }
 
 // HZ-313: after a split is filed, the source item's description and metric
@@ -4227,6 +4260,118 @@ export function upsertFromGithub(ghIssue, repoFullName) {
 
   if (changed) notify()
   return changed
+}
+
+// ---- HO-875: sl Task sync ----
+// The sl Tracker (backends/slTracker.js) files each item as one Task through
+// farmd. An sl item keeps `issue` NULL and is keyed on (repo, task_id); its id
+// is <prefix>-<n> from the prefix's own sequence, not the Task number. A task
+// here is issue-shaped: { number, title, body, labels: [{ name }], state }.
+
+// A Task number as task_id stores it (TEXT), or null when it is not one.
+function taskRef(number) {
+  const n = typeof number === 'string' && /^[1-9]\d{0,15}$/.test(number) ? Number(number) : number
+  return Number.isSafeInteger(n) && n > 0 ? String(n) : null
+}
+
+// The next sl item id for `prefix`: the larger of its sequence row and one
+// past the highest stored <prefix>-<n>, then the row moves past it. Only ids
+// whose suffix is all digits count (GLOB), so SLX-9 never feeds SL. Call
+// inside the transaction that inserts the item, so a failed insert takes the
+// number back.
+const selectSequence = db.prepare('SELECT next FROM tracker_sequence WHERE prefix = ?')
+const selectHighestSuffix = db.prepare(`
+  SELECT MAX(CAST(SUBSTR(id, length(?) + 2) AS INTEGER)) AS n FROM work_item
+  WHERE id GLOB ? || '-[0-9]*' AND SUBSTR(id, length(?) + 2) NOT GLOB '*[^0-9]*'
+`)
+const upsertSequence = db.prepare(`
+  INSERT INTO tracker_sequence (prefix, next) VALUES (?, ?)
+  ON CONFLICT(prefix) DO UPDATE SET next = excluded.next
+`)
+function allocateTrackerId(prefix) {
+  const stored = selectSequence.get(prefix)?.next ?? 1
+  const highest = selectHighestSuffix.get(prefix, prefix, prefix)?.n ?? 0
+  const n = Math.max(stored, highest + 1)
+  upsertSequence.run(prefix, n + 1)
+  return `${prefix}-${n}`
+}
+
+// Records the item a Task backs: inserted with the next <prefix>-<n> id the
+// first time, left as it is after that. { id, created } or null when the repo
+// is not a connected sl repo or `task` carries no Task number.
+export function recordTask(task, repoFullName) {
+  const ref = taskRef(task?.number)
+  const repoRow = typeof repoFullName === 'string' ? findRepo(repoFullName) : null
+  if (ref == null || !repoRow || repoRow.backend !== 'sl') return null
+  const selectByTask = db.prepare('SELECT id FROM work_item WHERE repo = ? AND task_id = ?')
+  const existing = selectByTask.get(repoFullName, ref)
+  if (existing) return { id: existing.id, created: false }
+  const title = task.title || `Task ${ref}`
+  const { desc, metric, guardrails } = parseIssueBody(task.body)
+  const labels = task.labels || []
+  const kind = kindFromLabels(labels)
+  const closed = task.state === 'closed'
+  const project = repoRow.project_id == null ? null : selectProjectDefinitions.get(repoRow.project_id)
+  const substepsJson = closed ? null : substepsSnapshotter({ project, kind, labels, repo: repoFullName, desc })
+  const id = db.transaction(() => {
+    const raced = selectByTask.get(repoFullName, ref)
+    if (raced) return null
+    const newId = allocateTrackerId(repoRow.prefix)
+    db.prepare(
+      'INSERT INTO work_item (id, title, priority, desc, metric, guardrails, issue, task_id, repo, project_id, cursor, kind, lane, autopilot_off, substeps_json, backend) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      newId,
+      title,
+      priorityFromLabels(labels),
+      desc,
+      metric,
+      guardrails,
+      ref,
+      repoFullName,
+      repoRow.project_id,
+      closed ? endIndex(kind) : firstStepIndex(kind),
+      kind,
+      laneFromLabels(labels, kind),
+      autopilotOffFromLabels(labels) ? 1 : 0,
+      substepsJson,
+      repoRow.backend,
+    )
+    return newId
+  })()
+  if (id == null) return { id: selectByTask.get(repoFullName, ref).id, created: false }
+  addEvent(id, { who: 'Horizon', text: `filed Task ${ref}`, color: '#2A2A2E', initials: 'HZ' })
+  notify()
+  if (!closed) agentRunner.kick(id)
+  return { id, created: true }
+}
+
+// A Task's state, synced onto the item it backs, as upsertFromGithub syncs an
+// issue's: closed outside Horizon closes the item, reopened reopens it, and an
+// abandoned item is left alone. Fields are not synced back: Horizon refines
+// them and the Task's body is never rewritten (there is no body sync on sl).
+// Returns whether the item changed; false for an untracked repo or Task.
+export function syncTaskState(task, repoFullName) {
+  const ref = taskRef(task?.number)
+  const repoRow = typeof repoFullName === 'string' ? findRepo(repoFullName) : null
+  if (ref == null || !repoRow || repoRow.backend !== 'sl') return false
+  const row = db.prepare('SELECT * FROM work_item WHERE repo = ? AND task_id = ?').get(repoFullName, ref)
+  if (!row || row.abandoned_at) return false
+  const closedOnTask = task.state === 'closed'
+  const wasClosed = isClosed(row)
+  if (closedOnTask && !wasClosed) {
+    agentRunner.cancel(row.id, 'cancelled')
+    moveItem(row.id, { action: 'close', who: 'Task', note: `closed Task ${ref}` })
+    addEvent(row.id, { who: 'Task', text: `closed Task ${ref}`, color: '#2A2A2E', initials: 'TK' })
+    wakeDependents(row.id)
+  } else if (!closedOnTask && wasClosed) {
+    moveItem(row.id, { action: 'reopen', who: 'Task', note: `reopened Task ${ref}` })
+    addEvent(row.id, { who: 'Task', text: `reopened Task ${ref}`, color: '#2A2A2E', initials: 'TK' })
+    agentRunner.kick(row.id)
+  } else {
+    return false
+  }
+  notify()
+  return true
 }
 
 // One-time boot recovery: items frozen in the legacy "rejected" state (from

@@ -190,8 +190,7 @@ async function fileOne(parent, row, spec, waits) {
       return childId
     })()
   }
-  // HO-879: an sl repo has no issue tracker yet — never search or file it on GitHub.
-  if ((store.findRepo(row.target_repo)?.backend ?? 'github') !== 'github') throw new Error(`backend_unsupported: ${row.target_repo} is not a GitHub repository`)
+  // HO-875: an sl repo files through its own tracker (Tasks via farmd), never GitHub.
   const { tracker } = forRepo(row.target_repo)
   let ghIssue = await tracker.findSplitIssue(row.target_repo, spawnMarker(parent.id, row.request_key, row.seq), sinceIso(row.created_at))
   if (!ghIssue) {
@@ -209,9 +208,9 @@ async function fileOne(parent, row, spec, waits) {
   }
   setTargetIssue.run(ghIssue.number, row.id)
   // The webhook may have synced it already; either way the item is looked up
-  // by repo and issue, never built from the prefix by hand.
-  store.upsertFromGithub(ghIssue, row.target_repo)
-  const child = store.findItemByIssue(row.target_repo, ghIssue.number)
+  // by repo and issue (HO-875: an sl repo's, by Task), never built from the
+  // prefix by hand.
+  const child = store.recordFiled(ghIssue, row.target_repo)
   if (!child) throw new Error(`${row.target_repo}#${ghIssue.number} did not sync in as an item`)
   finish.run('filed', null, child.id, row.id)
   return child.id

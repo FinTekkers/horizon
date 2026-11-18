@@ -7,6 +7,7 @@ systemd (infra/host/horizon-farm.service; `./farm/run.sh fg` by hand) on port
 """
 
 import asyncio
+import hmac
 import json
 import os
 import pwd
@@ -28,6 +29,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
 from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rehearsal_proxy, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, vcs, visual_page, workspace_sweep, workspaces
+from . import task_driver
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -3359,6 +3361,127 @@ async def images_pull(request: Request):
         _PULLING.add(image)
     threading.Thread(target=_pull_image, args=(image,), name="image-pull", daemon=True).start()
     return JSONResponse({"queued": True}, status_code=202)
+
+
+# ---- HO-875: the sl backend's Tasks ----
+# Served by farmd, not by the Node server: the server's own /api/farm/* routes
+# are farmd's way IN to the server, while these four are the server's sl
+# Tracker adapter (server/src/backends/slTracker.js) calling OUT to farmd. The
+# request and response shapes are pinned by
+# farm/tests/fixtures/farm_tasks_contract.json, which the server's tests serve
+# from a stub too, so the two sides cannot drift.
+#
+# Every call needs the x-farm-secret header. Loopback alone is not enough:
+# agent sessions run on this host and must not file or close Tasks. The
+# secret is compared, never logged or echoed. The driver is TASK_DRIVER's
+# (task_driver.driver_for); with none configured every route answers 503
+# task_driver_not_configured.
+TASK_DRIVER = task_driver.driver_for(farm_config.TASK_DRIVER)
+TASK_TEXT_MAX = 256 * 1024  # a step comment carries up to 60k of artifact text
+
+
+def _tasks_refusal(request: Request):
+    supplied = request.headers.get("x-farm-secret", "")
+    if not hmac.compare_digest(supplied.encode(), SHARED_SECRET.encode()):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if TASK_DRIVER is None:
+        return JSONResponse({"error": "task_driver_not_configured"}, status_code=503)
+    return None
+
+
+async def _tasks_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _task_text(value, *, required: bool) -> bool:
+    if not isinstance(value, str) or len(value) > TASK_TEXT_MAX:
+        return False
+    return bool(value.strip()) or not required
+
+
+def _task_repo(value) -> bool:
+    return _non_empty_str(value) and len(value) <= 200 and "/" in value
+
+
+@app.post("/api/farm/tasks")
+async def tasks_create(request: Request):
+    refused = _tasks_refusal(request)
+    if refused:
+        return refused
+    body = await _tasks_body(request)
+    repo, title, text = body.get("repo"), body.get("title"), body.get("body", "")
+    labels, key = body.get("labels", []), body.get("idempotency_key")
+    if not _task_repo(repo):
+        return JSONResponse({"error": "repo_required"}, status_code=400)
+    if not _task_text(title, required=True) or len(title) > 1000:
+        return JSONResponse({"error": "title_required"}, status_code=400)
+    if not _task_text(text, required=False):
+        return JSONResponse({"error": "body_invalid"}, status_code=400)
+    if not isinstance(labels, list) or len(labels) > 20 or not all(_non_empty_str(x) and len(x) <= 100 for x in labels):
+        return JSONResponse({"error": "labels_invalid"}, status_code=400)
+    if not _non_empty_str(key) or len(key) > 200:
+        return JSONResponse({"error": "idempotency_key_required"}, status_code=400)
+    task, created = await asyncio.to_thread(TASK_DRIVER.create, repo, title, text, labels, key)
+    print(f"farmd: Task {task['number']} {'filed' if created else 'already filed'} for {repo}", flush=True)
+    return JSONResponse({**task, "created": created}, status_code=201 if created else 200)
+
+
+@app.get("/api/farm/tasks")
+async def tasks_list(request: Request):
+    refused = _tasks_refusal(request)
+    if refused:
+        return refused
+    repo = request.query_params.get("repo", "")
+    after = request.query_params.get("after_comment", "0")
+    if not _task_repo(repo):
+        return JSONResponse({"error": "repo_required"}, status_code=400)
+    if not after.isdigit():
+        return JSONResponse({"error": "after_comment_invalid"}, status_code=400)
+    tasks, comments = await asyncio.to_thread(TASK_DRIVER.list, repo, int(after))
+    return {"tasks": tasks, "comments": comments}
+
+
+@app.post("/api/farm/tasks/{number}/comments")
+async def tasks_comment(number: int, request: Request):
+    refused = _tasks_refusal(request)
+    if refused:
+        return refused
+    body = await _tasks_body(request)
+    repo, text = body.get("repo"), body.get("body")
+    if not _task_repo(repo):
+        return JSONResponse({"error": "repo_required"}, status_code=400)
+    if not _task_text(text, required=True):
+        return JSONResponse({"error": "body_required"}, status_code=400)
+    try:
+        comment = await asyncio.to_thread(TASK_DRIVER.comment, repo, number, text)
+    except task_driver.TaskNotFound:
+        return JSONResponse({"error": "task_not_found"}, status_code=404)
+    return JSONResponse(comment, status_code=201)
+
+
+@app.post("/api/farm/tasks/{number}/close")
+async def tasks_close(number: int, request: Request):
+    refused = _tasks_refusal(request)
+    if refused:
+        return refused
+    body = await _tasks_body(request)
+    repo, summary, reason = body.get("repo"), body.get("summary"), body.get("reason")
+    if not _task_repo(repo):
+        return JSONResponse({"error": "repo_required"}, status_code=400)
+    if not _task_text(summary, required=True):
+        return JSONResponse({"error": "summary_required"}, status_code=400)
+    if reason not in task_driver.CLOSE_REASONS:
+        return JSONResponse({"error": "reason_invalid"}, status_code=400)
+    try:
+        task, already = await asyncio.to_thread(TASK_DRIVER.close, repo, number, summary, reason)
+    except task_driver.TaskNotFound:
+        return JSONResponse({"error": "task_not_found"}, status_code=404)
+    print(f"farmd: Task {number} on {repo} {'was already closed' if already else f'closed ({reason})'}", flush=True)
+    return {"number": task["number"], "state": task["state"], "reason": reason, "already_closed": already}
 
 
 @app.post("/internal/steps/checks")

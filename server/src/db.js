@@ -572,6 +572,22 @@ db.exec(`
   WHEN NEW.backend IS NOT OLD.backend
   BEGIN SELECT RAISE(ABORT, 'work_item.backend is immutable'); END;
 `)
+// HO-875: the sl Tracker. An sl item's Task number is task_id (above), and a
+// Task backs at most one item in its repo — store.recordTask checks and
+// inserts in one transaction. (No index names task_id: an index would block
+// the DROP COLUMN that rolling back HO-870's columns needs.) tracker_sequence
+// holds each item-id prefix's next sl item number: store.allocateTrackerId
+// takes the larger of it and one past the highest <prefix>-<n> already
+// stored, so no id is ever reused or renumbered. A prefix gets its row on its
+// first sl item. Task comments ingested as feedback keep their id
+// (task_comment_id), like gh_comment_id, so one comment is never ingested
+// twice. Additive only: existing rows keep NULL and nothing is backfilled.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS tracker_sequence (
+    prefix TEXT PRIMARY KEY,
+    next   INTEGER NOT NULL CHECK (next >= 1)
+  );
+`)
 // HZ-443: one-time backfill for items paused before paused_at existed — the
 // newest event mentioning "paused" (every pause path's event text does), else
 // updated_at, which can only understate the wait. Idempotent: it touches only
@@ -882,7 +898,12 @@ try {
 } catch {
   // column already exists
 }
+if (!db.prepare("SELECT 1 FROM pragma_table_info('feedback') WHERE name = 'task_comment_id'").get()) {
+  db.exec('ALTER TABLE feedback ADD COLUMN task_comment_id INTEGER') // HO-875, see tracker_sequence above
+}
 db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_task_comment
+    ON feedback(item_id, task_comment_id) WHERE task_comment_id IS NOT NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS idx_feedback_gh_comment
     ON feedback(gh_comment_id) WHERE gh_comment_id IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_feedback_delivered_run ON feedback(delivered_run_id);

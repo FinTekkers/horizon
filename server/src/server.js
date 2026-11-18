@@ -15,7 +15,7 @@ import * as heldAccept from './heldAccept.js'
 import * as farmHealth from './farmHealth.js'
 import * as accountPurge from './accountPurge.js'
 import { linkSpawned, spawnItems } from './spawn.js'
-import { PORT } from './config.js'
+import { FARM_URL, POLL_INTERVAL_MS, PORT } from './config.js'
 
 const fastify = buildApp()
 
@@ -72,3 +72,24 @@ const pruneSlArtifacts = () =>
     .catch((err) => fastify.log.warn(`sl artifacts prune failed: ${err.message}`))
 pruneSlArtifacts()
 setInterval(pruneSlArtifacts, SL_ARTIFACTS_PRUNE_TICK_MS).unref()
+// HO-875: the sl backend's Task sync (GitHub's runs in its poll loop above):
+// each sl Task's state and new comments, read through farmd. With no farm
+// configured the sl Tracker is a placeholder (backends/sl.js), so it is not
+// scheduled; pollOnce sends nothing when no repo is on sl.
+let slTaskPollInFlight = false
+const pollSlTasks = async () => {
+  if (slTaskPollInFlight) return
+  slTaskPollInFlight = true
+  try {
+    const { changed } = await forKind('sl').tracker.pollOnce(fastify.log)
+    if (changed > 0) fastify.log.info(`sl Task poll: ${changed} item(s) updated`)
+  } catch (err) {
+    fastify.log.warn(`sl Task poll failed: ${err.message}`)
+  } finally {
+    slTaskPollInFlight = false
+  }
+}
+if (FARM_URL) {
+  pollSlTasks()
+  setInterval(pollSlTasks, POLL_INTERVAL_MS).unref()
+}

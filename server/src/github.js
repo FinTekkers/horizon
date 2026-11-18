@@ -21,6 +21,10 @@ import { msOf } from './sqlTime.js'
 import { SCREENSHOT_DIR } from './backends/artifact.js'
 // HO-878: the pure screenshot rules both artifact backends share — moved, unchanged.
 import { artifactPruneReason, isScreenshotResults, promotionEntries } from './backends/artifactRules.js'
+// HO-875: the body format and comment footer the sl adapter shares — moved, unchanged.
+import { HORIZON_FOOTER, composeIssueBody } from './trackerText.js'
+
+export { composeIssueBody }
 
 const itemLink = (item) => `[open in Horizon](${UI_URL}/${item.id.toLowerCase()})`
 
@@ -95,20 +99,7 @@ export async function validateRepo(repo, token) {
 }
 
 // ---- issue creation (the UI's "New work item" flow) ----
-// Inverse of parseIssueBody in store.js.
-
-export function composeIssueBody({ outcome, metric, guardrails }) {
-  return [
-    '## Outcome',
-    outcome.trim(),
-    '',
-    '## Success metric',
-    metric.trim(),
-    '',
-    '## Guardrails',
-    guardrails?.trim() || '_Defaults apply (tests, linters, e2e must pass)._',
-  ].join('\n')
-}
+// composeIssueBody (inverse of parseIssueBody in store.js) lives in trackerText.js.
 
 // Hex, not theme tokens: these are persisted to GitHub, which has no idea what a
 // CSS variable is. Colour is presentation, so it stays here rather than moving
@@ -1264,8 +1255,7 @@ export async function closeIssueAsAbandoned(item, reason) {
 // only addFeedback's supersede-and-rerun path does, through the runner);
 // GitHub is authoritative for item existence and human text.
 
-// Every comment Horizon posts carries this marker in its footer.
-const HORIZON_FOOTER = 'posted by Horizon_'
+// Every comment Horizon posts carries HORIZON_FOOTER (trackerText.js).
 
 // Echo-loop guard, three layers: bot accounts, our own token identity, and
 // the footer marker every Horizon-authored comment carries. Without these,
@@ -1521,10 +1511,11 @@ export function setMainHeadListener(fn) {
   mainHeadListener = fn
 }
 
+// HO-875: GitHub items only — an sl item's review never lives on GitHub.
 async function pollPrStates(log) {
   let changed = 0
   const waiting = db
-    .prepare('SELECT id, repo, pr FROM work_item WHERE pr IS NOT NULL AND repo IS NOT NULL AND cursor = ?')
+    .prepare("SELECT id, repo, pr FROM work_item WHERE pr IS NOT NULL AND repo IS NOT NULL AND cursor = ? AND backend = 'github'")
     .all(ACCEPT_GATE_INDEX)
   for (const item of waiting) {
     try {

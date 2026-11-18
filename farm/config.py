@@ -14,6 +14,11 @@ SHARED_SECRET = os.environ.get("FARM_SHARED_SECRET", "dev-secret")
 # concierge holds. No dev default on purpose — unset means WhatsApp approvals
 # refuse (the server answers 503), never silently succeed.
 WA_APPROVAL_SECRET = os.environ.get("WA_APPROVAL_SECRET", "")
+# HO-875: the Task driver behind farmd's /api/farm/tasks routes (the sl
+# backend's tracker). "stub" is the in-memory driver in task_driver.py; unset
+# (the default) means the routes answer 503 task_driver_not_configured. The
+# real Task-service driver is a later item.
+TASK_DRIVER = os.environ.get("TASK_DRIVER", "").strip().lower()
 
 
 def farm_home() -> Path:

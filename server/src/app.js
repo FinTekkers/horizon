@@ -74,6 +74,7 @@ import { choiceValues } from '../../domain/js/providers.js'
 import { PERSONAS } from './personas.js'
 import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
 import { repoLinks } from './links.js'
+import { hasGithubIssue, hasTrackerRef, trackerRefText } from './trackerRefs.js'
 import { backendOf, forKind, forRepo, githubTestHooks, screenshotPublisherFor } from './backends/index.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
@@ -1910,17 +1911,28 @@ export function buildApp({
         }
         const strayRepo = scopeRepos?.find((r) => !connected.some((c) => c.repo === r && c.project_id === target.project_id))
         if (strayRepo) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: strayRepo })
-        // HO-879: an sl repo has no issue tracker yet — never file it on GitHub.
-        if ((store.findRepo(target.repo)?.backend ?? 'github') !== 'github') return reply.code(400).send({ error: 'backend_unsupported' })
+        // HO-879, narrowed by HO-875: an sl repo's tracker is farmd's Task
+        // routes, so with no farm configured it has none — refused, and never
+        // filed on GitHub.
+        if (store.findRepo(target.repo)?.backend === 'sl' && !FARM_URL) return reply.code(400).send({ error: 'backend_unsupported' })
         let ghIssue
         try {
           ghIssue = await forRepo(target.repo).tracker.createIssue(target.repo, { title, outcome, metric, guardrails, priority, kind })
         } catch (err) {
           return reply.code(502).send({ error: err.message })
         }
-        store.upsertFromGithub(ghIssue, target.repo)
-        if (scopeRepos) store.setScopeRepos(`${target.prefix}-${ghIssue.number}`, scopeRepos)
-        return { ok: true, id: `${target.prefix}-${ghIssue.number}`, issue: ghIssue.number, url: ghIssue.html_url }
+        // HO-875: recorded and looked up, not built by hand — an sl item's id
+        // comes from its prefix's sequence and its Task number is task_id.
+        const created = store.recordFiled(ghIssue, target.repo)
+        const id = created?.id ?? `${target.prefix}-${ghIssue.number}`
+        if (scopeRepos) store.setScopeRepos(id, scopeRepos)
+        return {
+          ok: true,
+          id,
+          issue: created ? created.issue : ghIssue.number,
+          url: ghIssue.html_url,
+          ...(created?.task_id != null ? { task_id: Number(created.task_id) } : {}),
+        }
       }
       if (scopeRepos) return reply.code(400).send({ error: 'scope_repo_not_in_project', repo: scopeRepos[0] })
       if (store.listRepos().length > 0) {
@@ -2283,26 +2295,29 @@ export function buildApp({
       item &&
       item.cursor === stepIndex &&
       stepIndex === endIndex(itemKindOf(item)) - 1 &&
-      item.issue != null &&
+      hasTrackerRef(item) &&
       item.repo
     ) {
+      // HO-875: an sl item closes its Task through farmd (the error already
+      // reads "Task close failed: …"); a GitHub item, its issue, as before.
+      const onGithub = hasGithubIssue(item)
       try {
         await forRepo(item.repo).tracker.closeIssueWithSummary(item)
         store.addEvent(id, {
           who: 'Horizon',
-          text: `closed issue #${item.issue} on GitHub with a summary`,
+          text: `closed ${trackerRefText(item)}${onGithub ? ' on GitHub' : ''} with a summary`,
           color: '#0E6E74',
           initials: 'HZ',
         })
       } catch (err) {
         store.addEvent(id, {
           who: 'Horizon',
-          text: `could not close issue #${item.issue}: ${err.message} — the gate stays open`,
+          text: `could not close ${trackerRefText(item)}: ${err.message} — the gate stays open`,
           color: '#9C333E',
           initials: 'HZ',
         })
         store.notifyChange()
-        return { error: `issue close failed: ${err.message}`, status: 502 }
+        return { error: onGithub ? `issue close failed: ${err.message}` : err.message, status: 502 }
       }
     }
     // HZ-313: approving the design files the split its plan proposed, before
@@ -2316,7 +2331,7 @@ export function buildApp({
     const result = store.approveGate(id, stepIndex, notes, actor, human)
     if (result.error === 'human_pin_required') return { ...result, status: 403 }
     // Approval notes are decisions — mirror them onto the issue thread.
-    if (!result.error && notes && item?.repo && item.issue != null) {
+    if (!result.error && notes && item?.repo && hasTrackerRef(item)) {
       forRepo(item.repo)
         .tracker.postIssueComment(
           item,
@@ -2591,8 +2606,11 @@ export function buildApp({
   // Mirrors a saved note onto the item's issue thread (the footer marks it
   // ours so ingestion skips it). Best-effort: a GitHub failure never fails the
   // note. Shared by /feedback and HZ-790's note-via-whatsapp.
-  function mirrorFeedback(id, item, message, who) {
-    if (!item?.repo || item.issue == null) return
+  function mirrorFeedback(id, view, message, who) {
+    // HO-875: the stored row, not the board view — only the row carries an sl
+    // item's task_id (a GitHub item's repo and issue are the same in both).
+    const item = store.getItem(id) ?? view
+    if (!item?.repo || !hasTrackerRef(item)) return
     forRepo(item.repo)
       .tracker.postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_${who} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
       .catch(() => {})
@@ -3085,20 +3103,22 @@ export function buildApp({
     if (result.error) return result
     // HZ-513: free the item's screenshots ref, as a PR closed unmerged does.
     // Not awaited and never throws, so it can't block or fail the abandon.
-    if (item?.repo) forRepo(item.repo).artifacts.deleteArtifactRef(item.repo, item).catch(() => {})
-    if (item?.repo && item.issue != null) {
+    // HO-875: removeArtifacts is the Artifact port's own call — on GitHub
+    // exactly deleteArtifactRef(item.repo, item), and real on sl too.
+    if (item?.repo) forRepo(item.repo).artifacts.removeArtifacts(item).catch(() => {})
+    if (item?.repo && hasTrackerRef(item)) {
       try {
         await forRepo(item.repo).tracker.closeIssueAsAbandoned(item, reason.trim())
         store.addEvent(id, {
           who: 'Horizon',
-          text: `closed issue #${item.issue} on GitHub as not planned`,
+          text: `closed ${trackerRefText(item)}${hasGithubIssue(item) ? ' on GitHub' : ''} as not planned`,
           color: '#0E6E74',
           initials: 'HZ',
         })
       } catch (err) {
         store.addEvent(id, {
           who: 'Horizon',
-          text: `could not close issue #${item.issue}: ${err.message} — close it manually`,
+          text: `could not close ${trackerRefText(item)}: ${err.message} — close it manually`,
           color: '#9C333E',
           initials: 'HZ',
         })
@@ -5980,13 +6000,15 @@ export function buildApp({
     }
     const event = request.headers['x-github-event']
     const repoFullName = request.body?.repository?.full_name
-    if (event === 'issues' && request.body?.issue && repoFullName) {
+    // HO-875: an sl repo's items follow its Tasks, never a GitHub issue event.
+    const onGithub = backendOf(repoFullName) === DEFAULT_BACKEND
+    if (event === 'issues' && request.body?.issue && repoFullName && onGithub) {
       forRepo(repoFullName).tracker.ingestIssue(request.body.issue, repoFullName) // no-op for unconnected repos
     }
     // Issue comments are the GitHub leg of feedback: "users interact mostly by
     // GH comments". Edits are deliberately not re-ingested (the comment id is
     // already recorded).
-    if (event === 'issue_comment' && request.body?.action === 'created' && request.body?.comment && repoFullName) {
+    if (event === 'issue_comment' && request.body?.action === 'created' && request.body?.comment && repoFullName && onGithub) {
       forRepo(repoFullName).tracker.ingestComment(repoFullName, request.body.issue?.number, request.body.comment, request.log)
     }
     // PRs decided directly on GitHub flow back into the lifecycle: merged →
