@@ -998,11 +998,11 @@ its `sl` tracker (`server/src/backends/slTracker.js`) calls farmd's
 Task create; the Task's number is stored in `work_item.task_id`, `issue` stays
 empty, and the item's id is `<prefix>-<n>` from the prefix's own sequence
 (`tracker_sequence`). Comments, the final-gate close (with a summary) and the
-abandon close go to the Task. The `sl` tracker's poll (Task state and
-comments, on the `POLL_INTERVAL_MS` cadence) exists but is **not started at
-boot yet**: `server.js` may start exactly one poll loop until the owner rules
-on the tests that pin it, so a Task closed or commented on outside Horizon is
-not read back until then.
+abandon close go to the Task. `server.js` polls every `sl` repo's Tasks on
+the `POLL_INTERVAL_MS` cadence (the `sl` tracker's `pollOnce`): a Task closed
+or reopened outside Horizon closes or reopens its item, and a comment on it
+becomes feedback. With `FARM_URL` unset or no repo on `sl`, the poll sends
+nothing.
 
 | File | Var | Notes |
 |---|---|---|

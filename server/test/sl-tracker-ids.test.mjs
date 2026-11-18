@@ -73,16 +73,16 @@ test('a farm refusal answers 502 "Task create failed: task_driver_not_configured
 
 test('with SL-1 to SL-3 stored, the next three sl items are SL-4, SL-5 and SL-6, each with its Task in task_id', async () => {
   const ids = []
-  for (const title of ['four', 'five', 'six']) {
-    const res = await create('acme/sl-app', title)
+  for (const name of ['four', 'five', 'six']) {
+    const res = await create('acme/sl-app', name)
     assert.equal(res.statusCode, 200, res.body)
     const body = res.json()
     ids.push(body.id)
     const row = db.prepare('SELECT task_id, issue, title FROM work_item WHERE id = ?').get(body.id)
-    assert.equal(row.title, title)
+    assert.equal(row.title, name)
     assert.equal(row.issue, null, 'an sl item has no issue')
     assert.equal(Number(row.task_id), body.task_id)
-    assert.equal(farm.tasks.get(body.task_id)?.title, title)
+    assert.equal(farm.tasks.get(body.task_id)?.title, name)
   }
   assert.deepEqual(ids, ['SL-4', 'SL-5', 'SL-6'])
 })
