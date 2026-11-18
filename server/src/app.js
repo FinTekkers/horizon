@@ -75,7 +75,7 @@ import { PERSONAS } from './personas.js'
 import { BACKENDS, DEFAULT_BACKEND } from './backends/names.js'
 import { repoLinks } from './links.js'
 import { hasGithubIssue, hasTrackerRef, trackerRefText } from './trackerRefs.js'
-import { backendOf, forKind, forRepo, githubTestHooks, screenshotPublisherFor } from './backends/index.js'
+import { backendOf, forItem, forKind, forRepo, githubTestHooks, screenshotPublisherFor } from './backends/index.js'
 import * as definitions from './definitions.js'
 import * as visualPages from './visualPages.js'
 import * as projectDefinitions from './projectDefinitions.js'
@@ -2431,7 +2431,7 @@ export function buildApp({
       // reads "Task close failed: …"); a GitHub item, its issue, as before.
       const onGithub = hasGithubIssue(item)
       try {
-        await forRepo(item.repo).tracker.closeIssueWithSummary(item)
+        await forItem(item).tracker.closeIssueWithSummary(item)
         store.addEvent(id, {
           who: 'Horizon',
           text: `closed ${trackerRefText(item)}${onGithub ? ' on GitHub' : ''} with a summary`,
@@ -2461,7 +2461,7 @@ export function buildApp({
     if (result.error === 'human_pin_required') return { ...result, status: 403 }
     // Approval notes are decisions — mirror them onto the issue thread.
     if (!result.error && notes && item?.repo && hasTrackerRef(item)) {
-      forRepo(item.repo)
+      forItem(item)
         .tracker.postIssueComment(
           item,
           `### ✅ Gate approved — ${STEPS[stepIndex].label}\n\n> ${notes}\n\n_${actor} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`,
@@ -2740,7 +2740,7 @@ export function buildApp({
     // item's task_id (a GitHub item's repo and issue are the same in both).
     const item = store.getItem(id) ?? view
     if (!item?.repo || !hasTrackerRef(item)) return
-    forRepo(item.repo)
+    forItem(item)
       .tracker.postIssueComment(item, `### 💬 Feedback\n\n> ${message}\n\n_${who} · [open in Horizon](${UI_URL}/${id.toLowerCase()}) · posted by Horizon_`)
       .catch(() => {})
   }
@@ -3135,7 +3135,7 @@ export function buildApp({
   function applyPriority(id, priority) {
     const item = store.getItem(id)
     const result = store.setPriority(id, priority)
-    if (!result.error && !result.unchanged && item?.repo && item.issue != null) {
+    if (!result.error && !result.unchanged && hasGithubIssue(item)) {
       forRepo(item.repo).tracker.setPriorityLabel(item, priority).catch(() => {})
     }
     return result
@@ -3172,7 +3172,7 @@ export function buildApp({
       }
       const item = store.getItem(request.params.id)
       if (!item) return reply.code(404).send({ error: 'not_found' })
-      if (!item.repo || item.issue == null) return reply.code(409).send({ error: 'no_github_issue' })
+      if (!hasGithubIssue(item)) return reply.code(409).send({ error: 'no_github_issue' })
       let issue
       try {
         issue = await forRepo(item.repo).tracker.setAutopilotOffLabel(item, off)
@@ -3234,10 +3234,10 @@ export function buildApp({
     // Not awaited and never throws, so it can't block or fail the abandon.
     // HO-875: removeArtifacts is the Artifact port's own call — on GitHub
     // exactly deleteArtifactRef(item.repo, item), and real on sl too.
-    if (item?.repo) forRepo(item.repo).artifacts.removeArtifacts(item).catch(() => {})
+    if (item?.repo) forItem(item).artifacts.removeArtifacts(item).catch(() => {})
     if (item?.repo && hasTrackerRef(item)) {
       try {
-        await forRepo(item.repo).tracker.closeIssueAsAbandoned(item, reason.trim())
+        await forItem(item).tracker.closeIssueAsAbandoned(item, reason.trim())
         store.addEvent(id, {
           who: 'Horizon',
           text: `closed ${trackerRefText(item)}${hasGithubIssue(item) ? ' on GitHub' : ''} as not planned`,

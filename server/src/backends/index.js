@@ -18,6 +18,7 @@ import { slAdapters, slScreenshotPublisher } from './sl.js'
 import { createSlVcs } from './sl/vcs.js'
 import { refreshDiffStatus, submitDiff as submitSlDiff } from './sl/review.js'
 import { FARM_URL } from '../config.js'
+import { isTaskBackedItem } from '../trackerRefs.js'
 
 export { BACKENDS, DEFAULT_BACKEND, isBackend }
 // HO-872: GitHub's e2e-only answers, for app.js's /api/test/* routes, so app.js
@@ -56,6 +57,14 @@ function adaptersFor(backend) {
 // The adapters for `repo`: { tracker, review, vcs, artifacts }.
 export function forRepo(repo) {
   return adaptersFor(backendOf(repo))
+}
+
+// HO-901: the adapters for an item. An sl Task-backed item (its immutable
+// work_item.backend is 'sl') always gets sl's — even once its repo is
+// disconnected and forRepo would fall back to GitHub's, which would call the
+// GitHub API with its null issue. Any other item gets exactly forRepo's.
+export function forItem(item) {
+  return isTaskBackedItem(item) ? adaptersFor('sl') : forRepo(item?.repo)
 }
 
 // HO-878: where an implement result's screenshot bundle goes, for a repo whose

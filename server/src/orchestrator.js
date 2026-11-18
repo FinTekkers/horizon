@@ -134,7 +134,7 @@ import { recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { approvedDesign, canvasInput, designRequired } from './designSpec.js'
 import { reviewShotsInput } from './screenshots.js'
-import { backendOf, forRepo, submitDiff } from './backends/index.js'
+import { backendOf, forItem, forRepo, submitDiff } from './backends/index.js'
 import { PHASES } from '../../domain/js/lifecycle.js'
 import { EXECUTE_CAUSES, VERIFY_VERDICT_VALUES, cleanOpenLines, executeFailed } from './verifyOutcome.js'
 import { getActiveProjectId, getFarmProjectId, getSetting, setSetting, getToken } from './settings.js'
@@ -188,7 +188,13 @@ import {
 } from './storedTestResults.js'
 import { declares } from '../../domain/js/providers.js'
 import { chainHead, effectiveChain, entryKey, entryLabel, formatResetTime, pickModel, resetMs } from './usageLimits.js'
-import { hasGithubIssue, hasTrackerRef, trackerRefText } from './trackerRefs.js'
+import {
+  deployUnsupportedReason,
+  hasGithubIssue,
+  hasTrackerRef,
+  isTaskBackedItem,
+  trackerRefText,
+} from './trackerRefs.js'
 import { isImportedItem } from './importedItem.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
@@ -1500,7 +1506,7 @@ export const MOCK_STEP_BEHAVIOR = {
   // Execute: the code change takes the form of a GitHub PR. The mock commits
   // a placeholder file; the PR/branch mechanics are the real integration.
   'Specialist agent implements': async (it) => {
-    if (!it.repo || it.issue == null) {
+    if (!hasGithubIssue(it)) {
       return { summary: 'implementation complete on a feature branch; all checks green (no GitHub — PR skipped)' }
     }
     if (it.pr != null) {
@@ -1543,7 +1549,9 @@ export const MOCK_STEP_BEHAVIOR = {
   // (server/src/deploy.js) picks up to pull the tag onto shoreward.ai. The
   // mock is the deploy content, not the plumbing.
   'Deploy the changes': async (it) => {
-    if (!it.repo || it.issue == null) {
+    // HO-901: an sl Task-backed item has no issue either, but it is not a demo
+    // item: it never takes this skip.
+    if (!hasGithubIssue(it) && !isTaskBackedItem(it)) {
       return { summary: 'deployed to the target environment; smoke checks passed (no GitHub — release skipped)' }
     }
     // HZ-304: this branch publishes a real release, so it is held to the same
@@ -1556,6 +1564,8 @@ export const MOCK_STEP_BEHAVIOR = {
       clearReleaseFields(it.id)
       return { summary: skip }
     }
+    // HO-901: no sl release path yet — a named failure, in the farm path's order.
+    if (isTaskBackedItem(it)) return { failure: deployUnsupportedReason(it) }
     try {
       const release = await forRepo(it.repo).vcs.createDeployRelease(it)
       return {
@@ -1888,10 +1898,11 @@ async function runLaneCheck(id, stepIndex) {
   const item = getItem(id)
   let missing
   try {
-    missing =
-      item.repo && item.issue != null
-        ? missingPlanSections(await forRepo(item.repo).tracker.getIssueBody(item))
-        : PLAN_SECTIONS.filter((name) => !String(item[LOCAL_PLAN_FIELDS[name]] || '').trim())
+    // HO-901: an sl item has no GitHub issue body, so it reads its stored
+    // plan fields like a local item — deliberately, not because it is local.
+    missing = hasGithubIssue(item)
+      ? missingPlanSections(await forRepo(item.repo).tracker.getIssueBody(item))
+      : PLAN_SECTIONS.filter((name) => !String(item[LOCAL_PLAN_FIELDS[name]] || '').trim())
   } catch (err) {
     console.warn(`lane check: ${id} could not read its issue: ${err.message}`)
     missing = null
@@ -2460,6 +2471,11 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     })
   }
 
+  // HO-901: an sl item has no issue but is no demo item, and there is no sl
+  // release path yet. The step fails here by name — never the release-less
+  // skip below, never a GitHub call. Untagged, so never auto-retried.
+  if (stepIndex === DEPLOY_STEP_INDEX && isTaskBackedItem(item)) return failFarmRun(runId, deployUnsupportedReason(item))
+
   // Queue watchdog: bounds how long a step may sit queued behind other work
   // before the farm actually launches an agent on it. Deliberately NOT
   // step-type-dependent (queue delay is about farm contention, not what the
@@ -2494,7 +2510,7 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     // item's release; the wait bound counts from that deploy's start.
     releaseFields = { release_tag: shipped.tag, release_url: shipped.release_url }
     deployWait = deployWaitFor(item.repo, { startedAt: shipped.startedAtMs, tag: shipped.tag })
-  } else if (stepIndex === DEPLOY_STEP_INDEX && item.repo && item.issue != null) {
+  } else if (stepIndex === DEPLOY_STEP_INDEX && hasGithubIssue(item)) {
     try {
       const release = await forRepo(item.repo).vcs.createDeployRelease(item)
       releaseFields = { release_tag: release.tag_name, release_url: release.html_url }
@@ -3353,7 +3369,7 @@ function postStepComment(item, stepIndex, attempt, summary, patch, isMock, artif
         })
       })
     : Promise.resolve()
-  bodySynced.then(() => forRepo(item.repo).tracker.postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd))).catch((err) => {
+  bodySynced.then(() => forItem(item).tracker.postIssueComment(item, stepCommentBody(item, stepIndex, attempt, summary, patch, isMock, artifactMd))).catch((err) => {
     addEvent(item.id, {
       who: 'Horizon',
       text: `could not post the step result to ${trackerRefText(item)}: ${err.message}`,
@@ -4050,7 +4066,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     } catch (err) {
       return failFarmRun(runId, `code pushed to ${artifacts.branch} but the diff could not be submitted: ${err.message}`)
     }
-  } else if (typeof artifacts?.branch === 'string' && item.repo && item.issue != null) {
+  } else if (typeof artifacts?.branch === 'string' && hasGithubIssue(item)) {
     try {
       const pr = await forRepo(item.repo).review.createPrFromBranch(item, artifacts.branch, { manualChecks })
       db.prepare("UPDATE work_item SET pr = ?, pr_url = ?, updated_at = datetime('now') WHERE id = ?").run(
