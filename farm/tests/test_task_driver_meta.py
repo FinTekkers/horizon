@@ -507,7 +507,7 @@ def test_the_driver_holds_no_credential_and_child_env_is_an_allowlist(driver, fa
         TaskServiceError("meta tasks.task create timed out after 60s"),
         PermissionError(13, "Permission denied"),
     ],
-    ids=["401", "500", "crash", "timeout", "exec-denied"],
+    ids=["401", "500", "crash", "timed-out", "exec-denied"],
 )
 def test_on_an_error_the_secret_is_absent_everywhere(driver, fake, failure, capsys, caplog):
     caplog.set_level(logging.DEBUG)
