@@ -28,7 +28,17 @@ tasks_driver.json) holding:
   - the idempotency keys, so a repeated create answers the first Task
   - a local comment id for each Task comment it has seen. Task comment ids are
     FBID strings with no order guarantee, but the contract's after_comment
-    cursor needs small, increasing integers.
+    cursor needs small, increasing integers. A local id is only ever bound to
+    a Task comment id the CLI printed: the one a comment create returns, or
+    one a comment list shows. When a create prints no id, the local id it
+    answers waits under `pending` (with the body's sha256) until a list
+    shows a comment on that Task with that text, and binds to it. So
+    Horizon's own comment never gets a second id and is never read back as
+    new feedback.
+  - nothing per comment for a closed Task. Its entries are pruned on close,
+    and the Task is marked `reseed`. If it is reopened outside Horizon, the
+    comments it already had are bound to id 0, which no cursor reads, so
+    they are not sent again as new feedback.
 A Task this index does not hold for a repo is unknown in that repo
 (TaskNotFound), and no call is made for it. Each create also sets
 --external-identifier to horizon:<sha256(repo, key)>, so a human can find
@@ -160,7 +170,7 @@ class MetaTasksDriver:
     # ---- the index on disk ----
 
     def _load(self) -> dict:
-        empty = {"tasks": {}, "keys": {}, "comments": {}, "next_comment": 1}
+        empty = {"tasks": {}, "keys": {}, "comments": {}, "pending": {}, "next_comment": 1}
         try:
             data = json.loads(self._state_path.read_text())
         except FileNotFoundError:
@@ -186,14 +196,42 @@ class MetaTasksDriver:
             raise TaskNotFound(number)
         return record
 
-    def _local_comment_id(self, meta_id: str, number: int) -> int:
+    def _next_local_id(self) -> int:
+        local = self._state["next_comment"]
+        self._state["next_comment"] = local + 1
+        return local
+
+    def _local_comment_id(self, meta_id: str, number: int, text: str | None = None, *, reseed: bool = False) -> int:
+        """The local id bound to Task comment `meta_id`. An unbound comment a
+        list shows (`text` given) takes a pending id from a create on its Task
+        with the same text, else 0 on a reopened Task (`reseed`), else a new id."""
         known = self._state["comments"].get(meta_id)
         if isinstance(known, dict) and isinstance(known.get("id"), int):
             return known["id"]
-        local = self._state["next_comment"]
-        self._state["next_comment"] = local + 1
+        pending = self._state["pending"].get(str(number))
+        match = None
+        if text is not None and isinstance(pending, list):
+            digest = _sha256(text)
+            match = next((p for p in pending if isinstance(p, dict) and p.get("sha") == digest), None)
+        if match is not None and isinstance(match.get("id"), int):
+            pending.remove(match)
+            if not pending:
+                del self._state["pending"][str(number)]
+            local = match["id"]
+        elif reseed:
+            local = 0
+        else:
+            local = self._next_local_id()
         self._state["comments"][meta_id] = {"id": local, "task": number}
         return local
+
+    def _forget_comments(self, number: int, record: dict) -> None:
+        """Prune a closed Task's comment entries, and mark it `reseed`."""
+        comments = self._state["comments"]
+        for meta_id in [m for m, c in comments.items() if isinstance(c, dict) and c.get("task") == number]:
+            del comments[meta_id]
+        self._state["pending"].pop(str(number), None)
+        record["reseed"] = True
 
     # ---- the CLI ----
 
@@ -295,9 +333,10 @@ class MetaTasksDriver:
             meta_id = _comment_id(out)
             author = out.get("author") if isinstance(out, dict) and isinstance(out.get("author"), str) else "horizon"
             if meta_id is None:
-                # Unknown id: the next list assigns it one, as for any new comment.
-                local = self._state["next_comment"]
-                self._state["next_comment"] = local + 1
+                # No id printed: the next list that shows this text on this
+                # Task binds the comment to this local id, and to no other.
+                local = self._next_local_id()
+                self._state["pending"].setdefault(str(number), []).append({"id": local, "sha": _sha256(body)})
             else:
                 local = self._local_comment_id(meta_id, number)
             self._save()
@@ -323,9 +362,11 @@ class MetaTasksDriver:
                 if row is None or row.get("status") != "CLOSED":
                     raise failed
                 record["closed"] = True
+                self._forget_comments(number, record)
                 self._save()
                 return self._task(number, record, row), True
             record["closed"] = True
+            self._forget_comments(number, record)
             self._save()
             return self._task(number, record, None), False
 
@@ -343,6 +384,8 @@ class MetaTasksDriver:
                 record = self._state["tasks"][str(number)]
                 task = self._task(number, record, rows[number])
                 record["closed"] = task["state"] == "closed"
+                if record["closed"]:
+                    self._forget_comments(number, record)
                 tasks.append(task)
             # Comments on a closed Task are not read: the server takes no
             # feedback on a closed item, and it bounds the calls per poll.
@@ -350,26 +393,34 @@ class MetaTasksDriver:
             with ThreadPoolExecutor(max_workers=COMMENT_WORKERS) as pool:
                 fetched = list(pool.map(self._comments_of, open_numbers))
             seen = []
+            read_numbers = set()
             for number, rows_of in zip(open_numbers, fetched):
+                if rows_of is None:
+                    continue
+                read_numbers.add(number)
                 for row in rows_of:
                     seen.append((int(row["id"]), number, row))
+            # A reopened Task keeps `reseed` until its comments are read once.
+            reseeded = {n for n in read_numbers if self._state["tasks"][str(n)].get("reseed")}
             comments = []
             for meta_id, number, row in sorted(seen, key=lambda s: s[0]):
-                local = self._local_comment_id(str(meta_id), number)
+                local = self._local_comment_id(str(meta_id), number, row["text"], reseed=number in reseeded)
                 if local > after_comment:
                     comments.append({"id": local, "task": number, "body": row["text"], "author": row["author"]})
+            for number in reseeded:
+                self._state["tasks"][str(number)].pop("reseed", None)
             if json.dumps(self._state, sort_keys=True) != before:
                 self._save()
             return tasks, sorted(comments, key=lambda c: c["id"])
 
-    def _comments_of(self, number: int) -> list[dict]:
+    def _comments_of(self, number: int) -> list[dict] | None:
         try:
             data = self._call(
                 ["tasks.comment", "list", f"--task=T{number}", "--columns=id,author,text,created", f"--limit={COMMENT_LIMIT}"],
                 number=number,
             )
         except TaskNotFound:
-            return []  # gone since the Task read: the next poll drops it
+            return None  # gone since the Task read: the next poll drops it
         if not isinstance(data, list):
             raise TaskServiceError(f"meta tasks.comment list returned no list for T{number}")
         rows = []
@@ -383,6 +434,10 @@ class MetaTasksDriver:
                     }
                 )
         return rows
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _cli_error(stream: str) -> dict:

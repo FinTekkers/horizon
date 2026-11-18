@@ -143,6 +143,7 @@ class FakeMeta:
         self.next_comment = 2100000000000001
         self.fail: list = []  # MetaResult or Exception, used up one per call
         self.create_output = None  # override the create template
+        self.comment_output = None  # override the comment create template
 
     def add(self, number, title="Seeded", status="OPEN"):
         self.tasks[number] = {"number": f"T{number}", "title": title, "description": "", "status": status, "url": f"https://www.internalfb.com/tasks?t={number}"}
@@ -192,6 +193,8 @@ class FakeMeta:
             return self._not_found(number)
         if command == ("tasks.comment", "create"):
             self.human_comment(number, flags["text"], author="horizon_host")
+            if self.comment_output is not None:
+                return self._ok(self.comment_output)
             return self._ok(dict(CLI["comment_create"]["output"], id=self.comments[number][-1]["id"], author="horizon_host"))
         if command == ("tasks.comment", "list"):
             return self._ok(self.comments[number])
@@ -397,6 +400,72 @@ def test_comment_ids_count_up_and_the_cursor_skips_what_was_read(driver, fake):
     assert [(c["id"], c["body"]) for c in page] == [(3, "third")]
 
 
+def poll(after=0):
+    return get(f"/api/farm/tasks?repo=acme%2Fsl-app&after_comment={after}").json()["comments"]
+
+
+@pytest.mark.parametrize("output", [{}, {"author": "horizon_host"}, {"id": "not-a-number"}, []])
+def test_a_comment_create_that_prints_no_id_gets_exactly_one_id(driver, fake, output):
+    number = create().json()["number"]
+    fake.human_comment(number, "Seen before the comment.")
+    assert [c["id"] for c in poll()] == [1]
+    fake.comment_output = output
+    mine = post(f"/api/farm/tasks/{number}/comments", {"repo": REPO, "body": "Mine. _posted by Horizon_"}).json()
+    assert mine["id"] == 2
+    fake.human_comment(number, "A human reply.")
+    # The next list binds Horizon's comment to the id the create answered,
+    # and gives the human's reply the next one. No other id is ever minted.
+    page = poll(1)
+    assert [(c["id"], c["body"]) for c in page] == [(2, "Mine. _posted by Horizon_"), (3, "A human reply.")]
+    assert poll(3) == []
+    assert [(c["id"], c["body"]) for c in poll()] == [(1, "Seen before the comment."), (2, "Mine. _posted by Horizon_"), (3, "A human reply.")]
+    bound = [c["id"] for c in driver._state["comments"].values()]
+    assert sorted(bound) == [1, 2, 3], "one local id per Task comment"
+    assert driver._state["pending"] == {}
+    assert driver._state["next_comment"] == 4
+
+
+def test_a_create_that_prints_an_id_does_not_take_a_pending_id(driver, fake):
+    number = create().json()["number"]
+    fake.comment_output = {}
+    assert post(f"/api/farm/tasks/{number}/comments", {"repo": REPO, "body": "Same text."}).json()["id"] == 1
+    fake.comment_output = None
+    assert post(f"/api/farm/tasks/{number}/comments", {"repo": REPO, "body": "Same text."}).json()["id"] == 2
+    assert [c["id"] for c in poll()] == [1, 2]
+    assert poll(2) == []
+
+
+def test_closing_prunes_comment_ids_and_a_reopen_does_not_resend_old_comments(driver, fake):
+    number = create().json()["number"]
+    other = create(key="other").json()["number"]
+    fake.human_comment(number, "Old feedback.")
+    fake.human_comment(other, "On the other Task.")
+    assert len(poll()) == 2
+    fake.comment_output = {}
+    post(f"/api/farm/tasks/{number}/comments", {"repo": REPO, "body": "Pending when closed."})
+    assert driver._state["pending"] == {str(number): [{"id": 3, "sha": task_driver_meta._sha256("Pending when closed.")}]}
+    post(f"/api/farm/tasks/{number}/close", {"repo": REPO, "summary": "s", "reason": "completed"})
+    assert {c["task"] for c in driver._state["comments"].values()} == {other}, "the closed Task's ids are pruned"
+    assert str(number) not in driver._state["pending"]
+    cursor = driver._state["next_comment"] - 1
+    # Reopened outside Horizon: its old comments are not new feedback, a new one is.
+    fake.tasks[number]["status"] = "OPEN"
+    assert poll(cursor) == []
+    fake.human_comment(number, "After the reopen.")
+    assert [(c["body"], c["id"] > cursor) for c in poll(cursor)] == [("After the reopen.", True)]
+
+
+def test_a_task_closed_outside_horizon_is_pruned_at_the_next_list(driver, fake):
+    number = create().json()["number"]
+    fake.human_comment(number, "x")
+    poll()
+    assert driver._state["comments"]
+    fake.tasks[number]["status"] = "CLOSED"
+    poll()
+    assert driver._state["comments"] == {}
+    assert driver._state["tasks"][str(number)]["reseed"] is True
+
+
 def test_a_comment_too_long_for_argv_is_refused_before_any_exec(driver, fake):
     number = create().json()["number"]
     mark = len(fake.calls)
@@ -489,6 +558,22 @@ def test_the_real_runner_passes_no_credential_and_the_secret_shows_nowhere(monke
     out = capsys.readouterr()
     assert SENTINEL not in out.out + out.err + caplog.text + "".join(r.text for r in responses)
     assert SENTINEL not in (tmp_path / "state.json").read_text()
+
+
+def test_ambient_sign_in_passes_no_secret_to_the_child_env(driver, fake):
+    """Sign-in is the host identity: every `meta` call, for each of the four
+    routes, gets only the allowlisted env names, and no secret farmd holds
+    reaches the child in env, argv or stdin."""
+    number = create().json()["number"]
+    post(f"/api/farm/tasks/{number}/comments", {"repo": REPO, "body": "x"})
+    get("/api/farm/tasks?repo=acme%2Fsl-app")
+    post(f"/api/farm/tasks/{number}/close", {"repo": REPO, "summary": "s", "reason": "completed"})
+    commands = {(c["argv"][1], c["argv"][2]) for c in fake.calls}
+    assert commands == ALLOWED_COMMANDS
+    for call in fake.calls:
+        assert call["env"] == {"PATH": "/usr/bin:/bin", "HOME": "/home/farm", "USER": "farm", "LANG": "C.UTF-8"}
+        assert SENTINEL not in json.dumps(call)
+        assert not any(name in call["env"] for name in ("GITHUB_TOKEN", "FARM_SHARED_SECRET", "TASK_SERVICE_TOKEN"))
 
 
 def test_the_driver_holds_no_credential_and_child_env_is_an_allowlist(driver, fake):
