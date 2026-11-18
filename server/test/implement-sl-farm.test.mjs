@@ -122,18 +122,23 @@ test('metric 2: a Task-backed sl item with a null issue submits its diff, and th
   assert.ok(events(id).some((t) => t.includes(`sl item ${id}: no PR is created for sl items`)), 'the completed event names it')
 })
 
-test('metric 2 (R1): an sl item with issue 42 never reaches createPrFromBranch, and the summary names sl and the item', async () => {
+// An sl item's tracker record is its Task, never an issue (HO-901), so a stray
+// issue number gives it no diff to submit: it fails with the named reason.
+test('metric 2 (R1): an sl item with issue 42 never reaches createPrFromBranch, and the failure names sl and the item', async () => {
   const id = 'SLF-3'
   const runId = itemWithActiveImplementRun(id, { repo: SL_REPO, issue: 42, backend: 'sl' })
   await complete(runId, id)
 
   assert.equal(prCalls.sl.length + prCalls.github.length, 0, 'createPrFromBranch is never called')
   const { status, output } = run(runId)
-  assert.equal(status, 'done')
-  assert.ok(output.includes(`sl item ${id}`), output)
-  assert.ok(output.includes('no PR is created for sl items'), output)
+  assert.notEqual(status, 'done')
+  assert.equal(
+    output,
+    `FAILED: sl item ${id}: code pushed to horizon/slf-3, but no PR is created for sl items, and with no Task there is no diff to submit`,
+  )
   assert.ok(!output.includes('backend_not_implemented'), output)
   assert.equal(row(id).pr, null)
+  assert.equal(store.itemViewById(id).paused, true, 'the item pauses for a human')
 })
 
 test('guardrail 1: a GitHub item with an issue and a branch still opens its PR and completes', async () => {

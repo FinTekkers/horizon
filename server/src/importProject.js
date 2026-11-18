@@ -26,6 +26,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { UI_URL } from './config.js'
 import { hasNoProject } from './membership.js'
+import { hasGithubIssue } from './trackerRefs.js'
 import { isAbandoned, isClosed, itemKindOf } from '../../domain/js/lifecycle.js'
 
 // The marker in an open copy's record body: what findSplitIssue looks for
@@ -171,7 +172,7 @@ function copyClosed(row, item, repo, targetId) {
 // back-link and the marker, under their own heading so parseIssueBody keeps
 // both out of the copy's guardrails.
 function importBodySuffix(item, targetId) {
-  const issueRef = item.repo && item.issue != null ? ` · \`${item.repo}#${item.issue}\`` : ''
+  const issueRef = hasGithubIssue(item) ? ` · \`${item.repo}#${item.issue}\`` : ''
   return ['## Imported from', `[${item.id}](${UI_URL}/${item.id.toLowerCase()})${issueRef}`, '', importMarker(item.id, targetId)].join('\n')
 }
 

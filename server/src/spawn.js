@@ -29,6 +29,7 @@
 import { db } from './db.js'
 import * as store from './store.js'
 import { forRepo } from './backends/index.js'
+import { hasGithubIssue } from './trackerRefs.js'
 // HO-871, transitional: the land-path git lookups below. HO-872 moves them onto its ports.
 import { defaultBranchOf, getBranchSha, getPrMergeSha, isAncestor } from './backends/github.js'
 import { UI_URL } from './config.js'
@@ -137,7 +138,7 @@ export const spawnMarker = (parentId, requestKey, seq) =>
 // back-link and the marker. Its own heading, so parseIssueBody keeps both out
 // of the child's guardrails.
 function spawnBodySuffix(parent, requestKey, seq, waits) {
-  const issueRef = parent.repo && parent.issue != null ? ` · \`${parent.repo}#${parent.issue}\`` : ''
+  const issueRef = hasGithubIssue(parent) ? ` · \`${parent.repo}#${parent.issue}\`` : ''
   return [
     '## Spawned by',
     `[${parent.id}](${UI_URL}/${parent.id.toLowerCase()})${issueRef}${waits ? ' — that item waits for this one to close.' : ' — filed by that Plan.'}`,

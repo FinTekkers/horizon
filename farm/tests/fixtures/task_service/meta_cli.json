@@ -1,0 +1,33 @@
+{
+  "about": "HO-883: `meta` CLI output shapes the Meta Tasks driver (farm/task_driver_meta.py) reads. farm/tests/test_task_driver_meta.py builds its stubbed Task service from these templates. Only the field names and value formats are real. Every title, text, author and id is made up. Templates marked `captured` copy the shape of read-only calls run on 2026-11-17 (stdout, or stderr for errors). Templates marked `hand-written` are commands that change a Task, which were not run against the live service. Swap them for the owner's scrubbed recordings from a scratch Task. The driver reads only `number`/`url` from a create (falling back to `--external-identifier` lookup), only `id`/`author` from a comment create, and nothing from a close.",
+  "task_list": {
+    "provenance": "captured: meta tasks.task list --task-is=T…,T… --columns=number,title,description,status,url -o json",
+    "output": { "pagination": { "next_page_token": null, "has_next_page": false, "page_size": 50, "total_count": 1 }, "data": [ { "number": "T100000001", "title": "Example title", "description": "Example description.", "status": "OPEN", "url": "https://www.internalfb.com/tasks?t=100000001" } ] }
+  },
+  "comment_list": {
+    "provenance": "captured: meta tasks.comment list --task=T… --columns=id,author,text,created -o json",
+    "output": [ { "id": "2100000000000001", "author": "example_user", "text": "Example comment.", "created": "2026-10-10 08:18" } ]
+  },
+  "error_not_found": {
+    "provenance": "captured (stderr, exit 1): meta tasks.task describe --task=T1 -o json",
+    "exit": 1,
+    "stderr": { "status": "error", "message": "Task T1 was not found or is not visible to you.", "error_code": "not_found", "exception_type": "MetaCLIEntityNotFoundException", "fault_domain": "caller" }
+  },
+  "error_user": {
+    "provenance": "captured (stderr, exit 1): meta tasks.task close --outcome=<invalid> -o json, message shortened",
+    "exit": 1,
+    "stderr": { "status": "error", "message": "Invalid option outcome: zz is not a valid value.", "error_code": "user_error", "exception_type": "MetaCLIValidationException", "fault_domain": "caller" }
+  },
+  "task_create": {
+    "provenance": "hand-written: meta tasks.task create --title=… --description=- --external-identifier=… -o json",
+    "output": { "number": "T100000001", "url": "https://www.internalfb.com/tasks/T100000001" }
+  },
+  "comment_create": {
+    "provenance": "hand-written: meta tasks.comment create --task=T… --text=… -o json",
+    "output": { "id": "2100000000000002", "author": "example_user" }
+  },
+  "task_close": {
+    "provenance": "hand-written: meta tasks.task close --task=T… --outcome=… --outcome-comment=… -o json",
+    "output": { "number": "T100000001", "completed": true }
+  }
+}

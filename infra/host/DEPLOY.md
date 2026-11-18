@@ -1006,19 +1006,29 @@ nothing.
 
 | File | Var | Notes |
 |---|---|---|
-| `/etc/horizon/farm.env` | `TASK_DRIVER` | the driver farmd's Task routes use. Only `stub` exists today: an in-memory driver that forgets every Task when farmd restarts. Unset (the default) ⇒ every Task route answers **503** `task_driver_not_configured`, and an `sl` item create answers **502** `Task create failed: task_driver_not_configured` with nothing written |
+| `/etc/horizon/farm.env` | `TASK_DRIVER` | the driver farmd's Task routes use. `tasks` (HO-883) files real Meta Tasks through the `meta` CLI (`farm/task_driver_meta.py`). `stub` is an in-memory driver that forgets every Task when farmd restarts. Unset (the default) ⇒ every Task route answers **503** `task_driver_not_configured`, and an `sl` item create answers **502** `Task create failed: task_driver_not_configured` with nothing written |
 
 - **Auth.** The server sends the existing `FARM_SHARED_SECRET` (already in
   both env files) as `x-farm-secret`; farmd refuses any Task call without it
   (**401**), because agent sessions share this host. No Task-service
   credential goes in `server.env`, and neither process logs the secret.
+- **Meta Tasks sign-in (`TASK_DRIVER=tasks`).** farmd runs `meta tasks.*`
+  as its own host user, using ambient sign-in the way `sl` and Eden do. There
+  is no token and no credential ref to set. The `meta` child gets only `PATH`,
+  `HOME`, `USER`, `LOGNAME`, the locale and `TMPDIR` from farmd's env. The
+  farmd user must be able to run `meta tasks.task list --owner-is-me`.
+  farmd records the Tasks it filed, their labels and its comment cursor in
+  `$FARM_HOME/state/tasks_driver.json`. A Task missing from that file is
+  unknown to its repo, so keep the file across restarts. Close reasons map to
+  `--outcome`: `completed` → `resolved`, `not_planned` → `unresolved`. The
+  close summary is the `--outcome-comment`.
 - **No farm, no `sl` items.** With `FARM_URL` unset, creating an item on an
   `sl` repo answers **400** `backend_unsupported`, and nothing is sent.
-- **Do not switch a real repo to `sl` yet.** The real Task-service driver is
-  a later item, and so are the `sl` PR, land and release steps. Until they
-  land, an `sl` item past Plan acts like a demo item: the release and PR steps
-  skip because it has no GitHub issue, so it can look shipped when nothing
-  shipped. Use `sl` only for test repos with `TASK_DRIVER=stub`.
+- **Do not switch a real repo to `sl` yet.** The `sl` PR, land and release
+  steps are later items. Until they land, an `sl` item past Plan acts like a
+  demo item: the release and PR steps skip because it has no GitHub issue, so
+  it can look shipped when nothing shipped. Use `sl` only for test repos (`TASK_DRIVER=stub`, or `tasks`
+  against scratch Tasks).
 
 ## 3. Confirm the repo is pull-only
 
