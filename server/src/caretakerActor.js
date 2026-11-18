@@ -39,6 +39,8 @@ import { CHECK_HEADLINE_PREFIX, capWords } from './checkHeadline.js'
 import { loadPolicy, REPEAT_SEND_BACK_RULE } from './caretaker.js'
 import { actOnAcceptGate, failInterruptedAcceptActions } from './caretakerAccept.js'
 import { itemAutopilotOff } from './caretakerItemOff.js'
+// HO-880: an imported item is read-only, so it is never acted on or pinged about.
+import { notImportedSql } from './importedItem.js'
 import { sendWhatsApp } from './waSend.js'
 import { ownerJid } from './waApprovers.js'
 import { CARETAKER_HOURLY_LIMIT, REVIEW_CYCLE_CAP, WA_NOTIFY_ENABLED, WA_NOTIFY_MAX_ATTEMPTS } from './config.js'
@@ -75,7 +77,7 @@ const FAILED_RUNS_STOP = 2
 // HZ-384: the same rules over another gate list, for the human-only refusals.
 const actionableEvalSql = (gates) => `p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on'
      AND c.gate_index IN (${gates.join(',')}) AND w.cursor = c.gate_index
-     AND w.abandoned_at IS NULL
+     AND w.abandoned_at IS NULL AND ${notImportedSql('w')}
      AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
            AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0)
      AND NOT EXISTS (SELECT 1 FROM caretaker_action a WHERE a.eval_id = c.id)
@@ -153,6 +155,7 @@ const selectHelpCandidates = db.prepare(`
     JOIN project p ON p.id = w.project_id
    WHERE p.autopilot = 'on' AND p.enabled = 1 AND c.mode = 'on' AND c.decision = 'ping_human'
      AND c.gate_index IN (${HELP_GATES.join(',')}) AND w.cursor = c.gate_index AND w.abandoned_at IS NULL
+     AND ${notImportedSql('w')}
      AND w.autopilot_off = 0
      AND c.arrival_run_id = COALESCE((SELECT MAX(s.id) FROM step_run s WHERE s.item_id = w.id
            AND s.step_index = w.cursor - 1 AND s.substep_id IS NULL AND s.status = 'done'), 0)

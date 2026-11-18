@@ -588,6 +588,37 @@ db.exec(`
     next   INTEGER NOT NULL CHECK (next >= 1)
   );
 `)
+// HO-880: an owner's import of a project's items into a new project on another
+// backend (server/src/importProject.js). Each copy records the item it was
+// copied from in work_item.source_item_id, and a project holds at most one
+// copy of a source item (the partial unique index). item_import is the
+// per-item ledger: UNIQUE(source_item_id) means a source item goes to one
+// target only and a re-run inserts nothing, and its row is also what makes the
+// source item read-only (server/src/importedItem.js) — the source's own row is
+// never written. status walks pending → filing → filed, the item_spawn pattern:
+// a 'filing' row left by a crash is re-run, and the tracker record is found by
+// its body marker before a second is created. Additive only: existing items
+// read source_item_id NULL and the ledger starts empty.
+if (!workItemColumns.has('source_item_id')) db.exec('ALTER TABLE work_item ADD COLUMN source_item_id TEXT')
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_source
+    ON work_item(project_id, source_item_id) WHERE source_item_id IS NOT NULL;
+  CREATE TABLE IF NOT EXISTS item_import (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_item_id    TEXT NOT NULL UNIQUE REFERENCES work_item(id),
+    source_project_id INTEGER NOT NULL REFERENCES project(id),
+    target_project_id INTEGER NOT NULL REFERENCES project(id),
+    closed            INTEGER NOT NULL CHECK (closed IN (0,1)),
+    status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','filing','filed')),
+    target_item_id    TEXT REFERENCES work_item(id),
+    target_record_ref TEXT,
+    created_by        TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_item_import_target ON item_import(target_project_id, status);
+  CREATE INDEX IF NOT EXISTS idx_item_import_source_project ON item_import(source_project_id);
+`)
 // HZ-443: one-time backfill for items paused before paused_at existed — the
 // newest event mentioning "paused" (every pause path's event text does), else
 // updated_at, which can only understate the wait. Idempotent: it touches only

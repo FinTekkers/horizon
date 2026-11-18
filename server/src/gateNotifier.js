@@ -45,6 +45,7 @@ import { stepLabel } from '../../domain/js/substeps.js'
 import { approverJids } from './waApprovers.js'
 import { sendWhatsApp, sendPoll } from './waSend.js'
 import { registerPoll, supersedeOpenPolls, attachPollMessageId, releaseInterruptedVotes } from './waPollVotes.js'
+import { isImportedItem } from './importedItem.js'
 import {
   UI_URL,
   WA_NOTIFY_ENABLED,
@@ -228,6 +229,9 @@ export function sweepGates({ log, render = renderNotice, renderPoll = renderPoll
       // notified either, so re-enabling the project notifies it on the next
       // sweep. It stays stale until then, the same as an unrenderable item.
       if (!store.isProjectEnabled(item.project_id)) continue
+      // HO-880: an imported item is read-only — nobody can act on its gate,
+      // so it is never notified (nor marked notified).
+      if (isImportedItem(item.id)) continue
       // HZ-279: a merge at Accept is marked notified with nothing sent.
       // finishGateAction notifies BEFORE the gate advances, so sending here
       // would be a notice for a gate that is about to be left. itemGateFields

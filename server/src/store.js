@@ -72,6 +72,7 @@ import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveIte
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
 import { DEFAULT_BACKEND, isBackend } from './backends/names.js'
 import { GITHUB_TOKEN_PAGES, repoLinks } from './links.js'
+import { IMPORTED_ITEM_ERROR, isImportedItem } from './importedItem.js'
 
 const listeners = new Set()
 
@@ -1702,6 +1703,7 @@ export function patchRunPlan(id, { from, planHash, index, command } = {}, actor 
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (!approvesRunPlan(itemKindOf(it))) return { error: 'not_a_task' }
   if (from !== moveKeyOf(it)) return { error: 'stale_step' }
   if (isClosed(it) || isAbandoned(it) || !PATCH_STEP_INDEXES.has(it.cursor) || selectActiveRun.get(id)) return { error: 'not_patchable' }
@@ -2379,6 +2381,7 @@ export function addDependency(id, dependsOnId, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   if (id === dependsOnId) return { error: 'self_dependency', message: `${id} cannot depend on itself` }
@@ -2422,6 +2425,7 @@ export function removeDependency(id, dependsOnId, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   const removed = db.transaction(() => {
     const edge = db.prepare('SELECT created_by FROM work_item_dependency WHERE item_id = ? AND depends_on_id = ?').get(id, dependsOnId)
     if (!edge) return false
@@ -2969,6 +2973,9 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     ...designSpecFields(row),
     // HO-862: only on an item with a recorded web-page round.
     ...visualPageFields(row),
+    // HO-880: only on an import's copy (sourceItemId) or its read-only source
+    // (imported). Absent otherwise, so no other item's payload changes.
+    ...importFields(row),
     // HO-844: only on a Task — at Review & close on a done_proof_incomplete
     // Verify outcome, the lines Accept with exceptions asks a reason for; and
     // once accepted so, every exception. Absent otherwise.
@@ -2976,8 +2983,23 @@ function itemView(row, { stepOutputs: withStepOutputs = true } = {}) {
     // HZ-799: every step POST /api/items/:id/move { stepKey } takes it to now.
     // HZ-711: with what every surface's Approve, Return to…, Retry and
     // Abandon need to name them (moveItem.js movesView).
-    moves: movesView(row, itemMoveTargets(row, activeRun), { enabled: !disabledProject(row) }),
+    moves: movesView(row, itemMoveTargets(row, activeRun), { enabled: movable(row) }),
   }
+}
+
+// HO-880: { sourceItemId } on a copy an import made, { imported: true } on a
+// source item an import froze, nothing on any other item.
+function importFields(row) {
+  return {
+    ...(row.source_item_id != null ? { sourceItemId: row.source_item_id } : {}),
+    ...(isImportedItem(row.id) ? { imported: true } : {}),
+  }
+}
+
+// Whether a human may move the item: its project is enabled and (HO-880) it
+// is not a read-only imported item.
+function movable(row) {
+  return !disabledProject(row) && !isImportedItem(row.id)
 }
 
 // HO-844: { acceptWithExceptions: { openLines, linesHash } } while the gate
@@ -3001,7 +3023,7 @@ function itemMoveTargets(row, activeRun = selectActiveRun.get(row.id) || null) {
     !(row.cursor === APPROVE_RUN_GATE_INDEX && !currentRunPlan(row.id)) &&
     !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesRequired(row) && !approvedGoldenCases(row.id)) &&
     !(FIRST_GATE_INDEXES.includes(row.cursor) && !designApprovable(row))
-  return moveTargets(row, { running: activeRun != null, enabled: !disabledProject(row), approvable })
+  return moveTargets(row, { running: activeRun != null, enabled: movable(row), approvable })
 }
 
 // The targets with the route's own fields (action, toIndex), for the route.
@@ -3142,6 +3164,7 @@ export function setStepProvider(id, stepIndex, provider, actor = 'You') {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   if (!providerOverrideEligible(stepIndex)) return { error: 'provider_not_eligible' }
@@ -3247,6 +3270,7 @@ export function approveGate(
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it) || isAbandoned(it) || STEPS[it.cursor].kind !== 'gate') return { error: 'not_at_gate' }
   if (stepIndex !== it.cursor) return { error: 'stale_step' }
 
@@ -3541,6 +3565,7 @@ export function requestChanges(id, target, feedbackText, actor = 'You', targetSt
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 
@@ -3654,6 +3679,7 @@ export function forceDesign(id, substepId, reason, actor = 'You', { proof = null
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   const sub = designSubstepOf(it)
@@ -3683,6 +3709,7 @@ export function moveByHuman(id, { action, toKey = null, note = '', who = 'You', 
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   const planned = planMove(it, { action, toKey })
   if (planned.error) return planned
   if (action === 'reopen' && it.repo && it.issue != null) {
@@ -3728,6 +3755,7 @@ export function setPaused(id, paused) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 
@@ -3762,6 +3790,7 @@ export function setPersona(id, agent, persona) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   const overlay = projectOverlayFor(it.project_id)
@@ -3791,6 +3820,7 @@ export function setPriority(id, priority) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
   if (!isPriority(priority)) return { error: 'bad_priority' }
@@ -3824,6 +3854,7 @@ export function abandonItem(id, reason, actor = 'You', { removeDependentLinks = 
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'already_abandoned' }
   const trimmed = (reason || '').trim()
@@ -3889,6 +3920,7 @@ export function addFeedback(id, { message, target = '', source = 'ui', ghComment
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
   if (disabledProject(it)) return { error: 'project_not_active' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   if (isClosed(it)) return { error: 'closed' }
   if (isAbandoned(it)) return { error: 'abandoned' }
 
@@ -4095,6 +4127,7 @@ export function createLocalItem({ title, outcome, metric, guardrails, priority, 
 export function approveGateFromGithub(id) {
   const it = getItem(id)
   if (!it) return { error: 'not_found' }
+  if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
   const stepIndex = it.cursor
   if (isClosed(it) || isAbandoned(it) || stepIndex !== ACCEPT_GATE_INDEX) return { error: 'not_at_accept_gate' }
 
@@ -4208,6 +4241,9 @@ export function upsertFromGithub(ghIssue, repoFullName) {
     changed = true
     if (!closedOnGithub) agentRunner.kick(id)
   } else {
+    // HO-880: an imported item is read-only — a later issue edit, close or
+    // reopen changes nothing here. The GitHub issue itself is never touched.
+    if (isImportedItem(row.id)) return false
     // Structured sections only overwrite when the body actually carries them,
     // so agent-refined metric/guardrails survive issues edited without those headings.
     const newMetric = metric || row.metric
@@ -4355,7 +4391,8 @@ export function syncTaskState(task, repoFullName) {
   const repoRow = typeof repoFullName === 'string' ? findRepo(repoFullName) : null
   if (ref == null || !repoRow || repoRow.backend !== 'sl') return false
   const row = db.prepare('SELECT * FROM work_item WHERE repo = ? AND task_id = ?').get(repoFullName, ref)
-  if (!row || row.abandoned_at) return false
+  // HO-880: an imported item is read-only, as in upsertFromGithub.
+  if (!row || row.abandoned_at || isImportedItem(row.id)) return false
   const closedOnTask = task.state === 'closed'
   const wasClosed = isClosed(row)
   if (closedOnTask && !wasClosed) {

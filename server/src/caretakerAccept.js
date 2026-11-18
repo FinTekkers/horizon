@@ -56,6 +56,8 @@ import * as heldAccept from './heldAccept.js'
 import { MERGEABLE_PROBE_DELAYS_MS, MERGEABLE_PROBE_ATTEMPTS, reviewPassed as passedReview } from './caretakerMergeable.js'
 import { itemAutopilotOff } from './caretakerItemOff.js'
 import { openBlockingAsks } from './asks.js'
+// HO-880: an imported item is read-only, so its PR is never accepted or merged here.
+import { notImportedSql } from './importedItem.js'
 
 const HOUR_MS = 60 * 60 * 1000
 const GATE_LABEL = STEPS[ACCEPT_GATE_INDEX].label
@@ -80,6 +82,7 @@ const selectCandidates = db.prepare(`
     FROM work_item w JOIN project p ON p.id = w.project_id
    WHERE p.autopilot = 'on' AND p.enabled = 1 AND w.cursor = ${ACCEPT_GATE_INDEX}
      AND w.abandoned_at IS NULL AND w.pr IS NOT NULL AND w.repo IS NOT NULL AND w.autopilot_off = 0
+     AND ${notImportedSql('w')}
    ORDER BY arrival_run_id, w.id`)
 // An escalated resolve sends the item back to implement, so it is no longer a
 // candidate above; it is still pinged, whoever started the run.

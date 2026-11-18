@@ -16,6 +16,8 @@
 // The owner — user.role 'owner', never the email allowlist — passes every user
 // scope, so the owner sees no change. For anyone else:
 //   - owner, test        404
+//   - owner:strict       (HO-880) 403 {"error":"owner_required"} — the one
+//                        scope that answers 403, see below
 //   - self               passes; the handler acts on request.user only
 //   - filtered           passes with request.viewer = { projectIds }; the
 //                        handler must filter by it (store.listItems' viewer)
@@ -35,6 +37,13 @@
 // A guessed or unknown id gets the same 404 as a project the user may not see,
 // never 403, so the answer cannot reveal that a project exists. Anything the
 // guard cannot resolve — a missing scope, an unknown scope, a throw — is 404.
+//
+// HO-880: owner:strict breaks the never-403 rule on purpose. It labels the
+// owner's project import (POST /api/project-imports), whose success metric is
+// a 403 for every non-owner. Its URL names no project, so the 403 reveals
+// nothing a 404 would hide. app.js also runs this guard in onRequest for an
+// owner:strict route, so a non-owner is refused before the body is parsed or
+// validated, and nothing is read or written for them.
 
 import { db } from './db.js'
 import { hasNoProject } from './membership.js'
@@ -45,6 +54,7 @@ import { rulesKey } from './definitions.js'
 // behind the session gate, so it is a user scope, owner-only.
 export const USER_SCOPES = Object.freeze([
   'owner',
+  'owner:strict',
   'self',
   'filtered',
   'test',
@@ -60,6 +70,7 @@ export const USER_SCOPES = Object.freeze([
 export const EXEMPT_SCOPES = Object.freeze(['farm', 'hmac', 'wa', 'public'])
 
 const NOT_FOUND = { error: 'not_found' }
+const OWNER_REQUIRED = { error: 'owner_required' }
 
 const selectRole = db.prepare('SELECT role FROM user WHERE id = ?')
 const selectMemberProjects = db.prepare('SELECT project_id FROM project_member WHERE user_id = ?')
@@ -213,6 +224,7 @@ export function createGuard({ resolveProject = projectForScope, memberProjects =
       const userId = request.user?.id
       if (typeof userId !== 'string' || !USER_SCOPES.includes(scope)) return reply.code(404).send(NOT_FOUND)
       if (isOwner(userId)) return
+      if (scope === 'owner:strict') return reply.code(403).send(OWNER_REQUIRED)
       if (scope === 'self') return
       if (scope === 'filtered') {
         request.viewer = { projectIds: memberProjects(userId) }

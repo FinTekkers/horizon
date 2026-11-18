@@ -85,6 +85,8 @@ import * as runLogView from './runLogView.js'
 import * as runTimeView from './runTimeView.js'
 import * as split from './split.js'
 import { narrowingStatus } from './narrowing.js'
+import { IMPORTED_ITEM_ERROR, isImportedItem } from './importedItem.js'
+import { importProject } from './importProject.js'
 import * as planDraft from './planDraft.js'
 import * as screenshots from './screenshots.js'
 import { filedMap } from './planFiling.js'
@@ -893,7 +895,28 @@ export function buildApp({
   // untouched; anyone else gets 404, never 403, outside their own projects.
   // preHandler rather than onRequest so a member:repo scope can read the body.
   const lookupMembers = memberProjects ?? access.memberProjectIds
-  fastify.addHook('preHandler', access.createGuard({ ...(resolveProject ? { resolveProject } : {}), memberProjects: lookupMembers }))
+  const routeGuard = access.createGuard({ ...(resolveProject ? { resolveProject } : {}), memberProjects: lookupMembers })
+  // HO-880: an owner:strict route runs the guard in onRequest too, so a
+  // non-owner gets 403 before the body is parsed or validated.
+  fastify.addHook('onRequest', async (request, reply) => {
+    if (request.routeOptions?.config?.scope === 'owner:strict') return routeGuard(request, reply)
+  })
+  fastify.addHook('preHandler', routeGuard)
+
+  // HO-880: an item an import froze is read-only. Every session write to it
+  // under /api/items/:id is answered 409 item_imported before its handler
+  // runs. After the guard, so a non-member still gets the guard's 404. The
+  // -via-whatsapp routes (exempt scopes) check their own credential first;
+  // the store refuses the item there (item_imported, which send() makes a
+  // 409). Reads are unchanged.
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (request.method === 'GET' || request.method === 'HEAD') return
+    if (access.EXEMPT_SCOPES.includes(request.routeOptions?.config?.scope)) return
+    const url = request.routeOptions?.url
+    if (typeof url !== 'string' || !(url === '/api/items/:id' || url.startsWith('/api/items/:id/'))) return
+    const id = request.params != null && Object.hasOwn(request.params, 'id') ? request.params.id : null
+    if (isImportedItem(id)) return reply.code(409).send({ error: IMPORTED_ITEM_ERROR })
+  })
 
   // The response schema documents the media type only: this route hijacks the
   // reply, so the serializer never runs on it either way (HZ-178).
@@ -2186,6 +2209,9 @@ export function buildApp({
     // Accepting the code means merging its PR — the gate does not advance if
     // the pre-merge checks or the merge fail, and the reason is logged to the
     // item's activity.
+    // HO-880: an imported item is read-only — refused before anything runs
+    // (no merge, no issue close, no event), whoever approves.
+    if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR, status: 409 }
     const item = store.getItem(id)
     // HZ-685: an outcome or metric narrowed to "Deferred to a follow-up item"
     // passes a filing gate only with that follow-up filed and linked (or
@@ -4907,6 +4933,67 @@ export function buildApp({
         broadcast()
       }
       return { ok: true, projectId: request.params.id, isolation: result.isolation, githubTokenRef: result.githubTokenRef, runUser: result.runUser }
+    },
+  )
+
+  // ---- HO-880: owner-only import into a new project on another backend ----
+  // Copies every item of `sourceProjectId` into `targetProjectId` (its one
+  // connected repo, or `targetRepo`), whose backend must differ: open items
+  // get new tracker records through the target repo's Tracker port, closed
+  // ones are copied as history, every copy keeps its source item's id, and the
+  // source items become read-only. One project_event per run. A re-run creates
+  // nothing twice (importProject.js).
+  //
+  // owner:strict: any non-owner — a member of either project included — gets
+  // 403 owner_required from the guard, in onRequest, before the body is read,
+  // so nothing is read or written for them. Not under /api/projects/:id/,
+  // whose routes answer a non-member 404 by design. Then the gate PIN, as for
+  // every owner write that changes a project.
+  fastify.post(
+    '/api/project-imports',
+    {
+      config: { scope: 'owner:strict' },
+      schema: {
+        security: HUMAN_GATE_SECURITY,
+        body: {
+          type: 'object',
+          required: ['sourceProjectId', 'targetProjectId'],
+          additionalProperties: false,
+          properties: {
+            sourceProjectId: { type: 'integer', minimum: 1 },
+            targetProjectId: { type: 'integer', minimum: 1 },
+            targetRepo: { type: 'string', minLength: 3, maxLength: 200 },
+          },
+        },
+        response: {
+          200: OK_OBJECT,
+          400: ERROR_OBJECT,
+          401: ERROR_OBJECT,
+          403: ERROR_OBJECT,
+          404: ERROR_OBJECT,
+          409: ERROR_OBJECT,
+          502: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!access.isOwner(request.user?.id)) return reply.code(403).send({ error: 'owner_required' })
+      if (!humanAuthorized(request, reply)) return
+      const { sourceProjectId, targetProjectId, targetRepo = null } = request.body
+      const result = await importProject({
+        sourceProjectId,
+        targetProjectId,
+        targetRepo,
+        who: actorOf(request),
+        trackerFor: (repo) => forRepo(repo).tracker,
+      })
+      if (result.error) {
+        const { status, ...body } = result
+        if (body.error === 'not_found') body.error = 'Project not found'
+        return reply.code(status).send(body)
+      }
+      broadcast()
+      return result
     },
   )
 

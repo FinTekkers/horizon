@@ -189,6 +189,7 @@ import {
 import { declares } from '../../domain/js/providers.js'
 import { chainHead, effectiveChain, entryKey, entryLabel, formatResetTime, pickModel, resetMs } from './usageLimits.js'
 import { hasGithubIssue, hasTrackerRef, trackerRefText } from './trackerRefs.js'
+import { isImportedItem } from './importedItem.js'
 
 // Keyed by step_run.id (HZ-100) — NOT item id. Keying by item used to let a
 // stale callback for a superseded run clear/overwrite the CURRENT run's
@@ -1594,7 +1595,9 @@ function dispatchableStep(item) {
     STEPS[item.cursor].kind === 'agent' &&
     // HZ-377: a step with no runner waits where it is — it is never
     // dispatched, to the farm or to the mock path, so no run is ever recorded.
-    STEPS[item.cursor].runsIn !== 'none'
+    STEPS[item.cursor].runsIn !== 'none' &&
+    // HO-880: an imported item is read-only — never dispatched again.
+    !isImportedItem(item.id)
   )
 }
 
@@ -1604,6 +1607,8 @@ function dispatchableStep(item) {
 export function waitReason(id) {
   const item = getItem(id)
   if (!item) return null
+  // HO-880: an imported item waits on nothing: it is read-only for good.
+  if (isImportedItem(id)) return { kind: 'imported', message: 'Imported into another project — this item is read-only.' }
   if (farm.status !== 'running') return { kind: 'farm_stopped', message: 'The farm is stopped. Start it to dispatch.' }
   if (!isProjectEnabled(item.project_id)) return { kind: 'project_disabled', message: 'Its project is disabled.' }
   if (isDeployBlocked()) return { kind: 'deploy_drain', message: 'Waiting for a self-deploy to finish.' }

@@ -188,6 +188,15 @@ test('self passes any signed-in user; owner and test pass only the owner', async
   assert.equal((await run('member:item', { user: owner, params: { id: 'BTA-1' } })).passed, true)
 })
 
+test('owner:strict (HO-880) answers a non-owner 403 owner_required and passes the owner; plain owner still answers 404', async () => {
+  assert.ok(access.USER_SCOPES.includes('owner:strict'))
+  assert.deepEqual(await run('owner:strict'), { status: 403, body: { error: 'owner_required' } })
+  assert.equal((await run('owner:strict', { user: owner })).passed, true)
+  assert.deepEqual(await run('owner'), NOT_FOUND)
+  // No signed-in user is still the fail-closed 404.
+  assert.deepEqual(await run('owner:strict', { user: null }), NOT_FOUND)
+})
+
 test('the guard fails closed: a missing or unknown scope, no user, or a resolver throw is 404', async () => {
   assert.deepEqual(await run(undefined), NOT_FOUND)
   assert.deepEqual(await run('admin'), NOT_FOUND)
