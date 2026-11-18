@@ -19,6 +19,13 @@ import { forRepo } from './backends/index.js'
 // The path-parameter shape of a screen name; anything else cannot be listed.
 export const SCREEN_RE = /^[A-Za-z0-9._-]{1,100}$/
 
+// HO-892: a screen name the image route serves — SCREEN_RE (so never a `/`)
+// and no `..` anywhere, so no name can read as a path step. The farm's runner
+// never makes such a name (farm/screenshot_runner.py png_name keeps only
+// [A-Za-z0-9_-]), and listedShots drops one, so the panel never lists a shot
+// the route refuses.
+export const isScreenName = (name) => typeof name === 'string' && SCREEN_RE.test(name) && !name.includes('..')
+
 // Images the panel shows, in the order it shows them.
 export const IMAGE_KINDS = ['baseline', 'new', 'diff']
 
@@ -42,7 +49,7 @@ export function listedShots(snapshot) {
   const seen = new Set()
   const shots = []
   for (const shot of snapshot.results.shots) {
-    if (shot.status === 'same' || seen.has(shot.name)) continue
+    if (shot.status === 'same' || seen.has(shot.name) || !isScreenName(shot.name)) continue
     seen.add(shot.name)
     const images = {}
     if (shot.status !== 'new' && baselineFiles?.get(shotPath(shot.name))) images.baseline = baselineFiles.get(shotPath(shot.name))

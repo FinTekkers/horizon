@@ -48,13 +48,14 @@ class GitWasRun(subprocess.SubprocessError):
 
 @pytest.fixture
 def git_calls(monkeypatch):
-    """Records every git argv any subprocess entry point is handed, and fails it."""
+    """Records every git (or gh) argv any subprocess entry point is handed, and fails it."""
     seen = []
 
     def guard(real):
         def run(args, *a, **kw):
             argv = args if isinstance(args, (list, tuple)) else [args]
-            if argv and (Path(str(argv[0])).name == "git" or str(argv[0]).startswith("git ")):
+            # HO-892: `gh` is refused too — neither may run on the sl path.
+            if argv and (Path(str(argv[0])).name in ("git", "gh") or str(argv[0]).startswith(("git ", "gh "))):
                 seen.append(list(map(str, argv)))
                 raise GitWasRun(f"git was run: {argv}")
             return real(args, *a, **kw)
@@ -168,4 +169,75 @@ def test_sl_bundle_with_an_invalid_config_is_skipped(tmp_path, git_calls):
     lines = []
     assert step_agent.screenshot_bundle(ws, log=lines.append) is None
     assert lines == ["screenshot_bundle: skipped — invalid config"]
+    assert git_calls == []
+
+
+# HO-892: the farm half of the sl pixel diff. The bundle carries the repo's
+# diff settings, so the server diffs with GitHub's threshold and tolerance.
+# SL_BUNDLE_GOLDEN is the exact bundle the farm builds from the committed
+# fixture; server/test/sl-screenshot-diffs.test.mjs posts that same file on
+# /complete, so the two halves cannot drift apart while both suites pass.
+SL_FIXTURE = Path(__file__).parent / "fixtures" / "sl-bundle"
+SL_BUNDLE_GOLDEN = SL_FIXTURE / "bundle.golden.json"
+
+
+@pytest.fixture
+def no_github_socket(monkeypatch):
+    """Fails any connection to api.github.com, and records it."""
+    import socket
+
+    seen = []
+    real = socket.create_connection
+
+    def connect(address, *a, **kw):
+        if str(address[0]).lower().rstrip(".") == "api.github.com":
+            seen.append(address)
+            raise OSError("api.github.com was contacted")
+        return real(address, *a, **kw)
+
+    monkeypatch.setattr(socket, "create_connection", connect)
+    return seen
+
+
+def fixture_ws(tmp_path: Path) -> Path:
+    ws = tmp_path / "ws"
+    (ws / ".sl").mkdir(parents=True)
+    (ws / ".horizon").mkdir()
+    (ws / screenshots_config.CONFIG_PATH).write_bytes((SL_FIXTURE / "screenshots.json").read_bytes())
+    (ws / "shots").mkdir()
+    for shot in sorted((SL_FIXTURE / "shots").iterdir()):
+        (ws / "shots" / shot.name).write_bytes(shot.read_bytes())
+    return ws
+
+
+def test_sl_bundle_carries_the_config_diff_settings_and_matches_the_shared_golden(tmp_path, git_calls, no_github_socket):
+    import socket
+
+    # Positive control: the socket guard trips on a GitHub connection.
+    with pytest.raises(OSError, match="api.github.com"):
+        socket.create_connection(("api.github.com", 443))
+    assert no_github_socket == [("api.github.com", 443)]
+    no_github_socket.clear()
+
+    ws = fixture_ws(tmp_path)
+    cfg = screenshots_config.load_config(ws)
+    lines = []
+    bundle = step_agent.screenshot_bundle(ws, log=lines.append)
+    assert git_calls == [] and no_github_socket == []
+    assert bundle is not None, lines
+    # The repo's own settings, not the defaults, as a GitHub publish passes them.
+    assert bundle["diff"] == {"threshold": cfg.diff_threshold, "ratioTolerance": cfg.diff_ratio_tolerance}
+    assert (cfg.diff_threshold, cfg.diff_ratio_tolerance) == (0.2, 0.02)
+    assert bundle == json.loads(SL_BUNDLE_GOLDEN.read_text(encoding="utf-8"))
+
+
+def test_sl_bundle_without_a_diff_block_carries_the_default_settings(tmp_path, git_calls):
+    ws = make_ws(tmp_path, backend="sl")
+    (ws / "shots").mkdir()
+    (ws / "shots" / "board.png").write_bytes(png("board"))
+    bundle = step_agent.screenshot_bundle(ws)
+    assert bundle["diff"] == {
+        "threshold": screenshots_config.DEFAULT_DIFF_THRESHOLD,
+        "ratioTolerance": screenshots_config.DEFAULT_DIFF_RATIO_TOLERANCE,
+    }
     assert git_calls == []

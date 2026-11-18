@@ -1,0 +1,7 @@
+{
+  "results.json": "{\n  \"version\": 1,\n  \"baseline\": \"456c73b6a5263a63af476853c1a6acd7b8744a2b\",\n  \"threshold\": 0.1,\n  \"ratioTolerance\": 0.01,\n  \"shots\": [\n    {\n      \"name\": \"changed\",\n      \"status\": \"changed\",\n      \"diffRatio\": 0.1,\n      \"diff\": \"e2e/__screenshots__/diff/changed.png\",\n      \"error\": null\n    },\n    {\n      \"name\": \"new\",\n      \"status\": \"new\",\n      \"diffRatio\": null,\n      \"diff\": null,\n      \"error\": null\n    },\n    {\n      \"name\": \"rebytes\",\n      \"status\": \"same\",\n      \"diffRatio\": 0,\n      \"diff\": null,\n      \"error\": null\n    },\n    {\n      \"name\": \"removed\",\n      \"status\": \"removed\",\n      \"diffRatio\": null,\n      \"diff\": null,\n      \"error\": null\n    },\n    {\n      \"name\": \"same\",\n      \"status\": \"same\",\n      \"diffRatio\": 0,\n      \"diff\": null,\n      \"error\": null\n    },\n    {\n      \"name\": \"sized\",\n      \"status\": \"changed\",\n      \"diffRatio\": 1,\n      \"diff\": \"e2e/__screenshots__/diff/sized.png\",\n      \"error\": null\n    },\n    {\n      \"name\": \"tolerated\",\n      \"status\": \"same\",\n      \"diffRatio\": 0.005,\n      \"diff\": null,\n      \"error\": null\n    }\n  ]\n}\n",
+  "diffs": {
+    "e2e/__screenshots__/diff/changed.png": "8c5aa05cd8080cda99fdc06d48c3eb03f8bbb06075b27d091033a31c1192cff5",
+    "e2e/__screenshots__/diff/sized.png": "6efee0cae9cb9ba7097df018a48f51e13c1fd1bf1b4acdc6e6a8c268f4297e44"
+  }
+}

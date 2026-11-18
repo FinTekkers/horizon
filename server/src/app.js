@@ -1473,7 +1473,7 @@ export function buildApp({
     async (request, reply) => {
       if (!humanAuthorized(request, reply)) return
       const { id, screen, kind } = request.params
-      if (!screenshots.SCREEN_RE.test(screen)) return reply.code(404).send({ error: 'unknown_screen' })
+      if (!screenshots.isScreenName(screen)) return reply.code(404).send({ error: 'unknown_screen' })
       const found = await acceptScreenshots(id)
       if (found.error) return reply.code(found.status).send({ error: found.error })
       const shot = found.shots.find((s) => s.screen === screen)

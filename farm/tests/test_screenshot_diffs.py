@@ -6,6 +6,7 @@ they FAIL — publish_screenshots skips the diffs, and every case below expects
 a results.json — rather than skip.
 """
 
+import hashlib
 import json
 import struct
 import subprocess
@@ -29,8 +30,10 @@ def git(cwd, *args, **kw):
     return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True, **kw).stdout
 
 
-def png(width=20, height=20, changed=0) -> bytes:
-    """A real RGBA PNG: opaque black, with the first `changed` pixels red."""
+def png(width=20, height=20, changed=0, level=-1) -> bytes:
+    """A real RGBA PNG: opaque black, with the first `changed` pixels red.
+    `level` is the zlib level, so two levels give the same pixels in
+    different bytes."""
     rows = b""
     for y in range(height):
         row = bytearray(b"\0")
@@ -42,7 +45,7 @@ def png(width=20, height=20, changed=0) -> bytes:
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(rows, level)) + chunk(b"IEND", b"")
 
 
 def png_size(data: bytes) -> tuple[int, int]:
@@ -357,3 +360,62 @@ def test_publish_never_moves_the_baseline(tmp_path):
     assert origin_sha(origin, "e2e-baseline") == before
     assert ref_files(origin, "e2e-baseline") == [f"{TREE}/a.png", f"{TREE}/b.png"]
 
+
+
+# HO-892 metric 5 / guardrail 1: GitHub's results.json and diff PNGs are pinned
+# byte for byte. The golden was written from main's farm/capture/diff.mjs
+# before HO-892 moved its per-pair diff into farm/capture/pixelDiff.mjs (which
+# the sl store on the server now shares), so any change to GitHub's output
+# fails here. Dates and authors are pinned, so the baseline commit sha in
+# results.json is stable.
+GOLDEN = Path(__file__).parent / "fixtures" / "screenshots" / "github-results.golden.json"
+PINNED_GIT_ENV = {
+    "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+    "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+    "GIT_AUTHOR_NAME": "T",
+    "GIT_AUTHOR_EMAIL": "t@example.com",
+    "GIT_COMMITTER_NAME": "T",
+    "GIT_COMMITTER_EMAIL": "t@example.com",
+}
+
+
+def github_publish_output(tmp_path) -> dict:
+    """One GitHub publish over every result kind: results.json's exact text
+    and the sha256 of each diff PNG on the ref."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    ws, origin = workspace(tmp_path)
+    seed_baseline(
+        tmp_path,
+        origin,
+        {"changed": png(), "same": png(), "rebytes": png(), "tolerated": png(), "sized": png(), "removed": png()},
+    )
+    write_shots(
+        ws,
+        {
+            "changed": png(changed=40),
+            "same": png(),
+            "rebytes": png(level=1),
+            "tolerated": png(changed=2),
+            "sized": png(width=24, height=16),
+            "new": png(),
+        },
+    )
+    publish(ws)
+    text = subprocess.run(
+        ["git", "--git-dir", str(origin), "show", f"{REF}:{TREE}/results.json"], capture_output=True, text=True, check=True
+    ).stdout
+    diffs = {}
+    for path in sorted(diff_files(origin)):
+        blob = subprocess.run(["git", "--git-dir", str(origin), "show", f"{REF}:{path}"], capture_output=True, check=True).stdout
+        diffs[path] = hashlib.sha256(blob).hexdigest()
+    return {"results.json": text, "diffs": diffs}
+
+
+def test_github_results_and_diff_pngs_match_the_golden_on_every_run(tmp_path, monkeypatch):
+    for key, value in PINNED_GIT_ENV.items():
+        monkeypatch.setenv(key, value)
+    assert png(level=1) != png(), "the rebytes pair must differ in bytes"
+    first = github_publish_output(tmp_path / "one")
+    second = github_publish_output(tmp_path / "two")
+    assert first == second
+    assert first == json.loads(GOLDEN.read_text(encoding="utf-8"))
