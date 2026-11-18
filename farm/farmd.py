@@ -33,6 +33,7 @@ from . import task_driver
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
+from .vcs import sl as sl_vcs
 from .agent_runner import AgentError, assert_provider_auth
 from .config import (
     FARM_PORT,
@@ -2111,10 +2112,13 @@ async def steps_run(request: Request):
             return JSONResponse({"error": f"missing {key}"}, status_code=400)
     # HO-874: an optional vcs backend, `git` when absent. Checked before
     # anything is provisioned or queued, so an unknown one spawns nothing.
+    # HO-876: only a backend that can run steps; `sl` is reached through
+    # /vcs/* instead, and a step request for it would clone a git hub.
     try:
-        vcs.get(body.get("backend"))
+        vcs.step_backend(body.get("backend"))
     except vcs.UnknownBackend as exc:
-        return JSONResponse({"error": "unknown_vcs_backend", "backend": exc.backend, "known": sorted(vcs.BACKENDS)}, status_code=400)
+        error = "vcs_backend_has_no_steps" if isinstance(exc, vcs.NoStepRuns) else "unknown_vcs_backend"
+        return JSONResponse({"error": error, "backend": exc.backend, "known": sorted(vcs.STEP_BACKENDS)}, status_code=400)
     # HZ-207: every task carries its own project and repo, and a task without
     # them is refused — never filled in from the farm's own state["project"],
     # which would hand one project's rules to another project's item.
@@ -2420,6 +2424,114 @@ async def conflicts_cancel(request: Request):
         flush=True,
     )
     return {"ok": True, "cancelled": True, "killed": killed, "lock_released": released}
+
+
+# HO-876: the `sl` backend's submit, review status and land. Each route is
+# loopback only (submit publishes a diff, land pushes to master), needs the
+# farm running, names backend "sl" (GitHub items keep the PR flow), and runs
+# in the item's existing sl checkout under its sl item lock, tried once.
+# Nothing here reaches git, gh or a token: see farm/vcs/sl.py.
+
+
+async def _vcs_request(request: Request) -> tuple[dict, str, dict] | JSONResponse:
+    host = request.client.host if request.client else None
+    if host not in LOOPBACK_HOSTS:
+        return JSONResponse({"error": "not_loopback"}, status_code=403)
+    if state["status"] != "running":
+        return JSONResponse({"error": f"farm_not_running (status={state['status']})"}, status_code=409)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_input", "detail": "a JSON object is required"}, status_code=400)
+    if body.get("backend") != "sl":
+        return JSONResponse({"error": "unsupported_backend", "backend": body.get("backend"), "known": ["sl"]}, status_code=400)
+    repo, item = body.get("repo"), body.get("item")
+    if not isinstance(repo, str) or not sl_vcs.REPO_RE.fullmatch(repo):
+        return JSONResponse({"error": "bad_input", "detail": "repo must be a bare sl repo name"}, status_code=400)
+    if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not sl_vcs.ITEM_RE.fullmatch(item["id"]):
+        return JSONResponse({"error": "bad_input", "detail": "item.id is required"}, status_code=400)
+    for key in ("summary", "test_plan", "checks_waiver", "test_env_file"):
+        if body.get(key) is not None and not isinstance(body[key], str):
+            return JSONResponse({"error": "bad_input", "detail": f"{key} must be a string"}, status_code=400)
+    if body.get("check_commands") is not None and not isinstance(body["check_commands"], dict):
+        return JSONResponse({"error": "bad_input", "detail": "check_commands must be an object"}, status_code=400)
+    return body, repo, item
+
+
+def _vcs_locked(repo: str, item_id: str, action):
+    """action(ws) in the item's sl checkout, under its sl lock. An expected
+    sl failure answers its own code; anything else is a 500 crash."""
+    try:
+        with sl_vcs.item_lock(repo, item_id, wait_s=0):
+            return action(sl_vcs.existing_checkout(repo, item_id))
+    except workspaces.ItemBusy:
+        return JSONResponse({"error": "item_busy"}, status_code=409)
+    except sl_vcs.SlError as exc:
+        print(f"farmd: /vcs for {item_id} refused: {exc.error}: {scrub(str(exc))[:300]}", flush=True)
+        return JSONResponse(exc.payload(), status_code=exc.http)
+    except Exception as exc:  # noqa: BLE001 — every surprise is a 500, scrubbed
+        print(f"farmd: /vcs for {item_id} crashed: {scrub(str(exc))}", flush=True)
+        return JSONResponse({"error": "crash", "detail": scrub(f"{type(exc).__name__}: {exc}")[:300]}, status_code=500)
+
+
+@app.post("/vcs/submit")
+async def vcs_submit(request: Request):
+    """HO-876: commit or amend the item's one draft commit and `jf submit` it.
+    200 {ok, diff, commit, updated}: a resubmit updates the same diff."""
+    parsed = await _vcs_request(request)
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    body, repo, item = parsed
+
+    def action(ws):
+        return {"ok": True, **sl_vcs.submit(ws, item, body.get("summary") or "", body.get("test_plan") or "")}
+
+    return await asyncio.to_thread(_vcs_locked, repo, item["id"], action)
+
+
+@app.post("/vcs/review-status")
+async def vcs_review_status(request: Request):
+    """HO-876: 200 {diff, status, landed_commit} for the item's diff."""
+    parsed = await _vcs_request(request)
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    _, repo, item = parsed
+    return await asyncio.to_thread(_vcs_locked, repo, item["id"], sl_vcs.review_status)
+
+
+@app.post("/vcs/land")
+async def vcs_land(request: Request):
+    """HO-876: land the item's diff on master. Already there: 200 with that
+    commit and already_landed, nothing pushed. Not Accepted: 409
+    not_accepted, nothing pushed. Else jf sync, the test rebase and
+    `sl push --to master`; 200 {ok, diff, commit, already_landed, note}."""
+    parsed = await _vcs_request(request)
+    if isinstance(parsed, JSONResponse):
+        return parsed
+    body, repo, item = parsed
+    timeout_s = body.get("timeout_s")
+    if timeout_s is None:
+        timeout_s = sl_vcs.DEFAULT_LAND_TIMEOUT_S
+    # NaN fails the range check too.
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not 0 < timeout_s <= 86400:
+        return JSONResponse({"error": "bad_input", "detail": "timeout_s must be a number of seconds, up to 86400"}, status_code=400)
+
+    def action(ws):
+        result = sl_vcs.land(
+            ws,
+            repo,
+            item,
+            timeout_s=timeout_s,
+            configured=body.get("check_commands"),
+            checks_waiver=body.get("checks_waiver"),
+            test_env_file=body.get("test_env_file"),
+            log=lambda msg: print(f"farmd: /vcs/land {item['id']}: {msg}", flush=True),
+        )
+        return {"ok": True, **result}
+
+    return await asyncio.to_thread(_vcs_locked, repo, item["id"], action)
 
 
 def _job_task_for_run(run_id: str) -> tuple[Path | None, dict | None]:

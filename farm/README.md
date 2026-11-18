@@ -435,6 +435,43 @@ Measure it on an idle host with
 It clones the repo into a throwaway `FARM_HOME` under pytest's `tmp_path` and
 never touches `~/.horizon-farm`.
 
+## The `sl` backend (HO-876)
+
+`farm/vcs/sl.py` checks out, submits, tracks and lands an item for a project
+on Sapling and Phabricator. It spawns `sl`, `eden` and `jf` only: never `git`
+or `gh`, and `workspaces.ensure()` is never the way in.
+
+- **Ambient auth only.** No token is taken, stored or put in a URL. Each spawn
+  gets the farm's environment minus every `*TOKEN*`, `*SECRET*` and
+  `*PASSWORD*` variable. A clone source with `user:secret@` is refused. After
+  checkout, `.sl/config`, `.hg/hgrc` and `sl paths` are scanned, and a
+  checkout holding a credential is removed.
+- **Checkouts** live at `$FARM_HOME/sl/<repo>/items/<item>`, outside
+  `WORKSPACES_DIR`, so the git worktree sweep never sees them. `eden clone`
+  is used when `eden` is on `PATH` and `FARM_SL_USE_EDEN` is not `0`;
+  otherwise `sl clone`. Nothing sweeps them yet: `sl.reap()` removes one.
+- **One diff per item.** The item is one draft commit. `jf submit` writes its
+  `Differential Revision: D<n>` line, and a resubmit amends the same commit,
+  so `jf` updates the same diff. That line is the only record of the diff
+  number. No line the farm writes is a `Reviewed By` line.
+- **Routes** (loopback only, farm running, `"backend": "sl"`, under the item's
+  `sl:` lock): `POST /vcs/submit`, `POST /vcs/review-status` and
+  `POST /vcs/land`. Nothing in the server calls them yet.
+- **Land order.** `sl pull`. If the diff is already on `remote/master`, return
+  that commit and push nothing. If it is not Accepted, answer 409
+  `not_accepted` and push nothing. Then `jf sync`, strip any `Reviewed By`
+  line it added, rebase onto `remote/master` and run the repo's checks, then
+  `sl push -r . --to master`. All of it runs in the item's own checkout,
+  because the post-sync commit exists only there.
+- **Checks on `sl`** run with `branch_gate=False`, no per-test or flake
+  recording and no dependency cache, because each of those runs `git` in the
+  workspace. The HZ-349/HZ-406 branch run of changed `scripts/checks/` files
+  does not happen for `sl` items.
+- **Host prerequisites:** `sl`, `jf` and (optionally) `eden` on `PATH`, plus
+  Tasks/Phabricator access for the farm user. Without them, only the mocked
+  tests run. `/vcs/land`'s `timeout_s` (default 1800) bounds the checks only.
+  The pull, rebase and push have their own timeouts (900 s each).
+
 ## The `asks` field (HZ-728)
 
 A step that finds follow-up or prerequisite work returns it as data, not as
