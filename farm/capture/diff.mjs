@@ -19,28 +19,13 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import pixelmatch from 'pixelmatch'
 import { PNG } from 'pngjs'
+import { diffPngs } from './pixelDiff.mjs'
 
-function padded(png, width, height) {
-  if (png.width === width && png.height === height) return png.data
-  const out = new PNG({ width, height })
-  PNG.bitblt(png, out, 0, 0, png.width, png.height, 0, 0)
-  return out.data
-}
-
+// HO-892: the pixel work is pixelDiff.mjs's, shared with the sl store.
 function diffPair(pair, { outDir, threshold, ratioTolerance }) {
-  const a = PNG.sync.read(readFileSync(pair.current))
-  const b = PNG.sync.read(readFileSync(pair.baseline))
-  const width = Math.max(a.width, b.width)
-  const height = Math.max(a.height, b.height)
-  const diff = new PNG({ width, height })
-  const diffPixels = pixelmatch(padded(a, width, height), padded(b, width, height), diff.data, width, height, {
-    threshold,
-  })
-  const sameSize = a.width === b.width && a.height === b.height
-  const diffRatio = sameSize ? diffPixels / (width * height) : 1
-  if (diffRatio <= ratioTolerance) return { name: pair.name, status: 'same', diffRatio, error: null }
-  writeFileSync(join(outDir, `${basename(pair.name)}.png`), PNG.sync.write(diff))
-  return { name: pair.name, status: 'changed', diffRatio, error: null }
+  const result = diffPngs(readFileSync(pair.current), readFileSync(pair.baseline), { threshold, ratioTolerance }, { pixelmatch, PNG })
+  if (result.png) writeFileSync(join(outDir, `${basename(pair.name)}.png`), result.png)
+  return { name: pair.name, status: result.status, diffRatio: result.diffRatio, error: null }
 }
 
 const input = JSON.parse(readFileSync(0, 'utf8'))

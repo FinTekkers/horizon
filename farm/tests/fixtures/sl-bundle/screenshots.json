@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "serve": "exec true",
+  "ready": "http://127.0.0.1:1/",
+  "outputDir": "shots",
+  "themes": [
+    "light"
+  ],
+  "viewports": [
+    {
+      "name": "desktop",
+      "width": 40,
+      "height": 30
+    }
+  ],
+  "screens": [
+    {
+      "name": "board",
+      "path": "/"
+    },
+    {
+      "name": "home",
+      "path": "/home"
+    }
+  ],
+  "diff": {
+    "threshold": 0.2,
+    "ratioTolerance": 0.02
+  }
+}

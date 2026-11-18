@@ -1,0 +1,20 @@
+{
+  "files": [
+    {
+      "path": "board.png",
+      "data": "iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAYAAABe3VzdAAAAPUlEQVR4nO3OsQ0AMAzDMP//dDrkCAcoB2lmJpnLpQ0ABMzucnUAIGAbAAjYBgACtgGAgG0AIGAbAPg38AEr33LUuT4sGAAAAABJRU5ErkJggg=="
+    },
+    {
+      "path": "home.png",
+      "data": "iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAYAAABe3VzdAAAASUlEQVR4Ae3SsQkAIBAEweu/aS1iE5EJDBdk/rbtPP58sF6IIMEqUHsbJFgFam+DBKtA7W2QYBWovQ0SrAK1t0GCVaD2Nvi34AW9/6uND62YXwAAAABJRU5ErkJggg=="
+    },
+    {
+      "path": "manifest.json",
+      "data": "eyJzaG90cyI6IFtdfQo="
+    }
+  ],
+  "diff": {
+    "threshold": 0.2,
+    "ratioTolerance": 0.02
+  }
+}

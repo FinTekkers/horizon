@@ -1001,10 +1001,15 @@ BUNDLE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
 
 def screenshot_bundle(ws: Path, log=log) -> dict | None:
-    """The workspace's captured shots as {"files": [{"path", "data"}]}: each
-    PNG in outputDir plus its manifest.json, base64-encoded. None when there is
-    nothing to send or the shots are over the caps. Best-effort and file reads
-    only: never raises, never runs a subprocess."""
+    """The workspace's captured shots as {"files": [{"path", "data"}],
+    "diff": {"threshold", "ratioTolerance"}}: each PNG in outputDir plus its
+    manifest.json, base64-encoded. None when there is nothing to send or the
+    shots are over the caps. Best-effort and file reads only: never raises,
+    never runs a subprocess.
+
+    HO-892: `diff` is the config's pixel-diff settings, the same pair a GitHub
+    publish hands farm/capture/diff.mjs. The server diffs the shots against
+    the sl baseline it holds, with the same farm/capture/pixelDiff.mjs."""
     try:
         cfg = screenshots_config.load_config(ws)
     except screenshots_config.ConfigError:
@@ -1036,7 +1041,7 @@ def screenshot_bundle(ws: Path, log=log) -> dict | None:
         log(f"screenshot_bundle: skipped — {exc}")
         return None
     log(f"screenshot_bundle: {len(pngs)} screenshot(s) ride on the result")
-    return {"files": files}
+    return {"files": files, "diff": {"threshold": cfg.diff_threshold, "ratioTolerance": cfg.diff_ratio_tolerance}}
 
 
 def truncate_diff(diff_full: str) -> tuple[str, str]:

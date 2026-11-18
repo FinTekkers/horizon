@@ -39,6 +39,13 @@
 // The server is one process (horizon-server), so an in-process lock per
 // project is enough to serialise writes. This module never imports github.js,
 // spawns a process or makes a network call.
+//
+// HO-892: a bundle that carries the repo's diff settings gets GitHub's pixel
+// diff — the same farm/capture/pixelDiff.mjs that farm/capture/diff.mjs runs,
+// with the same threshold and ratioTolerance — against the sl baseline. A
+// changed shot's diff PNG is one more file of the generation, at
+// e2e/__screenshots__/diff/<name>.png, so it lands through the same .tmp-*
+// folder and rename as every other file and is read through genFile.
 
 import { createHash, randomBytes } from 'node:crypto'
 import {
@@ -61,6 +68,10 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 
+import pixelmatch from 'pixelmatch'
+import { PNG } from 'pngjs'
+
+import { diffPngs } from '../../../farm/capture/pixelDiff.mjs'
 import { db } from '../db.js'
 import { msOf, sqlTime } from '../sqlTime.js'
 import { SCREENSHOT_DIR } from './artifact.js'
@@ -483,8 +494,22 @@ export async function publishArtifacts(item, { results, files } = {}) {
   })
 }
 
+// HO-892: the bundle's pixel-diff settings ({ threshold, ratioTolerance },
+// each a number in [0, 1], as farm/screenshots_config.py validates them), or
+// null when it carries none — a farm from before HO-892 — and shots are then
+// compared by sha256 only, as HO-878 did.
+function diffSettingsOf(bundle) {
+  const diff = Object.hasOwn(bundle, 'diff') ? bundle.diff : null
+  if (diff == null) return null
+  const unit = (key) => Object.hasOwn(diff, key) && typeof diff[key] === 'number' && diff[key] >= 0 && diff[key] <= 1
+  if (typeof diff !== 'object' || Array.isArray(diff) || !unit('threshold') || !unit('ratioTolerance')) {
+    throw new ArtifactStoreError('bad_bundle', 'diff settings are a threshold and a ratioTolerance in [0, 1]')
+  }
+  return { threshold: diff.threshold, ratioTolerance: diff.ratioTolerance }
+}
+
 // The farm's bundle checked and decoded: { shots: Map name → PNG bytes,
-// manifest }. Sizes are checked from the base64 length, before any decode.
+// manifest, diff }. Sizes are checked from the base64 length, before any decode.
 function decodeBundle(bundle) {
   const list = bundle?.files
   if (!Array.isArray(list) || list.length === 0) throw new ArtifactStoreError('bad_bundle', 'a bundle lists its files')
@@ -514,31 +539,60 @@ function decodeBundle(bundle) {
     }
   }
   if (shots.size === 0) throw new ArtifactStoreError('bad_bundle', 'no screenshots')
-  return { shots, manifest }
+  return { shots, manifest, diff: diffSettingsOf(bundle) }
 }
 
-// results.json for `shots` (name → bytes) against the current baseline, by
-// sha256: same, changed, new or removed. There is no pixel diff on sl yet, so
-// a changed shot has diffRatio null and no diff image.
-function resultsAgainst(shots, baseline) {
+// HO-892: one changed shot's row, pixel-diffed against its baseline file the
+// way farm/capture/diff.mjs diffs a GitHub pair: `same` within the tolerance
+// (no diff PNG), else `changed` with its diff PNG put in `diffs`. A pair that
+// fails (a corrupt PNG, a baseline file gone) is `changed` with `error` set and
+// no PNG, and the other shots still diff. Each pair waits a turn of the event
+// loop first, so a big bundle never holds the server for more than one pair.
+// `base` is the baseline file's { rel, sha } in generation `baseDir`.
+async function pixelRow(name, current, baseDir, base, settings, diffs) {
+  await new Promise((resolve) => setImmediate(resolve))
+  try {
+    const { status, diffRatio, png } = diffPngs(current, readContent(baseDir, base.rel, base.sha), settings, { pixelmatch, PNG })
+    if (png) diffs.set(name, png)
+    return { name, status, diffRatio, diff: png ? `${SCREENSHOT_DIR}/diff/${name}.png` : null, error: null }
+  } catch (err) {
+    return { name, status: 'changed', diffRatio: null, diff: null, error: String(err?.message || err).slice(0, 300) }
+  }
+}
+
+// { results, diffs }: results.json for `shots` (name → bytes) against the
+// current baseline — same, changed, new or removed — and the diff PNG of each
+// changed shot (name → bytes). Equal sha256s are `same` without a diff. With
+// no `settings` there is no pixel diff (HO-878): a changed shot has diffRatio
+// null and no diff image. With them, results.json also records them, as
+// GitHub's does.
+async function resultsAgainst(shots, baseline, settings) {
   const base = new Map()
   for (const [rel, entry] of baseline?.files ?? []) {
     const m = TOP_SHOT_RE.exec(rel)
-    if (m) base.set(m[1], entry.sha)
+    if (m) base.set(m[1], { rel, sha: entry.sha })
   }
   const rows = []
+  const diffs = new Map()
   for (const name of [...new Set([...shots.keys(), ...base.keys()])].sort()) {
     let status = 'changed'
     if (!base.has(name)) status = 'new'
     else if (!shots.has(name)) status = 'removed'
-    else if (sha256(shots.get(name)) === base.get(name)) status = 'same'
+    else if (sha256(shots.get(name)) === base.get(name).sha) status = 'same'
+    else if (settings) {
+      rows.push(await pixelRow(name, shots.get(name), baseline.dir, base.get(name), settings, diffs))
+      continue
+    }
     rows.push({ name, status, diffRatio: status === 'same' ? 0 : null, diff: null, error: null })
   }
-  return { version: 1, baseline: baseline?.commit ?? null, shots: rows }
+  const head = { version: 1, baseline: baseline?.commit ?? null }
+  const results = settings ? { ...head, ...settings, shots: rows } : { ...head, shots: rows }
+  return { results, diffs }
 }
 
 // HO-878: the farm's screenshot bundle for an sl item —
-// { files: [{ path: '<name>.png' | 'manifest.json', data: <base64> }] }, as
+// { files: [{ path: '<name>.png' | 'manifest.json', data: <base64> }],
+//   diff?: { threshold, ratioTolerance } (HO-892) }, as
 // farm/step_agent.py's screenshot_bundle builds it — stored as the item's
 // publish. Rejects with an ArtifactStoreError (nothing written) on a bad one.
 export async function saveScreenshotBundle(item, bundle) {
@@ -546,10 +600,11 @@ export async function saveScreenshotBundle(item, bundle) {
   const projectId = slProjectOf(item?.repo)
   if (projectId == null) throw new ArtifactStoreError('not_sl_project', `${item?.repo} is not an sl repo`)
   projectKey(projectId)
-  const { shots, manifest } = decodeBundle(bundle)
-  const results = resultsAgainst(shots, currentBaseline(storeDirs(projectId, false)))
+  const { shots, manifest, diff } = decodeBundle(bundle)
+  const { results, diffs } = await resultsAgainst(shots, currentBaseline(storeDirs(projectId, false)), diff)
   const files = new Map([...shots].map(([name, bytes]) => [`${SCREENSHOT_DIR}/${name}.png`, bytes]))
   if (manifest) files.set(`${SCREENSHOT_DIR}/${MANIFEST_NAME}`, manifest)
+  for (const [name, png] of diffs) files.set(`${SCREENSHOT_DIR}/diff/${name}.png`, png)
   return publishArtifacts(item, { results, files })
 }
 
