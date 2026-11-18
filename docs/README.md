@@ -2,6 +2,7 @@
 
 Newest first. Add one line per new doc — no other changes needed.
 
+- [`project-substeps.md`](project-substeps.md) — HO-854: turn on the "Design the screens" sub-step for a project with a UI: `farm/projects/<slug>/steps.json`, `anchor`, the `design` output, the credential and the intake freeze.
 - [`adr/README.md`](adr/README.md) — HZ-727: architecture decision records — numbering, statuses, template and index.
 - [`adr/0001-agent-asks.md`](adr/0001-agent-asks.md) — HZ-727: ADR 0001, agents raise follow-up and prerequisite work as reviewed asks.
 - [`tool-allowlist.md`](tool-allowlist.md) — HZ-536: add a tool venv to `farm/tools/allowlist.json` by PR, so a project persona can use it read-only.

@@ -42,7 +42,9 @@ import {
   defaultReworkTarget,
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
-import { DESIGN_OUTPUT, designSubstepOf, encodePending, latestRound, listRounds } from './designRounds.js'
+import { DESIGN_OUTPUT, currentDesignSubstep, designSubstepOf, encodePending, latestRound, listRounds, readPending } from './designRounds.js'
+import { parseCanvasLine } from '../../domain/js/designCanvas.js'
+import { safeCanvasUrl } from '../../domain/js/designRounds.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
 import { REASON } from '../../domain/js/reasons.js'
@@ -2818,7 +2820,7 @@ function substepFields(row, overlay) {
       persona,
       personaBadge: agent ? personaDisplay(agent, persona, overlay) : null,
       run: runs.get(s.id) ?? null,
-      ...designRoundFields(row.id, s),
+      ...designRoundFields(row, s),
     }
   })
   const current = currentSubstep(row)
@@ -2829,14 +2831,33 @@ function substepFields(row, overlay) {
   }
 }
 
+// Only the first line of a design run's artifact holds its canvas line.
+const selectDesignRunHeads = db.prepare(
+  'SELECT id, substr(artifact, 1, 1024) AS head FROM step_run WHERE item_id = ? AND substep_id = ? AND artifact IS NOT NULL',
+)
+
 // HO-851: a design sub-step also carries every round (designRounds.js) and,
 // while its latest round is a skip, why — the "Skipped: <reason>" the tracker
 // shows. Any other sub-step carries neither key, so its payload is unchanged.
-function designRoundFields(itemId, sub) {
+// HO-853: and each round's own canvas link (`canvasUrl`), read off its run's
+// canvas line (domain/js/designCanvas.js) and kept only as an https URL with
+// no credentials (safeCanvasUrl) — nothing else of the run is served. While
+// the item is at the sub-step, `pendingRound` is the round in flight and its
+// brief (the send-back note, or the override reason), else null.
+function designRoundFields(row, sub) {
   if (sub.output !== DESIGN_OUTPUT) return {}
-  const rounds = listRounds(itemId, sub.id)
+  const heads = new Map(selectDesignRunHeads.all(row.id, sub.id).map((run) => [run.id, run.head]))
+  const rounds = listRounds(row.id, sub.id).map((round) => ({
+    ...round,
+    canvasUrl: round.runId == null ? null : safeCanvasUrl(parseCanvasLine(heads.get(round.runId))?.url),
+  }))
   const latest = rounds.at(-1)
-  return { rounds, skip: latest?.kind === 'skip' ? { reason: latest.brief } : null }
+  const pending = currentDesignSubstep(row)?.id === sub.id ? readPending(row) : null
+  return {
+    rounds,
+    skip: latest?.kind === 'skip' ? { reason: latest.brief } : null,
+    pendingRound: pending ? { round: (latest?.round ?? 0) + 1, kind: pending.kind === 'forced' ? 'forced' : 'run', brief: String(pending.brief ?? '') } : null,
+  }
 }
 
 // HZ-709: one kind's steps as the snapshot lists them. Built once per kind —

@@ -59,6 +59,13 @@ export function returnTargets(item) {
   return movesOf(item).targets.filter((t) => t.action === 'return')
 }
 
+// HO-853: the served return target that runs the sub-step `substepId` again
+// (its key is `<step>#<substepId>`), or null when the snapshot lists none.
+export function substepReturnTarget(item, substepId) {
+  if (typeof substepId !== 'string' || substepId === '') return null
+  return returnTargets(item).find((t) => t.key === `${t.step}#${substepId}`) ?? null
+}
+
 // The current step's retry, or null.
 export function retryTarget(item) {
   return movesOf(item).targets.find((t) => t.action === 'retry') ?? null

@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 # HZ-132 put the failure-reason vocabulary there under the same rule, so the
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
-from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rehearsal_proxy, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, visual_page, workspace_sweep, workspaces
+from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rehearsal_proxy, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, vcs, visual_page, workspace_sweep, workspaces
 from . import task_driver
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
@@ -2109,6 +2109,12 @@ async def steps_run(request: Request):
     for key in ("run_id", "item", "step"):
         if key not in body:
             return JSONResponse({"error": f"missing {key}"}, status_code=400)
+    # HO-874: an optional vcs backend, `git` when absent. Checked before
+    # anything is provisioned or queued, so an unknown one spawns nothing.
+    try:
+        vcs.get(body.get("backend"))
+    except vcs.UnknownBackend as exc:
+        return JSONResponse({"error": "unknown_vcs_backend", "backend": exc.backend, "known": sorted(vcs.BACKENDS)}, status_code=400)
     # HZ-207: every task carries its own project and repo, and a task without
     # them is refused — never filled in from the farm's own state["project"],
     # which would hand one project's rules to another project's item.

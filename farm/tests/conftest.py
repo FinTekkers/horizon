@@ -124,6 +124,12 @@ os.environ.pop("FARM_MODEL_OVERRIDE", None)
 # be a nested run of the outer check, and a timeout in it would reap the
 # outer check's processes. Tests that need a tag set their own.
 os.environ.pop("HORIZON_RUN_ID", None)
+# HO-898: run_checks() adds --junitxml to PYTEST_ADDOPTS for each attempt, so
+# this suite, run as a check, inherits the outer report path. pytest has
+# already read it by now. A child pytest or a test run_checks() that kept it
+# would write over the outer report, or pass it through and lose its own rows.
+os.environ.pop("PYTEST_ADDOPTS", None)
+os.environ.pop("FARM_CHECK_PYTEST_JUNIT", None)
 
 sys.path.insert(0, str(REPO_ROOT))
 

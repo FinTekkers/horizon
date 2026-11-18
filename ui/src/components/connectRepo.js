@@ -95,3 +95,18 @@ export function needsRepo(project, isOwner, items = []) {
   if (!Array.isArray(project.repos) || project.repos.length > 0) return false
   return !items.some((item) => item.project_id === project.id)
 }
+
+// HO-900: the backend a repo is connected on — 'github', 'sl', or null when
+// there is no repo or no project lists it. Read only from the per-repo setting
+// (`projects[].repos[].backend`, from GET /api/projects); never inferred from
+// an item. A listed repo without `backend` (links not loaded yet) is the default.
+export function repoBackendOf(projects, repo) {
+  if (!repo) return null
+  const want = String(repo).toLowerCase()
+  for (const project of projects || []) {
+    for (const r of project?.repos || []) {
+      if (typeof r?.repo === 'string' && r.repo.toLowerCase() === want) return r.backend ?? DEFAULT_BACKEND
+    }
+  }
+  return null
+}

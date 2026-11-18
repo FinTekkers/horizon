@@ -77,6 +77,12 @@ for (const item of ITEMS) {
     await page.goto(`/${item.id.toLowerCase()}`)
     const table = page.getByRole('table', { name: 'Golden cases' })
     await expect(table).toBeVisible({ timeout: 15_000 })
+    // HO-853 guardrail 1: an item with no design keeps today's gate — no
+    // design panel, no gate-review container and none of its buttons.
+    await expect(page.getByTestId('design-panel')).toHaveCount(0)
+    await expect(page.locator('.step-card__gate-review')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Request changes' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Approve without design' })).toHaveCount(0)
     for (const name of ['Inputs', 'Measure', 'Expected', 'Tolerance', 'Source']) {
       await expect(table.getByRole('columnheader', { name, exact: true })).toBeVisible()
     }

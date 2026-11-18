@@ -22,6 +22,17 @@ const COPY = {
     placeholder: 'Your ruling on the blocking rule — e.g. a local workaround is allowed here (required)',
     required: true,
   },
+  // HO-853: the first gate's "Approve without design" — the reason is
+  // required, and Approve stays disabled until one is typed.
+  approveNoDesign: {
+    title: 'Approve without design',
+    submitLabel: 'Approve without design',
+    submitColor: 'var(--success)',
+    placeholder: 'Why approve with no design canvas? (required)',
+    inputLabel: 'Reason to approve without design',
+    required: true,
+    disabledUntilText: true,
+  },
 }
 
 // HZ-711: Return to and Retry are MoveDialog's; this composer keeps the modes
@@ -32,6 +43,9 @@ function subtitle(composer) {
   }
   if (composer.mode === 'abandon') {
     return 'Stops dispatch, cancels any in-flight run, and closes the GitHub issue as not planned — this is recorded on the activity feed and cannot be undone from here'
+  }
+  if (composer.mode === 'approveNoDesign') {
+    return `Approves ${composer.target || 'the gate'} with no design canvas. Your reason is kept on the item and shown on its design panel.`
   }
   if (composer.mode === 'amend') {
     return "Your ruling goes to the implement agent, the block clears and implement re-runs. The issue's guardrails and metric are not changed. Needs your gate PIN."
@@ -46,6 +60,8 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
   // (on by default) to remove their links to it in the same request.
   const dependents = composer.mode === 'abandon' ? composer.dependents || [] : []
   const [removeDependentLinks, setRemoveDependentLinks] = useState(true)
+  const [hasText, setHasText] = useState(false)
+  const blocked = copy.disabledUntilText === true && !hasText
   // HZ-470: Kill stays open until its request settles — Cancel, Esc and the
   // scrim do nothing meanwhile. Amend the rule keeps its Cancel.
   const locked = composer.busy === true && composer.mode === 'abandon'
@@ -113,7 +129,15 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
             </label>
           </div>
         )}
-        <textarea ref={inputRef} className="composer__input" placeholder={copy.placeholder} autoFocus />
+        <textarea
+          ref={inputRef}
+          className="composer__input"
+          placeholder={copy.placeholder}
+          aria-label={copy.inputLabel}
+          required={copy.disabledUntilText || undefined}
+          onChange={copy.disabledUntilText ? (e) => setHasText(e.target.value.trim() !== '') : undefined}
+          autoFocus
+        />
         <div className="composer__hint">⌘/Ctrl + Enter to submit · Esc to cancel</div>
         {/* HZ-389: a request that did not go through says why; the text
             stays, so it can be sent again. */}
@@ -125,7 +149,7 @@ export default function ComposerModal({ composer, onSubmit, onCancel }) {
           <button
             className="composer__submit"
             style={{ background: copy.submitColor }}
-            disabled={composer.busy}
+            disabled={composer.busy || blocked}
             aria-busy={composer.busy || undefined}
             onClick={submit}
           >

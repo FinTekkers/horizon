@@ -192,6 +192,9 @@ editor reads **`Agents get saved version`** `1.` Press
 - A save refused for its content usually means it looks like a secret.
   Replace the value with a `$NAME` reference.
 
+If the project has a UI, you can also give it the "Design the screens"
+sub-step. See [`project-substeps.md`](project-substeps.md).
+
 ## 5. Set up deploy targets and do a Dry run
 
 Skip this step if the project never deploys from Horizon.

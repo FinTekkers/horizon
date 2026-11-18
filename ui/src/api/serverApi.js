@@ -1001,9 +1001,20 @@ function post(path, body) {
   }).catch((err) => console.error(`POST ${path} failed`, err))
 }
 
+// HO-853: what the first gate's approve says about the design (HO-852's
+// designRunId / designSkipReason), from the item's designSpec as this tab
+// shows it; {} for any other gate or an item without a design to approve.
+function designApproval(item, designSkipReason) {
+  const spec = item.designSpec
+  if (!spec || spec.approved || item.cursor !== spec.gateIndex) return {}
+  if (typeof designSkipReason === 'string') return { designSkipReason }
+  return Number.isInteger(spec.pendingRunId) ? { designRunId: spec.pendingRunId } : {}
+}
+
 // HZ-642: `filedAutopilot` ('default' | 'off') is Approve & file's Autopilot
 // choice for the items the Plan files; it is sent at that gate only.
-export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}) {
+// HO-853: `designSkipReason` is "Approve without design"'s reason (HO-852).
+export async function approveGate(id, notes, { filedAutopilot = 'default', designSkipReason = null } = {}) {
   const item = items.find((it) => it.id === id)
   if (!item) return { ok: false }
   // Approving "Accept the code" merges the PR server-side. If GitHub refuses
@@ -1022,6 +1033,9 @@ export async function approveGate(id, notes, { filedAutopilot = 'default' } = {}
     // HZ-541: the golden-cases set this tab showed at the first gate.
     ...(item.goldenCases?.hash && !item.goldenCases.approved && item.cursor === item.goldenCases.gateIndex ? { goldenHash: item.goldenCases.hash } : {}),
     ...(item.cursor === APPROVE_FILE_GATE_INDEX ? { filedAutopilot } : {}),
+    // HO-852/HO-853: at the first gate of an item with a design, the canvas
+    // run this tab showed, or why it approves without design.
+    ...designApproval(item, designSkipReason),
     // HO-843: a one-command patch this card shows is approved for that
     // command only — its index and hash, so a newer patch is not approved unseen.
     ...(item.cursor === APPROVE_RUN_GATE_INDEX && item.runPlan?.commandPatch

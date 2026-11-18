@@ -1094,6 +1094,49 @@ button { font-family: var(--font-sans); }
 .golden-cases__empty { color: var(--muted); font-size: 13px; }
 .golden-cases .btn-gate-approve { align-self: flex-start; }
 .tile__metric-line--golden { scroll-margin-top: 80px; }
+
+/* HO-853: the first gate's design panel, beside the golden cases (stacked on
+   a narrow card or a phone), and a design sub-step row's round. */
+.step-card__gate-review { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-top: 10px; }
+.step-card__gate-review > .golden-cases { flex: 2 1 420px; min-width: 0; margin-top: 0; }
+.step-card__gate-review > .design-panel { flex: 1 1 280px; min-width: 0; }
+.design-panel {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 14px;
+  border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-alt);
+  font-size: 13px; color: var(--ink); overflow-wrap: anywhere;
+}
+.design-panel__title { font: 700 13px var(--font-sans); color: var(--deep); }
+.design-panel__status { color: var(--text-secondary); }
+.design-panel__status--note { color: var(--agent-human-ink); }
+.design-panel__status--warn { color: var(--warning-ink); }
+.design-panel__latest { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border); }
+.design-panel__round-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.design-panel__round { font-weight: 700; color: var(--deep); }
+.design-panel__kind { padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted-strong); font-size: 11px; font-weight: 600; }
+.design-panel__canvas { color: var(--primary-ink); font-weight: 600; text-decoration: none; }
+.design-panel__canvas:hover, .design-panel__canvas:focus-visible { text-decoration: underline; }
+.design-panel__round-head .design-panel__canvas { margin-left: auto; }
+.design-panel__facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
+.design-panel__facts dt { color: var(--muted-strong); font-weight: 600; }
+.design-panel__facts dd { margin: 0; min-width: 0; white-space: pre-wrap; }
+.design-panel__rounds { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.design-panel__round-item { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.design-panel__round-plain { color: var(--muted-strong); font-weight: 600; }
+.design-panel__round-brief { color: var(--text-secondary); min-width: 0; flex: 1 1 160px; }
+.design-panel__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.step-card__round {
+  margin-right: auto; padding: 1px 8px; border-radius: 999px;
+  background: var(--chip); color: var(--muted-strong); font: 600 11px var(--font-sans);
+}
+.step-card__artifact-link + .step-card__canvas-link { margin-left: 12px; }
+.step-card__brief { margin-top: 4px; font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; white-space: pre-wrap; }
+@media (max-width: 480px) {
+  /* One line, so the column is the card's width, not the table's. */
+  .step-card__gate-review { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+  .step-card__gate-review > .golden-cases, .step-card__gate-review > .design-panel { flex: 1 1 auto; }
+  .design-panel__facts { grid-template-columns: 1fr; }
+  .design-panel__round-head .design-panel__canvas { margin-left: 0; }
+}
 .tile__metric-line--golden:target { background: var(--warning-bg); border-radius: 6px; }
 
 .btn-outline {
@@ -2032,6 +2075,10 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
   display: inline-flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px;
   border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-alt);
   font: 700 13px var(--font-sans); color: var(--deep); cursor: pointer;
+}
+.autopilot-off-toggle--unavailable {
+  min-height: 0; padding: 8px 14px; border-style: dashed; background: none;
+  font-weight: 500; color: var(--text-secondary); cursor: default;
 }
 .autopilot-off-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--primary-ink); }
 .autopilot-off-toggle__error { font: 600 12px var(--font-sans); color: var(--danger-ink); }
