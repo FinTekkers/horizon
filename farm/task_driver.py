@@ -3,9 +3,10 @@
 The sl backend files each Horizon item as one Task. The Node server never
 talks to the Task service itself: its sl Tracker adapter
 (server/src/backends/slTracker.js) calls farmd, and farmd's routes call a
-TaskDriver. This item ships the interface and an in-memory stub; the real
-Task-service driver is a later item and must keep this interface (and the
-route contract pinned by farm/tests/fixtures/farm_tasks_contract.json).
+TaskDriver. HO-875 shipped the interface and an in-memory stub. The real
+Meta Tasks driver (HO-883) is in task_driver_meta.py. Both keep this
+interface and the route contract pinned by
+farm/tests/fixtures/farm_tasks_contract.json.
 
 A Task, as every driver returns it:
 
@@ -125,15 +126,25 @@ class StubTaskDriver:
 
 
 _stub: StubTaskDriver | None = None
+_tasks: TaskDriver | None = None
 
 
 def driver_for(name: str) -> TaskDriver | None:
     """The driver TASK_DRIVER names, or None when none is configured. "stub"
-    is one in-memory driver per process. Any other name is not a driver this
-    farm has, so it is treated as unconfigured, never guessed at."""
-    global _stub
+    is one in-memory driver per process. "tasks" is HO-883's Meta Tasks
+    driver (task_driver_meta.py), one per process, with its index under
+    STATE_DIR. Any other name is not a driver this farm has, so it is treated
+    as unconfigured, never guessed at."""
+    global _stub, _tasks
     if name == "stub":
         if _stub is None:
             _stub = StubTaskDriver()
         return _stub
+    if name == "tasks":
+        if _tasks is None:
+            from farm import config as farm_config
+            from farm.task_driver_meta import MetaTasksDriver
+
+            _tasks = MetaTasksDriver(farm_config.STATE_DIR / "tasks_driver.json")
+        return _tasks
     return None
