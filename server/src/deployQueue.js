@@ -29,6 +29,7 @@ import { DEPLOY_BATCH_S, DEPLOY_WAIT_MS, DEPLOY_WAITED_ON_CAP_S, FARM_STEP_TIMEO
 import { resolveTarget, deployOutcomeFor, startDeploy } from './deploy.js'
 import { jobBlocksDeploy, heldMsFor, oldestHolds, lastReleasedHold, releaseHold } from './deployHold.js'
 import { forRepo } from './backends/index.js'
+import { hasGithubIssue } from './trackerRefs.js'
 import { sqlTime, msOf } from './sqlTime.js'
 import { addEvent, getDefaultBranch, itemsComingToDeploy, notifyChange, openDependentsOfAny, runningJobsIn } from './store.js'
 import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
@@ -60,7 +61,7 @@ export function batchTag(target, id, startedMs) {
 // The target an item's Deploy step queues on, or null for today's per-item
 // path: no repo/issue/PR, no deploy target, or a library target.
 export function queueTargetFor(item) {
-  if (!item?.repo || item.issue == null || item.pr == null) return null
+  if (!hasGithubIssue(item) || item.pr == null) return null
   const target = resolveTarget(item.repo)
   return target && target.healthCheckType !== 'registry-publish' ? target : null
 }

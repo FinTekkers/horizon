@@ -26,6 +26,7 @@
 import { db } from './db.js'
 import * as store from './store.js'
 import { forRepo } from './backends/index.js'
+import { hasGithubIssue } from './trackerRefs.js'
 import { UI_URL } from './config.js'
 import { redact } from './caretakerRules.js'
 import { HOST_PATH } from './planText.js'
@@ -230,7 +231,7 @@ export const splitMarker = (sourceId) => `<!-- horizon-split-of: ${sourceId} -->
 // back-link and the marker. Its own heading, so parseIssueBody keeps both out
 // of the new item's guardrails.
 function splitBodySuffix(item, sameRepo) {
-  const issueRef = item.repo && item.issue != null ? ` · \`${item.repo}#${item.issue}\`` : ''
+  const issueRef = hasGithubIssue(item) ? ` · \`${item.repo}#${item.issue}\`` : ''
   const waits = sameRepo ? 'this follow-up waits for that item to close.' : 'that item waits for this one to close.'
   return [
     '## Split from',
@@ -342,7 +343,7 @@ export async function fileApprovedSplit(item, actor = 'You') {
     const desc = split.remaining_description || item.desc
     const metric = split.remaining_metric || item.metric
     if (split.remaining_description || split.remaining_metric) {
-      if (item.repo && item.issue != null) await forRepo(item.repo).tracker.pushIssueScope(item, { desc, metric })
+      if (hasGithubIssue(item)) await forRepo(item.repo).tracker.pushIssueScope(item, { desc, metric })
       store.applySplitScope(item.id, { desc, metric })
     }
 
