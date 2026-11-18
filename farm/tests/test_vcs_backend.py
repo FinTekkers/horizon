@@ -11,9 +11,9 @@ The `..._argv_unchanged` test names no farm.vcs module (the registry test
 imports it locally), so it also passes on the tree before the move.
 
 HO-909: the registry test checks farm/vcs/ against the owner-approved set of
-backends, so HO-876 can add farm/vcs/sl.py (and register it) without editing
-this file. Exact `{git, sl}` equality is proven on a temp copy of farm/vcs/,
-since this item may not add sl.py itself.
+backends, so HO-876 can add farm/vcs/sl.py without editing the registry test.
+Exact `{git, sl}` equality is proven on a temp copy of farm/vcs/, since this
+item may not add sl.py itself.
 """
 
 import json
@@ -106,8 +106,6 @@ def test_no_backend_runs_through_vcs_git(farm_up, monkeypatch):
 
 
 def test_unknown_backend_is_refused_with_zero_spawns(farm_up, monkeypatch):
-    from farm import vcs
-
     before = _queued()
     tripwire = SpawnTripwire(monkeypatch)
     provisioned = []
@@ -116,11 +114,7 @@ def test_unknown_backend_is_refused_with_zero_spawns(farm_up, monkeypatch):
     res = client.post("/steps/run", json=request_body(backend="hg"))
 
     assert res.status_code == 400
-    # HO-909 (owner-approved): `known` is the live registry, which the
-    # registry test holds to an approved subset that includes git.
-    assert res.json() == {"error": "unknown_vcs_backend", "backend": "hg", "known": sorted(vcs.BACKENDS)}
-    assert "git" in res.json()["known"]
-    assert set(res.json()["known"]) <= APPROVED_BACKENDS
+    assert res.json() == {"error": "unknown_vcs_backend", "backend": "hg", "known": ["git"]}
     assert tripwire.calls == []
     assert provisioned == []
     assert _queued() == before
