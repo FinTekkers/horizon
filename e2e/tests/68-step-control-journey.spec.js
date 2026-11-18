@@ -35,7 +35,7 @@ const NOTE = 'Redo the design with the cheaper storage option.'
 
 const FIXTURES = [
   { id: RETURN_ID, title: 'E2E fixture — step control: return to an earlier step', cursor: stepIndexOf(FROM_KEY) },
-  { id: BOARD_ID, title: 'E2E fixture — step control: Return to… from a board card', cursor: stepIndexOf(TO_KEY) },
+  { id: BOARD_ID, title: 'E2E fixture — step control: Move to… from a board card', cursor: stepIndexOf(TO_KEY) },
   { id: DRAWER_ID, title: 'E2E fixture — step control: Approve from the drawer', cursor: stepIndexOf('change.approve-prioritize') },
 ]
 
@@ -104,7 +104,7 @@ test('the item page: an earlier step opens the Move dialog, and the return lands
 
   // Exactly one dialog: the server's own summary of this move.
   await expect(page.getByRole('dialog')).toHaveCount(1)
-  const dialog = page.getByRole('dialog', { name: `Return to an earlier step · ${RETURN_ID}` })
+  const dialog = page.getByRole('dialog', { name: `Move to an earlier step · ${RETURN_ID}` })
   await expect(dialog).toBeVisible()
   // Opened from the step itself: no picker, the target is the step clicked.
   await expect(dialog.getByRole('radio')).toHaveCount(0)
@@ -146,10 +146,12 @@ test('the item page: an earlier step opens the Move dialog, and the return lands
   await expectAtTarget()
 })
 
-test('a board card: ⋯ → Return to… lists the snapshot’s return targets in order, with its default chosen', async ({ page, request }) => {
+test('a board card: ⋯ → Move to… lists the snapshot’s return targets in order, with its default chosen', async ({ page, request }) => {
   const item = await itemFromApi(request, BOARD_ID)
-  const targets = targetsOf(item, 'return')
+  // HZ-920: the return targets, then Close (the snapshot's skip target).
+  const targets = [...targetsOf(item, 'return'), ...targetsOf(item, 'skip')]
   expect(targets.length).toBeGreaterThan(1)
+  expect(targets.at(-1).label).toBe('Close')
 
   const moves = recordMoves(page, BOARD_ID)
   await page.goto('/')
@@ -157,12 +159,12 @@ test('a board card: ⋯ → Return to… lists the snapshot’s return targets i
   await expect(more).toBeVisible({ timeout: 10_000 })
   await more.click()
   const menu = page.getByRole('menu', { name: `Actions for ${BOARD_ID}` })
-  await expect(menu.getByRole('menuitem')).toHaveText(['Return to…', 'Abandon'])
-  await menu.getByRole('menuitem', { name: 'Return to…' }).click()
+  await expect(menu.getByRole('menuitem')).toHaveText(['Move to…', 'Abandon'])
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click()
 
   await expect(page.getByRole('dialog')).toHaveCount(1)
-  const dialog = page.getByRole('dialog', { name: `Return to an earlier step · ${BOARD_ID}` })
-  const group = dialog.getByRole('group', { name: 'Return to' })
+  const dialog = page.getByRole('dialog', { name: `Move to an earlier step · ${BOARD_ID}` })
+  const group = dialog.getByRole('group', { name: 'Move to' })
   const radios = group.getByRole('radio')
   await expect(radios).toHaveCount(targets.length)
   // The snapshot's order, by key and by label.

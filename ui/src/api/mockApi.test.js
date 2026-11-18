@@ -35,7 +35,7 @@ async function expectRefused(call) {
   expect(err.status).toBe(400)
 }
 
-test('Return to: an offered earlier step moves the item there and answers its restart by key, attempt 2', async () => {
+test('Move to: an offered earlier step moves the item there and answers its restart by key, attempt 2', async () => {
   vi.useFakeTimers()
   const before = findItem('BF-140')
   expect(STEPS[before.cursor].key).toBe('change.review-before-exec')
@@ -101,6 +101,40 @@ test('an item whose seed carries no moves offers none, so every move is refused'
   await expectRefused(moveItem('BF-102', { stepKey: STEPS[before.cursor].key }))
   await expectRefused(moveItem('BF-102', { stepKey: 'change.implement' }))
   expect(findItem('BF-102').cursor).toBe(before.cursor)
+})
+
+// HZ-920: Move to…'s Close is a `skip` target in the item's moves, as the
+// server sends it. The seed carries none, so a fresh item is given the
+// server's shape: the skip moves it to the final gate with the server's event
+// text and starts nothing; a target of any other unlisted action is refused.
+test('Move to… Close: an offered skip moves the item to the final gate and logs it; another action is still refused', async () => {
+  vi.useFakeTimers()
+  const { id } = await mockApi.createItem({ title: 'Done another way', outcome: 'o', metric: 'm' })
+  const it = findItem(id)
+  expect(STEPS[it.cursor].key).toBe('change.define-outcome')
+  it.moves = {
+    targets: [
+      { stepKey: 'change.define-outcome', isDefault: true, redo: 'Redoes', reapprovals: [], stopsRunning: false },
+      { stepKey: 'change.define-success', isDefault: false, redo: 'Approves', reapprovals: [], stopsRunning: false },
+      { stepKey: 'change.review-close', isDefault: false, redo: 'Skips 14 steps', reapprovals: [], stopsRunning: false },
+    ],
+    actions: { 'change.define-outcome': 'retry', 'change.define-success': 'approve', 'change.review-close': 'skip' },
+    labels: { 'change.define-outcome': STEPS[stepIndexOf('change.define-outcome')].label, 'change.review-close': 'Close' },
+    approveKey: null,
+    canAbandon: true,
+    amendKey: null,
+  }
+
+  await expectRefused(moveItem(id, { stepKey: 'change.define-success' }))
+  expect(findItem(id).cursor).toBe(it.cursor)
+
+  const result = await moveItem(id, { stepKey: 'change.review-close', note: 'proved outside the item' })
+  const after = findItem(id)
+  expect(after.cursor).toBe(endIndex('change') - 1)
+  expect(after.paused).toBe(false)
+  expect(result).toEqual({ ok: true, item: after })
+  expect(after.events[0].text).toBe(`moved this item to “${STEPS[endIndex('change') - 1].label}”: proved outside the item`)
+  vi.clearAllTimers()
 })
 
 afterEach(() => {

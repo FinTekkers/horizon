@@ -258,13 +258,22 @@
             "redo": "Redoes “<step-label:0>”",
             "reapprovals": [],
             "stopsRunning": false
+          },
+          {
+            "stepKey": "change.review-close",
+            "isDefault": false,
+            "redo": "Skips 15 steps and waits at “<step-label:15>” for approval; any open PR stays unmerged",
+            "reapprovals": [],
+            "stopsRunning": false
           }
         ],
         "actions": {
-          "change.define-outcome": "retry"
+          "change.define-outcome": "retry",
+          "change.review-close": "skip"
         },
         "labels": {
-          "change.define-outcome": "<step-label:0>"
+          "change.define-outcome": "<step-label:0>",
+          "change.review-close": "Close"
         },
         "approveKey": null,
         "canAbandon": true,
@@ -479,18 +488,27 @@
             "redo": "Redoes “<step-label:2>” and 1 later step",
             "reapprovals": [],
             "stopsRunning": false
+          },
+          {
+            "stepKey": "change.review-close",
+            "isDefault": false,
+            "redo": "Skips 12 steps and waits at “<step-label:15>” for approval; any open PR stays unmerged",
+            "reapprovals": [],
+            "stopsRunning": false
           }
         ],
         "actions": {
           "change.plan-options": "approve",
           "change.define-outcome": "return",
           "change.define-success": "return",
-          "change.set-guardrails": "return"
+          "change.set-guardrails": "return",
+          "change.review-close": "skip"
         },
         "labels": {
           "change.define-outcome": "<step-label:0>",
           "change.define-success": "<step-label:1>",
           "change.set-guardrails": "<step-label:2>",
+          "change.review-close": "Close",
           "change.approve-prioritize": "<step-label:3>"
         },
         "approveKey": "change.approve-prioritize",
@@ -649,13 +667,22 @@
             "redo": "Redoes “<step-label:0>”",
             "reapprovals": [],
             "stopsRunning": false
+          },
+          {
+            "stepKey": "plan.review-close",
+            "isDefault": false,
+            "redo": "Skips 11 steps and waits at “<step-label:27>” for approval",
+            "reapprovals": [],
+            "stopsRunning": false
           }
         ],
         "actions": {
-          "change.define-outcome": "retry"
+          "change.define-outcome": "retry",
+          "plan.review-close": "skip"
         },
         "labels": {
-          "change.define-outcome": "<step-label:0>"
+          "change.define-outcome": "<step-label:0>",
+          "plan.review-close": "Close"
         },
         "approveKey": null,
         "canAbandon": true,
@@ -830,13 +857,22 @@
             "redo": "Redoes “<step-label:0>”",
             "reapprovals": [],
             "stopsRunning": false
+          },
+          {
+            "stepKey": "change.review-close",
+            "isDefault": false,
+            "redo": "Skips 15 steps and waits at “<step-label:15>” for approval; any open PR stays unmerged",
+            "reapprovals": [],
+            "stopsRunning": false
           }
         ],
         "actions": {
-          "change.define-outcome": "retry"
+          "change.define-outcome": "retry",
+          "change.review-close": "skip"
         },
         "labels": {
-          "change.define-outcome": "<step-label:0>"
+          "change.define-outcome": "<step-label:0>",
+          "change.review-close": "Close"
         },
         "approveKey": null,
         "canAbandon": true,
@@ -994,13 +1030,22 @@
             "redo": "Redoes “<step-label:0>”",
             "reapprovals": [],
             "stopsRunning": false
+          },
+          {
+            "stepKey": "plan.review-close",
+            "isDefault": false,
+            "redo": "Skips 11 steps and waits at “<step-label:27>” for approval",
+            "reapprovals": [],
+            "stopsRunning": false
           }
         ],
         "actions": {
-          "change.define-outcome": "retry"
+          "change.define-outcome": "retry",
+          "plan.review-close": "skip"
         },
         "labels": {
-          "change.define-outcome": "<step-label:0>"
+          "change.define-outcome": "<step-label:0>",
+          "plan.review-close": "Close"
         },
         "approveKey": null,
         "canAbandon": true,
@@ -1175,13 +1220,22 @@
             "redo": "Redoes “<step-label:0>”",
             "reapprovals": [],
             "stopsRunning": false
+          },
+          {
+            "stepKey": "change.review-close",
+            "isDefault": false,
+            "redo": "Skips 15 steps and waits at “<step-label:15>” for approval; any open PR stays unmerged",
+            "reapprovals": [],
+            "stopsRunning": false
           }
         ],
         "actions": {
-          "change.define-outcome": "retry"
+          "change.define-outcome": "retry",
+          "change.review-close": "skip"
         },
         "labels": {
-          "change.define-outcome": "<step-label:0>"
+          "change.define-outcome": "<step-label:0>",
+          "change.review-close": "Close"
         },
         "approveKey": null,
         "canAbandon": true,
@@ -1356,13 +1410,22 @@
             "redo": "Redoes “<step-label:0>”",
             "reapprovals": [],
             "stopsRunning": false
+          },
+          {
+            "stepKey": "change.review-close",
+            "isDefault": false,
+            "redo": "Skips 15 steps and waits at “<step-label:15>” for approval; any open PR stays unmerged",
+            "reapprovals": [],
+            "stopsRunning": false
           }
         ],
         "actions": {
-          "change.define-outcome": "retry"
+          "change.define-outcome": "retry",
+          "change.review-close": "skip"
         },
         "labels": {
-          "change.define-outcome": "<step-label:0>"
+          "change.define-outcome": "<step-label:0>",
+          "change.review-close": "Close"
         },
         "approveKey": null,
         "canAbandon": true,

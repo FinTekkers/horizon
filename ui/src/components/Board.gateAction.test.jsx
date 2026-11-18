@@ -245,7 +245,7 @@ test('a running card starts no timer, makes no fetch and shows no elapsed clock'
   vi.unstubAllGlobals()
 })
 
-test('once the run ends, Approve and Return to… call their handlers, and neither opens the item', () => {
+test('once the run ends, Approve and Move to… call their handlers, and neither opens the item', () => {
   const onApprove = vi.fn()
   const onMove = vi.fn()
   const onOpen = vi.fn()
@@ -262,8 +262,8 @@ test('once the run ends, Approve and Return to… call their handlers, and neith
   expect(toggle.getAttribute('aria-haspopup')).toBe('menu')
   fireEvent.click(toggle)
   const menu = getByRole('menu')
-  expect(within(menu).getAllByRole('menuitem').map((b) => b.textContent)).toEqual(['Return to…', 'Abandon'])
-  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Return to…' }))
+  expect(within(menu).getAllByRole('menuitem').map((b) => b.textContent)).toEqual(['Move to…', 'Abandon'])
+  fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to…' }))
   expect(onMove).toHaveBeenCalledTimes(1)
   expect(onMove).toHaveBeenCalledWith('BGS-1', 'return', null)
   expect(onOpen).not.toHaveBeenCalled()

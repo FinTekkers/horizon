@@ -310,11 +310,11 @@ test('HZ-216: a running conflictRun shows its own label and elapsed time and dis
   const gateButton = (name) => [...document.querySelectorAll('.step-card__actions button')].find((b) => b.textContent === name)
 
   expect(document.querySelector('.gate-action-status').textContent).toMatch(/^Resolving conflicts on PR #7 · 1m 0\ds/)
-  for (const name of ['Approve', 'Approve with comments', 'Return to…']) expect(gateButton(name).disabled, name).toBe(true)
+  for (const name of ['Approve', 'Approve with comments', 'Move to…']) expect(gateButton(name).disabled, name).toBe(true)
 
   await waitFor(() => expect(listeners.size).toBeGreaterThan(0))
   pushItems([conflictedItem('RC-13', { conflictRun: { state: 'resolved', since: new Date().toISOString(), reason: null } })])
   await findByText(/has merge conflicts with main/)
-  for (const name of ['Approve', 'Approve with comments', 'Return to…']) expect(gateButton(name).disabled, name).toBe(false)
+  for (const name of ['Approve', 'Approve with comments', 'Move to…']) expect(gateButton(name).disabled, name).toBe(false)
   expect(document.querySelector('.gate-action-status')).toBeNull()
 })

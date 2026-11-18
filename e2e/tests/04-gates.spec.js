@@ -37,8 +37,8 @@ test('approve, approve-with-comments and return-to drive an item through consecu
   // with the gate's default target chosen; confirming rolls the item back to
   // that agent step, which re-runs and returns it to the same gate.
   const awaiting = page.locator('.step-card--awaiting')
-  const moveDialog = page.getByRole('dialog', { name: `Return to an earlier step · ${id}` })
-  await awaiting.getByRole('button', { name: 'Return to…' }).click()
+  const moveDialog = page.getByRole('dialog', { name: `Move to an earlier step · ${id}` })
+  await awaiting.getByRole('button', { name: 'Move to…' }).click()
   await expect(moveDialog).toBeVisible()
   await expect(moveDialog.getByRole('radio', { checked: true })).toHaveCount(1)
   await moveDialog.getByLabel('Note for the step (optional)').fill('Please double-check the test plan.')
@@ -53,7 +53,7 @@ test('approve, approve-with-comments and return-to drive an item through consecu
   // here must be crossed again on the way back, so picking it must re-present
   // that gate before Review before execution reappears — and the dialog says
   // so before anything is sent.
-  await awaiting.getByRole('button', { name: 'Return to…' }).click()
+  await awaiting.getByRole('button', { name: 'Move to…' }).click()
   await expect(moveDialog).toBeVisible()
   await moveDialog.getByRole('radio', { name: /^Plan options & trade-offs \(pros \/ cons\)/ }).check()
   await expect(moveDialog.getByRole('list', { name: 'Approvals given again' }).getByRole('listitem')).toHaveText([

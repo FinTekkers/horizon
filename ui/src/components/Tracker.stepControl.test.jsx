@@ -54,7 +54,7 @@ test('clicking every step opens no send-back or restart pop-up — only the Move
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     }
   }
-  expect([...opened].sort()).toEqual(['Approve this gate?', 'Return to an earlier step'])
+  expect([...opened].sort()).toEqual(['Approve this gate?', 'Move to an earlier step'])
   // Only the snapshot's targets and the gate open anything.
   const offered = new Set([...GATE_MOVES.targets.map((t) => t.label), GATE_MOVES.approve.label])
   const hinted = steps.filter((s) => s.querySelector('.step-card__hint')).map((s) => s.firstChild.textContent)

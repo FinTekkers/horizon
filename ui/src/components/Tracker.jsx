@@ -33,7 +33,7 @@ import { pauseReason } from '../domain/pauseReason'
 import { holdFor } from '../domain/hold'
 import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
-import { STEP_HINTS, retryTarget, returnTargets, stepActionFor, substepReturnTarget } from '../domain/stepActions'
+import { STEP_HINTS, moveDialogTargets, retryTarget, returnTargets, stepActionFor, substepReturnTarget } from '../domain/stepActions'
 import { resolveEventColor } from '../domain/eventColors'
 import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, recheckAndRun, patchRunPlan, setAutopilotOff } from '../api'
 import visualPageRules from '../../../domain/visualPage.json'
@@ -608,7 +608,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
   const commandChecksBlock = index === APPROVE_RUN_GATE_INDEX && !!item.runPlan?.commandPatch && item.runPlan.patchedCommand?.approvable !== true
   const stepAction = offered === 'approve' && (gateBusy || mergeQueued) ? null : offered
   const retryHere = retryTarget(item)?.step === st.key
-  const canReturn = returnTargets(item).length > 0
+  const canReturn = moveDialogTargets(item).length > 0
 
   return (
     <div className={`step${selected ? ' step--selected' : ''}`}>
@@ -989,7 +989,7 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                       aria-busy={gateBusy || undefined}
                       onClick={() => onMove(item.id, 'return', null)}
                     >
-                      Return to…
+                      Move to…
                     </button>
                   )}
                 </>
