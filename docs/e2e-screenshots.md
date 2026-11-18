@@ -19,7 +19,7 @@ pixels travel on their own git refs instead.
 |---|---|---|---|
 | `horizon/<id>` | The item's code. Never screenshots. | `finalize_branch()` in `farm/step_agent.py`, after checks pass | Deleted when the PR merges |
 | `e2e-artifacts/<id>` | This item's PNGs, as a single commit with no history | `publish_screenshots()` in `farm/step_agent.py`, force-pushed on every implement run | Deleted when the PR merges or is closed unmerged |
-| `e2e-baseline` | The approved shots of every merged item, screen by screen | `promoteBaseline()` in `server/src/github.js`, called from `mergePr()` | Permanent; one commit per merge that promotes a shot |
+| `e2e-baseline` | The approved shots of every merged item, screen by screen | `promoteBaseline()` in `server/src/github.js`, called through the Artifact port (`artifacts.promoteArtifacts`) after Accept's merge | Permanent; one commit per merge that promotes a shot |
 
 `<id>` is the lowercased item id, e.g. `e2e-artifacts/hz-143`.
 
@@ -120,9 +120,12 @@ drops the section, and a failed refresh leaves the old one.
 
 ### 5 · Merge: `promoteBaseline()`
 
-When the "Accept the code" gate merges the PR (squash), `mergePr()`:
+When the "Accept the code" gate merges the PR (squash), `mergePr()` deletes
+`horizon/<id>`. Then (HO-890) Accept calls the repo's backend Artifact port,
+`forRepo(repo).artifacts.promoteArtifacts`, which for GitHub runs
+`promoteBaseline()`:
 
-1. Deletes `horizon/<id>`.
+1. (`mergePr()`) Deletes `horizon/<id>`.
 2. HZ-510: promotes the shots approved at the gate (HZ-509's per-screen
    approvals, read by `screenshots.mergeApprovals()`; an approval counts only
    while the shot is unchanged since). Using the `results.json` on
@@ -146,7 +149,8 @@ When the "Accept the code" gate merges the PR (squash), `mergePr()`:
 
 A failed promotion never fails or reverts the merge. It is logged as
 `baseline promotion failed for <id>: …` and `e2e-artifacts/<id>` is kept —
-but only until the next daily prune (`pruneArtifactRefs()`), which deletes the
+but only until the next daily prune (`pruneArtifactRefs()`, run for every
+backend by `server/src/backends/artifactPrune.js`), which deletes the
 refs of merged items. Re-running a failed promotion needs that ref, so it is a
 manual job within about 24h; a durable promotion job that retries on its own
 is the follow-up if the logs show stale baselines. The baseline only ever
