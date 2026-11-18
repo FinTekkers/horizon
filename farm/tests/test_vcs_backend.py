@@ -111,7 +111,8 @@ def test_unknown_backend_is_refused_with_zero_spawns(farm_up, monkeypatch):
 
 
 def test_only_git_is_registered():
+    # HO-876 (owner ruling): exactly git and sl. Another backend amends this.
     from farm import vcs
 
-    assert vcs.BACKENDS == {"git": vcs.git}
-    assert sorted(p.name for p in (FARM_DIR / "vcs").glob("*.py")) == ["__init__.py", "git.py"]
+    assert vcs.BACKENDS == {"git": vcs.git, "sl": vcs.sl}
+    assert sorted(p.name for p in (FARM_DIR / "vcs").glob("*.py")) == ["__init__.py", "git.py", "sl.py"]
