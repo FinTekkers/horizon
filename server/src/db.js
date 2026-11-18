@@ -588,6 +588,18 @@ db.exec(`
     next   INTEGER NOT NULL CHECK (next >= 1)
   );
 `)
+// HO-877: an sl item's diff review status as farmd last reported it
+// (store.recordDiffStatus), and when — what the Accept caretaker decides on.
+// Not pr_mergeable: a 0 there starts Resolve conflicts, and the mergeable
+// probe gives up after minutes while a diff review takes hours. Nullable,
+// no index (read and written by primary key), no backfill: GitHub rows keep
+// NULL.
+{
+  const columns = new Set(db.prepare('PRAGMA table_info(work_item)').all().map((column) => column.name))
+  for (const column of ['diff_status TEXT', 'diff_status_at TEXT']) {
+    if (!columns.has(column.split(' ')[0])) db.exec(`ALTER TABLE work_item ADD COLUMN ${column}`)
+  }
+}
 // HO-880: an owner's import of a project's items into a new project on another
 // backend (server/src/importProject.js). Each copy records the item it was
 // copied from in work_item.source_item_id, and a project holds at most one

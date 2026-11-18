@@ -4182,6 +4182,47 @@ export function markLanded(id, hash) {
   return true
 }
 
+// HO-877: the sl diff an item's review was submitted as (D<n>), pinned once.
+// The sl land sends exactly this diff to farmd and never re-derives it. Writes
+// when diff_id is unset; the same diff again is a no-op. Another diff is not
+// adopted: it throws DiffChanged (err.code 'diff_changed', err.pinned,
+// err.found) so the submit path can name both diffs and wait for a human to
+// reset the pin. Returns whether this call wrote; false for an unknown id.
+const DIFF_ID = /^D\d+$/
+
+export function setDiffId(id, diff) {
+  if (typeof diff !== 'string' || !DIFF_ID.test(diff)) throw new Error('setDiffId: diff must be D<number>')
+  return db.transaction(() => {
+    const row = db.prepare('SELECT diff_id FROM work_item WHERE id = ?').get(id)
+    if (!row) return false
+    if (row.diff_id === diff) return false
+    if (row.diff_id != null) {
+      throw Object.assign(new Error(`DiffChanged: ${id} is pinned to ${row.diff_id}, not ${diff}`), {
+        code: 'diff_changed',
+        pinned: row.diff_id,
+        found: diff,
+      })
+    }
+    db.prepare(`UPDATE work_item SET diff_id = ?, diff_status = NULL, diff_status_at = NULL, ${touch} WHERE id = ?`).run(diff, id)
+    notify()
+    return true
+  })()
+}
+
+// HO-877: the pinned diff's review status as farmd reported it ('Accepted',
+// 'Needs Review', ...). Recorded only for the diff still pinned, so a late
+// read for an older diff writes nothing. Notifies when the status changed.
+// Returns whether it changed.
+export function recordDiffStatus(id, diff, status) {
+  if (typeof status !== 'string' || !status.trim()) throw new Error('recordDiffStatus: status must be a non-empty string')
+  const row = db.prepare('SELECT diff_id, diff_status FROM work_item WHERE id = ?').get(id)
+  if (!row || row.diff_id == null || row.diff_id !== diff) return false
+  db.prepare("UPDATE work_item SET diff_status = ?, diff_status_at = datetime('now') WHERE id = ? AND diff_id = ?").run(status, id, diff)
+  if (row.diff_status === status) return false
+  notify()
+  return true
+}
+
 // ---- GitHub sync ----
 // Shared upsert used by both the webhook handler and the poller. GitHub owns
 // title/description/priority/open-closed; the lifecycle state (cursor, flags,
