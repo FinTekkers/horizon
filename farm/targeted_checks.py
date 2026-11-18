@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 
 from . import checks, dep_cache
 from .checks import CheckFailure
+from .vcs import git as vcs_git
 
 FAILED_TESTS_ENV = checks.FAILED_TESTS_ENV
 # Over either cap, the list is not sent and the round runs full.
@@ -84,13 +85,7 @@ def failed_tests_value(rows: list[dict]) -> str | None:
 def _changed_files(ws: Path, since: str) -> list[str] | None:
     """Paths changed between `since` and HEAD, or None when git can't say."""
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(ws), "diff", "--name-only", since, "HEAD"],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=GIT_TIMEOUT_S,
-        )
+        proc = vcs_git.targeted_changed_files(ws, since, timeout=GIT_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if proc.returncode != 0:

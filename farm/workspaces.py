@@ -29,6 +29,9 @@ import time
 from pathlib import Path
 
 from .config import FARM_HOME, QUEUE_DIR, WORKSPACES_DIR
+from .vcs import git as vcs_git
+from .vcs.git import workspaces_git as _git
+from .vcs.git import workspaces_git_bytes as _git_bytes
 
 # Bounded pool of live item worktrees per repo. Without a bound, every item
 # ever dispatched would keep its own node_modules-sized checkout on disk
@@ -160,28 +163,6 @@ def item_lock_held(repo_full: str, item_id: str) -> bool:
         return False
 
 
-def _git(path: Path, *args: str, check: bool = True, timeout: int = 300) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        ["git", "-C", str(path), *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
-    )
-    if check and result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
-    return result
-
-
-def _git_bytes(path: Path, *args: str, check: bool = True, timeout: int = 120) -> bytes:
-    """Like _git, but stdout stays raw bytes (blob contents such as PNGs).
-
-    Interim: repoint callers at farm/vcs/git.py's step_agent_git_bytes once
-    HO-874 lands.
-    """
-    result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, timeout=timeout)
-    if check and result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", "replace").strip()
-        raise RuntimeError(f"git {' '.join(args)} failed: {stderr[:200]}")
-    return result.stdout
-
-
 SET_HEAD_TIMEOUT_S = 10
 _ORIGIN_PREFIX = "refs/remotes/origin/"
 
@@ -223,10 +204,7 @@ def ensure(repo_full: str, token: str | None) -> Path:
             _git(path, "reset", "--hard", f"origin/{default}")
             _git(path, "clean", "-fd")
     else:
-        result = subprocess.run(
-            ["git", "clone", url, str(path)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
-        )
+        result = vcs_git.workspaces_clone(url, path)
         if result.returncode != 0:
             raise RuntimeError(f"clone of {repo_full} failed: {result.stderr.strip()[:200]}")
     return path
@@ -299,13 +277,8 @@ def _tenant_clone(repo_full: str, path: Path, lock_path: Path, what: str) -> Pat
                 shutil.rmtree(path)
             env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
             try:
-                subprocess.run(
-                    [
-                        "git", "-c", "credential.helper=", "-c", f"credential.helper={TENANT_CREDENTIAL_HELPER}",
-                        "clone", f"https://github.com/{repo_full}.git", str(path),
-                    ],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace",
-                    timeout=TENANT_CLONE_TIMEOUT_S, env=env, check=True,
+                vcs_git.workspaces_tenant_clone(
+                    repo_full, path, helper=TENANT_CREDENTIAL_HELPER, timeout=TENANT_CLONE_TIMEOUT_S, env=env
                 )
                 _git(path, "config", "--replace-all", "credential.helper", "")
                 _git(path, "config", "--add", "credential.helper", TENANT_CREDENTIAL_HELPER)

@@ -24,13 +24,13 @@ push, no branch delete, no `stash drop`.
 
 import os
 import stat
-import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, NamedTuple
 
 from . import pause
 from .agent_runner import AgentError
+from .vcs import git as vcs_git
 
 # server/src/checkHeadline.js READ_ONLY_HEADLINE_PREFIX — keep the two in step
 # (farm/tests/test_read_only_guard.py reads both and compares them).
@@ -80,16 +80,7 @@ class Watch:
 
 
 def _git(ws: Path, *args: str, input: bytes | None = None) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", str(ws), "--no-optional-locks", *args],
-        input=input,
-        capture_output=True,
-        timeout=GIT_TIMEOUT_S,
-    )
-    if result.returncode != 0:
-        err = result.stderr.decode(errors="replace").strip()[:200]
-        raise RuntimeError(f"git {' '.join(args)} failed: {err}")
-    return result.stdout
+    return vcs_git.read_only_guard_git(ws, *args, input=input, timeout=GIT_TIMEOUT_S)
 
 
 def _status(ws: Path) -> list[tuple[str, str]]:
@@ -139,7 +130,7 @@ def snapshot(ws: Path, *, store: bool = True) -> Snapshot:
     compare against skips that."""
     head = _git(ws, "rev-parse", "--verify", "HEAD").decode().strip()
     # Bytes (HZ-420): the branch name goes back to `git checkout` in restore().
-    ref = subprocess.run(["git", "-C", str(ws), "symbolic-ref", "-q", "HEAD"], capture_output=True, timeout=GIT_TIMEOUT_S)
+    ref = vcs_git.read_only_guard_symbolic_ref(ws, timeout=GIT_TIMEOUT_S)
     branch = ref.stdout.decode(errors="surrogateescape").strip() if ref.returncode == 0 else None
     head_tree = _git(ws, "rev-parse", f"{head}^{{tree}}").decode().strip()
     entries = _status(ws)

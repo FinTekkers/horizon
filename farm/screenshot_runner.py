@@ -65,6 +65,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import checks, run_reaper, screenshots_config
+from .vcs import git as vcs_git
 
 CAPTURE_DIR = Path(__file__).resolve().parent / "capture"
 # Tests swap this for a fake worker that speaks the same protocol.
@@ -131,9 +132,7 @@ def output_dir_ignored(ws: Path, output_dir: str) -> bool:
     """Whether git ignores files in outputDir, so no PNG can land on main."""
     probe = f"{output_dir.rstrip('/')}/{MANIFEST_NAME}"
     try:
-        proc = subprocess.run(
-            ["git", "check-ignore", "-q", "--", probe], cwd=str(ws), capture_output=True, timeout=30
-        )
+        proc = vcs_git.screenshot_check_ignore(ws, probe)
     except (OSError, subprocess.SubprocessError):
         return False
     return proc.returncode == 0

@@ -7,12 +7,11 @@ inline `git` calls, so only the modules in ALLOWLIST may run `git` through
 holds a list or tuple literal whose first element is the string ``"git"``,
 e.g. ``subprocess.run(["git", "status"])``.
 
-The list is one-way: a new caller fails, but a listed module that stops
-calling git does not. Stale entries can linger, so later HO-868 items should
-drop an entry when they move its call site. Entries are exact repo-relative
-paths, never globs or directory prefixes. ``farm/review_diff.py`` is listed
-although it takes an injected ``git_bytes`` callable from step_agent.py rather
-than calling git itself; HO-869 names it as part of the boundary.
+HO-874 moved every inline git call into the git backend, so ALLOWLIST is a
+singleton and must stay one: ``farm/vcs/git.py`` is the only farm module that
+may spawn git. Any other module routes its git through that backend. The
+entry is an exact repo-relative path, never a glob or directory prefix;
+farm/vcs/ as a whole is scanned like the rest of farm/.
 
 The scan reads source text only, with stdlib ``ast``: it never imports a
 scanned module, spawns git or touches the network.
@@ -35,34 +34,8 @@ FARM = REPO_ROOT / "farm"
 # suite itself, whose fixtures legitimately spell out git commands.
 SKIP_DIRS = {"node_modules", ".venv", "__pycache__", ".pytest_cache", ".git"}
 
-# Today's 15 inline git callers, plus farm/review_diff.py (see docstring).
-ALLOWLIST = {
-    "farm/base_check.py",
-    "farm/check_record.py",
-    "farm/checks.py",
-    "farm/conflict_resolver.py",
-    "farm/handoff.py",
-    "farm/knowledge.py",
-    "farm/plan_bundle.py",
-    "farm/premerge.py",
-    "farm/read_only_guard.py",
-    "farm/rehearsal.py",
-    "farm/review_diff.py",
-    "farm/screenshot_runner.py",
-    "farm/step_agent.py",
-    "farm/targeted_checks.py",
-    "farm/task_clone.py",
-    "farm/workspaces.py",
-}
-
-# The five modules HO-869 names; they must stay on the list.
-REQUIRED = {
-    "farm/step_agent.py",
-    "farm/workspaces.py",
-    "farm/premerge.py",
-    "farm/conflict_resolver.py",
-    "farm/review_diff.py",
-}
+# HO-874: the git backend is the only inline git caller (see docstring).
+ALLOWLIST = {"farm/vcs/git.py"}
 
 
 def _imports_subprocess(tree: ast.AST) -> bool:
@@ -126,8 +99,8 @@ def test_every_inline_git_caller_is_on_the_allowlist():
     )
 
 
-def test_the_named_modules_stay_on_the_allowlist():
-    assert REQUIRED <= ALLOWLIST, f"missing from ALLOWLIST: {sorted(REQUIRED - ALLOWLIST)}"
+def test_the_allowlist_is_only_the_git_backend():
+    assert ALLOWLIST == {"farm/vcs/git.py"}, f"ALLOWLIST must be exactly the git backend: {sorted(ALLOWLIST)}"
 
 
 def test_every_allowlist_entry_is_an_exact_path_to_an_existing_file():
@@ -176,4 +149,4 @@ def test_fixture_an_injected_git_bytes_callable_is_not_flagged():
 
 def test_fixture_a_listed_module_is_not_flagged():
     text = 'import subprocess\nsubprocess.run(["git", "status"])\n'
-    assert _violations({"farm/step_agent.py": text}) == []
+    assert _violations({"farm/vcs/git.py": text}) == []

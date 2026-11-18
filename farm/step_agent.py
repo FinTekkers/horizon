@@ -86,6 +86,8 @@ from .persona_tools import apply as apply_persona_tools
 from .personas import compose_role, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
+from .vcs.git import step_agent_git as git
+from .vcs.git import step_agent_git_bytes as git_bytes
 from .workspaces import ItemBusy, checkout_detached, default_branch, ensure_item_worktree, ensure_tenant_hub, hub_lock, item_lock, tenant_task_clone_path
 
 FARMD = f"http://127.0.0.1:{FARM_PORT}"
@@ -462,22 +464,6 @@ def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def git(ws: Path, *args: str, check: bool = True, env: dict | None = None) -> subprocess.CompletedProcess:
-    run_env = {**os.environ, **env} if env else None
-    result = subprocess.run(
-        ["git", "-C", str(ws), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=300,
-        env=run_env,
-    )
-    if check and result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()[:200]}")
-    return result
-
-
 def pushed_head(ws: Path, repo: str) -> dict[str, str]:
     """HZ-546: {repo: HEAD} for a step's source_shas, when origin has the
     workspace's HEAD commit; else {}. The UI links code references at this
@@ -487,17 +473,6 @@ def pushed_head(ws: Path, repo: str) -> dict[str, str]:
         return {}
     remote = git(ws, "branch", "-r", "--contains", head, check=False)
     return {repo: head} if remote.returncode == 0 and remote.stdout.strip() else {}
-
-
-def git_bytes(ws: Path, *args: str, check: bool = True, input: bytes | None = None) -> bytes:
-    """git's raw stdout (HZ-420). For output that goes back into git or onto
-    disk — a path decoded with errors="replace" names a different file — and
-    for the review diff, which decides per file how to show bytes."""
-    result = subprocess.run(["git", "-C", str(ws), *args], input=input, capture_output=True, timeout=300)
-    if check and result.returncode != 0:
-        err = result.stderr.decode("utf-8", "replace").strip()[:200]
-        raise RuntimeError(f"git {' '.join(args)} failed: {err}")
-    return result.stdout
 
 
 def _shown(path: str) -> str:

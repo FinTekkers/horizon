@@ -43,6 +43,7 @@ from pathlib import Path
 
 from . import config as farm_config
 from . import persona_tools, workspaces
+from .vcs import git as vcs_git
 
 EXTRACTOR_TOOL = "pdfminer"
 EXTRACTOR_COMMAND = "pdf2txt.py"
@@ -122,10 +123,7 @@ def _last_line(text: str) -> str:
 
 def _pages(binary: Path, repo: str, sha: str) -> list[str]:
     """The PDF blob's text, one string per page."""
-    blob = subprocess.run(
-        ["git", "-C", str(workspaces.hub_path(repo)), "cat-file", "blob", sha],
-        capture_output=True, timeout=FETCH_LIMIT_S,
-    )
+    blob = vcs_git.knowledge_cat_file(workspaces.hub_path(repo), sha, timeout=FETCH_LIMIT_S)
     if blob.returncode != 0:
         raise ExtractError(f"git cat-file {sha} failed: {_last_line(blob.stderr.decode('utf-8', 'replace'))}")
     with tempfile.TemporaryDirectory(prefix="horizon-knowledge-") as tmp:

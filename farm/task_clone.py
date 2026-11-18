@@ -22,6 +22,8 @@ from pathlib import Path
 
 from domain.py import run_plan
 
+from .vcs import git as vcs_git
+
 GIT_LIMIT_S = 120
 BRANCH = "main"
 # Inside .git, so the clone's work tree stays clean.
@@ -50,17 +52,7 @@ def _git_env() -> dict:
 
 
 def _git(task_dir: str, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", task_dir, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=GIT_LIMIT_S,
-        check=False,
-        env=_git_env(),
-        stdin=subprocess.DEVNULL,
-    )
+    return vcs_git.task_clone_git(task_dir, *args, timeout=GIT_LIMIT_S, env=_git_env())
 
 
 def head(task_dir: str) -> str:

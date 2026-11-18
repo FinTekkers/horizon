@@ -63,6 +63,7 @@ import time
 from domain.py import run_plan
 
 from . import container_runner, db_changes
+from .vcs import git as vcs_git
 
 CAP_S = int(run_plan.CONTRACT["rehearsalCapS"])
 PULL_CAP_S = 600
@@ -267,14 +268,7 @@ def _porcelain(repo_dir: str) -> str | None:
     """`git status --porcelain` of the checkout, run on the host (where git
     reads it), or None when git cannot answer. Kept in memory only."""
     try:
-        res = subprocess.run(
-            ["git", "-C", repo_dir, "status", "--porcelain", "--untracked-files=all"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            errors="replace",
-            timeout=30,
-        )
+        res = vcs_git.rehearsal_porcelain(repo_dir)
     except (OSError, subprocess.SubprocessError):
         return None
     return res.stdout if res.returncode == 0 else None
