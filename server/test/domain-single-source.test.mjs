@@ -10,9 +10,10 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
-import { repoFiles, relative, MIN_EXPECTED_FILES } from './helpers/repoFiles.mjs'
+import { repoFiles, relative, MIN_EXPECTED_FILES, REPO_ROOT } from './helpers/repoFiles.mjs'
 
 const files = repoFiles()
 const relPaths = files.map((f) => relative(f))
@@ -29,9 +30,54 @@ test('the walk itself is not vacuous', () => {
   assert.ok(relPaths.includes('server/src/store.js'))
 })
 
-test('exactly one steps.json exists, and it is domain/steps.json', () => {
-  const found = relPaths.filter((p) => path.basename(p) === 'steps.json')
+// HO-854 (owner ruling): a project's sub-step definitions,
+// farm/projects/<slug>/steps.json (server/src/substeps.js), share the
+// filename, so that one path shape is allowed beside domain/steps.json.
+// Anywhere else, domain/steps.json is still the only steps.json.
+const PROJECT_SUBSTEPS_FILE = /^farm\/projects\/[a-z0-9]+(?:-[a-z0-9]+)*\/steps\.json$/
+
+test('exactly one steps.json exists outside farm/projects/<slug>/, and it is domain/steps.json', () => {
+  const found = relPaths.filter((p) => path.basename(p) === 'steps.json' && !PROJECT_SUBSTEPS_FILE.test(p))
   assert.deepEqual(found, ['domain/steps.json'])
+})
+
+test('the project path carve-out admits only farm/projects/<slug>/steps.json', () => {
+  assert.ok(PROJECT_SUBSTEPS_FILE.test('farm/projects/horizon/steps.json'))
+  assert.ok(PROJECT_SUBSTEPS_FILE.test('farm/projects/acme-capital/steps.json'))
+  for (const elsewhere of [
+    'steps.json',
+    'farm/steps.json',
+    'farm/projects/steps.json',
+    'farm/projects/horizon/nested/steps.json',
+    'farm/projects/Horizon/steps.json',
+    'server/projects/horizon/steps.json',
+    'ui/farm/projects/horizon/steps.json',
+  ]) {
+    assert.ok(!PROJECT_SUBSTEPS_FILE.test(elsewhere), `${elsewhere} must not be allowed as a second steps.json`)
+  }
+})
+
+test('farm/projects/horizon/steps.json is a project sub-step file, not a second step model', () => {
+  // Positive control: the walk finds it, so the carve-out above is exercised.
+  assert.ok(relPaths.includes('farm/projects/horizon/steps.json'))
+  const projectFiles = relPaths.filter((p) => PROJECT_SUBSTEPS_FILE.test(p))
+  assert.ok(projectFiles.length >= 1)
+  const model = JSON.parse(readFileSync(path.join(REPO_ROOT, 'domain/steps.json'), 'utf8'))
+  const modelKeys = Object.keys(model)
+  for (const rel of projectFiles) {
+    const raw = JSON.parse(readFileSync(path.join(REPO_ROOT, rel), 'utf8'))
+    // The sub-step shape, { substeps: [...] }, and none of the step model's
+    // own top-level keys.
+    assert.deepEqual(Object.keys(raw), ['substeps'], `${rel} must hold only "substeps"`)
+    assert.ok(Array.isArray(raw.substeps) && raw.substeps.length > 0, `${rel} must list sub-steps`)
+    for (const key of modelKeys) assert.ok(!Object.hasOwn(raw, key), `${rel} carries the step model's "${key}"`)
+    // Each entry follows a global step by index; none declares a step.
+    for (const entry of raw.substeps) {
+      assert.ok(Number.isInteger(entry.anchor), `${rel}: ${entry.id} must anchor to a global step index`)
+      assert.ok(['opening', 'audit'].includes(entry.kind), `${rel}: ${entry.id} kind must be opening or audit`)
+      assert.ok(!Object.hasOwn(entry, 'key') && !Object.hasOwn(entry, 'phase'), `${rel}: ${entry.id} looks like a step declaration`)
+    }
+  }
 })
 
 test('no steps_generated.json survives anywhere', () => {

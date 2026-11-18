@@ -1,0 +1,12 @@
+{
+  "substeps": [
+    {
+      "id": "design-screens",
+      "label": "Design the screens",
+      "kind": "opening",
+      "anchor": 1,
+      "output": "design",
+      "applies": { "repos": ["FinTekkers/horizon"] }
+    }
+  ]
+}
