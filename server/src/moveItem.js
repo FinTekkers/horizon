@@ -19,6 +19,7 @@
 import { db } from './db.js'
 import { PARENT_ABANDONED_REASON, PARENT_CLOSED_REASON, dismissSoftAsksForParent } from './asks.js'
 import { isHumanProof } from './humanProof.js'
+import { IMPORTED_ITEM_ERROR, isImportedItem } from './importedItem.js'
 import { clearGoldenCases } from './goldenCases.js'
 import { clearDesignSpec } from './designSpec.js'
 import {
@@ -386,7 +387,7 @@ function badField(fields) {
 // with it releases a rule block (HZ-346) — any other move releases the pause
 // alone. `fields` are extra columns from MOVE_FIELDS, written with the step.
 // Returns { ok, move } or a planMove refusal, plus not_found, bad_field and
-// human_pin_required.
+// human_pin_required, and (HO-880) item_imported.
 //
 // HO-843: a reset that clears the approved plan hash clears the per-command
 // approval and any owner patch in flight with it. `keepCommandHashes` is the
@@ -400,6 +401,8 @@ export function moveItem(
   return db.transaction(() => {
     const item = selectRow.get(id)
     if (!item) return { error: 'not_found' }
+    // HO-880: an imported item is read-only — no caller moves it.
+    if (isImportedItem(id)) return { error: IMPORTED_ITEM_ERROR }
     const field = badField(fields)
     if (field) return { error: 'bad_field', field }
     const plan = planMove(item, { action, toKey, substepId })

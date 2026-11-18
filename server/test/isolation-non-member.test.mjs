@@ -286,6 +286,10 @@ const WRITE_CASES = {
   'PUT /api/projects/:id/repos/test-env': { expect: '404', url: `/api/projects/${A}/repos/test-env`, body: { repo: REPO_A, path: '/tmp/iso-alpha-test.env' }, owner: 200 },
   'POST /api/projects/:id/repos/webhook/fix': { expect: '404', url: `/api/projects/${A}/repos/webhook/fix`, body: { repo: REPO_A }, owner: 503 }, // webhook_url_not_public: the test UI_URL is localhost
   'PUT /api/projects/:id/repos/backend': { expect: '404', url: `/api/projects/${A}/repos/backend`, body: { repo: REPO_A, backend: 'github' }, owner: 200 }, // HO-879: the backend it already has, so nothing changes
+  // HO-880: owner:strict answers every non-owner 403 owner_required (its URL
+  // names no project, so nothing is revealed); the owner's same-project body
+  // is refused 400 bad_projects, so nothing is imported.
+  'POST /api/project-imports': { expect: 'self', url: '/api/project-imports', body: { sourceProjectId: A, targetProjectId: A }, self: { session: 403, token: 403 }, owner: 400 },
   'POST /api/sync/token': { expect: '404', url: '/api/sync/token', body: { token: 'iso-not-a-real-token' }, owner: 400 }, // GitHub is unreachable here
   // member:*
   'POST /api/items': { expect: '404', url: '/api/items', body: { title: 'Iso new item', outcome: 'An outcome', metric: 'A metric', repo: REPO_A }, owner: 502 }, // GitHub is unreachable: no issue is created

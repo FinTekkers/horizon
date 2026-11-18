@@ -6,7 +6,7 @@
 // approval half of that: a tap on a native poll, resolved here, deterministically.
 //
 // GUARDRAIL 1 IS STRUCTURAL, NOT CAREFUL. This module imports db, store,
-// config, waApprovers and domain/js/lifecycle.js — no orchestrator, no
+// config, waApprovers, importedItem (db only) and domain/js/lifecycle.js — no orchestrator, no
 // personas, no definitions, nothing under farm/. There is no model to call on
 // this path because nothing on this path can reach one. The two actions a vote
 // can take are INJECTED by app.js rather than imported, which is what keeps
@@ -33,6 +33,7 @@ import { db } from './db.js'
 import * as store from './store.js'
 import { isClosed, isAbandoned, stepIndexOf } from '../../domain/js/lifecycle.js'
 import { isAllowedApprover, normalizeJid } from './waApprovers.js'
+import { isImportedItem } from './importedItem.js'
 import { POLL_APPROVE, POLL_SEND_BACK, POLL_OPTIONS } from './waSend.js'
 
 // What a vote resolved to, and the HTTP status app.js answers with. Every
@@ -49,6 +50,8 @@ export const OUTCOMES = {
   ignored_stale_gate: 409,
   ignored_already_decided: 409,
   ignored_project_disabled: 409,
+  // HO-880: the item was imported into another project and is read-only.
+  ignored_item_imported: 409,
   failed: 502,
 }
 
@@ -68,6 +71,8 @@ const STORE_REFUSALS = new Set([
   'merged_target',
   // HZ-384: a humanOnly gate never passes from WhatsApp — retrying cannot help.
   'human_pin_required',
+  // HO-880: an imported item stays read-only — retrying cannot help.
+  'item_imported',
 ])
 
 const CHOICES = { [POLL_APPROVE]: 'approve', [POLL_SEND_BACK]: 'send_back' }
@@ -282,6 +287,9 @@ export async function applyVote({ voteId, pollMsgId, voterJid, selectedOption },
   // — a project disabled since then is never acted on. store.js refuses it
   // too (project_not_active); this catches it before the claim writes a row.
   if (!store.isProjectEnabled(item.project_id)) return result('ignored_project_disabled', at)
+  // HO-880: an imported item is read-only. store.js refuses it too
+  // (item_imported); this catches it before the claim writes a row.
+  if (isImportedItem(item.id)) return result('ignored_item_imported', at)
 
   // 4. First valid vote decides. Atomic.
   const refused = claim(voteId, poll, voterJid, choice)

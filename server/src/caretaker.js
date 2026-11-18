@@ -51,6 +51,8 @@ import { MERGEABLE_DEFER_CAP_MS, mergeableProbeState, reviewPassed } from './car
 import { deploySkipReason } from './deploySkip.js'
 import { FILING_GATES, narrowingStatus } from './narrowing.js'
 import { openBlockingAsks } from './asks.js'
+// HO-880: an imported item is read-only, so it is never judged.
+import { notImportedSql } from './importedItem.js'
 
 // Gate 3 is excluded HERE, in code, before any evaluation in any mode: new
 // work never enters without a human.
@@ -70,6 +72,7 @@ const selectCandidates = db.prepare(`
    WHERE p.autopilot IN ('shadow','on')
      AND w.cursor IN (${CARETAKER_GATES.map(() => '?').join(',')})
      AND w.abandoned_at IS NULL
+     AND ${notImportedSql('w')}
      AND NOT EXISTS (
        SELECT 1 FROM caretaker_eval c
         WHERE c.item_id = w.id AND c.gate_index = w.cursor
