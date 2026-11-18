@@ -2259,7 +2259,16 @@ export function buildApp({
           }
           // HO-872: the backend's land — for GitHub, mergePr unchanged. Only
           // here, inside the premerge claim and after the re-check above.
-          const landed = await forRepo(item.repo).vcs.land(item, { sha: gate.headSha, approvals, log: fastify.log })
+          // HO-890: no `approvals` here, so GitHub's land (mergePr) does not
+          // promote; the promotion runs once, below, through the Artifact port.
+          const landed = await forRepo(item.repo).vcs.land(item, { sha: gate.headSha, log: fastify.log })
+          // HO-890: the backend's promotion of the approved screens into its
+          // baseline — only after a land that succeeded. Best-effort, as it was
+          // inside mergePr: a failure (thrown or rejected) is logged and the
+          // merge still counts.
+          await Promise.resolve()
+            .then(() => forRepo(item.repo).artifacts.promoteArtifacts(item, approvals, { log: fastify.log }))
+            .catch((err) => fastify.log.warn(`baseline promotion failed for ${item.id}: ${err?.message ?? err}`))
           outcome = { state: 'merged' }
           store.addEvent(id, {
             who: 'Horizon',

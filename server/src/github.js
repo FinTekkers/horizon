@@ -832,8 +832,9 @@ async function promoteBaseline(item, approvals, log) {
 // HO-873: the Artifact port (backends/artifact.js) for GitHub — the methods
 // forRepo(repo).artifacts carries. Each one calls the function above it
 // unchanged; listArtifacts applies pruneArtifactRefs's own rule for which refs
-// under ARTIFACTS_PREFIX name an item. The live prune (startPolling) and
-// promotion (mergePr) still call pruneArtifactRefs and promoteBaseline direct.
+// under ARTIFACTS_PREFIX name an item. HO-890: the live prune
+// (backends/artifactPrune.js) and Accept's promotion (app.js) call these
+// through the registry; mergePr's back-compat promotion calls promoteArtifacts.
 export function readArtifacts(item) {
   return fetchScreenshotSnapshot(item.repo, item)
 }
@@ -861,8 +862,12 @@ export function pruneArtifacts({ log, now } = {}) {
   return pruneArtifactRefs(log, now)
 }
 
+// HO-890: a failure names the ref that stays, so app.js's warning reads as
+// mergePr's always has: "… — e2e-artifacts/<id> is kept".
 export function promoteArtifacts(item, approvals, { log } = {}) {
-  return promoteBaseline(item, approvals, log)
+  return promoteBaseline(item, approvals, log).catch((err) => {
+    throw new Error(`${err?.message ?? err} — ${artifactsRef(item)} is kept`, { cause: err })
+  })
 }
 
 const SHA_RE = /^[0-9a-f]{40}$/
@@ -952,17 +957,22 @@ export async function isAncestor(repo, baseSha, headSha) {
   return COMPARE_ANCESTOR_STATUSES.has(status)
 }
 
-// Accepting the code merges its PR (squash), removes the work branch, and —
-// only here, never from a PR branch — promotes this item's approved
-// screenshots (`approvals`, see promoteBaseline) into the baseline that
-// future PRs compare against. A failed promotion is logged with the item id
-// and never fails the merge.
+// Accepting the code merges its PR (squash) and removes the work branch.
+// HO-890: Accept's promotion of the approved screenshots into the baseline now
+// runs in app.js, through forRepo(repo).artifacts.promoteArtifacts, after land.
+// mergePr still promotes — through promoteArtifacts, the Artifact port — but
+// only when the caller passes an `approvals` key (even `approvals: null`): the
+// HZ-510 tests and test/contracts/vcs.contract.mjs call it that way. app.js
+// passes none, so one Accept promotes once. A later item retires this mode once
+// those tests may move to promoteArtifacts. A failed promotion is logged with
+// the item id and never fails the merge.
 //
 // `sha` (HZ-183) pins the merge to the PR head the pre-merge check tested:
 // GitHub refuses with 409 if the head moved since. A squash builds its own
 // commit, so the tested merge commit itself is never pushed; the head pin plus
 // app.js's base re-check together are what make the squash the tested tree.
-export async function mergePr(item, { sha, approvals = null, log } = {}) {
+export async function mergePr(item, opts = {}) {
+  const { sha, approvals = null, log } = opts
   const repo = item.repo
   const res = await gh(`/repos/${repo}/pulls/${item.pr}/merge`, {
     method: 'PUT',
@@ -973,9 +983,13 @@ export async function mergePr(item, { sha, approvals = null, log } = {}) {
     await gh(`/repos/${repo}/git/refs/${encodeURIComponent(`heads/horizon/${item.id.toLowerCase()}`)}`, {
       method: 'DELETE',
     }).catch(() => {})
-    await promoteBaseline(item, approvals, log).catch((err) =>
-      log?.warn(`baseline promotion failed for ${item.id}: ${err.message} — ${artifactsRef(item)} is kept`),
-    )
+    // HO-890: the back-compat mode above. promoteArtifacts's error already
+    // ends "— e2e-artifacts/<id> is kept".
+    if (Object.hasOwn(opts, 'approvals')) {
+      await promoteArtifacts(item, approvals, { log }).catch((err) =>
+        log?.warn(`baseline promotion failed for ${item.id}: ${err.message}`),
+      )
+    }
     return res.json()
   }
   const data = await res.json().catch(() => ({}))
@@ -1572,9 +1586,8 @@ export function startPolling(log) {
   }
   tick()
   setInterval(tick, POLL_INTERVAL_MS).unref()
-  const prune = () => pruneArtifactRefs(log).catch((err) => log.warn(`artifacts prune failed: ${err.message}`))
-  prune()
-  setInterval(prune, ARTIFACTS_PRUNE_MS).unref()
+  // HO-890: the daily artifacts prune is no longer armed here — server.js runs
+  // backends/artifactPrune.js, which prunes every backend through its port.
 }
 
 export function verifySignature(secret, rawBody, signatureHeader) {

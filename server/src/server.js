@@ -3,6 +3,7 @@
 
 import { buildApp } from './app.js'
 import { forKind } from './backends/index.js'
+import { startArtifactPrune } from './backends/artifactPrune.js'
 import * as orchestrator from './orchestrator.js'
 import * as gateNotifier from './gateNotifier.js'
 import * as caretaker from './caretaker.js'
@@ -63,15 +64,10 @@ accountPurge.init(fastify.log)
 // Before polling starts, so the first tick already seeds main's head (HZ-235).
 autoResolve.startAutoResolve(fastify.log)
 forKind('github').tracker.startPolling(fastify.log)
-// HO-878: the sl backend's daily artifact sweep (GitHub's runs inside its poll
-// loop). The adapter's own cursor holds it to once per 24h across restarts.
-const SL_ARTIFACTS_PRUNE_TICK_MS = 24 * 60 * 60 * 1000
-const pruneSlArtifacts = () =>
-  forKind('sl')
-    .artifacts.pruneArtifacts({ log: fastify.log })
-    .catch((err) => fastify.log.warn(`sl artifacts prune failed: ${err.message}`))
-pruneSlArtifacts()
-setInterval(pruneSlArtifacts, SL_ARTIFACTS_PRUNE_TICK_MS).unref()
+// HO-890: the daily artifact sweep for every backend (GitHub and sl), each
+// through its Artifact port. Each adapter's own cursor holds it to once per
+// 24h across restarts; one backend's failure never stops another's.
+startArtifactPrune(fastify.log)
 // HO-875: the sl backend's Task sync (GitHub's runs in its poll loop above):
 // each sl Task's state and new comments, read through farmd. With no farm
 // configured the sl Tracker is a placeholder (backends/sl.js), so it is not
