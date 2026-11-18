@@ -15,9 +15,10 @@ SHARED_SECRET = os.environ.get("FARM_SHARED_SECRET", "dev-secret")
 # refuse (the server answers 503), never silently succeed.
 WA_APPROVAL_SECRET = os.environ.get("WA_APPROVAL_SECRET", "")
 # HO-875: the Task driver behind farmd's /api/farm/tasks routes (the sl
-# backend's tracker). "stub" is the in-memory driver in task_driver.py; unset
-# (the default) means the routes answer 503 task_driver_not_configured. The
-# real Task-service driver is a later item.
+# backend's tracker). "stub" is the in-memory driver in task_driver.py;
+# "tasks" is the Meta Tasks driver in task_driver_meta.py (HO-883), which runs
+# the `meta` CLI under the host identity and holds no credential. Unset (the
+# default) means the routes answer 503 task_driver_not_configured.
 TASK_DRIVER = os.environ.get("TASK_DRIVER", "").strip().lower()
 
 
