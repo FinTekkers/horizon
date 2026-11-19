@@ -25,49 +25,51 @@ const PHONE = { width: 375, height: 667 }
 
 const card = (page, id) => page.locator('.card', { has: page.locator('.card__id', { hasText: new RegExp(`^${id}$`) }) })
 
-test("board: blocked cards, the Blocked by dependencies filter, and a planning item's open blocker", async ({ page }) => {
-  await test.step('a blocked card reads Blocked and keeps its blocker link inside the card in light, dark and phone layouts', async () => {
-    await page.goto('/')
-    const blocked = card(page, 'DEP-2')
+test('a blocked card reads Blocked and keeps its blocker link inside the card in light, dark and phone layouts', async ({
+  page,
+}) => {
+  await page.goto('/')
+  const blocked = card(page, 'DEP-2')
 
-    async function expectLayout(label) {
-      await blocked.scrollIntoViewIfNeeded()
-      await expect(blocked.locator('.status-pill'), label).toHaveText('Blocked')
-      await expect(blocked.locator('.status-pill'), label).toBeVisible()
-      await expect(blocked.getByRole('button', { name: 'Pause work' }), label).toHaveCount(0)
-      await expect(blocked.locator('.card__elapsed'), label).toHaveCount(0)
-      const link = blocked.locator('.dep-pill--blocked').getByRole('link', { name: 'DEP-1' })
-      await expect(link, label).toBeVisible()
-      const cardBox = await blocked.boundingBox()
-      const linkBox = await link.boundingBox()
-      expect(linkBox.x, `${label}: link starts outside the card`).toBeGreaterThanOrEqual(cardBox.x)
-      expect(linkBox.y, `${label}: link starts outside the card`).toBeGreaterThanOrEqual(cardBox.y)
-      expect(linkBox.x + linkBox.width, `${label}: link ends outside the card`).toBeLessThanOrEqual(cardBox.x + cardBox.width)
-      expect(linkBox.y + linkBox.height, `${label}: link ends outside the card`).toBeLessThanOrEqual(cardBox.y + cardBox.height)
-      const { scroll, client } = await blocked.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }))
-      expect(scroll, `${label}: card overflows horizontally`).toBeLessThanOrEqual(client)
-    }
+  async function expectLayout(label) {
+    await blocked.scrollIntoViewIfNeeded()
+    await expect(blocked.locator('.status-pill'), label).toHaveText('Blocked')
+    await expect(blocked.locator('.status-pill'), label).toBeVisible()
+    await expect(blocked.getByRole('button', { name: 'Pause work' }), label).toHaveCount(0)
+    await expect(blocked.locator('.card__elapsed'), label).toHaveCount(0)
+    const link = blocked.locator('.dep-pill--blocked').getByRole('link', { name: 'DEP-1' })
+    await expect(link, label).toBeVisible()
+    const cardBox = await blocked.boundingBox()
+    const linkBox = await link.boundingBox()
+    expect(linkBox.x, `${label}: link starts outside the card`).toBeGreaterThanOrEqual(cardBox.x)
+    expect(linkBox.y, `${label}: link starts outside the card`).toBeGreaterThanOrEqual(cardBox.y)
+    expect(linkBox.x + linkBox.width, `${label}: link ends outside the card`).toBeLessThanOrEqual(cardBox.x + cardBox.width)
+    expect(linkBox.y + linkBox.height, `${label}: link ends outside the card`).toBeLessThanOrEqual(cardBox.y + cardBox.height)
+    const { scroll, client } = await blocked.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }))
+    expect(scroll, `${label}: card overflows horizontally`).toBeLessThanOrEqual(client)
+  }
 
-    await expectLayout('light')
+  await expectLayout('light')
 
-    await page.locator('.topbar__avatar').click()
-    await page.getByRole('switch', { name: 'Dark mode' }).click()
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-    await page.locator('.usermenu__scrim').click()
-    await expectLayout('dark')
+  await page.locator('.topbar__avatar').click()
+  await page.getByRole('switch', { name: 'Dark mode' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.locator('.usermenu__scrim').click()
+  await expectLayout('dark')
 
-    await page.setViewportSize(PHONE)
-    // HZ-586: a phone shows one column at a time; DEP-2's is Execute.
-    await page.getByRole('tab', { name: /^Execute, / }).click()
-    await expectLayout('phone')
+  await page.setViewportSize(PHONE)
+  // HZ-586: a phone shows one column at a time; DEP-2's is Execute.
+  await page.getByRole('tab', { name: /^Execute, / }).click()
+  await expectLayout('phone')
 
-    // Leave the shared storage state as other specs expect it: light mode.
-    await page.setViewportSize({ width: 1024, height: 640 })
-    await page.locator('.topbar__avatar').click()
-    await page.getByRole('switch', { name: 'Dark mode' }).click()
-    await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
-  })
+  // Leave the shared storage state as other specs expect it: light mode.
+  await page.setViewportSize({ width: 1024, height: 640 })
+  await page.locator('.topbar__avatar').click()
+  await page.getByRole('switch', { name: 'Dark mode' }).click()
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
+})
 
+test("board: the Blocked by dependencies filter, and a planning item's open blocker", async ({ page }) => {
   // HZ-669: the off-by-default Blocked by dependencies filter hides held cards,
   // counts them, survives a reload, and its chip turns it back off.
   await test.step('the Blocked by dependencies filter hides blocked cards, stays on after a reload, and its chip turns it off', async () => {

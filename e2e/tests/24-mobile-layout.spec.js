@@ -99,164 +99,160 @@ async function checkBottomNav(page) {
   await expect(nav(page)).toHaveCount(0)
 }
 
-// The dark theme step stays last: its init script stores the dark theme for
-// every later load of this page.
-test('phone layout: no side scroll, the bottom nav, the slim top bar, and the dark theme', async ({ page }) => {
-  await test.step('phones never scroll sideways on the board, tracker or an item page', async () => {
-    for (const size of [PHONE, { width: 393, height: 852 }]) {
-      await page.setViewportSize(size)
-      await page.goto('/')
-      await expect(nav(page)).toBeVisible()
-      await expect(page.locator('.card', { hasText: 'MOB-GATE' }).locator('.proj-badge')).toBeVisible()
-      await expectNoSideScroll(page)
-
-      await navTab(page, 'Tracker').click()
-      await expect(page.locator('.tracker')).toBeVisible()
-      await expectNoSideScroll(page)
-
-      await page.goto('/hz-102')
-      await expect(page.locator('.tracker__id')).toHaveText('HZ-102')
-      await expectNoSideScroll(page)
-
-      await page.goto('/mob-gate')
-      await expect(page.locator('.tracker__meta .proj-badge')).toBeVisible()
-      await expectNoSideScroll(page)
-    }
-
-    // Fixed at the element that overflowed — not hidden on the page itself.
-    const overflowX = await page.evaluate(() =>
-      [document.documentElement, document.body, document.querySelector('.app')].map((el) => getComputedStyle(el).overflowX),
-    )
-    expect(overflowX).toEqual(['visible', 'visible', 'visible'])
-  })
-
-  await test.step('bottom nav switches views, opens approvals with the desktop count, and only shows below 700px', async () => {
-    await checkBottomNav(page)
-
-    // Desktop keeps its own top-bar controls and no bottom nav.
-    await page.setViewportSize({ width: 1280, height: 800 })
-    await page.goto('/')
-    await expect(page.locator('.seg-tabs').getByRole('button', { name: 'Board' })).toBeVisible()
-    await expect(page.locator('.seg-tabs').getByRole('button', { name: 'Tracker' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Pending approvals' })).toBeVisible()
-    await expect(page.locator('.bottomnav')).toHaveCount(0)
-  })
-
-  await test.step('the phone top bar is one slim row with 44px targets, and the nav is keyboard reachable', async () => {
-    await page.setViewportSize(PHONE)
+test('phones never scroll sideways on the board, tracker or an item page', async ({ page }) => {
+  for (const size of [PHONE, { width: 393, height: 852 }]) {
+    await page.setViewportSize(size)
     await page.goto('/')
     await expect(nav(page)).toBeVisible()
+    await expect(page.locator('.card', { hasText: 'MOB-GATE' }).locator('.proj-badge')).toBeVisible()
+    await expectNoSideScroll(page)
 
-    const bar = await page.locator('.topbar').boundingBox()
-    expect(bar.height).toBeLessThanOrEqual(64)
-    const parts = await Promise.all(
-      ['.topbar__logo', '.projswitch', '.topbar__avatar'].map((sel) => page.locator(sel).boundingBox()),
-    )
-    const centres = parts.map((b) => b.y + b.height / 2)
-    expect(Math.max(...centres) - Math.min(...centres)).toBeLessThanOrEqual(4)
-    for (const b of parts) {
-      expect(b.y).toBeGreaterThanOrEqual(bar.y)
-      expect(b.y + b.height).toBeLessThanOrEqual(bar.y + bar.height)
-    }
-    await expect(page.locator('.seg-tabs')).toBeHidden()
-    await expect(page.locator('.pending-btn')).toBeHidden()
+    await navTab(page, 'Tracker').click()
+    await expect(page.locator('.tracker')).toBeVisible()
+    await expectNoSideScroll(page)
 
-    const targets = [
-      navTab(page, 'Board'),
-      navTab(page, 'Tracker'),
-      navTab(page, /^Approvals/),
-      page.getByRole('button', { name: /^Project filter:/ }),
-      page.locator('.topbar__avatar'),
-    ]
-    for (const target of targets) {
-      const box = await target.boundingBox()
-      expect(box.width).toBeGreaterThanOrEqual(44)
-      expect(box.height).toBeGreaterThanOrEqual(44)
-    }
+    await page.goto('/hz-102')
+    await expect(page.locator('.tracker__id')).toHaveText('HZ-102')
+    await expectNoSideScroll(page)
 
-    // The compact switcher still opens, and its menu stays on screen.
-    await page.locator('.projswitch').click()
-    const menu = page.locator('.usermenu__menu--left')
-    await expect(menu).toBeVisible()
-    const menuBox = await menu.boundingBox()
-    const { client } = await pageWidths(page)
-    expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(client)
-    // The scrim spans the top bar (its backdrop-filter contains fixed children), so dismiss in its empty middle.
-    await page.locator('.usermenu__scrim').click({ position: { x: bar.width / 2, y: bar.height / 2 } })
-    await expect(menu).toHaveCount(0)
+    await page.goto('/mob-gate')
+    await expect(page.locator('.tracker__meta .proj-badge')).toBeVisible()
+    await expectNoSideScroll(page)
+  }
 
-    // Keyboard: Tab from the avatar walks the three tabs in order, each with a visible focus ring.
-    await page.locator('.topbar__avatar').focus()
-    for (const name of ['Board', 'Tracker', /^Approvals/]) {
-      await page.keyboard.press('Tab')
-      await expect(navTab(page, name)).toBeFocused()
-      const outline = await page.evaluate(() => getComputedStyle(document.activeElement).outlineStyle)
-      expect(outline).not.toBe('none')
-    }
-  })
+  // Fixed at the element that overflowed — not hidden on the page itself.
+  const overflowX = await page.evaluate(() =>
+    [document.documentElement, document.body, document.querySelector('.app')].map((el) => getComputedStyle(el).overflowX),
+  )
+  expect(overflowX).toEqual(['visible', 'visible', 'visible'])
+})
 
-  await test.step('the last card and the last activity row end above the bottom nav', async () => {
-    await page.setViewportSize(PHONE)
+test('bottom nav switches views, opens approvals with the desktop count, and only shows below 700px', async ({ page }) => {
+  await checkBottomNav(page)
 
-    const lowestAboveNav = async (selector) => {
-      const { scrollHeight, innerHeight } = await page.evaluate(() => ({
-        scrollHeight: document.documentElement.scrollHeight,
-        innerHeight: window.innerHeight,
-      }))
-      expect(scrollHeight).toBeGreaterThan(innerHeight)
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
-      const { lowest, navTop } = await page.evaluate((sel) => {
-        const bottoms = [...document.querySelectorAll(sel)].map((el) => el.getBoundingClientRect().bottom)
-        return { lowest: Math.max(...bottoms), navTop: document.querySelector('.bottomnav').getBoundingClientRect().top }
-      }, selector)
-      expect(lowest).toBeLessThanOrEqual(navTop)
-    }
+  // Desktop keeps its own top-bar controls and no bottom nav.
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.goto('/')
+  await expect(page.locator('.seg-tabs').getByRole('button', { name: 'Board' })).toBeVisible()
+  await expect(page.locator('.seg-tabs').getByRole('button', { name: 'Tracker' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Pending approvals' })).toBeVisible()
+  await expect(page.locator('.bottomnav')).toHaveCount(0)
+})
 
-    await page.goto('/')
-    await expect(page.locator('.card', { hasText: 'MOB-6' })).toBeVisible()
-    await lowestAboveNav('.card')
-    const { padding, navHeight } = await page.evaluate(() => ({
-      padding: parseFloat(getComputedStyle(document.querySelector('.app')).paddingBottom),
-      navHeight: document.querySelector('.bottomnav').getBoundingClientRect().height,
+test('the phone top bar is one slim row with 44px targets, and the nav is keyboard reachable', async ({ page }) => {
+  await page.setViewportSize(PHONE)
+  await page.goto('/')
+  await expect(nav(page)).toBeVisible()
+
+  const bar = await page.locator('.topbar').boundingBox()
+  expect(bar.height).toBeLessThanOrEqual(64)
+  const parts = await Promise.all(
+    ['.topbar__logo', '.projswitch', '.topbar__avatar'].map((sel) => page.locator(sel).boundingBox()),
+  )
+  const centres = parts.map((b) => b.y + b.height / 2)
+  expect(Math.max(...centres) - Math.min(...centres)).toBeLessThanOrEqual(4)
+  for (const b of parts) {
+    expect(b.y).toBeGreaterThanOrEqual(bar.y)
+    expect(b.y + b.height).toBeLessThanOrEqual(bar.y + bar.height)
+  }
+  await expect(page.locator('.seg-tabs')).toBeHidden()
+  await expect(page.locator('.pending-btn')).toBeHidden()
+
+  const targets = [
+    navTab(page, 'Board'),
+    navTab(page, 'Tracker'),
+    navTab(page, /^Approvals/),
+    page.getByRole('button', { name: /^Project filter:/ }),
+    page.locator('.topbar__avatar'),
+  ]
+  for (const target of targets) {
+    const box = await target.boundingBox()
+    expect(box.width).toBeGreaterThanOrEqual(44)
+    expect(box.height).toBeGreaterThanOrEqual(44)
+  }
+
+  // The compact switcher still opens, and its menu stays on screen.
+  await page.locator('.projswitch').click()
+  const menu = page.locator('.usermenu__menu--left')
+  await expect(menu).toBeVisible()
+  const menuBox = await menu.boundingBox()
+  const { client } = await pageWidths(page)
+  expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(client)
+  // The scrim spans the top bar (its backdrop-filter contains fixed children), so dismiss in its empty middle.
+  await page.locator('.usermenu__scrim').click({ position: { x: bar.width / 2, y: bar.height / 2 } })
+  await expect(menu).toHaveCount(0)
+
+  // Keyboard: Tab from the avatar walks the three tabs in order, each with a visible focus ring.
+  await page.locator('.topbar__avatar').focus()
+  for (const name of ['Board', 'Tracker', /^Approvals/]) {
+    await page.keyboard.press('Tab')
+    await expect(navTab(page, name)).toBeFocused()
+    const outline = await page.evaluate(() => getComputedStyle(document.activeElement).outlineStyle)
+    expect(outline).not.toBe('none')
+  }
+})
+
+test('the last card and the last activity row end above the bottom nav', async ({ page }) => {
+  await page.setViewportSize(PHONE)
+
+  const lowestAboveNav = async (selector) => {
+    const { scrollHeight, innerHeight } = await page.evaluate(() => ({
+      scrollHeight: document.documentElement.scrollHeight,
+      innerHeight: window.innerHeight,
     }))
-    expect(padding).toBeGreaterThanOrEqual(navHeight)
+    expect(scrollHeight).toBeGreaterThan(innerHeight)
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+    const { lowest, navTop } = await page.evaluate((sel) => {
+      const bottoms = [...document.querySelectorAll(sel)].map((el) => el.getBoundingClientRect().bottom)
+      return { lowest: Math.max(...bottoms), navTop: document.querySelector('.bottomnav').getBoundingClientRect().top }
+    }, selector)
+    expect(lowest).toBeLessThanOrEqual(navTop)
+  }
 
-    await page.goto('/mob-log')
-    await expect(page.locator('.activity-row__text', { hasText: 'mobile fixture event 25' })).toBeVisible()
-    await lowestAboveNav('.activity-row')
+  await page.goto('/')
+  await expect(page.locator('.card', { hasText: 'MOB-6' })).toBeVisible()
+  await lowestAboveNav('.card')
+  const { padding, navHeight } = await page.evaluate(() => ({
+    padding: parseFloat(getComputedStyle(document.querySelector('.app')).paddingBottom),
+    navHeight: document.querySelector('.bottomnav').getBoundingClientRect().height,
+  }))
+  expect(padding).toBeGreaterThanOrEqual(navHeight)
+
+  await page.goto('/mob-log')
+  await expect(page.locator('.activity-row__text', { hasText: 'mobile fixture event 25' })).toBeVisible()
+  await lowestAboveNav('.activity-row')
+})
+
+test('dark theme: the bottom nav works the same and paints with the dark tokens', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('horizon_theme', 'dark'))
+  await checkBottomNav(page)
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+
+  await page.setViewportSize(PHONE)
+  await page.goto('/')
+  await expect(nav(page)).toBeVisible()
+  const colours = await page.evaluate(() => {
+    const navEl = document.querySelector('.bottomnav')
+    const style = (el) => getComputedStyle(el)
+    // Resolve the token through the cascade, so a hard-coded border colour wouldn't match.
+    const probe = document.createElement('div')
+    probe.style.color = 'var(--topbar-border)'
+    document.body.appendChild(probe)
+    const topbarBorder = style(probe).color
+    probe.remove()
+    return {
+      background: style(navEl).backgroundColor,
+      border: style(navEl).borderTopColor,
+      topbarBorder,
+      active: style(navEl.querySelector('[aria-current="page"]')).color,
+      inactive: style(navEl.querySelector('.bottomnav__tab:not([aria-current])')).color,
+    }
   })
-
-  await test.step('dark theme: the bottom nav works the same and paints with the dark tokens', async () => {
-    await page.addInitScript(() => localStorage.setItem('horizon_theme', 'dark'))
-    await checkBottomNav(page)
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-
-    await page.setViewportSize(PHONE)
-    await page.goto('/')
-    await expect(nav(page)).toBeVisible()
-    const colours = await page.evaluate(() => {
-      const navEl = document.querySelector('.bottomnav')
-      const style = (el) => getComputedStyle(el)
-      // Resolve the token through the cascade, so a hard-coded border colour wouldn't match.
-      const probe = document.createElement('div')
-      probe.style.color = 'var(--topbar-border)'
-      document.body.appendChild(probe)
-      const topbarBorder = style(probe).color
-      probe.remove()
-      return {
-        background: style(navEl).backgroundColor,
-        border: style(navEl).borderTopColor,
-        topbarBorder,
-        active: style(navEl.querySelector('[aria-current="page"]')).color,
-        inactive: style(navEl.querySelector('.bottomnav__tab:not([aria-current])')).color,
-      }
-    })
-    expect(colours.background).toBe(hexToRgb(DARK.surface))
-    expect(colours.background).not.toBe(hexToRgb(LIGHT.surface))
-    expect(colours.active).toBe(hexToRgb(DARK.primaryInk))
-    expect(colours.inactive).toBe(hexToRgb(DARK.mutedStrong))
-    expect(colours.inactive).not.toBe(hexToRgb(LIGHT.mutedStrong))
-    expect(colours.border).toBe(colours.topbarBorder)
-    expect(colours.border).not.toBe('rgb(231, 226, 240)') // light --topbar-border
-  })
+  expect(colours.background).toBe(hexToRgb(DARK.surface))
+  expect(colours.background).not.toBe(hexToRgb(LIGHT.surface))
+  expect(colours.active).toBe(hexToRgb(DARK.primaryInk))
+  expect(colours.inactive).toBe(hexToRgb(DARK.mutedStrong))
+  expect(colours.inactive).not.toBe(hexToRgb(LIGHT.mutedStrong))
+  expect(colours.border).toBe(colours.topbarBorder)
+  expect(colours.border).not.toBe('rgb(231, 226, 240)') // light --topbar-border
 })

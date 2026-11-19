@@ -6,7 +6,7 @@
 // on a phone) and no timer on paused or closed cards.
 //
 // Rows are seeded directly (fixtures/seed.js), so the orchestrator never
-// kicks them. One test in two steps: the suite shares one time budget.
+// kicks them. Two consolidated journeys: the suite shares one time budget.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
@@ -50,75 +50,75 @@ test.beforeAll(() => {
 const card = (page, id) => page.locator('.card', { has: page.locator('.card__id', { hasText: new RegExp(`^${id}$`) }) })
 const minutesOf = (text) => Number(/· (\d+)m$/.exec(text)?.[1])
 
-// The clock step stays last: page.clock.install() cannot be undone on a page,
-// so the layout step runs first, on the real clock.
-test("board: a card's elapsed line, its layout and its minute tick", async ({ page }) => {
-  await test.step('the elapsed line stays on one line at card width in light, dark and phone layouts; paused and closed cards show none', async () => {
-    await page.goto('/')
-    await page.locator('.board__filter-chip', { hasText: 'Closed' }).click()
-    const long = card(page, 'EL-LONG')
-    await expect(long.locator('.card__elapsed')).toHaveText('Summarizing reviews · 1h 05m', { timeout: 10_000 })
+test('a gate card shows the server-derived time in a non-UTC browser, ticks each minute without a reload, and survives one', async ({
+  page,
+}) => {
+  await page.clock.install()
+  await page.goto('/')
+  const elapsed = card(page, 'EL-GATE').locator('.card__elapsed')
+  await expect(elapsed).toHaveText(/^Waiting on you · 2[456]m$/, { timeout: 10_000 })
+  const first = minutesOf(await elapsed.textContent())
 
-    await expect(card(page, 'EL-PAUSED')).toBeVisible()
-    await expect(card(page, 'EL-PAUSED').locator('.card__elapsed')).toHaveCount(0)
-    await expect(card(page, 'EL-CLOSED')).toBeVisible()
-    await expect(card(page, 'EL-CLOSED').locator('.card__elapsed')).toHaveCount(0)
+  await page.clock.fastForward('01:00')
+  await expect(elapsed).toHaveText(`Waiting on you · ${first + 1}m`)
 
-    async function expectOneLine(label) {
-      const line = long.locator('.card__elapsed')
-      const { scroll, client, height, lineHeight } = await line.evaluate((el) => ({
-        scroll: el.scrollWidth,
-        client: el.clientWidth,
-        height: el.getBoundingClientRect().height,
-        lineHeight: parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.5,
-      }))
-      expect(scroll, `${label}: elapsed line overflows`).toBeLessThanOrEqual(client)
-      expect(height, `${label}: elapsed line wraps`).toBeLessThanOrEqual(lineHeight + 1)
-      // The status row is untouched: as tall as with the elapsed line hidden.
-      const rowHeights = await long.evaluate((el) => {
-        const row = () => el.querySelector('.card__status-row').getBoundingClientRect().height
-        const elapsedLine = el.querySelector('.card__elapsed')
-        const shown = row()
-        elapsedLine.style.display = 'none'
-        const hidden = row()
-        elapsedLine.style.display = ''
-        return { shown, hidden }
-      })
-      expect(rowHeights.shown, `${label}: status row height changed`).toBe(rowHeights.hidden)
-    }
+  await page.reload()
+  await expect(elapsed).toHaveText(/^Waiting on you · 2[4-7]m$/, { timeout: 10_000 })
+  expect(minutesOf(await elapsed.textContent())).toBeGreaterThanOrEqual(first)
+})
 
-    await expectOneLine('light')
-    await page.locator('.topbar__avatar').click()
-    await page.getByRole('switch', { name: 'Dark mode' }).click()
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-    await page.locator('.usermenu__scrim').click()
-    await expectOneLine('dark')
+test('the elapsed line stays on one line at card width in light, dark and phone layouts; paused and closed cards show none', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.locator('.board__filter-chip', { hasText: 'Closed' }).click()
+  const long = card(page, 'EL-LONG')
+  await expect(long.locator('.card__elapsed')).toHaveText('Summarizing reviews · 1h 05m', { timeout: 10_000 })
 
-    await page.setViewportSize(PHONE)
-    // HZ-586: a phone shows one column at a time; EL-LONG's is Technical Plan.
-    await page.getByRole('tab', { name: /^Technical Plan, / }).click()
-    await long.scrollIntoViewIfNeeded()
-    await expectOneLine('phone')
+  await expect(card(page, 'EL-PAUSED')).toBeVisible()
+  await expect(card(page, 'EL-PAUSED').locator('.card__elapsed')).toHaveCount(0)
+  await expect(card(page, 'EL-CLOSED')).toBeVisible()
+  await expect(card(page, 'EL-CLOSED').locator('.card__elapsed')).toHaveCount(0)
 
-    // Leave the shared storage state as other specs expect it: light mode.
-    await page.setViewportSize({ width: 1024, height: 640 })
-    await page.locator('.topbar__avatar').click()
-    await page.getByRole('switch', { name: 'Dark mode' }).click()
-    await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
-  })
+  async function expectOneLine(label) {
+    const line = long.locator('.card__elapsed')
+    const { scroll, client, height, lineHeight } = await line.evaluate((el) => ({
+      scroll: el.scrollWidth,
+      client: el.clientWidth,
+      height: el.getBoundingClientRect().height,
+      lineHeight: parseFloat(getComputedStyle(el).lineHeight) || parseFloat(getComputedStyle(el).fontSize) * 1.5,
+    }))
+    expect(scroll, `${label}: elapsed line overflows`).toBeLessThanOrEqual(client)
+    expect(height, `${label}: elapsed line wraps`).toBeLessThanOrEqual(lineHeight + 1)
+    // The status row is untouched: as tall as with the elapsed line hidden.
+    const rowHeights = await long.evaluate((el) => {
+      const row = () => el.querySelector('.card__status-row').getBoundingClientRect().height
+      const elapsedLine = el.querySelector('.card__elapsed')
+      const shown = row()
+      elapsedLine.style.display = 'none'
+      const hidden = row()
+      elapsedLine.style.display = ''
+      return { shown, hidden }
+    })
+    expect(rowHeights.shown, `${label}: status row height changed`).toBe(rowHeights.hidden)
+  }
 
-  await test.step('a gate card shows the server-derived time in a non-UTC browser, ticks each minute without a reload, and survives one', async () => {
-    await page.clock.install()
-    await page.goto('/')
-    const elapsed = card(page, 'EL-GATE').locator('.card__elapsed')
-    await expect(elapsed).toHaveText(/^Waiting on you · 2[456]m$/, { timeout: 10_000 })
-    const first = minutesOf(await elapsed.textContent())
+  await expectOneLine('light')
+  await page.locator('.topbar__avatar').click()
+  await page.getByRole('switch', { name: 'Dark mode' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.locator('.usermenu__scrim').click()
+  await expectOneLine('dark')
 
-    await page.clock.fastForward('01:00')
-    await expect(elapsed).toHaveText(`Waiting on you · ${first + 1}m`)
+  await page.setViewportSize(PHONE)
+  // HZ-586: a phone shows one column at a time; EL-LONG's is Technical Plan.
+  await page.getByRole('tab', { name: /^Technical Plan, / }).click()
+  await long.scrollIntoViewIfNeeded()
+  await expectOneLine('phone')
 
-    await page.reload()
-    await expect(elapsed).toHaveText(/^Waiting on you · 2[4-7]m$/, { timeout: 10_000 })
-    expect(minutesOf(await elapsed.textContent())).toBeGreaterThanOrEqual(first)
-  })
+  // Leave the shared storage state as other specs expect it: light mode.
+  await page.setViewportSize({ width: 1024, height: 640 })
+  await page.locator('.topbar__avatar').click()
+  await page.getByRole('switch', { name: 'Dark mode' }).click()
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
 })
