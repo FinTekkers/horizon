@@ -108,59 +108,60 @@ async function patchCommand2(page, id) {
   await expect(page.locator('.activity-row__text', { hasText: 'patched command 2 of 3 of the run plan' })).toBeVisible({ timeout: 10_000 })
 }
 
-test('fail journey: the patched command fails its preflight — back at Run plan naming the failed check, no Approve button, also after a reload', async ({ page }) => {
+test("item page: a patched command's checks, failing and passing", async ({ page }) => {
   test.setTimeout(90_000)
-  await patchCommand2(page, FAIL_ID)
+  await test.step('fail journey: the patched command fails its preflight — back at Run plan naming the failed check, no Approve button, also after a reload', async () => {
+    await patchCommand2(page, FAIL_ID)
 
-  const runPlan = stepCard(page, 'Run plan')
-  await expect(page.locator('.activity-row__text', { hasText: 'patched command 2 of 3 failed its preflight' })).toBeVisible({ timeout: 30_000 })
-  for (const pass of [1, 2]) {
-    await expect(runPlan.getByText('Failed check: preflight')).toBeVisible({ timeout: 15_000 })
-    await expect(runPlan.getByTestId('command-check-audit')).toHaveText('✓ contract audit — passed')
-    await expect(runPlan.getByTestId('command-check-preflight')).toHaveText(/^✕ preflight — failed/)
-    await expect(runPlan.getByTestId('command-check-rehearsal')).toHaveText('· rehearsal — waits for the check before it')
-    await expect(page.locator('.btn-gate-approve')).toHaveCount(0)
-    await expect(stepCard(page, 'Approve the run')).not.toHaveClass(/step-card--awaiting/)
-    if (pass === 1) await page.reload()
-  }
+    const runPlan = stepCard(page, 'Run plan')
+    await expect(page.locator('.activity-row__text', { hasText: 'patched command 2 of 3 failed its preflight' })).toBeVisible({ timeout: 30_000 })
+    for (const pass of [1, 2]) {
+      await expect(runPlan.getByText('Failed check: preflight')).toBeVisible({ timeout: 15_000 })
+      await expect(runPlan.getByTestId('command-check-audit')).toHaveText('✓ contract audit — passed')
+      await expect(runPlan.getByTestId('command-check-preflight')).toHaveText(/^✕ preflight — failed/)
+      await expect(runPlan.getByTestId('command-check-rehearsal')).toHaveText('· rehearsal — waits for the check before it')
+      await expect(page.locator('.btn-gate-approve')).toHaveCount(0)
+      await expect(stepCard(page, 'Approve the run')).not.toHaveClass(/step-card--awaiting/)
+      if (pass === 1) await page.reload()
+    }
 
-  // Command 2 stays unapproved; commands 1 and 3 keep their approval.
-  const db = openDb(DB_PATH)
-  try {
-    const row = db.prepare('SELECT cursor, paused, approved_command_hashes_json FROM work_item WHERE id = ?').get(FAIL_ID)
-    expect([row.cursor, row.paused]).toEqual([kindStepIndex('Run plan', 'task'), 1])
-    expect(JSON.parse(row.approved_command_hashes_json)).toEqual([sha256(COMMANDS[0]), null, sha256(COMMANDS[2])])
-  } finally {
-    db.close()
-  }
-})
+    // Command 2 stays unapproved; commands 1 and 3 keep their approval.
+    const db = openDb(DB_PATH)
+    try {
+      const row = db.prepare('SELECT cursor, paused, approved_command_hashes_json FROM work_item WHERE id = ?').get(FAIL_ID)
+      expect([row.cursor, row.paused]).toEqual([kindStepIndex('Run plan', 'task'), 1])
+      expect(JSON.parse(row.approved_command_hashes_json)).toEqual([sha256(COMMANDS[0]), null, sha256(COMMANDS[2])])
+    } finally {
+      db.close()
+    }
+  })
 
-test('pass journey: three passes show, then the Approve card; the PIN approves command 2, and after a reload every command is approved', async ({ page }) => {
-  test.setTimeout(90_000)
-  await patchCommand2(page, PASS_ID)
+  await test.step('pass journey: three passes show, then the Approve card; the PIN approves command 2, and after a reload every command is approved', async () => {
+    await patchCommand2(page, PASS_ID)
 
-  const gate = stepCard(page, 'Approve the run')
-  await expect(gate.getByText('Always a human · even on Autopilot')).toBeVisible({ timeout: 30_000 })
-  await expect(gate.getByTestId('command-check-audit')).toHaveText('✓ contract audit — passed', { timeout: 15_000 })
-  await expect(gate.getByTestId('command-check-preflight')).toHaveText('✓ preflight — passed', { timeout: 15_000 })
-  await expect(gate.getByTestId('command-check-rehearsal')).toHaveText('✓ rehearsal — passed', { timeout: 15_000 })
-  const approve = gate.getByRole('button', { name: 'Approve the run', exact: true })
-  await expect(approve).toBeVisible()
+    const gate = stepCard(page, 'Approve the run')
+    await expect(gate.getByText('Always a human · even on Autopilot')).toBeVisible({ timeout: 30_000 })
+    await expect(gate.getByTestId('command-check-audit')).toHaveText('✓ contract audit — passed', { timeout: 15_000 })
+    await expect(gate.getByTestId('command-check-preflight')).toHaveText('✓ preflight — passed', { timeout: 15_000 })
+    await expect(gate.getByTestId('command-check-rehearsal')).toHaveText('✓ rehearsal — passed', { timeout: 15_000 })
+    const approve = gate.getByRole('button', { name: 'Approve the run', exact: true })
+    await expect(approve).toBeVisible()
 
-  await approve.click()
-  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
-  await page.locator('.composer__submit').click()
-  await answerPinDialog(page, GATE_PIN)
-  await expect(gate.locator('.step-card__meta')).toHaveText('Approved by you', { timeout: 10_000 })
+    await approve.click()
+    await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+    await page.locator('.composer__submit').click()
+    await answerPinDialog(page, GATE_PIN)
+    await expect(gate.locator('.step-card__meta')).toHaveText('Approved by you', { timeout: 10_000 })
 
-  await page.reload()
-  await expect(stepCard(page, 'Approve the run').locator('.step-card__meta')).toHaveText('Approved by you', { timeout: 10_000 })
-  await expect(page.locator('.activity-row__text', { hasText: 'approved: approve the run — command 2 of 3' })).toBeVisible()
-  const db = openDb(DB_PATH)
-  try {
-    const row = db.prepare('SELECT approved_command_hashes_json FROM work_item WHERE id = ?').get(PASS_ID)
-    expect(JSON.parse(row.approved_command_hashes_json)).toEqual([sha256(COMMANDS[0]), sha256(NEW_COMMAND), sha256(COMMANDS[2])])
-  } finally {
-    db.close()
-  }
+    await page.reload()
+    await expect(stepCard(page, 'Approve the run').locator('.step-card__meta')).toHaveText('Approved by you', { timeout: 10_000 })
+    await expect(page.locator('.activity-row__text', { hasText: 'approved: approve the run — command 2 of 3' })).toBeVisible()
+    const db = openDb(DB_PATH)
+    try {
+      const row = db.prepare('SELECT approved_command_hashes_json FROM work_item WHERE id = ?').get(PASS_ID)
+      expect(JSON.parse(row.approved_command_hashes_json)).toEqual([sha256(COMMANDS[0]), sha256(NEW_COMMAND), sha256(COMMANDS[2])])
+    } finally {
+      db.close()
+    }
+  })
 })

@@ -47,63 +47,69 @@ test.beforeAll(() => {
 })
 
 // HZ-803: a fixed clock and zone, so the card's "when it ran" text is exact.
-// 20 Oct is still British Summer Time, so 10:01:30 UTC reads 11:01.
+// 20 Oct is still British Summer Time, so 10:01:30 UTC reads 11:01. Each step
+// fixes the clock first.
 test.use({ timezoneId: 'Europe/London' })
-test.beforeEach(async ({ page }) => {
-  await page.clock.setFixedTime(new Date('2026-11-06T16:06:00Z'))
-})
 
 const reviewStep = (page) =>
   page.locator('.step', { has: page.locator('.step-card__label', { hasText: REVIEW.label }) })
 
-test('a review that sent the item back shows its outcome and opens attempt 1’s artifact', async ({ page }) => {
-  await page.goto(`/${ID_A.toLowerCase()}`)
-  const step = reviewStep(page)
-  await expect(step.locator('.step-card__meta')).toHaveText('Failed, sent back · attempt 1', { timeout: 15_000 })
-  await expect(step.getByText('Queued', { exact: true })).toHaveCount(0)
+test('item page: a review step that ran ahead, with one attempt and with two', async ({ page }) => {
+  await test.step('a review that sent the item back shows its outcome and opens attempt 1’s artifact', async () => {
+    await page.clock.setFixedTime(new Date('2026-11-06T16:06:00Z'))
 
-  const link = step.getByRole('link', { name: 'View attempt 1 ↗' })
-  const [artifact] = await Promise.all([page.waitForEvent('popup'), link.click()])
-  await expect(artifact).toHaveURL(new RegExp(`/artifacts/${REVIEW_STEP_INDEX}/1$`))
-  await expect(artifact.locator('article')).toContainText('marker-review-a1')
-  await artifact.close()
+    await page.goto(`/${ID_A.toLowerCase()}`)
+    const step = reviewStep(page)
+    await expect(step.locator('.step-card__meta')).toHaveText('Failed, sent back · attempt 1', { timeout: 15_000 })
+    await expect(step.getByText('Queued', { exact: true })).toHaveCount(0)
 
-  // From the server, not tab state: a reload shows the same.
-  await page.reload()
-  await expect(step.locator('.step-card__meta')).toHaveText('Failed, sent back · attempt 1', { timeout: 15_000 })
-  await expect(step.getByRole('link', { name: 'View attempt 1 ↗' })).toHaveAttribute(
-    'href',
-    new RegExp(`/artifacts/${REVIEW_STEP_INDEX}/1$`),
-  )
-  // HZ-803: the old result says it is from a previous attempt, and when it ran.
-  await expect(step.getByTestId('run-time')).toHaveText('previous attempt · 20 Oct 11:01 · 17 d ago')
+    const link = step.getByRole('link', { name: 'View attempt 1 ↗' })
+    const [artifact] = await Promise.all([page.waitForEvent('popup'), link.click()])
+    await expect(artifact).toHaveURL(new RegExp(`/artifacts/${REVIEW_STEP_INDEX}/1$`))
+    await expect(artifact.locator('article')).toContainText('marker-review-a1')
+    await artifact.close()
 
-  // On a phone the sent-back step still shows its outcome and attempt link.
-  await page.setViewportSize({ width: 375, height: 667 })
-  await step.scrollIntoViewIfNeeded()
-  await expect(step.locator('.step-card__meta')).toBeVisible()
-  await expect(step.getByRole('link', { name: 'View attempt 1 ↗' })).toBeVisible()
-  // HZ-803: the time and label wrap inside the card instead of overflowing it.
-  await expect(step.getByTestId('run-time')).toBeVisible()
-  const overflow = await step.locator('.step-card').evaluate((card) => ({
-    card: card.scrollWidth - card.clientWidth,
-    page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-  }))
-  expect(overflow).toEqual({ card: 0, page: 0 })
-})
+    // From the server, not tab state: a reload shows the same.
+    await page.reload()
+    await expect(step.locator('.step-card__meta')).toHaveText('Failed, sent back · attempt 1', { timeout: 15_000 })
+    await expect(step.getByRole('link', { name: 'View attempt 1 ↗' })).toHaveAttribute(
+      'href',
+      new RegExp(`/artifacts/${REVIEW_STEP_INDEX}/1$`),
+    )
+    // HZ-803: the old result says it is from a previous attempt, and when it ran.
+    await expect(step.getByTestId('run-time')).toHaveText('previous attempt · 20 Oct 11:01 · 17 d ago')
 
-test('with two review attempts it shows attempt 2 and opens attempt 2’s artifact', async ({ page }) => {
-  await page.goto(`/${ID_B.toLowerCase()}`)
-  const step = reviewStep(page)
-  await expect(step.locator('.step-card__meta')).toHaveText('Failed, sent back · attempt 2', { timeout: 15_000 })
-  // HZ-803: the shown attempt's time (attempt 2), not attempt 1's.
-  await expect(step.getByTestId('run-time')).toHaveText('previous attempt · 20 Oct 11:02 · 17 d ago')
+    // On a phone the sent-back step still shows its outcome and attempt link.
+    await page.setViewportSize({ width: 375, height: 667 })
+    await step.scrollIntoViewIfNeeded()
+    await expect(step.locator('.step-card__meta')).toBeVisible()
+    await expect(step.getByRole('link', { name: 'View attempt 1 ↗' })).toBeVisible()
+    // HZ-803: the time and label wrap inside the card instead of overflowing it.
+    await expect(step.getByTestId('run-time')).toBeVisible()
+    const overflow = await step.locator('.step-card').evaluate((card) => ({
+      card: card.scrollWidth - card.clientWidth,
+      page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    }))
+    expect(overflow).toEqual({ card: 0, page: 0 })
+  })
 
-  const link = step.getByRole('link', { name: 'View attempt 2 ↗' })
-  const [artifact] = await Promise.all([page.waitForEvent('popup'), link.click()])
-  await expect(artifact).toHaveURL(new RegExp(`/artifacts/${REVIEW_STEP_INDEX}/2$`))
-  await expect(artifact.locator('article')).toContainText('marker-review-a2')
-  await expect(artifact.locator('article')).not.toContainText('marker-review-a1')
-  // Earlier attempts stay reachable from the artifact page.
-  await expect(artifact.locator('.attempts a', { hasText: 'attempt 1' })).toBeVisible()
+  await test.step('with two review attempts it shows attempt 2 and opens attempt 2’s artifact', async () => {
+    await page.clock.setFixedTime(new Date('2026-11-06T16:06:00Z'))
+    // Back to the project's viewport (playwright.config.js) after the phone check.
+    await page.setViewportSize({ width: 1024, height: 640 })
+
+    await page.goto(`/${ID_B.toLowerCase()}`)
+    const step = reviewStep(page)
+    await expect(step.locator('.step-card__meta')).toHaveText('Failed, sent back · attempt 2', { timeout: 15_000 })
+    // HZ-803: the shown attempt's time (attempt 2), not attempt 1's.
+    await expect(step.getByTestId('run-time')).toHaveText('previous attempt · 20 Oct 11:02 · 17 d ago')
+
+    const link = step.getByRole('link', { name: 'View attempt 2 ↗' })
+    const [artifact] = await Promise.all([page.waitForEvent('popup'), link.click()])
+    await expect(artifact).toHaveURL(new RegExp(`/artifacts/${REVIEW_STEP_INDEX}/2$`))
+    await expect(artifact.locator('article')).toContainText('marker-review-a2')
+    await expect(artifact.locator('article')).not.toContainText('marker-review-a1')
+    // Earlier attempts stay reachable from the artifact page.
+    await expect(artifact.locator('.attempts a', { hasText: 'attempt 1' })).toBeVisible()
+  })
 })

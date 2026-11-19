@@ -51,25 +51,6 @@ test.beforeAll(() => {
 const stepCard = (page, index) =>
   page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: STEPS[index].label }) })
 
-test('an item whose every model is usage-limited says it is waiting for the reset, after a reload too', async ({ page }) => {
-  await page.goto(`/${WAIT_ID.toLowerCase()}`)
-  await expect(page.locator('.tracker__id')).toHaveText(WAIT_ID)
-  await expect(page.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
-
-  await page.reload()
-  await expect(page.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
-})
-
-test('a step that ran on a fallback model names the model and what it fell back from, after a reload too', async ({ page }) => {
-  await page.goto(`/${FELL_ID.toLowerCase()}`)
-  const provider = stepCard(page, ARCH).locator('.step-card__provider')
-  await expect(provider.getByText('Ran on Muse (muse-spark-1.3)')).toBeVisible({ timeout: 10_000 })
-  await expect(provider.getByText(NOTE)).toBeVisible()
-
-  await page.reload()
-  await expect(stepCard(page, ARCH).locator('.step-card__provider').getByText(NOTE)).toBeVisible({ timeout: 10_000 })
-})
-
 function waitColumn(id) {
   const db = openDb(DB_PATH)
   try {
@@ -79,19 +60,40 @@ function waitColumn(id) {
   }
 }
 
-test('HZ-713: Release now ends the wait and runs the same step again; a reload keeps it gone', async ({ page }) => {
-  await page.goto(`/${RELEASE_ID.toLowerCase()}`)
-  await expect(page.locator('.tracker__id')).toHaveText(RELEASE_ID)
-  const banner = page.locator('[data-hold-banner="usageLimit"]')
-  await expect(banner.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
+test('item page: usage-limit waits, fallback models and Release now', async ({ page }) => {
+  await test.step('an item whose every model is usage-limited says it is waiting for the reset, after a reload too', async () => {
+    await page.goto(`/${WAIT_ID.toLowerCase()}`)
+    await expect(page.locator('.tracker__id')).toHaveText(WAIT_ID)
+    await expect(page.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
 
-  await banner.getByRole('button', { name: 'Release now' }).click()
-  await expect(page.getByText(WAIT_TEXT)).toHaveCount(0, { timeout: 10_000 })
-  await expect(page.locator('[data-hold-banner]')).toHaveCount(0)
-  await expect.poll(() => waitColumn(RELEASE_ID).usage_wait_until, { timeout: 10_000 }).toBeNull()
+    await page.reload()
+    await expect(page.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
+  })
 
-  await page.reload()
-  await expect(page.locator('.tracker__id')).toHaveText(RELEASE_ID)
-  await expect(page.getByText(WAIT_TEXT)).toHaveCount(0)
-  await expect(page.locator('[data-hold-banner="usageLimit"]')).toHaveCount(0)
+  await test.step('a step that ran on a fallback model names the model and what it fell back from, after a reload too', async () => {
+    await page.goto(`/${FELL_ID.toLowerCase()}`)
+    const provider = stepCard(page, ARCH).locator('.step-card__provider')
+    await expect(provider.getByText('Ran on Muse (muse-spark-1.3)')).toBeVisible({ timeout: 10_000 })
+    await expect(provider.getByText(NOTE)).toBeVisible()
+
+    await page.reload()
+    await expect(stepCard(page, ARCH).locator('.step-card__provider').getByText(NOTE)).toBeVisible({ timeout: 10_000 })
+  })
+
+  await test.step('HZ-713: Release now ends the wait and runs the same step again; a reload keeps it gone', async () => {
+    await page.goto(`/${RELEASE_ID.toLowerCase()}`)
+    await expect(page.locator('.tracker__id')).toHaveText(RELEASE_ID)
+    const banner = page.locator('[data-hold-banner="usageLimit"]')
+    await expect(banner.getByText(WAIT_TEXT)).toBeVisible({ timeout: 10_000 })
+
+    await banner.getByRole('button', { name: 'Release now' }).click()
+    await expect(page.getByText(WAIT_TEXT)).toHaveCount(0, { timeout: 10_000 })
+    await expect(page.locator('[data-hold-banner]')).toHaveCount(0)
+    await expect.poll(() => waitColumn(RELEASE_ID).usage_wait_until, { timeout: 10_000 }).toBeNull()
+
+    await page.reload()
+    await expect(page.locator('.tracker__id')).toHaveText(RELEASE_ID)
+    await expect(page.getByText(WAIT_TEXT)).toHaveCount(0)
+    await expect(page.locator('[data-hold-banner="usageLimit"]')).toHaveCount(0)
+  })
 })

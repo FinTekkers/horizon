@@ -104,52 +104,54 @@ async function openPage(page, link) {
   return popup
 }
 
-test('round 1: the Plan options card links the web page, shows both screenshots, and the link opens the page', async ({ page, request }) => {
-  await serveFarm(page.context(), () => 1)
-  await finishWithPage(request, OPTIONS, 1)
+test('item page: the visual web page link and screenshots across rounds 1 and 2', async ({ page, request }) => {
+  await test.step('round 1: the Plan options card links the web page, shows both screenshots, and the link opens the page', async () => {
+    await serveFarm(page.context(), () => 1)
+    await finishWithPage(request, OPTIONS, 1)
 
-  await page.goto(`/${ITEM.toLowerCase()}`)
-  const card = cardFor(page, STEPS[OPTIONS].label)
-  const link = card.getByRole('link', { name: /View web page/ })
-  await expect(link).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('link', { name: /View web page/ })).toHaveCount(1)
-  expect(await link.getAttribute('href')).toMatch(new RegExp(`/api/items/${ITEM}/page$`))
-  expect(await link.getAttribute('target')).toBe('_blank')
-  expect(await link.getAttribute('rel')).toContain('noopener')
-  expect(await link.getAttribute('rel')).toContain('noreferrer')
-  await expectRound(card, 1)
+    await page.goto(`/${ITEM.toLowerCase()}`)
+    const card = cardFor(page, STEPS[OPTIONS].label)
+    const link = card.getByRole('link', { name: /View web page/ })
+    await expect(link).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('link', { name: /View web page/ })).toHaveCount(1)
+    expect(await link.getAttribute('href')).toMatch(new RegExp(`/api/items/${ITEM}/page$`))
+    expect(await link.getAttribute('target')).toBe('_blank')
+    expect(await link.getAttribute('rel')).toContain('noopener')
+    expect(await link.getAttribute('rel')).toContain('noreferrer')
+    await expectRound(card, 1)
 
-  const popup = await openPage(page, link)
-  await expect(popup.getByRole('heading', { name: MARKERS[1] })).toBeVisible()
-  await popup.close()
-})
+    const popup = await openPage(page, link)
+    await expect(popup.getByRole('heading', { name: MARKERS[1] })).toBeVisible()
+    await popup.close()
+  })
 
-test('round 2: the same link now opens the round-2 page, with round-2 screenshots, and both rounds are kept', async ({ page, request }) => {
-  await page.goto(`/${ITEM.toLowerCase()}`)
-  const before = await page.getByRole('link', { name: /View web page/ }).getAttribute('href', { timeout: 15_000 })
+  await test.step('round 2: the same link now opens the round-2 page, with round-2 screenshots, and both rounds are kept', async () => {
+    await page.goto(`/${ITEM.toLowerCase()}`)
+    const before = await page.getByRole('link', { name: /View web page/ }).getAttribute('href', { timeout: 15_000 })
 
-  await serveFarm(page.context(), () => 2)
-  await finishWithPage(request, PLAN, 2)
-  await page.reload()
+    await serveFarm(page.context(), () => 2)
+    await finishWithPage(request, PLAN, 2)
+    await page.reload()
 
-  const card = cardFor(page, STEPS[PLAN].label)
-  const link = card.getByRole('link', { name: /View web page/ })
-  await expect(link).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('link', { name: /View web page/ })).toHaveCount(1)
-  expect(await link.getAttribute('href')).toBe(before)
-  await expectRound(card, 2)
-  await expect(page.getByRole('img', { name: /Web page round 1/ })).toHaveCount(0)
+    const card = cardFor(page, STEPS[PLAN].label)
+    const link = card.getByRole('link', { name: /View web page/ })
+    await expect(link).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('link', { name: /View web page/ })).toHaveCount(1)
+    expect(await link.getAttribute('href')).toBe(before)
+    await expectRound(card, 2)
+    await expect(page.getByRole('img', { name: /Web page round 1/ })).toHaveCount(0)
 
-  const item = (await (await page.request.get('/api/items')).json()).items.find((it) => it.id === ITEM)
-  expect(item.visualPage.rounds.map((r) => [r.round, r.stepIndex, r.shots.desktop])).toEqual([
-    [1, OPTIONS, 'page-r1-desktop.png'],
-    [2, PLAN, 'page-r2-desktop.png'],
-  ])
+    const item = (await (await page.request.get('/api/items')).json()).items.find((it) => it.id === ITEM)
+    expect(item.visualPage.rounds.map((r) => [r.round, r.stepIndex, r.shots.desktop])).toEqual([
+      [1, OPTIONS, 'page-r1-desktop.png'],
+      [2, PLAN, 'page-r2-desktop.png'],
+    ])
 
-  const popup = await openPage(page, link)
-  await expect(popup.getByRole('heading', { name: MARKERS[2] })).toBeVisible()
-  await expect(popup.getByText(MARKERS[1])).toHaveCount(0)
-  await popup.close()
+    const popup = await openPage(page, link)
+    await expect(popup.getByRole('heading', { name: MARKERS[2] })).toBeVisible()
+    await expect(popup.getByText(MARKERS[1])).toHaveCount(0)
+    await popup.close()
+  })
 })
 
 test('with no farm to read from, the real page route answers a readable 503', async ({ page }) => {

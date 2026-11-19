@@ -67,120 +67,122 @@ async function triggerFrame(request) {
   expect(res.ok()).toBeTruthy()
 }
 
-test('metric 1: a new user in no project sees the setup screen, not the board', async ({ browser }) => {
-  const { context, page, errors } = await memberPage(browser, newcomer)
-  try {
-    await page.goto('/')
-    await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
-    await expect(page.locator('.board__title')).toHaveCount(0)
-    await expect(page.getByRole('button', { name: '+ New work item' })).toHaveCount(0)
-    expect(errors).toEqual([])
-  } finally {
-    await context.close()
-  }
-})
-
-test('metric 1: a member removed from their last project falls back to the setup screen live, and after a reload', async ({ browser, request }) => {
-  const { context, page, errors } = await memberPage(browser, leaver)
-  try {
-    await page.goto('/')
-    await expect(page.locator('.board__title')).toBeVisible()
-    await expect(page.getByRole('heading', { name: HEADING })).toHaveCount(0)
-
-    const db = openDb(DB_PATH)
+test('the first-project setup screen: who sees it, creating a project, and its light and dark shots', async ({ browser, request, page }, testInfo) => {
+  await test.step('metric 1: a new user in no project sees the setup screen, not the board', async () => {
+    const { context, page, errors } = await memberPage(browser, newcomer)
     try {
-      db.prepare('DELETE FROM project_member WHERE project_id = ? AND user_id = ?').run(projectA, leaver.userId)
-    } finally {
-      db.close()
-    }
-    await triggerFrame(request)
-    await expect(page.getByRole('heading', { name: HEADING })).toBeVisible({ timeout: 5000 })
-    await expect(page.locator('.board__title')).toHaveCount(0)
-
-    await page.reload()
-    await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
-    await expect(page.locator('.card')).toHaveCount(0)
-    expect(errors).toEqual([])
-  } finally {
-    await context.close()
-  }
-})
-
-test("metric 2: creating a project on the screen lands on that project's empty board, and a reload keeps it", async ({ browser }) => {
-  const { context, page, errors } = await memberPage(browser, newcomer)
-  try {
-    await page.goto('/')
-    await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
-    await page.getByLabel('Project name').fill(NEW_PROJECT)
-    await page.getByRole('button', { name: 'Create project' }).click()
-
-    for (const pass of ['live', 'after reload']) {
-      if (pass === 'after reload') await page.reload()
-      await expect(page.getByRole('heading', { name: HEADING }), pass).toHaveCount(0)
-      await expect(page.locator('.board__title'), pass).toBeVisible()
-      await expect(page.locator('.board__project'), pass).toHaveText(NEW_PROJECT)
-      await expect(page.locator('.card'), pass).toHaveCount(0)
-    }
-
-    const db = openDb(DB_PATH)
-    try {
-      const project = db.prepare('SELECT id FROM project WHERE name = ?').get(NEW_PROJECT)
-      expect(db.prepare('SELECT project_id FROM project_member WHERE user_id = ?').all(newcomer.userId)).toEqual([{ project_id: project.id }])
-      expect(db.prepare('SELECT active_project_id FROM user WHERE id = ?').get(newcomer.userId).active_project_id).toBe(project.id)
-    } finally {
-      db.close()
-    }
-    expect(errors).toEqual([])
-  } finally {
-    await context.close()
-  }
-})
-
-test('metric 3: the owner with no project_member rows sees the board, never the setup screen', async ({ page }) => {
-  const ownerRows = "SELECT COUNT(*) AS n FROM project_member m JOIN user u ON u.id = m.user_id WHERE u.role = 'owner'"
-  let db = openDb(DB_PATH)
-  try {
-    expect(db.prepare(ownerRows).get().n).toBe(0)
-  } finally {
-    db.close()
-  }
-  await page.goto('/')
-  await expect(page.locator('.board__title')).toBeVisible()
-  await expect(page.getByText(ITEM_TITLE)).toBeVisible()
-  await expect(page.getByRole('heading', { name: HEADING })).toHaveCount(0)
-
-  // After one live frame too: a title renamed now shows the frame arrived.
-  const renamed = `${ITEM_TITLE} (renamed)`
-  db = openDb(DB_PATH)
-  try {
-    db.prepare('UPDATE work_item SET title = ? WHERE id = ?').run(renamed, 'FP-O1')
-  } finally {
-    db.close()
-  }
-  await triggerFrame(page.request)
-  await expect(page.getByText(renamed)).toBeVisible({ timeout: 5000 })
-  await expect(page.getByRole('heading', { name: HEADING })).toHaveCount(0)
-  await expect(page.locator('.board__title')).toBeVisible()
-})
-
-// Metric 5 (manual): the PR's light and dark shots. The theme follows the
-// colour scheme only while no choice is stored, so each shot checks
-// html[data-theme] first — a "dark" shot can never silently be light.
-test('metric 5: the setup screen renders in light and dark', async ({ browser }, testInfo) => {
-  const { context, page, errors } = await memberPage(browser, shooter)
-  try {
-    await page.setViewportSize({ width: 1280, height: 800 })
-    for (const theme of ['light', 'dark']) {
-      await page.emulateMedia({ colorScheme: theme })
       await page.goto('/')
       await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
-      expect(await page.locator('html').getAttribute('data-theme'), theme).toBe(theme === 'dark' ? 'dark' : null)
-      const path = testInfo.outputPath(`first-project--${theme}.png`)
-      await page.screenshot({ path })
-      await testInfo.attach(`first-project--${theme}`, { path, contentType: 'image/png' })
+      await expect(page.locator('.board__title')).toHaveCount(0)
+      await expect(page.getByRole('button', { name: '+ New work item' })).toHaveCount(0)
+      expect(errors).toEqual([])
+    } finally {
+      await context.close()
     }
-    expect(errors).toEqual([])
-  } finally {
-    await context.close()
-  }
+  })
+
+  await test.step('metric 1: a member removed from their last project falls back to the setup screen live, and after a reload', async () => {
+    const { context, page, errors } = await memberPage(browser, leaver)
+    try {
+      await page.goto('/')
+      await expect(page.locator('.board__title')).toBeVisible()
+      await expect(page.getByRole('heading', { name: HEADING })).toHaveCount(0)
+
+      const db = openDb(DB_PATH)
+      try {
+        db.prepare('DELETE FROM project_member WHERE project_id = ? AND user_id = ?').run(projectA, leaver.userId)
+      } finally {
+        db.close()
+      }
+      await triggerFrame(request)
+      await expect(page.getByRole('heading', { name: HEADING })).toBeVisible({ timeout: 5000 })
+      await expect(page.locator('.board__title')).toHaveCount(0)
+
+      await page.reload()
+      await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
+      await expect(page.locator('.card')).toHaveCount(0)
+      expect(errors).toEqual([])
+    } finally {
+      await context.close()
+    }
+  })
+
+  await test.step("metric 2: creating a project on the screen lands on that project's empty board, and a reload keeps it", async () => {
+    const { context, page, errors } = await memberPage(browser, newcomer)
+    try {
+      await page.goto('/')
+      await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
+      await page.getByLabel('Project name').fill(NEW_PROJECT)
+      await page.getByRole('button', { name: 'Create project' }).click()
+
+      for (const pass of ['live', 'after reload']) {
+        if (pass === 'after reload') await page.reload()
+        await expect(page.getByRole('heading', { name: HEADING }), pass).toHaveCount(0)
+        await expect(page.locator('.board__title'), pass).toBeVisible()
+        await expect(page.locator('.board__project'), pass).toHaveText(NEW_PROJECT)
+        await expect(page.locator('.card'), pass).toHaveCount(0)
+      }
+
+      const db = openDb(DB_PATH)
+      try {
+        const project = db.prepare('SELECT id FROM project WHERE name = ?').get(NEW_PROJECT)
+        expect(db.prepare('SELECT project_id FROM project_member WHERE user_id = ?').all(newcomer.userId)).toEqual([{ project_id: project.id }])
+        expect(db.prepare('SELECT active_project_id FROM user WHERE id = ?').get(newcomer.userId).active_project_id).toBe(project.id)
+      } finally {
+        db.close()
+      }
+      expect(errors).toEqual([])
+    } finally {
+      await context.close()
+    }
+  })
+
+  await test.step('metric 3: the owner with no project_member rows sees the board, never the setup screen', async () => {
+    const ownerRows = "SELECT COUNT(*) AS n FROM project_member m JOIN user u ON u.id = m.user_id WHERE u.role = 'owner'"
+    let db = openDb(DB_PATH)
+    try {
+      expect(db.prepare(ownerRows).get().n).toBe(0)
+    } finally {
+      db.close()
+    }
+    await page.goto('/')
+    await expect(page.locator('.board__title')).toBeVisible()
+    await expect(page.getByText(ITEM_TITLE)).toBeVisible()
+    await expect(page.getByRole('heading', { name: HEADING })).toHaveCount(0)
+
+    // After one live frame too: a title renamed now shows the frame arrived.
+    const renamed = `${ITEM_TITLE} (renamed)`
+    db = openDb(DB_PATH)
+    try {
+      db.prepare('UPDATE work_item SET title = ? WHERE id = ?').run(renamed, 'FP-O1')
+    } finally {
+      db.close()
+    }
+    await triggerFrame(page.request)
+    await expect(page.getByText(renamed)).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('heading', { name: HEADING })).toHaveCount(0)
+    await expect(page.locator('.board__title')).toBeVisible()
+  })
+
+  // Metric 5 (manual): the PR's light and dark shots. The theme follows the
+  // colour scheme only while no choice is stored, so each shot checks
+  // html[data-theme] first — a "dark" shot can never silently be light.
+  await test.step('metric 5: the setup screen renders in light and dark', async () => {
+    const { context, page, errors } = await memberPage(browser, shooter)
+    try {
+      await page.setViewportSize({ width: 1280, height: 800 })
+      for (const theme of ['light', 'dark']) {
+        await page.emulateMedia({ colorScheme: theme })
+        await page.goto('/')
+        await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
+        expect(await page.locator('html').getAttribute('data-theme'), theme).toBe(theme === 'dark' ? 'dark' : null)
+        const path = testInfo.outputPath(`first-project--${theme}.png`)
+        await page.screenshot({ path })
+        await testInfo.attach(`first-project--${theme}`, { path, contentType: 'image/png' })
+      }
+      expect(errors).toEqual([])
+    } finally {
+      await context.close()
+    }
+  })
 })

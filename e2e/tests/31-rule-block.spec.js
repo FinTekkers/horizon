@@ -115,57 +115,56 @@ function seedRuleOne(db) {
   insertEvent(db, { itemId: 'RULE-1', text: EVENT })
 }
 
-test('a rule-blocked item reads Blocked by a rule on the card and item page, survives a reload, and is never dispatched', async ({
-  page,
-  request,
-}) => {
-  await page.goto('/')
-  const blocked = card(page, 'RULE-1')
-  await expect(blocked.locator('.status-pill')).toHaveText('Blocked by a rule')
-  await expect(blocked.locator('.card__elapsed')).toHaveCount(0)
+test("board and item page: a rule-blocked item, and a long block's summary and banner", async ({ page, request }) => {
+  await test.step('a rule-blocked item reads Blocked by a rule on the card and item page, survives a reload, and is never dispatched', async () => {
+    await page.goto('/')
+    const blocked = card(page, 'RULE-1')
+    await expect(blocked.locator('.status-pill')).toHaveText('Blocked by a rule')
+    await expect(blocked.locator('.card__elapsed')).toHaveCount(0)
 
-  await page.goto('/rule-1')
-  await expect(page.locator('.tracker__id')).toHaveText('RULE-1')
-  await expect(page.locator('.tracker__status')).toHaveText('Blocked by a rule')
-  await expect(page.locator('.activity-row__text', { hasText: `stopped by a rule: “${RULE}”` })).toContainText(NEEDS)
-  // Resume is the owner's retry, so the pause control stays.
-  await expect(page.getByRole('button', { name: 'Pause work' })).toBeVisible()
+    await page.goto('/rule-1')
+    await expect(page.locator('.tracker__id')).toHaveText('RULE-1')
+    await expect(page.locator('.tracker__status')).toHaveText('Blocked by a rule')
+    await expect(page.locator('.activity-row__text', { hasText: `stopped by a rule: “${RULE}”` })).toContainText(NEEDS)
+    // Resume is the owner's retry, so the pause control stays.
+    await expect(page.getByRole('button', { name: 'Pause work' })).toBeVisible()
 
-  await page.reload()
-  await expect(page.locator('.tracker__status')).toHaveText('Blocked by a rule')
+    await page.reload()
+    await expect(page.locator('.tracker__status')).toHaveText('Blocked by a rule')
 
-  // Kick both through the real route; only the control may dispatch. Once
-  // the control's mock step has finished, one mock step latency has passed.
-  for (const id of ['RULE-1', 'RULE-CTRL']) {
-    const res = await request.post(`/api/items/${id}/dependencies/remove`, { data: { dependsOnId: 'RULE-UP' } })
-    expect(res.ok()).toBe(true)
-  }
-  await expect.poll(() => runCount('RULE-CTRL', 'done'), { timeout: 10_000 }).toBeGreaterThan(0)
-  expect(runCount('RULE-1')).toBe(1)
-  await expect(page.locator('.tracker__status')).toHaveText('Blocked by a rule')
-})
+    // Kick both through the real route; only the control may dispatch. Once
+    // the control's mock step has finished, one mock step latency has passed.
+    for (const id of ['RULE-1', 'RULE-CTRL']) {
+      const res = await request.post(`/api/items/${id}/dependencies/remove`, { data: { dependsOnId: 'RULE-UP' } })
+      expect(res.ok()).toBe(true)
+    }
+    await expect.poll(() => runCount('RULE-CTRL', 'done'), { timeout: 10_000 }).toBeGreaterThan(0)
+    expect(runCount('RULE-1')).toBe(1)
+    await expect(page.locator('.tracker__status')).toHaveText('Blocked by a rule')
+  })
 
-test('HZ-365: the card shows the first line of what is needed and links to the banner, which shows all 3,000 characters', async ({ page }) => {
-  expect(LONG_NEEDS.length).toBe(3000)
-  await page.goto('/')
-  const blocked = card(page, 'RULE-LONG')
-  await expect(blocked.locator('.card__rule-block')).toContainText(LONG_SUMMARY)
-  await expect(blocked.locator('.card__rule-block')).not.toContainText('Cause:')
-  await expect(blocked.getByRole('button', { name: 'Pause work' })).toHaveCount(0)
+  await test.step('HZ-365: the card shows the first line of what is needed and links to the banner, which shows all 3,000 characters', async () => {
+    expect(LONG_NEEDS.length).toBe(3000)
+    await page.goto('/')
+    const blocked = card(page, 'RULE-LONG')
+    await expect(blocked.locator('.card__rule-block')).toContainText(LONG_SUMMARY)
+    await expect(blocked.locator('.card__rule-block')).not.toContainText('Cause:')
+    await expect(blocked.getByRole('button', { name: 'Pause work' })).toHaveCount(0)
 
-  await blocked.getByRole('link', { name: 'See what to do' }).click()
-  await expect(page).toHaveURL(/\/rule-long#rule-block$/)
-  const banner = page.locator('#rule-block')
-  await expect(banner.locator('.pause-banner__title')).toHaveText(`Blocked by a rule · ${STEPS[IMPLEMENT_STEP_INDEX].label}`)
-  await expect(banner).toBeInViewport()
-  await expect(banner.locator('blockquote')).toHaveText(RULE)
+    await blocked.getByRole('link', { name: 'See what to do' }).click()
+    await expect(page).toHaveURL(/\/rule-long#rule-block$/)
+    const banner = page.locator('#rule-block')
+    await expect(banner.locator('.pause-banner__title')).toHaveText(`Blocked by a rule · ${STEPS[IMPLEMENT_STEP_INDEX].label}`)
+    await expect(banner).toBeInViewport()
+    await expect(banner.locator('blockquote')).toHaveText(RULE)
 
-  await banner.getByRole('button', { name: "Show the agent's full explanation" }).click()
-  const full = banner.getByTestId('rule-block-needs')
-  expect(await full.evaluate((el) => el.textContent)).toBe(LONG_NEEDS)
+    await banner.getByRole('button', { name: "Show the agent's full explanation" }).click()
+    const full = banner.getByTestId('rule-block-needs')
+    expect(await full.evaluate((el) => el.textContent)).toBe(LONG_NEEDS)
 
-  await page.reload()
-  await expect(page.locator('#rule-block .pause-banner__title')).toHaveText(`Blocked by a rule · ${STEPS[IMPLEMENT_STEP_INDEX].label}`)
+    await page.reload()
+    await expect(page.locator('#rule-block .pause-banner__title')).toHaveText(`Blocked by a rule · ${STEPS[IMPLEMENT_STEP_INDEX].label}`)
+  })
 })
 
 test('HZ-365: Amend the rule asks for the gate PIN, then clears the block and re-runs implement', async ({ page }) => {

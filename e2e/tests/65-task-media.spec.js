@@ -109,63 +109,69 @@ async function expectPlayable({ video, img }) {
   await expect.poll(() => img.evaluate((i) => i.complete && i.naturalWidth), { timeout: 15_000 }).toBeGreaterThan(0)
 }
 
-test('the Execute card plays the run’s video and shows its image, each with its name and size', async ({ page, request }) => {
-  const res = await request.post(`${SERVER}/api/farm/steps/${runId}/progress`, {
-    headers: FARM,
-    data: {
-      status: 'finished',
-      elapsedS: 12,
-      budgetS: 600,
-      startedAt: new Date(Date.now() - 12_000).toISOString(),
-      updatedAt: new Date().toISOString(),
-      commands: [{ command: 'scripts/cut.sh', status: 'done', exit_code: 0 }],
-      logTail: [],
-      media: MEDIA,
-    },
+test("item page: a task run's media on Execute, Verify & report and Review & close, and with no farm", async ({ page, request }) => {
+  await test.step('the Execute card plays the run’s video and shows its image, each with its name and size', async () => {
+    const res = await request.post(`${SERVER}/api/farm/steps/${runId}/progress`, {
+      headers: FARM,
+      data: {
+        status: 'finished',
+        elapsedS: 12,
+        budgetS: 600,
+        startedAt: new Date(Date.now() - 12_000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        commands: [{ command: 'scripts/cut.sh', status: 'done', exit_code: 0 }],
+        logTail: [],
+        media: MEDIA,
+      },
+    })
+    expect(res.status()).toBe(200)
+
+    await serveMedia(page)
+    await page.goto(`/${ITEM.toLowerCase()}`)
+    await expectPlayable(await expectMedia(cardFor(page, 'Execute')))
+
+    await page.reload()
+    await expectPlayable(await expectMedia(cardFor(page, 'Execute')))
   })
-  expect(res.status()).toBe(200)
 
-  await serveMedia(page)
-  await page.goto(`/${ITEM.toLowerCase()}`)
-  await expectPlayable(await expectMedia(cardFor(page, 'Execute')))
+  await test.step('Verify & report and Review & close show the same media, and it fits a phone', async () => {
+    const db = openDb(DB_PATH)
+    try {
+      // The job finished: its run closes with the view it stored, and the
+      // item moves on to the last gate.
+      db.prepare("UPDATE step_run SET status = 'done', output = '1 command(s) run, 1 passed, 0 failed', ended_at = ? WHERE id = ?").run(sqliteNow(), runId)
+      db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(TASK_REVIEW_CLOSE_GATE_INDEX, ITEM)
+    } finally {
+      db.close()
+    }
 
-  await page.reload()
-  await expectPlayable(await expectMedia(cardFor(page, 'Execute')))
-})
+    await serveMedia(page)
+    await page.goto(`/${ITEM.toLowerCase()}`)
+    for (const label of ['Execute', 'Verify & report', 'Review & close']) {
+      await expectMedia(cardFor(page, label))
+    }
 
-test('Verify & report and Review & close show the same media, and it fits a phone', async ({ page }) => {
-  const db = openDb(DB_PATH)
-  try {
-    // The job finished: its run closes with the view it stored, and the
-    // item moves on to the last gate.
-    db.prepare("UPDATE step_run SET status = 'done', output = '1 command(s) run, 1 passed, 0 failed', ended_at = ? WHERE id = ?").run(sqliteNow(), runId)
-    db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(TASK_REVIEW_CLOSE_GATE_INDEX, ITEM)
-  } finally {
-    db.close()
-  }
+    await page.setViewportSize(PHONE)
+    await page.reload()
+    const review = cardFor(page, 'Review & close')
+    const media = await expectMedia(review)
+    await expectPlayable(media)
+    const sizes = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }))
+    expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
+    const box = await media.video.boundingBox()
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width).toBeLessThanOrEqual(PHONE.width)
+  })
 
-  await serveMedia(page)
-  await page.goto(`/${ITEM.toLowerCase()}`)
-  for (const label of ['Execute', 'Verify & report', 'Review & close']) {
-    await expectMedia(cardFor(page, label))
-  }
-
-  await page.setViewportSize(PHONE)
-  await page.reload()
-  const review = cardFor(page, 'Review & close')
-  const media = await expectMedia(review)
-  await expectPlayable(media)
-  const sizes = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }))
-  expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
-  const box = await media.video.boundingBox()
-  expect(box.x).toBeGreaterThanOrEqual(0)
-  expect(box.x + box.width).toBeLessThanOrEqual(PHONE.width)
-})
-
-test('with no farm to stream from, each file says it could not load instead of a blank player', async ({ page }) => {
-  await page.goto(`/${ITEM.toLowerCase()}`)
-  const execute = cardFor(page, 'Execute')
-  await expect(fileIn(execute, 'cut.webm').getByRole('alert')).toContainText(/could not load/i, { timeout: 15_000 })
-  await expect(fileIn(execute, 'poster.jpg').getByRole('alert')).toContainText(/could not load/i)
-  await expect(fileIn(execute, 'cut.webm').locator('video')).toHaveCount(0)
+  await test.step('with no farm to stream from, each file says it could not load instead of a blank player', async () => {
+    // As a fresh page would be: no farm media route, and the project's viewport
+    // (playwright.config.js) after the phone check.
+    await page.unroute(`**/api/items/${ITEM}/media/*`)
+    await page.setViewportSize({ width: 1024, height: 640 })
+    await page.goto(`/${ITEM.toLowerCase()}`)
+    const execute = cardFor(page, 'Execute')
+    await expect(fileIn(execute, 'cut.webm').getByRole('alert')).toContainText(/could not load/i, { timeout: 15_000 })
+    await expect(fileIn(execute, 'poster.jpg').getByRole('alert')).toContainText(/could not load/i)
+    await expect(fileIn(execute, 'cut.webm').locator('video')).toHaveCount(0)
+  })
 })

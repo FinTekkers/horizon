@@ -91,148 +91,155 @@ test.beforeAll(() => {
   }
 })
 
-// Every test's send asks for the PIN, whichever test runs first.
-test.beforeEach(() => {
+// Every step's send asks for the PIN, whichever step runs first: each step
+// starts by locking the session again.
+function lockGatePin() {
   const db = openDb(DB_PATH)
   try {
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
     db.close()
   }
-})
+}
 
 const servedItem = async (page, id) => (await (await page.request.get('/api/items?v=2')).json()).items.find((it) => it.id === id)
 const designOf = (item) => item?.substeps?.find((s) => s.id === DESIGN.id)
 const designRow = (page) => page.getByTestId('substep-row').filter({ hasText: DESIGN.label })
 const moveResponse = (page, id) => page.waitForResponse((res) => res.url().endsWith(`/api/items/${id}/move`) && res.request().method() === 'POST' && res.status() !== 401)
 
-test('R2: the design panel sits beside the golden cases, shows the latest round, and each round opens its own canvas', async ({ page }) => {
-  await page.goto(`/${IDS.panel.toLowerCase()}`)
-  const review = page.locator('.step-card__gate-review')
-  for (let pass = 0; pass < 2; pass++) {
-    await expect(review.getByTestId('design-panel')).toBeVisible({ timeout: 15_000 })
-    await expect(review.getByTestId('golden-cases')).toBeVisible()
-    const panel = review.getByTestId('design-panel')
-    await expect(panel).toContainText('Design · Round 2')
-    const latest = panel.getByTestId('design-latest')
-    await expect(latest).toContainText(ROUNDS[1].brief)
-    await expect(latest).toContainText(ROUNDS[1].whatChanged)
-    const rounds = panel.getByRole('list', { name: 'Design rounds' })
-    await expect(rounds.getByRole('link', { name: 'Round 1 canvas ↗' })).toHaveAttribute('href', canvasUrlFor(slugOf(IDS.panel, 1)))
-    await expect(rounds.getByRole('link', { name: 'Round 2 canvas ↗' })).toHaveAttribute('href', canvasUrlFor(slugOf(IDS.panel, 2)))
-    await expect(designRow(page).getByTestId('substep-round')).toHaveText('Round 2')
-    if (pass === 0) await page.reload()
-  }
-})
-
-test('R3: a skipped design row shows its round and reason; "Design it anyway" needs a reason, then the item moves', async ({ page }) => {
-  await page.goto(`/${IDS.skipped.toLowerCase()}`)
-  const row = designRow(page)
-  await expect(row).toBeVisible({ timeout: 15_000 })
-  await expect(row.getByTestId('substep-round')).toHaveText('Round 1')
-  await expect(row).toContainText(`Skipped: ${SKIP_REASON}`)
-
-  await row.getByRole('button', { name: 'Design it anyway' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Design it anyway' })
-  const submit = dialog.getByRole('button', { name: 'Design it' })
-  await expect(submit).toBeDisabled()
-  await dialog.getByLabel('Reason to design it anyway').fill('   ')
-  await expect(submit).toBeDisabled()
-  await dialog.getByLabel('Reason to design it anyway').fill('The owner wants screens')
-  await expect(submit).toBeEnabled()
-  const forced = page.waitForResponse((res) => res.url().endsWith(`/api/items/${IDS.skipped}/substeps/${DESIGN.id}/force`) && res.status() !== 401)
-  await submit.click()
-  await answerPinDialog(page, GATE_PIN)
-  expect((await forced).status()).toBe(200)
-
-  // The forced round runs and is stored; a reload agrees.
-  await expect
-    .poll(async () => designOf(await servedItem(page, IDS.skipped))?.rounds?.at(-1)?.kind ?? null, { timeout: 30_000 })
-    .toBe('forced')
-  await page.reload()
-  await expect(designRow(page)).toBeVisible({ timeout: 15_000 })
-  await expect(designRow(page)).not.toContainText('Skipped:')
-  await expect(designRow(page).getByTestId('substep-round')).toHaveText('Round 2')
-})
-
-test('R4: Request changes needs a note, posts one move to the served design target, and the note is the new round’s brief', async ({ page }) => {
-  const key = (await servedItem(page, IDS.request)).moves.targets.map((t) => t.stepKey).find((k) => k.endsWith(`#${DESIGN.id}`))
-  expect(key, 'item.moves lists the design sub-step').toBeTruthy()
-  await page.goto(`/${IDS.request.toLowerCase()}`)
-  const panel = page.getByTestId('design-panel')
-  await expect(panel).toBeVisible({ timeout: 15_000 })
-
-  await panel.getByRole('button', { name: 'Request changes' }).click()
-  const dialog = page.getByRole('dialog', { name: /Request design changes/ })
-  const send = dialog.getByRole('button', { name: 'Request changes' })
-  const note = dialog.getByLabel('Brief for the next round (required)')
-  await expect(send).toBeDisabled()
-  await note.fill('   ')
-  await expect(send).toBeDisabled()
-  const NOTE = 'Make the empty state friendlier'
-  await note.fill(NOTE)
-  await expect(send).toBeEnabled()
-
-  const bodies = []
-  page.on('request', (req) => {
-    if (req.method() === 'POST' && req.url().endsWith(`/api/items/${IDS.request}/move`)) bodies.push(req.postDataJSON())
+test('item page: the design gate journey, rounds R2 to R5', async ({ page }) => {
+  await test.step('R2: the design panel sits beside the golden cases, shows the latest round, and each round opens its own canvas', async () => {
+    lockGatePin()
+    await page.goto(`/${IDS.panel.toLowerCase()}`)
+    const review = page.locator('.step-card__gate-review')
+    for (let pass = 0; pass < 2; pass++) {
+      await expect(review.getByTestId('design-panel')).toBeVisible({ timeout: 15_000 })
+      await expect(review.getByTestId('golden-cases')).toBeVisible()
+      const panel = review.getByTestId('design-panel')
+      await expect(panel).toContainText('Design · Round 2')
+      const latest = panel.getByTestId('design-latest')
+      await expect(latest).toContainText(ROUNDS[1].brief)
+      await expect(latest).toContainText(ROUNDS[1].whatChanged)
+      const rounds = panel.getByRole('list', { name: 'Design rounds' })
+      await expect(rounds.getByRole('link', { name: 'Round 1 canvas ↗' })).toHaveAttribute('href', canvasUrlFor(slugOf(IDS.panel, 1)))
+      await expect(rounds.getByRole('link', { name: 'Round 2 canvas ↗' })).toHaveAttribute('href', canvasUrlFor(slugOf(IDS.panel, 2)))
+      await expect(designRow(page).getByTestId('substep-round')).toHaveText('Round 2')
+      if (pass === 0) await page.reload()
+    }
   })
-  const moved = moveResponse(page, IDS.request)
-  await send.click()
-  await answerPinDialog(page, GATE_PIN)
-  const res = await moved
-  expect(res.status()).toBe(200)
-  expect(res.request().postDataJSON()).toEqual({ stepKey: key, from: GATE_KEY, note: NOTE })
-  expect((await res.json()).item.substep_cursor, 'the item is at "Design the screens"').toBe(DESIGN.id)
-  // One move: the first try was answered 401 and sent again, unchanged, with the PIN.
-  expect(bodies.length).toBeGreaterThan(0)
-  for (const body of bodies) expect(body).toEqual({ stepKey: key, from: GATE_KEY, note: NOTE })
-  await expect(dialog).toHaveCount(0, { timeout: 15_000 })
 
-  // The round runs on the mock pipeline and the item comes back to the gate.
-  await expect
-    .poll(async () => {
-      const item = await servedItem(page, IDS.request)
-      const last = designOf(item)?.rounds?.at(-1)
-      return [item?.currentStepKey, last?.round ?? null, last?.brief ?? null]
-    }, { timeout: 30_000 })
-    .toEqual([GATE_KEY, 3, NOTE])
-  await page.reload()
-  const latest = page.getByTestId('design-panel').getByTestId('design-latest')
-  await expect(latest).toBeVisible({ timeout: 15_000 })
-  await expect(latest).toContainText('Round 3')
-  await expect(latest).toContainText(NOTE)
-})
+  await test.step('R3: a skipped design row shows its round and reason; "Design it anyway" needs a reason, then the item moves', async () => {
+    lockGatePin()
+    await page.goto(`/${IDS.skipped.toLowerCase()}`)
+    const row = designRow(page)
+    await expect(row).toBeVisible({ timeout: 15_000 })
+    await expect(row.getByTestId('substep-round')).toHaveText('Round 1')
+    await expect(row).toContainText(`Skipped: ${SKIP_REASON}`)
 
-test('R5: Approve without design needs a reason; sent, the item leaves the gate and shows the reason after a reload', async ({ page }) => {
-  await page.goto(`/${IDS.noDesign.toLowerCase()}`)
-  const panel = page.getByTestId('design-panel')
-  await expect(panel).toBeVisible({ timeout: 15_000 })
-  await panel.getByRole('button', { name: 'Approve without design' }).click()
-  const dialog = page.getByRole('dialog', { name: /Approve without design/ })
-  const send = dialog.getByRole('button', { name: 'Approve without design' })
-  const reason = dialog.getByLabel('Reason to approve without design')
-  await expect(send).toBeDisabled()
-  await reason.fill('   ')
-  await expect(send).toBeDisabled()
-  const REASON = 'Copy-only change, no new screens'
-  await reason.fill(REASON)
-  await expect(send).toBeEnabled()
+    await row.getByRole('button', { name: 'Design it anyway' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Design it anyway' })
+    const submit = dialog.getByRole('button', { name: 'Design it' })
+    await expect(submit).toBeDisabled()
+    await dialog.getByLabel('Reason to design it anyway').fill('   ')
+    await expect(submit).toBeDisabled()
+    await dialog.getByLabel('Reason to design it anyway').fill('The owner wants screens')
+    await expect(submit).toBeEnabled()
+    const forced = page.waitForResponse((res) => res.url().endsWith(`/api/items/${IDS.skipped}/substeps/${DESIGN.id}/force`) && res.status() !== 401)
+    await submit.click()
+    await answerPinDialog(page, GATE_PIN)
+    expect((await forced).status()).toBe(200)
 
-  const approved = moveResponse(page, IDS.noDesign)
-  await send.click()
-  await answerPinDialog(page, GATE_PIN)
-  const res = await approved
-  expect(res.status()).toBe(200)
-  expect(res.request().postDataJSON()).toMatchObject({ action: 'approve', from: GATE_KEY, designSkipReason: REASON })
+    // The forced round runs and is stored; a reload agrees.
+    await expect
+      .poll(async () => designOf(await servedItem(page, IDS.skipped))?.rounds?.at(-1)?.kind ?? null, { timeout: 30_000 })
+      .toBe('forced')
+    await page.reload()
+    await expect(designRow(page)).toBeVisible({ timeout: 15_000 })
+    await expect(designRow(page)).not.toContainText('Skipped:')
+    await expect(designRow(page).getByTestId('substep-round')).toHaveText('Round 2')
+  })
 
-  await expect
-    .poll(async () => {
-      const item = await servedItem(page, IDS.noDesign)
-      return [item?.currentStepKey !== GATE_KEY, item?.designSpec?.approved ?? null, item?.designSpec?.skipReason ?? null]
-    }, { timeout: 15_000 })
-    .toEqual([true, true, REASON])
-  await page.reload()
-  await expect(page.getByTestId('design-skip-reason')).toContainText(REASON, { timeout: 15_000 })
-  await expect(page.locator('.activity-row__text', { hasText: `approved without a design: ${REASON}` })).toBeVisible()
+  await test.step('R4: Request changes needs a note, posts one move to the served design target, and the note is the new round’s brief', async () => {
+    lockGatePin()
+    const key = (await servedItem(page, IDS.request)).moves.targets.map((t) => t.stepKey).find((k) => k.endsWith(`#${DESIGN.id}`))
+    expect(key, 'item.moves lists the design sub-step').toBeTruthy()
+    await page.goto(`/${IDS.request.toLowerCase()}`)
+    const panel = page.getByTestId('design-panel')
+    await expect(panel).toBeVisible({ timeout: 15_000 })
+
+    await panel.getByRole('button', { name: 'Request changes' }).click()
+    const dialog = page.getByRole('dialog', { name: /Request design changes/ })
+    const send = dialog.getByRole('button', { name: 'Request changes' })
+    const note = dialog.getByLabel('Brief for the next round (required)')
+    await expect(send).toBeDisabled()
+    await note.fill('   ')
+    await expect(send).toBeDisabled()
+    const NOTE = 'Make the empty state friendlier'
+    await note.fill(NOTE)
+    await expect(send).toBeEnabled()
+
+    const bodies = []
+    page.on('request', (req) => {
+      if (req.method() === 'POST' && req.url().endsWith(`/api/items/${IDS.request}/move`)) bodies.push(req.postDataJSON())
+    })
+    const moved = moveResponse(page, IDS.request)
+    await send.click()
+    await answerPinDialog(page, GATE_PIN)
+    const res = await moved
+    expect(res.status()).toBe(200)
+    expect(res.request().postDataJSON()).toEqual({ stepKey: key, from: GATE_KEY, note: NOTE })
+    expect((await res.json()).item.substep_cursor, 'the item is at "Design the screens"').toBe(DESIGN.id)
+    // One move: the first try was answered 401 and sent again, unchanged, with the PIN.
+    expect(bodies.length).toBeGreaterThan(0)
+    for (const body of bodies) expect(body).toEqual({ stepKey: key, from: GATE_KEY, note: NOTE })
+    await expect(dialog).toHaveCount(0, { timeout: 15_000 })
+
+    // The round runs on the mock pipeline and the item comes back to the gate.
+    await expect
+      .poll(async () => {
+        const item = await servedItem(page, IDS.request)
+        const last = designOf(item)?.rounds?.at(-1)
+        return [item?.currentStepKey, last?.round ?? null, last?.brief ?? null]
+      }, { timeout: 30_000 })
+      .toEqual([GATE_KEY, 3, NOTE])
+    await page.reload()
+    const latest = page.getByTestId('design-panel').getByTestId('design-latest')
+    await expect(latest).toBeVisible({ timeout: 15_000 })
+    await expect(latest).toContainText('Round 3')
+    await expect(latest).toContainText(NOTE)
+  })
+
+  await test.step('R5: Approve without design needs a reason; sent, the item leaves the gate and shows the reason after a reload', async () => {
+    lockGatePin()
+    await page.goto(`/${IDS.noDesign.toLowerCase()}`)
+    const panel = page.getByTestId('design-panel')
+    await expect(panel).toBeVisible({ timeout: 15_000 })
+    await panel.getByRole('button', { name: 'Approve without design' }).click()
+    const dialog = page.getByRole('dialog', { name: /Approve without design/ })
+    const send = dialog.getByRole('button', { name: 'Approve without design' })
+    const reason = dialog.getByLabel('Reason to approve without design')
+    await expect(send).toBeDisabled()
+    await reason.fill('   ')
+    await expect(send).toBeDisabled()
+    const REASON = 'Copy-only change, no new screens'
+    await reason.fill(REASON)
+    await expect(send).toBeEnabled()
+
+    const approved = moveResponse(page, IDS.noDesign)
+    await send.click()
+    await answerPinDialog(page, GATE_PIN)
+    const res = await approved
+    expect(res.status()).toBe(200)
+    expect(res.request().postDataJSON()).toMatchObject({ action: 'approve', from: GATE_KEY, designSkipReason: REASON })
+
+    await expect
+      .poll(async () => {
+        const item = await servedItem(page, IDS.noDesign)
+        return [item?.currentStepKey !== GATE_KEY, item?.designSpec?.approved ?? null, item?.designSpec?.skipReason ?? null]
+      }, { timeout: 15_000 })
+      .toEqual([true, true, REASON])
+    await page.reload()
+    await expect(page.getByTestId('design-skip-reason')).toContainText(REASON, { timeout: 15_000 })
+    await expect(page.locator('.activity-row__text', { hasText: `approved without a design: ${REASON}` })).toBeVisible()
+  })
 })

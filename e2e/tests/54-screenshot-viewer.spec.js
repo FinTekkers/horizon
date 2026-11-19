@@ -8,9 +8,9 @@
 // canned as in 52-screenshot-approvals.
 //
 // HZ-704: setting the spec's own PIN locks the shared session, so the first
-// test's panel waits for "Show images", whose image requests open the PIN
-// dialog; answering it verifies the session, and the later tests' panels show
-// their images at once.
+// step's panel waits for "Show images", whose image requests open the PIN
+// dialog; answering it verifies the session, and the later steps' and the
+// phone test's panels show their images at once.
 
 import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
@@ -49,7 +49,8 @@ test.beforeAll(() => {
   }
 })
 
-test.beforeEach(async ({ request }) => {
+// Each desktop step and the phone test start from freshly seeded shots.
+async function seedShots(request) {
   await seedScreenshotSnapshot(
     request,
     {
@@ -58,7 +59,7 @@ test.beforeEach(async ({ request }) => {
     },
     BLOBS,
   )
-})
+}
 
 test.afterAll(async ({ request }) => {
   await clearScreenshotSnapshot(request)
@@ -90,131 +91,142 @@ const visibleBaseline = (img) =>
     return el.getBoundingClientRect().width * (1 - right / 100)
   })
 
-test('a shot opens full size; the tabs switch it by click and by Left/Right; focus stays in the viewer and returns on Esc', async ({ page }) => {
-  // The first protected request since setGatePinDirect locked the session.
-  const board = await openBoard(page, ITEMS.desktop, { pin: GATE_PIN })
-  const panelImg = board.getByRole('img', { name: 'Current', exact: true })
-  expect((await panelImg.boundingBox()).width).toBeLessThan(WIDTH)
-  const src = {}
-  for (const name of KINDS) src[name] = await board.getByRole('img', { name, exact: true }).getAttribute('src')
+test('the screenshot viewer on desktop: tabs, swipe, and the stacked layout', async ({ page, request }) => {
+  await test.step('a shot opens full size; the tabs switch it by click and by Left/Right; focus stays in the viewer and returns on Esc', async () => {
+    await seedShots(request)
 
-  const opener = board.getByRole('button', { name: 'Current', exact: true })
-  await opener.click()
-  const viewer = viewerOf(page)
-  await expect(viewer).toBeVisible()
-  const shown = viewer.getByRole('img')
-  await expect.poll(() => naturalWidth(shown)).toBe(WIDTH)
-  expect(Math.abs((await shown.boundingBox()).width - WIDTH)).toBeLessThanOrEqual(1)
+    // The first protected request since setGatePinDirect locked the session.
+    const board = await openBoard(page, ITEMS.desktop, { pin: GATE_PIN })
+    const panelImg = board.getByRole('img', { name: 'Current', exact: true })
+    expect((await panelImg.boundingBox()).width).toBeLessThan(WIDTH)
+    const src = {}
+    for (const name of KINDS) src[name] = await board.getByRole('img', { name, exact: true }).getAttribute('src')
 
-  const expectShown = async (name) => {
-    await expect(viewer.getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true')
-    await expect(viewer.getByRole('img', { name: `board — ${name}` })).toHaveAttribute('src', src[name])
-  }
-  await expectShown('Current')
-  await viewer.getByRole('tab', { name: 'Baseline' }).click()
-  await expectShown('Baseline')
-  await viewer.getByRole('tab', { name: 'Diff' }).click()
-  await expectShown('Diff')
-  await page.keyboard.press('ArrowRight')
-  await expectShown('Baseline')
-  // Left on the first tab wraps to the last.
-  await page.keyboard.press('ArrowLeft')
-  await expectShown('Diff')
-  await page.keyboard.press('ArrowLeft')
-  await expectShown('Current')
+    const opener = board.getByRole('button', { name: 'Current', exact: true })
+    await opener.click()
+    const viewer = viewerOf(page)
+    await expect(viewer).toBeVisible()
+    const shown = viewer.getByRole('img')
+    await expect.poll(() => naturalWidth(shown)).toBe(WIDTH)
+    expect(Math.abs((await shown.boundingBox()).width - WIDTH)).toBeLessThanOrEqual(1)
 
-  // The native modal keeps Tab inside the viewer.
-  for (let i = 0; i < 8; i++) {
-    await page.keyboard.press('Tab')
-    expect(await viewer.evaluate((el) => el.contains(document.activeElement))).toBe(true)
-  }
-  await page.keyboard.press('Escape')
-  await expect(viewer).toHaveCount(0)
-  await expect(opener).toBeFocused()
-  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
-})
+    const expectShown = async (name) => {
+      await expect(viewer.getByRole('tab', { name, exact: true })).toHaveAttribute('aria-selected', 'true')
+      await expect(viewer.getByRole('img', { name: `board — ${name}` })).toHaveAttribute('src', src[name])
+    }
+    await expectShown('Current')
+    await viewer.getByRole('tab', { name: 'Baseline' }).click()
+    await expectShown('Baseline')
+    await viewer.getByRole('tab', { name: 'Diff' }).click()
+    await expectShown('Diff')
+    await page.keyboard.press('ArrowRight')
+    await expectShown('Baseline')
+    // Left on the first tab wraps to the last.
+    await page.keyboard.press('ArrowLeft')
+    await expectShown('Diff')
+    await page.keyboard.press('ArrowLeft')
+    await expectShown('Current')
 
-test('swipe layers baseline over current in one box; dragging and Left/Right move the divider', async ({ page }) => {
-  const board = await openBoard(page, ITEMS.desktop)
-  await board.getByRole('button', { name: 'Current', exact: true }).click()
-  const viewer = viewerOf(page)
-  await viewer.getByRole('button', { name: 'Swipe' }).click()
-  await expect(viewer.getByRole('button', { name: 'Swipe' })).toHaveAttribute('aria-pressed', 'true')
-  const baseline = viewer.getByRole('img', { name: 'board — Baseline' })
-  const current = viewer.getByRole('img', { name: 'board — Current' })
-  await expect.poll(() => naturalWidth(baseline)).toBe(WIDTH)
-  await expect.poll(() => naturalWidth(current)).toBe(WIDTH)
-  expect(await baseline.boundingBox()).toEqual(await current.boundingBox())
+    // The native modal keeps Tab inside the viewer.
+    for (let i = 0; i < 8; i++) {
+      await page.keyboard.press('Tab')
+      expect(await viewer.evaluate((el) => el.contains(document.activeElement))).toBe(true)
+    }
+    await page.keyboard.press('Escape')
+    await expect(viewer).toHaveCount(0)
+    await expect(opener).toBeFocused()
+    expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
+  })
 
-  const slider = viewer.getByRole('slider', { name: 'Baseline share' })
-  await expect(slider).toHaveAttribute('aria-valuenow', '50')
-  const start = await visibleBaseline(baseline)
-  const handle = await slider.boundingBox()
-  const x = handle.x + handle.width / 2
-  const y = Math.max(handle.y, 0) + 100
+  await test.step('swipe layers baseline over current in one box; dragging and Left/Right move the divider', async () => {
+    await seedShots(request)
 
-  await page.mouse.move(x, y)
-  await page.mouse.down()
-  await page.mouse.move(x - 400, y, { steps: 5 })
-  await page.mouse.up()
-  await expect(slider).toHaveAttribute('aria-valuenow', '25')
-  const left = await visibleBaseline(baseline)
-  expect(left).toBeLessThan(start)
+    const board = await openBoard(page, ITEMS.desktop)
+    await board.getByRole('button', { name: 'Current', exact: true }).click()
+    const viewer = viewerOf(page)
+    await viewer.getByRole('button', { name: 'Swipe' }).click()
+    await expect(viewer.getByRole('button', { name: 'Swipe' })).toHaveAttribute('aria-pressed', 'true')
+    const baseline = viewer.getByRole('img', { name: 'board — Baseline' })
+    const current = viewer.getByRole('img', { name: 'board — Current' })
+    await expect.poll(() => naturalWidth(baseline)).toBe(WIDTH)
+    await expect.poll(() => naturalWidth(current)).toBe(WIDTH)
+    expect(await baseline.boundingBox()).toEqual(await current.boundingBox())
 
-  await page.mouse.move(x - 400, y)
-  await page.mouse.down()
-  await page.mouse.move(x + 100, y, { steps: 5 })
-  await page.mouse.up()
-  await expect.poll(async () => Number(await slider.getAttribute('aria-valuenow'))).toBeGreaterThan(50)
-  expect(await visibleBaseline(baseline)).toBeGreaterThan(left)
+    const slider = viewer.getByRole('slider', { name: 'Baseline share' })
+    await expect(slider).toHaveAttribute('aria-valuenow', '50')
+    const start = await visibleBaseline(baseline)
+    const handle = await slider.boundingBox()
+    const x = handle.x + handle.width / 2
+    const y = Math.max(handle.y, 0) + 100
 
-  await slider.focus()
-  const before = Number(await slider.getAttribute('aria-valuenow'))
-  const beforeClip = await visibleBaseline(baseline)
-  await page.keyboard.press('ArrowLeft')
-  await expect(slider).toHaveAttribute('aria-valuenow', String(before - 5))
-  expect(await visibleBaseline(baseline)).toBeLessThan(beforeClip)
-  await page.keyboard.press('ArrowRight')
-  await page.keyboard.press('ArrowRight')
-  await expect(slider).toHaveAttribute('aria-valuenow', String(before + 5))
-  expect(await visibleBaseline(baseline)).toBeGreaterThan(beforeClip)
-  // The slider's keys never switch the tab or leave swipe mode.
-  await expect(viewer.getByRole('button', { name: 'Swipe' })).toHaveAttribute('aria-pressed', 'true')
-})
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x - 400, y, { steps: 5 })
+    await page.mouse.up()
+    await expect(slider).toHaveAttribute('aria-valuenow', '25')
+    const left = await visibleBaseline(baseline)
+    expect(left).toBeLessThan(start)
 
-test('side by side by default; Stacked gives each image the full panel width and survives a reload', async ({ page }) => {
-  const board = await openBoard(page, ITEMS.desktop)
-  expect(await page.evaluate(() => localStorage.getItem('horizon.shotLayout'))).toBeNull()
-  const boxes = async () => {
-    const out = []
-    for (const name of KINDS) out.push(await board.getByRole('img', { name, exact: true }).boundingBox())
-    return out
-  }
-  const side = await boxes()
-  expect(side[1].y).toBe(side[0].y)
-  expect(side[2].y).toBe(side[0].y)
+    await page.mouse.move(x - 400, y)
+    await page.mouse.down()
+    await page.mouse.move(x + 100, y, { steps: 5 })
+    await page.mouse.up()
+    await expect.poll(async () => Number(await slider.getAttribute('aria-valuenow'))).toBeGreaterThan(50)
+    expect(await visibleBaseline(baseline)).toBeGreaterThan(left)
 
-  const expectStacked = async () => {
-    await expect(page.getByRole('button', { name: 'Stacked' })).toHaveAttribute('aria-pressed', 'true')
-    const content = await board.locator('.shots__images').evaluate((el) => {
-      const style = getComputedStyle(el)
-      return el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
-    })
-    const stacked = await boxes()
-    for (const box of stacked) expect(Math.abs(box.width - content)).toBeLessThanOrEqual(2)
-    expect(stacked[1].y).toBeGreaterThan(stacked[0].y)
-    expect(stacked[2].y).toBeGreaterThan(stacked[1].y)
-  }
-  await page.getByRole('button', { name: 'Stacked' }).click()
-  await expectStacked()
+    await slider.focus()
+    const before = Number(await slider.getAttribute('aria-valuenow'))
+    const beforeClip = await visibleBaseline(baseline)
+    await page.keyboard.press('ArrowLeft')
+    await expect(slider).toHaveAttribute('aria-valuenow', String(before - 5))
+    expect(await visibleBaseline(baseline)).toBeLessThan(beforeClip)
+    await page.keyboard.press('ArrowRight')
+    await page.keyboard.press('ArrowRight')
+    await expect(slider).toHaveAttribute('aria-valuenow', String(before + 5))
+    expect(await visibleBaseline(baseline)).toBeGreaterThan(beforeClip)
+    // The slider's keys never switch the tab or leave swipe mode.
+    await expect(viewer.getByRole('button', { name: 'Swipe' })).toHaveAttribute('aria-pressed', 'true')
+  })
 
-  await page.reload()
-  for (const name of KINDS) await expect.poll(() => naturalWidth(board.getByRole('img', { name, exact: true }))).toBe(WIDTH)
-  await expectStacked()
+  await test.step('side by side by default; Stacked gives each image the full panel width and survives a reload', async () => {
+    await seedShots(request)
+
+    const board = await openBoard(page, ITEMS.desktop)
+    expect(await page.evaluate(() => localStorage.getItem('horizon.shotLayout'))).toBeNull()
+    const boxes = async () => {
+      const out = []
+      for (const name of KINDS) out.push(await board.getByRole('img', { name, exact: true }).boundingBox())
+      return out
+    }
+    const side = await boxes()
+    expect(side[1].y).toBe(side[0].y)
+    expect(side[2].y).toBe(side[0].y)
+
+    const expectStacked = async () => {
+      await expect(page.getByRole('button', { name: 'Stacked' })).toHaveAttribute('aria-pressed', 'true')
+      const content = await board.locator('.shots__images').evaluate((el) => {
+        const style = getComputedStyle(el)
+        return el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+      })
+      const stacked = await boxes()
+      for (const box of stacked) expect(Math.abs(box.width - content)).toBeLessThanOrEqual(2)
+      expect(stacked[1].y).toBeGreaterThan(stacked[0].y)
+      expect(stacked[2].y).toBeGreaterThan(stacked[1].y)
+    }
+    await page.getByRole('button', { name: 'Stacked' }).click()
+    await expectStacked()
+
+    await page.reload()
+    for (const name of KINDS) await expect.poll(() => naturalWidth(board.getByRole('img', { name, exact: true }))).toBe(WIDTH)
+    await expectStacked()
+  })
 })
 
 test.describe('on a 390px phone', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true })
+  test.beforeEach(async ({ request }) => {
+    await seedShots(request)
+  })
 
   test('the viewer keeps the natural width, scrolls inside itself, allows pinch-zoom, and Esc or Close shut it', async ({ page }) => {
     const board = await openBoard(page, ITEMS.phone)

@@ -111,40 +111,44 @@ async function openPhoneBoard(page) {
 test.describe('on a 390px touch phone', () => {
   test.use(PHONE)
 
-  test('a board card ⋯ just above the tab bar opens above it, and Abandon opens the abandon dialog', async ({ page }, testInfo) => {
-    await openPhoneBoard(page)
-    const id = await placeableGateId(page)
-    expect(id, 'no seeded gate card can be scrolled to just above the tab bar').not.toBeNull()
-    const toggle = toggleFor(page, id)
-    await placeAboveNav(page, toggle)
-    const url = page.url()
-    const tab = await activeTab(page).innerText()
+  // The dark step stays last: the dark theme it stores stays for every later
+  // load of this page.
+  test('a board card ⋯ menu opens above the tab bar, in light and in dark', async ({ page }, testInfo) => {
+    await test.step('a board card ⋯ just above the tab bar opens above it, and Abandon opens the abandon dialog', async () => {
+      await openPhoneBoard(page)
+      const id = await placeableGateId(page)
+      expect(id, 'no seeded gate card can be scrolled to just above the tab bar').not.toBeNull()
+      const toggle = toggleFor(page, id)
+      await placeAboveNav(page, toggle)
+      const url = page.url()
+      const tab = await activeTab(page).innerText()
 
-    await toggle.tap()
-    await expect(page.getByRole('menu')).toBeVisible()
-    // The tapped card keeps no hover lift, so it traps nothing.
-    await expect(page.locator('.card', { has: toggle })).toHaveCSS('transform', 'none')
-    await expectMenuClearOfNav(page)
-    await shoot(page, testInfo, 'phone-board-menu-light')
+      await toggle.tap()
+      await expect(page.getByRole('menu')).toBeVisible()
+      // The tapped card keeps no hover lift, so it traps nothing.
+      await expect(page.locator('.card', { has: toggle })).toHaveCSS('transform', 'none')
+      await expectMenuClearOfNav(page)
+      await shoot(page, testInfo, 'phone-board-menu-light')
 
-    await abandonIn(page).tap()
-    await expectAbandonDialogOnTop(page, id)
-    expect(page.url()).toBe(url)
-    await expect(activeTab(page)).toHaveText(tab)
-    await page.locator('.composer__cancel').tap()
-    await expect(page.locator('.composer__title')).toHaveCount(0)
-  })
+      await abandonIn(page).tap()
+      await expectAbandonDialogOnTop(page, id)
+      expect(page.url()).toBe(url)
+      await expect(activeTab(page)).toHaveText(tab)
+      await page.locator('.composer__cancel').tap()
+      await expect(page.locator('.composer__title')).toHaveCount(0)
+    })
 
-  test('in dark, the board card menu also opens above the tab bar', async ({ page }, testInfo) => {
-    await page.goto('/')
-    await useDark(page)
-    await openPhoneBoard(page)
-    const id = await placeableGateId(page)
-    expect(id).not.toBeNull()
-    await placeAboveNav(page, toggleFor(page, id))
-    await toggleFor(page, id).tap()
-    await expectMenuClearOfNav(page)
-    await shoot(page, testInfo, 'phone-board-menu-dark')
+    await test.step('in dark, the board card menu also opens above the tab bar', async () => {
+      await page.goto('/')
+      await useDark(page)
+      await openPhoneBoard(page)
+      const id = await placeableGateId(page)
+      expect(id).not.toBeNull()
+      await placeAboveNav(page, toggleFor(page, id))
+      await toggleFor(page, id).tap()
+      await expectMenuClearOfNav(page)
+      await shoot(page, testInfo, 'phone-board-menu-dark')
+    })
   })
 
   test('the item page ⋯ just above the tab bar opens above it, and Abandon opens the abandon dialog', async ({ page }, testInfo) => {

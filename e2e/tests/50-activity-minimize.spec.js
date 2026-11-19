@@ -39,87 +39,87 @@ const minimize = (page) => page.getByRole('button', { name: 'Minimize Activity' 
 const expand = (page) => page.getByRole('button', { name: 'Expand Activity' })
 const storedChoice = (page) => page.evaluate((key) => localStorage.getItem(key), MIN_KEY)
 
-test('minimizing hides the rows, widens Lifecycle, and survives a reload and another item; expanding restores both', async ({
-  page,
-}) => {
-  await page.goto(`/${FIRST_ID.toLowerCase()}`)
-  const activity = page.locator('.tracker__activity')
-  const stepper = page.locator('.tracker__stepper')
-  await expect(page.locator('.tracker__id')).toHaveText(FIRST_ID)
-  await expect(activity.locator('.activity-row').first()).toBeVisible()
-  await expect(minimize(page)).toHaveAttribute('aria-expanded', 'true')
+test('item page: minimizing the Activity panel, on desktop and on a phone', async ({ page }) => {
+  await test.step('minimizing hides the rows, widens Lifecycle, and survives a reload and another item; expanding restores both', async () => {
+    await page.goto(`/${FIRST_ID.toLowerCase()}`)
+    const activity = page.locator('.tracker__activity')
+    const stepper = page.locator('.tracker__stepper')
+    await expect(page.locator('.tracker__id')).toHaveText(FIRST_ID)
+    await expect(activity.locator('.activity-row').first()).toBeVisible()
+    await expect(minimize(page)).toHaveAttribute('aria-expanded', 'true')
 
-  const expandedStepper = (await stepper.boundingBox()).width
-  const expandedActivity = (await activity.boundingBox()).width
+    const expandedStepper = (await stepper.boundingBox()).width
+    const expandedActivity = (await activity.boundingBox()).width
 
-  await minimize(page).click()
+    await minimize(page).click()
 
-  await expect(activity.locator('.activity-row')).toHaveCount(0)
-  await expect(activity.locator('.activity-empty')).toHaveCount(0)
-  await expect(expand(page)).toBeVisible()
-  await expect(expand(page)).toContainText('Activity')
-  await expect(expand(page)).toHaveAttribute('aria-expanded', 'false')
-  expect(await storedChoice(page)).toBe('1')
+    await expect(activity.locator('.activity-row')).toHaveCount(0)
+    await expect(activity.locator('.activity-empty')).toHaveCount(0)
+    await expect(expand(page)).toBeVisible()
+    await expect(expand(page)).toContainText('Activity')
+    await expect(expand(page)).toHaveAttribute('aria-expanded', 'false')
+    expect(await storedChoice(page)).toBe('1')
 
-  // Real layout proof, not just the modifier class: the strip narrows and
-  // Lifecycle takes the freed width.
-  const minActivity = (await activity.boundingBox()).width
-  const minStepper = (await stepper.boundingBox()).width
-  expect(expandedActivity - minActivity).toBeGreaterThan(50)
-  expect(minStepper - expandedStepper).toBeGreaterThan(50)
+    // Real layout proof, not just the modifier class: the strip narrows and
+    // Lifecycle takes the freed width.
+    const minActivity = (await activity.boundingBox()).width
+    const minStepper = (await stepper.boundingBox()).width
+    expect(expandedActivity - minActivity).toBeGreaterThan(50)
+    expect(minStepper - expandedStepper).toBeGreaterThan(50)
 
-  // A reload reads the stored choice back.
-  await page.reload()
-  await expect(page.locator('.tracker__id')).toHaveText(FIRST_ID)
-  await expect(expand(page)).toBeVisible()
-  await expect(activity.locator('.activity-row')).toHaveCount(0)
+    // A reload reads the stored choice back.
+    await page.reload()
+    await expect(page.locator('.tracker__id')).toHaveText(FIRST_ID)
+    await expect(expand(page)).toBeVisible()
+    await expect(activity.locator('.activity-row')).toHaveCount(0)
 
-  // So does another item: the choice is per browser, not per item.
-  await page.goto(`/${SECOND_ID.toLowerCase()}`)
-  await expect(page.locator('.tracker__id')).toHaveText(SECOND_ID)
-  await expect(expand(page)).toBeVisible()
-  await expect(activity.locator('.activity-row')).toHaveCount(0)
+    // So does another item: the choice is per browser, not per item.
+    await page.goto(`/${SECOND_ID.toLowerCase()}`)
+    await expect(page.locator('.tracker__id')).toHaveText(SECOND_ID)
+    await expect(expand(page)).toBeVisible()
+    await expect(activity.locator('.activity-row')).toHaveCount(0)
 
-  await expand(page).click()
-  await expect(minimize(page)).toBeVisible()
-  await expect(activity.getByText('second-item fixture event 1')).toBeVisible()
-  const restoredStepper = (await stepper.boundingBox()).width
-  expect(Math.abs(restoredStepper - expandedStepper)).toBeLessThanOrEqual(2)
-  expect(await storedChoice(page)).toBe('0')
+    await expand(page).click()
+    await expect(minimize(page)).toBeVisible()
+    await expect(activity.getByText('second-item fixture event 1')).toBeVisible()
+    const restoredStepper = (await stepper.boundingBox()).width
+    expect(Math.abs(restoredStepper - expandedStepper)).toBeLessThanOrEqual(2)
+    expect(await storedChoice(page)).toBe('0')
 
-  // The expanded choice carries back to the first item too.
-  await page.goto(`/${FIRST_ID.toLowerCase()}`)
-  await expect(minimize(page)).toBeVisible()
-  await expect(activity.locator('.activity-row').first()).toBeVisible()
-})
-
-test('on a phone the toggle collapses the panel in place to one horizontal row', async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 667 })
-  await page.goto(`/${FIRST_ID.toLowerCase()}`)
-  const activity = page.locator('.tracker__activity')
-  await expect(activity.locator('.activity-row').first()).toBeVisible()
-
-  await minimize(page).click()
-
-  await expect(expand(page)).toBeVisible()
-  await expect(activity.locator('.activity-row')).toHaveCount(0)
-  // In place: still full width, and the label runs horizontally instead of
-  // a tall vertical strip.
-  const box = await activity.boundingBox()
-  expect(box.width).toBeGreaterThan(300)
-  const labelHeight = (await expand(page).locator('.tracker__activity-expand-label').boundingBox()).height
-  expect(labelHeight).toBeLessThanOrEqual(30)
-  const collapsed = await page.evaluate(() => {
-    const button = document.querySelector('.tracker__activity-expand')
-    const label = document.querySelector('.tracker__activity-expand-label')
-    return {
-      direction: getComputedStyle(button).flexDirection,
-      writingMode: getComputedStyle(label).writingMode,
-    }
+    // The expanded choice carries back to the first item too.
+    await page.goto(`/${FIRST_ID.toLowerCase()}`)
+    await expect(minimize(page)).toBeVisible()
+    await expect(activity.locator('.activity-row').first()).toBeVisible()
   })
-  expect(collapsed).toEqual({ direction: 'row', writingMode: 'horizontal-tb' })
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375)
 
-  await expand(page).click()
-  await expect(activity.locator('.activity-row').first()).toBeVisible()
+  await test.step('on a phone the toggle collapses the panel in place to one horizontal row', async () => {
+    await page.setViewportSize({ width: 375, height: 667 })
+    await page.goto(`/${FIRST_ID.toLowerCase()}`)
+    const activity = page.locator('.tracker__activity')
+    await expect(activity.locator('.activity-row').first()).toBeVisible()
+
+    await minimize(page).click()
+
+    await expect(expand(page)).toBeVisible()
+    await expect(activity.locator('.activity-row')).toHaveCount(0)
+    // In place: still full width, and the label runs horizontally instead of
+    // a tall vertical strip.
+    const box = await activity.boundingBox()
+    expect(box.width).toBeGreaterThan(300)
+    const labelHeight = (await expand(page).locator('.tracker__activity-expand-label').boundingBox()).height
+    expect(labelHeight).toBeLessThanOrEqual(30)
+    const collapsed = await page.evaluate(() => {
+      const button = document.querySelector('.tracker__activity-expand')
+      const label = document.querySelector('.tracker__activity-expand-label')
+      return {
+        direction: getComputedStyle(button).flexDirection,
+        writingMode: getComputedStyle(label).writingMode,
+      }
+    })
+    expect(collapsed).toEqual({ direction: 'row', writingMode: 'horizontal-tb' })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375)
+
+    await expand(page).click()
+    await expect(activity.locator('.activity-row').first()).toBeVisible()
+  })
 })

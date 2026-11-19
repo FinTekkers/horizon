@@ -57,109 +57,111 @@ async function choose(page, name) {
   await page.getByRole('menuitemradio', { name }).click()
 }
 
-test('the filter switches between projects and All projects, and only ever filters', async ({ page }) => {
-  const writes = []
-  page.on('request', (req) => {
-    if (req.method() !== 'GET') writes.push(`${req.method()} ${req.url()}`)
-  })
-  await page.goto('/')
-  const alphaCard = page.getByText('E2E fixture — Alpha item')
-  const betaCard = page.getByText('E2E fixture — Beta item')
-  await expect(alphaCard).toBeVisible({ timeout: 10_000 })
-  await expect(betaCard).toBeVisible()
-  await expect(page.getByText('E2E fixture — Gamma item')).toHaveCount(0)
-
-  await page.locator('.projswitch').click()
-  await expect(page.getByRole('menuitemradio', { name: GAMMA })).toHaveCount(0)
-  await page.locator('.usermenu__scrim').click()
-
-  await choose(page, BETA)
-  await expect(betaCard).toBeVisible()
-  await expect(alphaCard).toHaveCount(0)
-  await expect(page.locator('.card .proj-badge')).toHaveText([BETA])
-
-  await choose(page, ALPHA)
-  await expect(alphaCard).toBeVisible()
-  await expect(betaCard).toHaveCount(0)
-
-  await choose(page, 'All projects')
-  await expect(alphaCard).toBeVisible()
-  await expect(betaCard).toBeVisible()
-  await expect(page.getByText('E2E fixture — Gamma item')).toHaveCount(0)
-
-  expect(writes, writes.join('\n')).toEqual([])
-})
-
-test('a project badge never widens its card or the tracker header below 700px', async ({ page }) => {
-  for (const width of [375, 699]) {
-    await page.setViewportSize({ width, height: 800 })
+test("the board's project filter: switching, badge widths and repo chips", async ({ page }) => {
+  await test.step('the filter switches between projects and All projects, and only ever filters', async () => {
+    const writes = []
+    page.on('request', (req) => {
+      if (req.method() !== 'GET') writes.push(`${req.method()} ${req.url()}`)
+    })
     await page.goto('/')
-    const card = page.locator('.card', { hasText: 'E2E fixture — Alpha item' })
-    await expect(card.locator('.proj-badge')).toBeVisible({ timeout: 10_000 })
-    const overflow = await card.evaluate((el) => el.scrollWidth - el.clientWidth)
-    expect(overflow, `card overflows at ${width}px`).toBeLessThanOrEqual(0)
-    const meta = await card.locator('.card__meta').evaluate((el) => el.scrollWidth - el.clientWidth)
-    expect(meta, `card meta row overflows at ${width}px`).toBeLessThanOrEqual(0)
+    const alphaCard = page.getByText('E2E fixture — Alpha item')
+    const betaCard = page.getByText('E2E fixture — Beta item')
+    await expect(alphaCard).toBeVisible({ timeout: 10_000 })
+    await expect(betaCard).toBeVisible()
+    await expect(page.getByText('E2E fixture — Gamma item')).toHaveCount(0)
 
-    await page.goto('/pf-a1')
-    const header = page.locator('.tracker__meta')
-    await expect(header.locator('.proj-badge')).toHaveText(ALPHA)
-    const badgeWidth = await header.locator('.proj-badge').evaluate((el) => el.getBoundingClientRect().width)
-    expect(badgeWidth, `badge clamps at ${width}px`).toBeLessThan(120)
-  }
-})
+    await page.locator('.projswitch').click()
+    await expect(page.getByRole('menuitemradio', { name: GAMMA })).toHaveCount(0)
+    await page.locator('.usermenu__scrim').click()
 
-test('repo chips narrow a project, and wrap inside an on-screen menu at phone width', async ({ page }) => {
-  const writes = []
-  page.on('request', (req) => {
-    if (req.method() !== 'GET') writes.push(`${req.method()} ${req.url()}`)
+    await choose(page, BETA)
+    await expect(betaCard).toBeVisible()
+    await expect(alphaCard).toHaveCount(0)
+    await expect(page.locator('.card .proj-badge')).toHaveText([BETA])
+
+    await choose(page, ALPHA)
+    await expect(alphaCard).toBeVisible()
+    await expect(betaCard).toHaveCount(0)
+
+    await choose(page, 'All projects')
+    await expect(alphaCard).toBeVisible()
+    await expect(betaCard).toBeVisible()
+    await expect(page.getByText('E2E fixture — Gamma item')).toHaveCount(0)
+
+    expect(writes, writes.join('\n')).toEqual([])
   })
-  await page.setViewportSize({ width: 375, height: 812 })
-  await page.goto('/')
-  const servicesCard = page.getByText('E2E fixture — ledger-service item')
-  const modelsCard = page.getByText('E2E fixture — ledger-models item')
-  await expect(servicesCard).toBeVisible({ timeout: 10_000 })
 
-  await choose(page, REPOS_PROJECT)
-  await page.getByRole('button', { name: /^Project filter:/ }).click()
-  const group = page.getByRole('group', { name: `Repos in ${REPOS_PROJECT}` })
-  await expect(group).toBeVisible()
-  const chips = REPOS.map((r) => page.getByRole('button', { name: `${r.prefix} · ${r.repo.split('/')[1]}` }))
-  for (const c of chips) await expect(c).toHaveAttribute('aria-pressed', 'true')
+  await test.step('a project badge never widens its card or the tracker header below 700px', async () => {
+    for (const width of [375, 699]) {
+      await page.setViewportSize({ width, height: 800 })
+      await page.goto('/')
+      const card = page.locator('.card', { hasText: 'E2E fixture — Alpha item' })
+      await expect(card.locator('.proj-badge')).toBeVisible({ timeout: 10_000 })
+      const overflow = await card.evaluate((el) => el.scrollWidth - el.clientWidth)
+      expect(overflow, `card overflows at ${width}px`).toBeLessThanOrEqual(0)
+      const meta = await card.locator('.card__meta').evaluate((el) => el.scrollWidth - el.clientWidth)
+      expect(meta, `card meta row overflows at ${width}px`).toBeLessThanOrEqual(0)
 
-  const menu = page.locator('.usermenu__menu--left')
-  const box = await menu.boundingBox()
-  expect(box.x).toBeGreaterThanOrEqual(0)
-  expect(box.x + box.width).toBeLessThanOrEqual(375)
-  expect(box.y + box.height).toBeLessThanOrEqual(812)
-  const rows = new Set()
-  for (const c of chips) rows.add(Math.round((await c.boundingBox()).y))
-  expect(rows.size).toBeGreaterThanOrEqual(2)
-  const widths = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth])
-  expect(widths[0]).toBe(widths[1])
-
-  // Dark theme: a pressed chip's border is the --primary token.
-  const [border, primary] = await chips[0].evaluate((el) => {
-    document.documentElement.dataset.theme = 'dark'
-    const probe = document.createElement('div')
-    probe.style.color = 'var(--primary)'
-    document.body.appendChild(probe)
-    const resolved = getComputedStyle(probe).color
-    probe.remove()
-    return [getComputedStyle(el).borderTopColor, resolved]
+      await page.goto('/pf-a1')
+      const header = page.locator('.tracker__meta')
+      await expect(header.locator('.proj-badge')).toHaveText(ALPHA)
+      const badgeWidth = await header.locator('.proj-badge').evaluate((el) => el.getBoundingClientRect().width)
+      expect(badgeWidth, `badge clamps at ${width}px`).toBeLessThan(120)
+    }
   })
-  expect(border).toBe(primary)
 
-  await chips[0].click()
-  await expect(chips[0]).toHaveAttribute('aria-pressed', 'false')
-  await expect(group).toBeVisible()
-  await expect(page.getByRole('button', { name: `Project filter: ${REPOS_PROJECT} · 4 of 5 repos` })).toBeVisible()
-  // The scrim spans only the top bar (its backdrop-filter contains fixed children); dismiss right of the switcher.
-  const bar = await page.locator('.topbar').boundingBox()
-  await page.locator('.usermenu__scrim').click({ position: { x: bar.width - 4, y: 4 } })
-  await expect(group).toHaveCount(0)
-  await expect(servicesCard).toHaveCount(0)
-  await expect(modelsCard).toBeVisible()
+  await test.step('repo chips narrow a project, and wrap inside an on-screen menu at phone width', async () => {
+    const writes = []
+    page.on('request', (req) => {
+      if (req.method() !== 'GET') writes.push(`${req.method()} ${req.url()}`)
+    })
+    await page.setViewportSize({ width: 375, height: 812 })
+    await page.goto('/')
+    const servicesCard = page.getByText('E2E fixture — ledger-service item')
+    const modelsCard = page.getByText('E2E fixture — ledger-models item')
+    await expect(servicesCard).toBeVisible({ timeout: 10_000 })
 
-  expect(writes, writes.join('\n')).toEqual([])
+    await choose(page, REPOS_PROJECT)
+    await page.getByRole('button', { name: /^Project filter:/ }).click()
+    const group = page.getByRole('group', { name: `Repos in ${REPOS_PROJECT}` })
+    await expect(group).toBeVisible()
+    const chips = REPOS.map((r) => page.getByRole('button', { name: `${r.prefix} · ${r.repo.split('/')[1]}` }))
+    for (const c of chips) await expect(c).toHaveAttribute('aria-pressed', 'true')
+
+    const menu = page.locator('.usermenu__menu--left')
+    const box = await menu.boundingBox()
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.width).toBeLessThanOrEqual(375)
+    expect(box.y + box.height).toBeLessThanOrEqual(812)
+    const rows = new Set()
+    for (const c of chips) rows.add(Math.round((await c.boundingBox()).y))
+    expect(rows.size).toBeGreaterThanOrEqual(2)
+    const widths = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth])
+    expect(widths[0]).toBe(widths[1])
+
+    // Dark theme: a pressed chip's border is the --primary token.
+    const [border, primary] = await chips[0].evaluate((el) => {
+      document.documentElement.dataset.theme = 'dark'
+      const probe = document.createElement('div')
+      probe.style.color = 'var(--primary)'
+      document.body.appendChild(probe)
+      const resolved = getComputedStyle(probe).color
+      probe.remove()
+      return [getComputedStyle(el).borderTopColor, resolved]
+    })
+    expect(border).toBe(primary)
+
+    await chips[0].click()
+    await expect(chips[0]).toHaveAttribute('aria-pressed', 'false')
+    await expect(group).toBeVisible()
+    await expect(page.getByRole('button', { name: `Project filter: ${REPOS_PROJECT} · 4 of 5 repos` })).toBeVisible()
+    // The scrim spans only the top bar (its backdrop-filter contains fixed children); dismiss right of the switcher.
+    const bar = await page.locator('.topbar').boundingBox()
+    await page.locator('.usermenu__scrim').click({ position: { x: bar.width - 4, y: 4 } })
+    await expect(group).toHaveCount(0)
+    await expect(servicesCard).toHaveCount(0)
+    await expect(modelsCard).toBeVisible()
+
+    expect(writes, writes.join('\n')).toEqual([])
+  })
 })
