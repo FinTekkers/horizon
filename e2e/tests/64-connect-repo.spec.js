@@ -214,10 +214,11 @@ test('metrics 1–4: a member connects from the card, sees the result, and the b
   }
 })
 
-// Metric 5 (manual): the PR's light and dark screens of each state, and the
-// phone width. Each shot waits for its state's text, and checks
-// html[data-theme] first, so a "dark" shot can never silently be light.
-test('metric 5: the card in its empty, refused and connected states, light and dark, and at phone width', async ({ browser }, testInfo) => {
+// Metric 5 (manual): the PR's screens of each state, and the phone width.
+// Light only (HZ-924): dark is the screenshot capture's
+// (.horizon/screenshots.json). Each shot waits for its state's text, and the
+// first checks html[data-theme].
+test('metric 5: the card in its empty, refused and connected states, and at phone width', async ({ browser }, testInfo) => {
   const { context, page, errors, githubHits } = await memberPage(browser, shotsMember)
   const shot = async (name) => {
     // The viewport is tall enough for the whole card: a full-page shot would
@@ -236,26 +237,23 @@ test('metric 5: the card in its empty, refused and connected states, light and d
         ? route.fulfill({ status: answer.status, contentType: 'application/json', body: JSON.stringify(answer.body) })
         : route.fallback(),
     )
-    for (const theme of ['light', 'dark']) {
-      await page.emulateMedia({ colorScheme: theme })
-      await page.goto('/')
-      await expect(page.getByRole('heading', { name: CARD })).toBeVisible()
-      expect(await page.locator('html').getAttribute('data-theme'), theme).toBe(theme === 'dark' ? 'dark' : null)
-      await shot(`connect-repo--empty--${theme}`)
-
-      answer = refused
-      await fillAndConnect(page)
-      await expect(page.getByRole('alert').locator('strong')).toHaveText(REFUSAL)
-      await shot(`connect-repo--refused--${theme}`)
-
-      answer = success(1)
-      await page.getByLabel('Token', { exact: true }).fill(TOKEN)
-      await page.getByRole('button', { name: 'Connect repository' }).click()
-      await expect(page.getByRole('heading', { name: CONNECTED })).toBeVisible()
-      await shot(`connect-repo--connected--${theme}`)
-    }
-
     await page.emulateMedia({ colorScheme: 'light' })
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: CARD })).toBeVisible()
+    expect(await page.locator('html').getAttribute('data-theme')).toBe(null)
+    await shot('connect-repo--empty--light')
+
+    answer = refused
+    await fillAndConnect(page)
+    await expect(page.getByRole('alert').locator('strong')).toHaveText(REFUSAL)
+    await shot('connect-repo--refused--light')
+
+    answer = success(1)
+    await page.getByLabel('Token', { exact: true }).fill(TOKEN)
+    await page.getByRole('button', { name: 'Connect repository' }).click()
+    await expect(page.getByRole('heading', { name: CONNECTED })).toBeVisible()
+    await shot('connect-repo--connected--light')
+
     await page.setViewportSize({ width: 390, height: 1400 })
     await page.goto('/')
     await expect(page.getByRole('heading', { name: CARD })).toBeVisible()

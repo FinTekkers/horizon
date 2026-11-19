@@ -60,7 +60,7 @@
       "suite": "e2e"
     },
     {
-      "file": "e2e/tests/04-gates.spec.js",
+      "file": "e2e/tests/04-gates-lifecycle.spec.js",
       "reason": "3 of 10 clean runs",
       "suite": "e2e"
     },
@@ -76,11 +76,6 @@
     },
     {
       "file": "e2e/tests/07-merge-conflict.spec.js",
-      "reason": "3 of 10 clean runs",
-      "suite": "e2e"
-    },
-    {
-      "file": "e2e/tests/08-full-lifecycle.spec.js",
       "reason": "3 of 10 clean runs",
       "suite": "e2e"
     },
@@ -1492,7 +1487,7 @@
   ],
   "floor": 0.95,
   "history_through": "2026-10-07T21:43:21.085Z",
-  "inputs_sha256": "0edf2c61d8fa0c9c72a43b9b477f8ddde7212a88ca11a127fd05a47ccd3db4ae",
+  "inputs_sha256": "c158b8652409caaac3d55510faa68a77b04208c14b08ffff4e0061c474e8e9bc",
   "max_age_days": 14,
   "min_clean_runs": 10,
   "repo": "FinTekkers/horizon",

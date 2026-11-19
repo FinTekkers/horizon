@@ -6345,6 +6345,24 @@ export function buildApp({
       return { ok: true }
     })
 
+    // e2e only (HZ-924): holds what the Accept gate does with one item's
+    // pre-merge result until premerge-release, so a spec controls how long the
+    // run stays in flight instead of sleeping. The farm.premerge run itself is
+    // still the real one (see premerge.holdForTest).
+    fastify.post('/api/test/premerge-hold', { config: { scope: 'test' } }, async (request, reply) => {
+      const itemId = request.body?.itemId
+      if (typeof itemId !== 'string' || !itemId) return reply.code(400).send({ error: 'itemId must be a string' })
+      premerge.holdForTest(itemId)
+      return { ok: true }
+    })
+
+    // `released` is false when no hold was set, so a teardown can always call it.
+    fastify.post('/api/test/premerge-release', { config: { scope: 'test' } }, async (request, reply) => {
+      const itemId = request.body?.itemId
+      if (typeof itemId !== 'string' || !itemId) return reply.code(400).send({ error: 'itemId must be a string' })
+      return { ok: true, released: premerge.releaseForTest(itemId) }
+    })
+
     // e2e only (HZ-509), same reasoning: with no GitHub token, nothing can
     // answer the Accept gate's screenshot panel. `snapshots` is keyed
     // "<repo>#<item id>" (see github.setScreenshotSnapshotForTest); `blobs`

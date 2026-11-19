@@ -163,22 +163,21 @@ test('metric 3: the owner with no project_member rows sees the board, never the 
   await expect(page.locator('.board__title')).toBeVisible()
 })
 
-// Metric 5 (manual): the PR's light and dark shots. The theme follows the
-// colour scheme only while no choice is stored, so each shot checks
-// html[data-theme] first — a "dark" shot can never silently be light.
-test('metric 5: the setup screen renders in light and dark', async ({ browser }, testInfo) => {
+// Metric 5 (manual): the PR's shot. Light only (HZ-924): dark is the
+// screenshot capture's (.horizon/screenshots.json). The theme follows the
+// colour scheme only while no choice is stored, so the shot checks
+// html[data-theme] first.
+test('metric 5: the setup screen renders in light', async ({ browser }, testInfo) => {
   const { context, page, errors } = await memberPage(browser, shooter)
   try {
     await page.setViewportSize({ width: 1280, height: 800 })
-    for (const theme of ['light', 'dark']) {
-      await page.emulateMedia({ colorScheme: theme })
-      await page.goto('/')
-      await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
-      expect(await page.locator('html').getAttribute('data-theme'), theme).toBe(theme === 'dark' ? 'dark' : null)
-      const path = testInfo.outputPath(`first-project--${theme}.png`)
-      await page.screenshot({ path })
-      await testInfo.attach(`first-project--${theme}`, { path, contentType: 'image/png' })
-    }
+    await page.emulateMedia({ colorScheme: 'light' })
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
+    expect(await page.locator('html').getAttribute('data-theme')).toBe(null)
+    const path = testInfo.outputPath('first-project--light.png')
+    await page.screenshot({ path })
+    await testInfo.attach('first-project--light', { path, contentType: 'image/png' })
     expect(errors).toEqual([])
   } finally {
     await context.close()

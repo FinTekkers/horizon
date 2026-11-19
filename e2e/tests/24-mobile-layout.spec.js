@@ -6,7 +6,6 @@
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent, insertProject } from '../fixtures/seed.js'
-import { DARK, LIGHT } from '../../ui/src/theme-tokens.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const PHONE = { width: 375, height: 667 }
@@ -46,15 +45,11 @@ async function expectNoSideScroll(page) {
   expect(scroll).toBe(client)
 }
 
-const hexToRgb = (hex) => {
-  const n = parseInt(hex.slice(1), 16)
-  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`
-}
-
 const nav = (page) => page.getByRole('navigation', { name: 'Primary' })
 const navTab = (page, name) => nav(page).getByRole('button', { name })
 
-// Line 2's nav journey — run in light theme and again in dark (line 7).
+// Line 2's nav journey. Light only (HZ-924): the dark tokens are the screenshot
+// capture's (.horizon/screenshots.json).
 async function checkBottomNav(page) {
   await page.setViewportSize({ width: 1024, height: 640 })
   await page.goto('/')
@@ -221,38 +216,4 @@ test('the last card and the last activity row end above the bottom nav', async (
   await page.goto('/mob-log')
   await expect(page.locator('.activity-row__text', { hasText: 'mobile fixture event 25' })).toBeVisible()
   await lowestAboveNav('.activity-row')
-})
-
-test('dark theme: the bottom nav works the same and paints with the dark tokens', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('horizon_theme', 'dark'))
-  await checkBottomNav(page)
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-
-  await page.setViewportSize(PHONE)
-  await page.goto('/')
-  await expect(nav(page)).toBeVisible()
-  const colours = await page.evaluate(() => {
-    const navEl = document.querySelector('.bottomnav')
-    const style = (el) => getComputedStyle(el)
-    // Resolve the token through the cascade, so a hard-coded border colour wouldn't match.
-    const probe = document.createElement('div')
-    probe.style.color = 'var(--topbar-border)'
-    document.body.appendChild(probe)
-    const topbarBorder = style(probe).color
-    probe.remove()
-    return {
-      background: style(navEl).backgroundColor,
-      border: style(navEl).borderTopColor,
-      topbarBorder,
-      active: style(navEl.querySelector('[aria-current="page"]')).color,
-      inactive: style(navEl.querySelector('.bottomnav__tab:not([aria-current])')).color,
-    }
-  })
-  expect(colours.background).toBe(hexToRgb(DARK.surface))
-  expect(colours.background).not.toBe(hexToRgb(LIGHT.surface))
-  expect(colours.active).toBe(hexToRgb(DARK.primaryInk))
-  expect(colours.inactive).toBe(hexToRgb(DARK.mutedStrong))
-  expect(colours.inactive).not.toBe(hexToRgb(LIGHT.mutedStrong))
-  expect(colours.border).toBe(colours.topbarBorder)
-  expect(colours.border).not.toBe('rgb(231, 226, 240)') // light --topbar-border
 })

@@ -275,6 +275,9 @@ const WRITE_CASES = {
   'POST /api/test/farm-reachable': { expect: '404', url: '/api/test/farm-reachable', body: { reachable: true }, owner: 200 },
   // HO-842: clears a canned /preflight answer; nothing was set for ISOA-1.
   'POST /api/test/recheck-result': { expect: '404', url: '/api/test/recheck-result', body: { itemId: 'ISOA-1', answer: null }, owner: 200 },
+  // HZ-924: held on an id no item has, so no pre-merge run here can wait on it.
+  'POST /api/test/premerge-hold': { expect: '404', url: '/api/test/premerge-hold', body: { itemId: 'ISO-NO-ITEM-1' }, owner: 200 },
+  'POST /api/test/premerge-release': { expect: '404', url: '/api/test/premerge-release', body: { itemId: 'ISO-NO-ITEM-1' }, owner: 200 },
   // owner
   'POST /api/admin/deploy-targets': { expect: '404', url: '/api/admin/deploy-targets', body: { key: 'iso-target', ...DEPLOY_TARGET }, owner: 201 },
   'PUT /api/admin/deploy-targets/:key': { expect: '404', url: '/api/admin/deploy-targets/iso-target', body: DEPLOY_TARGET, owner: 200 },
