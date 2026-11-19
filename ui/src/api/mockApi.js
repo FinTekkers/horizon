@@ -451,10 +451,10 @@ export async function approveGate(id, notes, options = {}) {
 }
 
 // HZ-711: mirrors serverApi.moveItem — a Return to or Retry the item's
-// `moves` offers, else the server's refusal. HZ-389: answers { ok, item,
-// restart } and numbers the restarted attempt the way the server does: one
-// more than the runs the step already had (here, one run per visit, since mock
-// steps record none).
+// `moves` offers (HZ-920: or Move to…'s Close, a skip to the final gate),
+// else the server's refusal. HZ-389: answers { ok, item, restart } and numbers
+// the restarted attempt the way the server does: one more than the runs the
+// step already had (here, one run per visit, since mock steps record none).
 const mockAttempts = new Map() // `${id}:${stepKey}` -> the last attempt started
 const restartsSent = new Map()
 
@@ -464,12 +464,17 @@ export async function moveItem(id, { stepKey, note = '' }) {
   if (isClosed(it)) throw new Error('closed')
   const listed = (it.moves?.targets ?? []).some((t) => t.stepKey === stepKey)
   const action = listed && Object.hasOwn(it.moves.actions, stepKey) ? it.moves.actions[stepKey] : null
-  if (!listed || (action !== 'return' && action !== 'retry')) throw Object.assign(new Error('invalid_target'), { status: 400 })
+  if (!listed || (action !== 'return' && action !== 'retry' && action !== 'skip')) throw Object.assign(new Error('invalid_target'), { status: 400 })
   const label = it.moves.labels[stepKey]
   const to = stepKey.split('#')[0]
   clearTimeout(timers[id])
   update(id, (x) => ({ ...x, cursor: stepIndexOf(to), paused: false, moves: null }))
-  const text = action === 'retry' ? `retried “${label}”` : `moved this item back to “${label}”`
+  const text =
+    action === 'retry'
+      ? `retried “${label}”`
+      : action === 'skip'
+        ? `moved this item to “${STEPS[stepIndexOf(to)].label}”`
+        : `moved this item back to “${label}”`
   pushEvent(id, { who: 'You', text: `${text}${note ? ': ' + note : ''}`, color: '#DFA200', initials: 'YOU' })
   runAgents(id)
   const item = items.find((x) => x.id === id)

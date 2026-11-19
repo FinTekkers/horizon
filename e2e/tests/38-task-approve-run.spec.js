@@ -41,7 +41,7 @@ test.beforeAll(() => {
 const stepCard = (page, label) =>
   page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}(\\s*(Return here|Retry|Approve))?$`) }) })
 
-test('Approve the run: the human-only card, Return to Run plan, a wrong PIN refused, the right PIN passes', async ({ page }) => {
+test('Approve the run: the human-only card, Move to Run plan, a wrong PIN refused, the right PIN passes', async ({ page }) => {
   test.setTimeout(60_000)
   const pinDialog = page.getByRole('dialog', { name: 'Enter your gate PIN' })
 
@@ -56,8 +56,8 @@ test('Approve the run: the human-only card, Return to Run plan, a wrong PIN refu
 
   // Return to…: back to Run plan (the gate's default), which runs again and
   // returns here. The first gate action since setGatePinDirect locked the session.
-  await gate.getByRole('button', { name: 'Return to…' }).click()
-  const moveDialog = page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` })
+  await gate.getByRole('button', { name: 'Move to…' }).click()
+  const moveDialog = page.getByRole('dialog', { name: `Move to an earlier step · ${ID}` })
   await expect(moveDialog.getByRole('radio', { name: /^Run plan/ })).toBeChecked()
   await moveDialog.getByLabel('Note for the step (optional)').fill('Run it against staging first.')
   await moveDialog.getByRole('button', { name: 'Return here' }).click()

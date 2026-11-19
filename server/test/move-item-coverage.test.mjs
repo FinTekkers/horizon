@@ -34,7 +34,7 @@ function coverage(files) {
 }
 
 test(`metric 5: moveItem.js is at ${THRESHOLD}% line coverage or more from the move tests`, () => {
-  const result = coverage(['move-item-table.test.mjs', 'move-item-single-writer.test.mjs', 'move-item-log.test.mjs'])
+  const result = coverage(['move-item-table.test.mjs', 'move-item-single-writer.test.mjs', 'move-item-log.test.mjs', 'move-to-close.test.mjs'])
   assert.notEqual(result.percent, null, `moveItem.js is missing from the coverage report:\n${result.output.slice(-3000)}`)
   assert.ok(result.percent >= THRESHOLD, `moveItem.js line coverage ${result.percent}%`)
   assert.equal(result.status, 0, result.output.slice(-3000))

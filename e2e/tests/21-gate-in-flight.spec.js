@@ -124,7 +124,7 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await itemPage.goto(`/${ID.toLowerCase()}`)
   const gate = itemPage.locator('.step-card--awaiting', { hasText: 'Accept the code' })
   const gateApprove = gate.locator('.btn-gate-approve')
-  const gateReject = gate.getByRole('button', { name: 'Return to…' })
+  const gateReject = gate.getByRole('button', { name: 'Move to…' })
   const gateStatus = gate.locator('.gate-action-status')
   await expect(gateApprove).toBeEnabled({ timeout: 10_000 })
 

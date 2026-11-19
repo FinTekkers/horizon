@@ -57,10 +57,10 @@ test('metrics 2 and 3: the board card lists the served targets in order, with th
   await mountApp(server, '/')
   fireEvent.click(await screen.findByRole('button', { name: `More actions for ${GATE_ITEM.id}` }))
 
-  expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Return to…', 'Abandon'])
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Return to…' }))
+  expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(['Move to…', 'Abandon'])
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Move to…' }))
 
-  const radios = within(screen.getByRole('group', { name: 'Return to' })).getAllByRole('radio')
+  const radios = within(screen.getByRole('group', { name: 'Move to' })).getAllByRole('radio')
   expect(radios.map((r) => r.closest('label').querySelector('span').textContent)).toEqual(GATE_MOVES.targets.map((t) => t.label))
   expect(radios.map((r) => r.value)).toEqual(GATE_ITEM.moves.targets.map((t) => t.stepKey))
   // The fixture's default is the second target, not the first.
@@ -135,7 +135,7 @@ for (const [status, error, message] of [
       })
     }
     await mountApp(server, '/hz-901')
-    fireEvent.click(await screen.findByRole('button', { name: 'Return to…' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Move to…' }))
     const before = shownState()
     expect(before.awaiting).toEqual(['Review before execution'])
     expect(before.status).toBeTruthy()

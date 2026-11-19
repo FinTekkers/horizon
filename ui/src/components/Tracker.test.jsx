@@ -359,10 +359,10 @@ test('an abandoned item hides Pause/Resume and Abandon, and shows the reason ins
 // HZ-711: Restart phase became the steps' own Return to… and Retry; an
 // abandoned item's snapshot offers neither — reopening must be a deliberate
 // act, not a leftover lever.
-test('an abandoned item offers no Return to… or Retry, on its steps or in a menu', () => {
+test('an abandoned item offers no Move to… or Retry, on its steps or in a menu', () => {
   const item = { ...baseItem, cursor: 11, abandoned_at: '2026-01-01 00:00:00', abandoned_reason: 'stopping this', moves: NO_MOVES }
   const { container, queryByRole } = renderTracker(item)
-  for (const name of ['Return to…', 'Retry', 'More actions for T-1']) {
+  for (const name of ['Move to…', 'Retry', 'More actions for T-1']) {
     expect(queryByRole('button', { name })).toBeNull()
   }
   expect(container.querySelector('.step-card__hint')).toBeNull()
@@ -1270,12 +1270,12 @@ const renderQueued = (item, deployBlock = DRAIN) =>
     />,
   )
 
-test('HZ-360: the item page reads Queued to merge with the approver, and offers no Approve or Return to…', () => {
+test('HZ-360: the item page reads Queued to merge with the approver, and offers no Approve or Move to…', () => {
   const { container, queryByRole } = renderQueued(atAccept({ acceptWaiting: { source: 'human', actor: 'Dana' } }))
   expect(container.querySelector('.tracker__status').textContent).toBe('Queued to merge')
   expect(container.querySelector('.step-card__queued').textContent).toContain(QUEUED)
   expect(container.querySelector('.step-card__queued-by').textContent).toBe('Approved by you')
-  for (const name of ['Approve', 'Approve with comments', 'Return to…']) {
+  for (const name of ['Approve', 'Approve with comments', 'Move to…']) {
     expect(queryByRole('button', { name })).toBeNull()
   }
   // The PR stays one click away.
@@ -1290,7 +1290,7 @@ test('HZ-360: Autopilot waiting reads Approved by Autopilot; with no drain the g
   expect(container.querySelector('.step-card__queued')).toBeNull()
   const gate = container.querySelector('.step-card--awaiting')
   expect(within(gate).getByRole('button', { name: 'Approve' })).toBeTruthy()
-  expect(within(gate).getByRole('button', { name: 'Return to…' })).toBeTruthy()
+  expect(within(gate).getByRole('button', { name: 'Move to…' })).toBeTruthy()
 })
 
 // The choice for a conflicted PR at a blocked gate: the same queued status,

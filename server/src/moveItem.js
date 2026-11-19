@@ -29,6 +29,7 @@ import {
   IMPACT_REVIEW_STEP_INDEX,
   IMPLEMENT_ITEM_KIND,
   IMPLEMENT_STEP_INDEX,
+  ITEM_KINDS,
   PREFLIGHT_STEP_INDEX,
   REVIEW_STEP_INDEX,
   RUN_PLAN_STEP_INDEX,
@@ -52,9 +53,24 @@ import { currentSubstep, decodeMoveKey, encodeMoveKey, substepReworkTargets, sub
 import { designSubstepOf, returnTarget } from './designRounds.js'
 
 // The five a human (or the route) can ask for, plus 'close', which only a
-// GitHub issue close makes — the route never offers it.
-export const MOVE_ACTIONS = Object.freeze(['approve', 'return', 'retry', 'abandon', 'reopen', 'close'])
-export const ROUTE_MOVE_ACTIONS = Object.freeze(MOVE_ACTIONS.filter((action) => action !== 'close'))
+// GitHub issue close makes — the route never offers it — and (HZ-920)
+// 'skip', a human's Move to… → Close, reached only as a stepKey target, so
+// the route's `action` form never offers it either.
+export const MOVE_ACTIONS = Object.freeze(['approve', 'return', 'retry', 'abandon', 'reopen', 'close', 'skip'])
+export const ROUTE_MOVE_ACTIONS = Object.freeze(MOVE_ACTIONS.filter((action) => action !== 'close' && action !== 'skip'))
+
+// HZ-920: what Move to… names the skip target.
+export const CLOSE_TARGET_LABEL = 'Close'
+
+// HZ-920: a kind's final gate — its last row, the one a skip lands on and a
+// human still approves to close the item. Every kind must end at a gate, or
+// Close would run an agent step: checked once, at load.
+function finalGateIndex(kind) {
+  return endIndex(kind) - 1
+}
+for (const kind of ITEM_KINDS) {
+  if (STEPS[finalGateIndex(kind)]?.kind !== 'gate') throw new Error(`moveItem: the last row of kind ${kind} is not a gate`)
+}
 
 // A closed item sits one past its kind's last row, where no step key is.
 export const CLOSED_KEY = 'closed'
@@ -170,6 +186,7 @@ function reviewFailed(item) {
 //   bad_target_key  no such step in the item's kind, or not the step the
 //                   action goes to
 //   not_earlier     a return to the current step or a later one
+//   not_later       a skip from the final gate itself (HZ-920)
 //   lane_skipped    a return to a row the item's lane skips
 //   merged          a return before Accept the code after the PR merged
 //   not_at_gate     approve away from a gate
@@ -201,6 +218,15 @@ export function planMove(item, { action, toKey = null, substepId = null } = {}) 
   const atGate = STEPS[item.cursor].kind === 'gate'
   if (action === 'abandon') return done(item.cursor, NO_RESET)
   if (action === 'close') return done(endIndex(kind), NO_RESET)
+  if (action === 'skip') {
+    // HZ-920: on to the kind's final gate, running none of the steps between
+    // and approving nothing — the item waits there for the close approval.
+    const finalGate = finalGateIndex(kind)
+    if (toKey != null && toKey !== stepKeyAt(finalGate)) return { error: 'bad_target_key' }
+    if (item.cursor >= finalGate) return { error: 'not_later' }
+    if (laneSkips(item).has(finalGate)) return { error: 'lane_skipped' }
+    return done(finalGate, { ...NO_RESET, releaseHolds: true })
+  }
   if (action === 'retry') {
     if (atGate) return { error: 'at_gate' }
     if (toKey != null && toKey !== fromKey) return { error: 'bad_target_key' }
@@ -267,6 +293,12 @@ export function moveTargets(item, { running = false, enabled = true, approvable 
       toIndex,
     })
 
+  // HZ-920: Close, last — unless a target already goes to that step.
+  const addClose = () => {
+    const skip = planMove(item, { action: 'skip' })
+    if (skip.ok && !targets.some((t) => t.stepKey === skip.toKey)) add('skip', skip.toIndex, skip.toKey)
+  }
+
   if (atGate) {
     const approve = planMove(item, { action: 'approve' })
     if (approve.ok && approvable) add('approve', approve.toIndex, approve.toKey)
@@ -277,6 +309,7 @@ export function moveTargets(item, { running = false, enabled = true, approvable 
       if (planMove(item, { action: 'return', toKey: anchorKey, substepId: sub.substepId }).error) continue
       add('return', sub.index, encodeMoveKey(anchorKey, sub.substepId), { label: sub.label })
     }
+    addClose()
     return targets
   }
 
@@ -289,6 +322,7 @@ export function moveTargets(item, { running = false, enabled = true, approvable 
   const forward = planMove(item, { action: 'approve', toKey: stepKeyAt(ACCEPT_GATE_INDEX) })
   if (forward.ok) add('approve', forward.toIndex, forward.toKey)
   for (const key of allowedTargets(item)) add('return', stepIndexOf(key), key)
+  addClose()
   return targets
 }
 
@@ -300,9 +334,11 @@ export function toPublicTarget({ action, toIndex, ...target }) {
 // HZ-711: item.moves as served — the targets, and beside them what the item
 // page, board cards and the Approvals drawer need to name each one without
 // working out a rule or holding a step table:
-//   actions     each target's stepKey → 'approve', 'return' or 'retry'
+//   actions     each target's stepKey → 'approve', 'return', 'retry' or
+//               (HZ-920) 'skip'
 //   labels      each return or retry target's key, each reapproval and the
-//               gate an approve passes → its label; a sub-step's is its own
+//               gate an approve passes → its label; a sub-step's is its own;
+//               the skip target's is "Close"
 //   approveKey  the gate the item waits at, when it can be approved — even
 //               while the stepKey form cannot approve it (no run plan, golden
 //               cases unseen): the Approve those surfaces send carries what
@@ -330,7 +366,12 @@ export function movesView(item, targets, { enabled = true } = {}) {
   return {
     targets: targets.map(toPublicTarget),
     actions: Object.fromEntries(targets.map((t) => [t.stepKey, t.action])),
-    labels: Object.fromEntries(named.map((key) => [key, moveKeyLabel(item, key)])),
+    labels: {
+      ...Object.fromEntries(named.map((key) => [key, moveKeyLabel(item, key)])),
+      // HZ-920: the final gate is never an approve's gate or a reapproval
+      // while Close is offered (the item is before it), so this names one key.
+      ...Object.fromEntries(targets.filter((t) => t.action === 'skip').map((t) => [t.stepKey, CLOSE_TARGET_LABEL])),
+    },
     approveKey,
     canAbandon: open,
     amendKey,
@@ -357,6 +398,12 @@ function redoLine(item, action, toIndex, label) {
     const what =
       STEPS[item.cursor].kind === 'gate' ? `Approves ${quoted(item.cursor)}` : 'Accepts the code despite the review findings'
     return toIndex >= endIndex(itemKindOf(item)) ? `${what} and closes the item` : `${what} and moves on to ${quoted(toIndex)}`
+  }
+  if (action === 'skip') {
+    const skipped = laneRows(item).filter((step) => step.index >= item.cursor && step.index < toIndex).length
+    // A Change's PR is not merged by a skip: it stays open as it is.
+    const pr = itemKindOf(item) === IMPLEMENT_ITEM_KIND ? '; any open PR stays unmerged' : ''
+    return `Skips ${skipped} step${skipped === 1 ? '' : 's'} and waits at ${quoted(toIndex)} for approval${pr}`
   }
   const later = laneRows(item).filter((step) => step.index > toIndex && step.index <= item.cursor).length
   const tail = later ? ` and ${later} later step${later === 1 ? '' : 's'}` : ''

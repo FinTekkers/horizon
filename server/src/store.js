@@ -3701,9 +3701,10 @@ export function hasRuleBlock(id) {
 }
 
 // HZ-710: the route's return, retry and reopen (approve and abandon keep
-// their own paths, with their checks). A return or retry re-runs from the
-// target with `note` as that step's feedback; a return to a gate waits there
-// for a new decision. A reopen of an item that has a GitHub issue is refused:
+// their own paths, with their checks), and HZ-920's skip (Move to… → Close).
+// A return or retry re-runs from the target with `note` as that step's
+// feedback; a return to a gate, or a skip to the final gate, waits there for
+// a new decision. A reopen of an item that has a GitHub issue is refused:
 // the next sync would close it again, so it is reopened on GitHub.
 export function moveByHuman(id, { action, toKey = null, note = '', who = 'You', proof = null }) {
   const it = getItem(id)
@@ -3736,8 +3737,15 @@ export function moveByHuman(id, { action, toKey = null, note = '', who = 'You', 
   })()
   if (moved.error) return moved
   const label = STEPS[moved.toIndex]?.label ?? ''
+  // HZ-920: a skip (Move to… → Close) moves forward, so it is not "back".
   const text =
-    action === 'reopen' ? 'reopened this item' : action === 'retry' ? `retried “${label}”` : `moved this item back to “${label}”`
+    action === 'reopen'
+      ? 'reopened this item'
+      : action === 'retry'
+        ? `retried “${label}”`
+        : action === 'skip'
+          ? `moved this item to “${label}”`
+          : `moved this item back to “${label}”`
   addEvent(id, { who, text: `${text}${trimmed ? ': ' + trimmed : ''}`, color: '#DFA200', initials: 'YOU' })
   notify()
   agentRunner.kick(id)

@@ -117,13 +117,13 @@ test('a card at Accept the code during a drain reads Queued to merge, names the 
   }
 })
 
-test('with no drain the same card keeps Approve and Return to…', () => {
+test('with no drain the same card keeps Approve and Move to…', () => {
   const { container } = renderBoard([item('Q-1')], null)
   const card = cardOf(container, 'Q-1')
   expect(card.querySelector('.card__queued')).toBeNull()
   expect(buttons(card)).toContain('Approve')
   fireEvent.click(moreToggle(card, 'Q-1'))
-  expect([...card.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Return to…', 'Abandon'])
+  expect([...card.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Move to…', 'Abandon'])
 })
 
 class MockEventSource {

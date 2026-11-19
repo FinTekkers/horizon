@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { returnTargets, targetFor } from '../domain/stepActions'
+import { moveDialogTargets, targetFor } from '../domain/stepActions'
 
 // HZ-711: the one dialog for Return to and Retry, on every surface. It shows
 // the server's own summary of the move (item.moves): the target step, what is
 // redone, which approvals are given again and whether a running step stops,
 // plus a note for the step that runs again. Opened without a step (the menu's
-// Return to…), it lists the snapshot's return targets with the gate's default
-// chosen. It reads `item` live, so a newer snapshot shows its targets; a
-// failed move keeps the dialog, its choice and the note.
+// Move to…), it lists the snapshot's return targets with the gate's default
+// chosen, then (HZ-920) Close when the snapshot offers it. It reads `item`
+// live, so a newer snapshot shows its targets; a failed move keeps the
+// dialog, its choice and the note.
 //
 // HO-853: a shortcut that presets the step can also name its own title, note
 // label and submit label, and require the note (`requireNote`): then nothing
@@ -27,13 +28,14 @@ export default function MoveDialog({
   requireNote = false,
 }) {
   const picker = action === 'return' && stepKey == null
-  const choices = picker ? returnTargets(item) : []
+  const choices = picker ? moveDialogTargets(item) : []
   const fallback = (choices.find((t) => t.isDefault) ?? choices[0])?.key ?? null
   const [picked, setChosen] = useState(null)
   // A choice a newer snapshot no longer offers falls back to its default.
   const chosen = picker ? (choices.some((t) => t.key === picked) ? picked : fallback) : stepKey
   const [note, setNote] = useState('')
-  const target = chosen ? targetFor(item, action, chosen) : null
+  // HZ-920: a picked choice is found among the choices — Close is not a return.
+  const target = chosen ? (picker ? choices.find((t) => t.key === chosen) ?? null : targetFor(item, action, chosen)) : null
   const noteMissing = requireNote && note.trim() === ''
   const noteRef = useRef(null)
 
@@ -71,14 +73,14 @@ export default function MoveDialog({
       <div className="composer__scrim" onClick={onCancel} />
       <div className="composer__panel move-dialog" role="dialog" aria-modal="true" aria-labelledby="move-dialog-title" aria-describedby="move-dialog-sub">
         <div className="composer__title" id="move-dialog-title">
-          {title ?? (retry ? 'Retry this step' : 'Return to an earlier step')} · {item.id}
+          {title ?? (retry ? 'Retry this step' : 'Move to an earlier step')} · {item.id}
         </div>
         <div className="composer__sub" id="move-dialog-sub">
           {item.title}
         </div>
         {picker && (
           <fieldset className="move-dialog__choices">
-            <legend className="composer__field-label">Return to</legend>
+            <legend className="composer__field-label">Move to</legend>
             {choices.map((t) => (
               <label key={t.key} className="move-dialog__choice">
                 <input type="radio" name="move-target" value={t.key} checked={chosen === t.key} onChange={() => setChosen(t.key)} />

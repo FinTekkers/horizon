@@ -1,6 +1,6 @@
 // HZ-470: Kill (Abandon) and Restart phase used to close their dialog at once
 // and drop the request's answer, so a failure was silent. HZ-711: Restart
-// phase is gone; its successor is the Move dialog (Return to an earlier step,
+// phase is gone; its successor is the Move dialog (Move to an earlier step,
 // opened from the step list), and both now POST /move. Here the server
 // answers 500 for each: the request is sent exactly once (no automatic
 // retry), the dialog stays open with the error, and the item's state and
@@ -26,7 +26,7 @@ test.beforeAll(() => {
   try {
     // beforeAll re-runs in a fresh worker after a failed test; seed once.
     if (!db.prepare('SELECT 1 FROM work_item WHERE id = ?').get(ID)) {
-      insertItem(db, { id: ID, title: 'E2E fixture — Kill and Return to fail loudly', cursor: 3 })
+      insertItem(db, { id: ID, title: 'E2E fixture — Kill and Move to fail loudly', cursor: 3 })
     }
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
@@ -65,12 +65,12 @@ const DIALOGS = [
     submit: 'Abandon',
   },
   {
-    name: 'Return to an earlier step',
+    name: 'Move to an earlier step',
     // HZ-799's stepKey form: the step clicked, by key.
     sent: (body) => body.stepKey === FIRST_STEP.key && body.action === undefined,
     // HZ-711: an earlier step in the step list opens the Move dialog for it.
     open: (page) => page.getByRole('button', { name: new RegExp(`^${escape(FIRST_STEP.label)}\\s*Return here$`) }).click(),
-    dialog: (page) => page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` }),
+    dialog: (page) => page.getByRole('dialog', { name: `Move to an earlier step · ${ID}` }),
     note: (dialog) => dialog.getByLabel('Note for the step (optional)'),
     submit: 'Return here',
   },

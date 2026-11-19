@@ -80,8 +80,8 @@ test('the board and tracker show the snapshot’s sub-steps, and a return to the
   const auditKey = `${implement.key}#${audit.id}`
   const served = (await (await page.request.get('/api/items')).json()).items.find((it) => it.id === ID).moves
   expect(served.actions[auditKey]).toBe('return')
-  await page.locator('.step-card--awaiting').getByRole('button', { name: 'Return to…' }).click()
-  const dialog = page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` })
+  await page.locator('.step-card--awaiting').getByRole('button', { name: 'Move to…' }).click()
+  const dialog = page.getByRole('dialog', { name: `Move to an earlier step · ${ID}` })
   await expect(dialog).toBeVisible()
   const radio = dialog.getByRole('radio', { name: new RegExp(`^${audit.label}`) })
   await expect(radio).toHaveAttribute('value', auditKey)

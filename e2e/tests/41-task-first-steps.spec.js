@@ -61,7 +61,7 @@ async function expectAtTheGate(page) {
   const gate = stepCard(page, GATE.label)
   await expect(gate).toHaveClass(/step-card--awaiting/, { timeout: 15_000 })
   await expect(gate.getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
-  await expect(gate.getByRole('button', { name: 'Return to…' })).toBeVisible()
+  await expect(gate.getByRole('button', { name: 'Move to…' })).toBeVisible()
   // HZ-711: each earlier step is offered as a return target in the step list.
   for (const step of FIRST_STEPS) {
     await expect(page.getByRole('button', { name: new RegExp(`^${escape(step.label)}\\s*Return here$`) })).toBeVisible()
