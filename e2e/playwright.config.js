@@ -70,6 +70,14 @@ process.env.HORIZON_E2E_FARM_HOME = FARM_HOME
 // the real loopback-only /api/farm/deploy-drain routes, which need this.
 const FARM_SECRET = 'e2e-farm-secret'
 process.env.HORIZON_E2E_FARM_SECRET = FARM_SECRET
+// HZ-925: bare /admin waits 500 ms for its reads, not the production 3 s
+// (ui/src/components/AdminPage.jsx LANDING_WAIT_MS). Set here, not only in the
+// UI webServer env: ui/scripts/ensure-build.mjs keys ui/dist-local on every
+// VITE_* var, and spec 53's serve.sh runs it from the test worker's env — one
+// value for the whole run means one key, so the bundle is never rebuilt and
+// swapped under the running vite preview.
+const ADMIN_LANDING_WAIT_MS = '500'
+process.env.VITE_ADMIN_LANDING_WAIT_MS = ADMIN_LANDING_WAIT_MS
 
 export default defineConfig({
   testDir: './tests',
@@ -137,6 +145,13 @@ export default defineConfig({
         // Live changes reach the page 100 ms after they happen, not the
         // production 1 s batching window (server/src/app.js STREAM_BATCH_MS).
         STREAM_BATCH_MS: '100',
+        // The agent output page polls every 200 ms, not the production 2 s
+        // (server/src/runLogView.js POLL_MS).
+        RUN_LOG_POLL_MS: '200',
+        // The deploy queue ticks every 200 ms, not the production 5 s
+        // (server/src/deployQueue.js TICK_MS). Its batch-failure window is 60
+        // ticks: 12 s here, about 5 minutes in production.
+        DEPLOY_TICK_MS: '200',
         HORIZON_UI_URL: BASE_URL,
         // Force demo mode regardless of whatever the parent shell has set —
         // this suite must never reach real GitHub or a real farm daemon.
@@ -192,6 +207,7 @@ export default defineConfig({
       reuseExistingServer: false,
       env: {
         VITE_PROXY_TARGET: `http://localhost:${SERVER_PORT}`,
+        VITE_ADMIN_LANDING_WAIT_MS: ADMIN_LANDING_WAIT_MS,
       },
     },
   ],
