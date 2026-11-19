@@ -86,9 +86,12 @@ export default defineConfig({
   // implement attempt (HZ-157, HZ-178, HZ-187 on 2026-10-01), so it went to
   // 180s. By 2026-10-07 the suite itself had grown to 174-180s even at load
   // ~0.5 (check-metrics.jsonl), so 180s failed all-pass runs on a quiet host
-  // (HZ-304, HZ-319). 360s is 2x that quiet-host time. HZ-327 replaces this
-  // with a rule derived from measured suite time.
-  globalTimeout: 360_000,
+  // (HZ-304, HZ-319). 360s was 2x that quiet-host time. By 2026-11-19 the
+  // suite (~187 tests, one worker) needed about 8 minutes on a quiet host:
+  // HZ-920 ran 140-165 tests green in exactly 6.0m three times and the rest
+  // never ran. 600s, owner's call; a rule derived from measured suite time
+  // is still to come (HZ-327 added flake reruns, not this).
+  globalTimeout: 600_000,
   globalSetup: './global-setup.js',
   // HZ-327: under a farm check run, also JUnit XML into the run's report dir —
   // one row per spec in the repo's test history.
