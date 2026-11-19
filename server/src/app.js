@@ -580,7 +580,10 @@ let flushTimer = null
 // the live DB (234 items, 2026-10-06): one flush — slim build plus diff — is
 // ~55 ms; the old per-change full snapshot was ~145 ms to build and 9.4 MB per
 // tab. A single-item delta is ~3 KB (16 KB for the largest item).
-export const STREAM_BATCH_MS = 1000
+// STREAM_BATCH_MS in the env shortens it for the e2e server only
+// (e2e/playwright.config.js sets 100): every live change a spec waits on paid
+// the full window, ~1.3 s each, 84 s of the 19 Nov suite. Floor 50 ms.
+export const STREAM_BATCH_MS = Math.max(Number(process.env.STREAM_BATCH_MS) || 1000, 50)
 
 // A store change, or one of the routes below after a farm/sync state change.
 // Never writes to a socket itself: see flushStream().
