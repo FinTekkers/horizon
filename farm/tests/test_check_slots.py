@@ -314,12 +314,12 @@ def test_the_e2e_contention_ceiling_is_not_raised_either():
     this item's contention detector (farm/check_metrics.py classifies its
     message). Raising it would hide exactly what the measurement is for —
     enforced by a runner here rather than by review. main has since moved it
-    from 85s to 180s, then to 360s, on its own evidence (see the comment
+    from 85s to 180s, then to 360s, then to 600s, on its own evidence (see the comment
     above it); this item pins whatever main set and does not raise it further."""
     config_js = os.path.join(REPO_ROOT, "e2e", "playwright.config.js")
     with open(config_js) as fh:
         source = fh.read()
-    assert "globalTimeout: 360_000" in source
+    assert "globalTimeout: 600_000" in source
     assert "workers: 1" in source, "the e2e suite must stay single-worker; it is not what oversubscribes the host"
 
 

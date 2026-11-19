@@ -371,7 +371,10 @@ All three levers are config; no code revert is needed.
   from `python -m farm.tools.report_check_metrics` instead.
   Exception (2026-10-07, owner's call): `globalTimeout` went from 180s to
   360s because the suite alone reached 174-180s on a quiet host, so the
-  limit no longer measured contention. HZ-327 replaces the fixed number.
+  limit no longer measured contention. Again on 2026-11-19: 360s to 600s,
+  because the suite alone needed about 8 minutes (HZ-920 cut off at 6.0m
+  three times with nothing failing). HZ-327 did not replace the fixed
+  number; it added flake reruns.
 
 Stale slot files under `$FARM_HOME/locks/checks/` need no cleanup — `flock`
 state is held by the kernel, not by the files' contents.
