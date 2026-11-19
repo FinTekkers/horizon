@@ -11,6 +11,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import { render, screen, fireEvent, cleanup, within, waitFor } from '@testing-library/react'
 
 vi.mock('../api', () => ({
+  // HZ-921: the Effort & cost card asks; these items show none.
+  getItemStats: async () => ({ visible: false, stats: null }),
   getPlanDraft: vi.fn(),
   savePlanDraft: vi.fn(),
   issueUrl: () => 'https://example.test/issue',

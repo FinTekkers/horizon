@@ -246,3 +246,64 @@ test('domain/productivity.schema.json is byte-identical to HZ-549’s (454bb71) 
   const bytes = readFileSync(path.join(REPO_ROOT, 'domain/productivity.schema.json'))
   assert.equal(createHash('sha256').update(bytes).digest('hex'), '18689e2d544d45e6aa10a4374cc7197c15ef8efc63bd79208d84929896c978ff')
 })
+
+// ---- HZ-921 metric 1: the run's turns, as the provider reported them ----
+
+const turnsOf = (runId) => db.prepare('SELECT num_turns FROM step_run WHERE id = ?').get(runId).num_turns
+
+test('HZ-921: num_turns is an additive nullable column with no default, and older rows read NULL', () => {
+  const column = db.prepare('PRAGMA table_info(step_run)').all().find((c) => c.name === 'num_turns')
+  assert.ok(column, 'num_turns is missing')
+  assert.equal(column.notnull, 0)
+  assert.equal(column.dflt_value, null)
+  const oldRow = activeRun(itemAt(OPTIONS_STEP_INDEX), OPTIONS_STEP_INDEX)
+  assert.equal(turnsOf(oldRow), null)
+})
+
+test('HZ-921: a completed agent run stores the num_turns the farm reported', async () => {
+  const runId = activeRun(itemAt(OPTIONS_STEP_INDEX), OPTIONS_STEP_INDEX)
+  const res = await complete(runId, { summary: 'proposed', artifacts: stubArtifacts() })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(STUB.usage.num_turns, 3)
+  assert.equal(turnsOf(runId), STUB.usage.num_turns)
+})
+
+test('HZ-921: a run reporting no turns stores NULL, not 0', async () => {
+  const { num_turns, ...noTurns } = STUB.usage
+  const runId = activeRun(itemAt(OPTIONS_STEP_INDEX), OPTIONS_STEP_INDEX)
+  const res = await complete(runId, { summary: 'proposed', artifacts: stubArtifacts({ usage: { ...noTurns, num_turns: null } }) })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.equal(turnsOf(runId), null)
+  assert.equal(row(runId).cost_usd, STUB.usage.cost_usd) // the figures are unaffected
+})
+
+test('HZ-921: cleanUsage keeps 7 and 0 turns as given; anything else, and every non-agent or unrecorded run, is NULL', () => {
+  const step = STEPS[OPTIONS_STEP_INDEX]
+  const store7 = (num_turns) => {
+    const runId = activeRun(itemAt(OPTIONS_STEP_INDEX), OPTIONS_STEP_INDEX)
+    assert.equal(recordRunUsage(runId, cleanUsage({ ...STUB.usage, num_turns }, step)), true)
+    return turnsOf(runId)
+  }
+  assert.equal(store7(7), 7)
+  assert.equal(store7(0), 0)
+  for (const bad of [undefined, '7', -1, 1.5, true]) assert.equal(store7(bad), null, JSON.stringify(bad))
+  const { num_turns, ...missing } = STUB.usage
+  assert.equal(cleanUsage(missing, step).num_turns, null)
+  // Turns are kept apart from the figures: an agent run with no usage still
+  // stores the turns it reported (UNKNOWN_AGENT).
+  assert.equal(cleanUsage({ agent_run: true, num_turns: 4 }, step).num_turns, 4)
+  const cases = {
+    NON_AGENT: cleanUsage({ agent_run: false, num_turns: 9 }, step),
+    NOT_RECORDED: cleanUsage(null, step),
+    UNKNOWN_AGENT: cleanUsage({ agent_run: true, input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_write_tokens: null, cost_usd: null }, step),
+  }
+  assert.equal(NON_AGENT.num_turns, null)
+  for (const [name, cleaned] of Object.entries(cases)) {
+    const runId = activeRun(itemAt(OPTIONS_STEP_INDEX), OPTIONS_STEP_INDEX)
+    recordRunUsage(runId, cleaned)
+    assert.equal(turnsOf(runId), null, name)
+  }
+  const inherited = Object.create({ num_turns: 5 })
+  Object.assign(inherited, { ...missing })
+  assert.equal(cleanUsage(inherited, step).num_turns, null, 'an inherited num_turns is not read')
+})

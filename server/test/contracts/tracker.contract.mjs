@@ -55,6 +55,8 @@ export const TRACKER_METHODS = Object.freeze([
   'pollOnce',
   'startPolling',
   'getSyncState',
+  // HZ-921: the item's one stats comment (tracker-port.contract.mjs).
+  'upsertStatsComment',
 ])
 
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} }

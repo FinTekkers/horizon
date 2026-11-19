@@ -481,6 +481,7 @@ STUB_RUN_USAGE = {
     "cache_read_tokens": 0,
     "cache_write_tokens": 0,
     "cost_usd": 0,
+    "num_turns": None,
 }
 
 

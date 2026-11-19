@@ -8,7 +8,7 @@
 // helpers still throw. slScreenshotPublisher stores the screenshot bundle an
 // sl item's implement result carries (the sl farm pushes no ref).
 //
-// HO-875: the tracker group's twelve Tracker port methods (backends/tracker.js)
+// HO-875: the tracker group's Tracker port methods (backends/tracker.js)
 // are real too — Tasks through farmd, in backends/slTracker.js — on a server
 // with a farm (FARM_URL). farmd is the sl Tracker's only implementation, so
 // with no farm configured every sl tracker method stays the HO-870

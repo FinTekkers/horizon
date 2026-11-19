@@ -7,6 +7,8 @@ import { afterEach, expect, test, vi } from 'vitest'
 import { render, cleanup, within } from '@testing-library/react'
 
 vi.mock('../api', () => ({
+  // HZ-921: the Effort & cost card asks; these items show none.
+  getItemStats: async () => ({ visible: false, stats: null }),
   issueUrl: () => 'https://example.test/issue',
   issueLabel: (item) => `#${item.issue}`,
   artifactUrl: () => 'https://example.test/artifact',

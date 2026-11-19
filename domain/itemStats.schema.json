@@ -1,0 +1,645 @@
+{
+  "title": "Horizon item Effort & cost",
+  "description": "HZ-921: the 200 response of GET /api/items/:id/stats. `stats` is the object the item's `<!-- horizon-stats v1 -->` comment holds (server/src/itemStats.js); null with visible false before the kind's last step. Ids, keys, names, numbers and timestamps only: no prompt, output, note or path.",
+  "type": "object",
+  "required": [
+    "visible",
+    "stats"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "visible": {
+      "description": "Whether the summary is shown: at the kind's last step, or closed or abandoned.",
+      "type": "boolean"
+    },
+    "stats": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "schema",
+            "version",
+            "item",
+            "kind",
+            "repo",
+            "lane",
+            "priority",
+            "outcome",
+            "created_at",
+            "closed_at",
+            "steps",
+            "phases",
+            "totals",
+            "implementation",
+            "time",
+            "clarification"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "horizon-stats"
+              ]
+            },
+            "version": {
+              "type": "integer",
+              "enum": [
+                1
+              ]
+            },
+            "item": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "type": "string",
+              "minLength": 1
+            },
+            "repo": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "lane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "priority": {
+              "type": "string"
+            },
+            "outcome": {
+              "description": "'closed' or 'abandoned'; null while the item is open (at its last step).",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "closed",
+                "abandoned",
+                null
+              ]
+            },
+            "created_at": {
+              "description": "ISO 8601 UTC.",
+              "type": "string"
+            },
+            "closed_at": {
+              "description": "ISO 8601 UTC: the latest close (Productivity's close events) or the abandon; null while open.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "steps": {
+              "description": "One row per step run, oldest first.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "step",
+                  "agent",
+                  "attempt",
+                  "model",
+                  "provider",
+                  "input_tokens",
+                  "output_tokens",
+                  "cache_read_tokens",
+                  "cache_write_tokens",
+                  "cost_usd",
+                  "turns",
+                  "wall_ms"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "step": {
+                    "description": "The step's key (domain/steps.json).",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "agent": {
+                    "type": "string"
+                  },
+                  "attempt": {
+                    "type": "integer"
+                  },
+                  "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "input_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "output_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "cache_read_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "cache_write_tokens": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "cost_usd": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "turns": {
+                    "description": "The run's agent turns; null when not recorded, and for a run with no agent.",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "wall_ms": {
+                    "description": "Started to ended; null while running.",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "phases": {
+              "description": "The kind's phases in order, each with its runs' usage.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "phase",
+                  "input_tokens",
+                  "output_tokens",
+                  "cache_read_tokens",
+                  "cache_write_tokens",
+                  "tokens",
+                  "cost_usd"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "phase": {
+                    "type": "string"
+                  },
+                  "input_tokens": {
+                    "description": "Input tokens; null until a run in it was recorded.",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "output_tokens": {
+                    "description": "Output tokens; null until a run in it was recorded.",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "cache_read_tokens": {
+                    "description": "Cache-read tokens; null until a run in it was recorded.",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "cache_write_tokens": {
+                    "description": "Cache-write tokens; null until a run in it was recorded.",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "tokens": {
+                    "description": "Input + output tokens, as Admin's Productivity page counts them (its runs with both recorded); null until one was.",
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "minimum": 0
+                  },
+                  "cost_usd": {
+                    "description": "Cost in USD, rounded to 6 places, by Productivity's rule; null until a run in it was recorded.",
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "minimum": 0
+                  }
+                }
+              }
+            },
+            "totals": {
+              "description": "Every run of the item.",
+              "type": "object",
+              "required": [
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "tokens",
+                "cost_usd",
+                "turns"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "input_tokens": {
+                  "description": "Input tokens; null until a run in it was recorded.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "output_tokens": {
+                  "description": "Output tokens; null until a run in it was recorded.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "cache_read_tokens": {
+                  "description": "Cache-read tokens; null until a run in it was recorded.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "cache_write_tokens": {
+                  "description": "Cache-write tokens; null until a run in it was recorded.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "tokens": {
+                  "description": "Input + output tokens, as Admin's Productivity page counts them (its runs with both recorded); null until one was.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "cost_usd": {
+                  "description": "Cost in USD, rounded to 6 places, by Productivity's rule; null until a run in it was recorded.",
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "turns": {
+                  "description": "Agent turns summed; null when any agent run in it has none recorded (never 0 for unknown).",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              }
+            },
+            "implementation": {
+              "description": "Every 'Specialist agent implements' run; null for a kind with no implement step.",
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "attempts",
+                    "fix_rounds",
+                    "input_tokens",
+                    "output_tokens",
+                    "cache_read_tokens",
+                    "cache_write_tokens",
+                    "tokens",
+                    "cost_usd",
+                    "turns",
+                    "wall_ms"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "attempts": {
+                      "description": "Implement runs.",
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "fix_rounds": {
+                      "description": "Failed automated reviews (Productivity's reviewFails).",
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "input_tokens": {
+                      "description": "Input tokens; null until a run in it was recorded.",
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "output_tokens": {
+                      "description": "Output tokens; null until a run in it was recorded.",
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "cache_read_tokens": {
+                      "description": "Cache-read tokens; null until a run in it was recorded.",
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "cache_write_tokens": {
+                      "description": "Cache-write tokens; null until a run in it was recorded.",
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "tokens": {
+                      "description": "Input + output tokens, as Admin's Productivity page counts them (its runs with both recorded); null until one was.",
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "cost_usd": {
+                      "description": "Cost in USD, rounded to 6 places, by Productivity's rule; null until a run in it was recorded.",
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "turns": {
+                      "description": "Agent turns summed; null when any agent run in it has none recorded (never 0 for unknown).",
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
+                    "wall_ms": {
+                      "description": "Implement runs' wall time summed; null when none finished.",
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    }
+                  }
+                }
+              ]
+            },
+            "time": {
+              "description": "Where the elapsed time went; the four parts sum to elapsed_ms.",
+              "type": "object",
+              "required": [
+                "elapsed_ms",
+                "agent_ms",
+                "waiting_ms",
+                "checks_deploy_ms",
+                "queued_ms"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "elapsed_ms": {
+                  "description": "Created to closed (or abandoned); to now while open.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "agent_ms": {
+                  "description": "Agents working: Productivity's agentsWorking.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "waiting_ms": {
+                  "description": "Waiting on the owner at gates, gate opening to decision: Productivity's waitingOnYou.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "checks_deploy_ms": {
+                  "description": "Checks and deploys: Productivity's checksAndDeploy.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "queued_ms": {
+                  "description": "The rest of elapsed: slot waits (Productivity's queued), dispatch and idle time. Not Productivity's queued alone.",
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "clarification": {
+              "type": "object",
+              "required": [
+                "none",
+                "total",
+                "request_changes",
+                "review_fails",
+                "asks",
+                "caretaker_rulings",
+                "review_cycles",
+                "auto_retries",
+                "usage_limit_fallbacks"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "none": {
+                  "description": "True when total is 0: shown as 'No clarification needed'.",
+                  "type": "boolean"
+                },
+                "total": {
+                  "description": "request_changes + review_fails + asks + caretaker_rulings + auto_retries + usage_limit_fallbacks.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "request_changes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "step",
+                      "count"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "step": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  },
+                  "description": "The owner's Request changes at a gate (Productivity's sendBacks), by the step sent back to."
+                },
+                "review_fails": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "step",
+                      "count"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "step": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  },
+                  "description": "Failed automated reviews (Productivity's reviewFails), by the step they sent the item to."
+                },
+                "asks": {
+                  "description": "Asks the agents raised; split asks are not counted.",
+                  "type": "object",
+                  "required": [
+                    "blocking",
+                    "soft",
+                    "by_step"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "blocking": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "soft": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "by_step": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "step",
+                          "blocking",
+                          "soft"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "step": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "blocking": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "soft": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "caretaker_rulings": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "step",
+                      "count"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "step": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "count": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  },
+                  "description": "Applied caretaker rulings, by gate."
+                },
+                "review_cycles": {
+                  "description": "Runs of the automated review step (not counted in total).",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "auto_retries": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "usage_limit_fallbacks": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

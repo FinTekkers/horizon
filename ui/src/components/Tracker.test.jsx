@@ -13,6 +13,8 @@ import { render, fireEvent, cleanup, waitFor, act, within } from '@testing-libra
 import { afterEach } from 'vitest'
 
 vi.mock('../api', () => ({
+  // HZ-921: the Effort & cost card asks; these items show none.
+  getItemStats: async () => ({ visible: false, stats: null }),
   issueUrl: () => 'https://example.test/issue',
   issueLabel: (item) => `#${item.issue}`,
   artifactUrl: () => 'https://example.test/artifact',

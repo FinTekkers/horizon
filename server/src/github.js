@@ -22,7 +22,7 @@ import { SCREENSHOT_DIR } from './backends/artifact.js'
 // HO-878: the pure screenshot rules both artifact backends share — moved, unchanged.
 import { artifactPruneReason, isScreenshotResults, promotionEntries } from './backends/artifactRules.js'
 // HO-875: the body format and comment footer the sl adapter shares — moved, unchanged.
-import { HORIZON_FOOTER, composeIssueBody } from './trackerText.js'
+import { HORIZON_FOOTER, STATS_MARKER, composeIssueBody } from './trackerText.js'
 
 export { composeIssueBody }
 
@@ -1206,6 +1206,37 @@ export async function postIssueComment(item, body) {
     body: JSON.stringify({ body }),
   })
   if (!res.ok) throw new Error(`GitHub returned ${res.status} posting a comment`)
+}
+
+// HZ-921: the item's one stats comment (statsComment.js), found by
+// STATS_MARKER on a comment Horizon wrote (isOwnComment). Every page of the
+// issue's comments is read, so a long thread still finds it. Found with a
+// different body: edited; the same body: left alone; none: posted. Resolves
+// 'updated', 'unchanged' or 'posted'; a failed request rejects, so nothing is
+// ever posted when the search could not finish.
+const STATS_COMMENT_PAGE = 100
+const STATS_COMMENT_MAX_PAGES = 50
+
+export async function upsertStatsComment(item, body) {
+  const list = `/repos/${item.repo}/issues/${item.issue}/comments`
+  let found = null
+  for (let page = 1; found == null; page++) {
+    if (page > STATS_COMMENT_MAX_PAGES) throw new Error(`issue #${item.issue} has too many comments to search for the stats comment`)
+    const res = await gh(`${list}?per_page=${STATS_COMMENT_PAGE}&page=${page}`)
+    if (!res.ok) throw new Error(`GitHub returned ${res.status} listing comments on issue #${item.issue}`)
+    const comments = await res.json()
+    if (!Array.isArray(comments)) throw new Error(`GitHub returned no comment list for issue #${item.issue}`)
+    found = comments.find((c) => isOwnComment(c) && typeof c.body === 'string' && c.body.includes(STATS_MARKER)) ?? null
+    if (comments.length < STATS_COMMENT_PAGE) break
+  }
+  if (found) {
+    if (found.body === body) return 'unchanged'
+    const res = await gh(`/repos/${item.repo}/issues/comments/${found.id}`, { method: 'PATCH', body: JSON.stringify({ body }) })
+    if (!res.ok) throw new Error(`GitHub returned ${res.status} updating the stats comment`)
+    return 'updated'
+  }
+  await postIssueComment(item, body)
+  return 'posted'
 }
 
 // ---- issue status sync (UI → GitHub) ----

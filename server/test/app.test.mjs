@@ -508,7 +508,8 @@ test('abandon closes the linked GitHub issue as not planned — and the DB write
     const patchCall = calls.find((c) => c.url.endsWith('/repos/acme/demo/issues/12'))
     assert.ok(patchCall, 'expected a PATCH to close the issue')
     assert.deepEqual(patchCall.body, { state: 'closed', state_reason: 'not_planned' })
-    const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-ABANDON-GH' ORDER BY id DESC LIMIT 1").get()
+    // HZ-921: the stats post that follows the close may log its own outcome.
+    const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-ABANDON-GH' AND text NOT LIKE 'could not post the effort & cost stats%' ORDER BY id DESC LIMIT 1").get()
     assert.match(event.text, /closed issue #12 on GitHub as not planned/)
   } finally {
     globalThis.fetch = realFetch
@@ -526,7 +527,7 @@ test('abandon still returns 200 {ok:true} when the GitHub close fails — best-e
     assert.equal(res.statusCode, 200)
     assert.deepEqual(res.json(), { ok: true })
     assert.ok(db.prepare("SELECT abandoned_at FROM work_item WHERE id = 'T-ABANDON-GH-FAIL'").get().abandoned_at)
-    const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-ABANDON-GH-FAIL' ORDER BY id DESC LIMIT 1").get()
+    const event = db.prepare("SELECT text FROM event WHERE item_id = 'T-ABANDON-GH-FAIL' AND text NOT LIKE 'could not post the effort & cost stats%' ORDER BY id DESC LIMIT 1").get()
     assert.match(event.text, /could not close issue #13/)
   } finally {
     globalThis.fetch = realFetch
