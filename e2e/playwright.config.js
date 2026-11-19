@@ -134,6 +134,9 @@ export default defineConfig({
         // Keeps the mock-agent pipeline (server/src/orchestrator.js) fast
         // enough to fit the whole suite in the runtime budget.
         MOCK_STEP_LATENCY_MS: '50',
+        // Live changes reach the page 100 ms after they happen, not the
+        // production 1 s batching window (server/src/app.js STREAM_BATCH_MS).
+        STREAM_BATCH_MS: '100',
         HORIZON_UI_URL: BASE_URL,
         // Force demo mode regardless of whatever the parent shell has set —
         // this suite must never reach real GitHub or a real farm daemon.
