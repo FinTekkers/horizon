@@ -5,12 +5,21 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 function run(vars, script) {
-  const env = { ...process.env, HORIZON_DB: join(mkdtempSync(join(tmpdir(), 'timer-env-')), 'h.db') }
+  const dir = mkdtempSync(join(tmpdir(), 'timer-env-'))
+  try {
+    return runIn(dir, vars, script)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+function runIn(dir, vars, script) {
+  const env = { ...process.env, HORIZON_DB: join(dir, 'h.db') }
   delete env.RUN_LOG_POLL_MS
   delete env.DEPLOY_TICK_MS
   delete env.FARM_HOME
