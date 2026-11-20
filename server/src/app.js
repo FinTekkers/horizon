@@ -108,6 +108,9 @@ import {
 } from './productivity.js'
 import { ITEM_STATS_RESPONSE_SCHEMA, itemStats } from './itemStats.js'
 import { queueItemStats } from './statsComment.js'
+// HZ-921: the stats post's Tracker port, handed in so statsComment.js stays
+// off the backend registry.
+const trackerOf = (item) => forItem(item).tracker
 import { statsVisible } from '../../domain/js/itemStats.js'
 import { RULE_MAX_CHARS, NEEDS_MAX_CHARS } from './ruleBlock.js'
 import {
@@ -2487,7 +2490,7 @@ export function buildApp({
     if (result.error === 'human_pin_required') return { ...result, status: 403 }
     // HZ-921: the closed item's Effort & cost stats comment. Not awaited and
     // never rejects, so it can't block or undo the close.
-    if (!result.error && closedTracker) queueItemStats(store.getItem(id), fastify.log)
+    if (!result.error && closedTracker) queueItemStats(store.getItem(id), trackerOf, fastify.log)
     // Approval notes are decisions — mirror them onto the issue thread.
     if (!result.error && notes && item?.repo && hasTrackerRef(item)) {
       forItem(item)
@@ -3283,7 +3286,7 @@ export function buildApp({
       }
       store.notifyChange()
       // HZ-921: the abandoned item's stats comment, as at the final gate.
-      queueItemStats(store.getItem(id), fastify.log)
+      queueItemStats(store.getItem(id), trackerOf, fastify.log)
     }
     return result
   }

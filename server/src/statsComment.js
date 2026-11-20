@@ -12,7 +12,6 @@
 
 import { db } from './db.js'
 import * as store from './store.js'
-import { forItem } from './backends/index.js'
 import { UI_URL } from './config.js'
 import { HORIZON_FOOTER, STATS_MARKER } from './trackerText.js'
 import { hasTrackerRef, trackerRefText } from './trackerRefs.js'
@@ -60,13 +59,15 @@ export function renderStatsComment(stats) {
 // Posts or updates `item`'s stats comment. Resolves the adapter's result
 // ('posted', 'updated', 'unchanged', or sl's 'kept'), 'skipped' for an item
 // with no tracker record or not yet closed or abandoned, or 'failed' after
-// logging it and adding an event. Never rejects.
-export async function postItemStats(item, log) {
+// logging it and adding an event. Never rejects. `trackerFor(item)` is the
+// item's Tracker port (backends/index.js forItem(item).tracker), passed in by
+// the caller so this module stays off the backend registry.
+export async function postItemStats(item, trackerFor, log) {
   try {
     if (!item?.repo || !hasTrackerRef(item) || !(isClosed(item) || isAbandoned(item))) return 'skipped'
     const stats = itemStats(item.id)
     if (!stats) return 'skipped'
-    const result = await forItem(item).tracker.upsertStatsComment(item, renderStatsComment(stats))
+    const result = await trackerFor(item).upsertStatsComment(item, renderStatsComment(stats))
     if (result === 'kept') log?.info?.(`${item.id}: stats comment exists; sl cannot edit it, so the first one stands`)
     return result
   } catch (err) {
@@ -89,8 +90,8 @@ export async function postItemStats(item, log) {
 // settleStatsPosts lets a test wait for them, so no stub answers after it ends.
 const inFlight = new Set()
 
-export function queueItemStats(item, log) {
-  const post = postItemStats(item, log).finally(() => inFlight.delete(post))
+export function queueItemStats(item, trackerFor, log) {
+  const post = postItemStats(item, trackerFor, log).finally(() => inFlight.delete(post))
   inFlight.add(post)
   return post
 }
@@ -108,8 +109,8 @@ const selectBackfillIds = db.prepare(`
 
 // The closed and abandoned items with a tracker record, optionally one item or
 // one project's; each gets postItemStats (or, with dryRun, its summary line and
-// no request). Resolves [{ id, result, line }].
-export async function backfillItemStats({ dryRun = false, itemId = null, projectId = null, log } = {}) {
+// no request). `trackerFor` as for postItemStats. Resolves [{ id, result, line }].
+export async function backfillItemStats({ dryRun = false, itemId = null, projectId = null, trackerFor, log } = {}) {
   const results = []
   for (const { id } of selectBackfillIds.all({ itemId, projectId })) {
     const item = store.getItem(id)
@@ -117,7 +118,7 @@ export async function backfillItemStats({ dryRun = false, itemId = null, project
     const stats = itemStats(id)
     if (!stats) continue
     const line = statsSummaryLine(stats)
-    results.push({ id, result: dryRun ? 'dry-run' : await postItemStats(item, log), line })
+    results.push({ id, result: dryRun ? 'dry-run' : await postItemStats(item, trackerFor, log), line })
   }
   return results
 }

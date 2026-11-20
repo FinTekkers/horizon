@@ -29,8 +29,10 @@ if (projectId != null && !Number.isInteger(projectId)) {
 }
 
 const { backfillItemStats } = await import('../src/statsComment.js')
+const { forItem } = await import('../src/backends/index.js')
+const trackerFor = (item) => forItem(item).tracker
 
 const log = { info: (msg) => console.error(msg), warn: (msg) => console.error(msg) }
-const results = await backfillItemStats({ dryRun, itemId, projectId, log })
+const results = await backfillItemStats({ dryRun, itemId, projectId, trackerFor, log })
 for (const row of results) console.log(JSON.stringify(row))
 process.exit(results.some((row) => row.result === 'failed') ? 1 : 0)

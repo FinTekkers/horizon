@@ -29,6 +29,8 @@ const auth = await import('../src/auth.js')
 const orchestrator = await import('../src/orchestrator.js')
 const { buildApp } = await import('../src/app.js')
 const { itemStats } = await import('../src/itemStats.js')
+const { forItem } = await import('../src/backends/index.js')
+const trackerFor = (item) => forItem(item).tracker
 const {
   STATS_MARKER,
   backfillItemStats,
@@ -172,14 +174,14 @@ test('a second close and the backfill update or skip the comment, and never add 
   await withGithub({}, async (gh) => {
     assert.equal((await approveFinal(id)).statusCode, 200)
     await settleStatsPosts()
-    assert.equal(await postItemStats(store.getItem(id)), 'unchanged') // close's post, again
-    const [backfilled] = (await backfillItemStats({ itemId: id })).map((row) => row.result)
+    assert.equal(await postItemStats(store.getItem(id), trackerFor), 'unchanged') // close's post, again
+    const [backfilled] = (await backfillItemStats({ itemId: id, trackerFor })).map((row) => row.result)
     assert.equal(backfilled, 'unchanged')
     // The data moves on (a late retry event): the next run edits the one comment.
     db.prepare(
       "INSERT INTO event (item_id, who, text, color, initials) VALUES (?, 'Horizon', 'transient failure (x): y — auto-retrying (1/2)', '#000', 'HZ')",
     ).run(id)
-    assert.equal((await backfillItemStats({ itemId: id }))[0].result, 'updated')
+    assert.equal((await backfillItemStats({ itemId: id, trackerFor }))[0].result, 'updated')
     assert.equal(gh.statsPosts().length, 1, 'one POST in all')
     assert.equal(gh.statsComments(issue).length, 1)
     assert.equal(partsOf(gh.statsComments(issue)[0].body)[1].clarification.auto_retries, 1)
@@ -192,7 +194,7 @@ test('a stats comment on the second page of a long issue is edited, not posted a
     for (let i = 0; i < 120; i++) gh.seed(issue, { body: `comment ${i}`, user: { login: 'someone', type: 'User' } })
     gh.seed(issue, { body: `old line\n\n${STATS_MARKER}\n\`\`\`json\n{}\n\`\`\`\n\n_posted by Horizon_`, user: { login: 'horizon-app', type: 'User' } })
     for (let i = 0; i < 5; i++) gh.seed(issue, { body: `later ${i}`, user: { login: 'someone', type: 'User' } })
-    assert.equal(await postItemStats(store.getItem(id)), 'updated')
+    assert.equal(await postItemStats(store.getItem(id), trackerFor), 'updated')
     assert.equal(gh.statsPosts().length, 0)
     assert.ok(gh.calls.some((c) => c.method === 'GET' && c.search.includes('page=2')), 'page 2 was read')
     assert.equal(gh.statsComments(issue).length, 1)
@@ -230,8 +232,8 @@ test('a GitHub 500 leaves the item closed, logs a red event, and posts nothing',
 test('the backfill makes no request for an open item', async () => {
   const { id } = seedItem('SC-6', { cursor: IMPLEMENT })
   await withGithub({}, async (gh) => {
-    assert.deepEqual(await backfillItemStats({ itemId: id }), [])
-    assert.equal(await postItemStats(store.getItem(id)), 'skipped')
+    assert.deepEqual(await backfillItemStats({ itemId: id, trackerFor }), [])
+    assert.equal(await postItemStats(store.getItem(id), trackerFor), 'skipped')
     assert.deepEqual(gh.calls, [])
   })
 })
