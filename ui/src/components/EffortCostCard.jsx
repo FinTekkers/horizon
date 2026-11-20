@@ -74,12 +74,13 @@ function WholeItem({ stats }) {
       <dl className="effort-card__list">
         {phases.map((p) => (
           <Row key={p.phase} label={p.phase}>
-            {formatCost(p.cost_usd)} · {formatTokens(p.tokens)}
+            {/* A phase with no run, or none recorded, says so once. */}
+            {p.cost_usd == null && p.tokens == null ? 'none recorded' : `${formatCost(p.cost_usd)} · ${formatTokens(p.tokens)}`}
           </Row>
         ))}
       </dl>
       <h4 className="effort-card__subhead">Time</h4>
-      <dl className="effort-card__list">
+      <dl className="effort-card__list effort-card__time">
         <Row label={stats.closed_at ? 'Elapsed, created to closed' : 'Elapsed so far'}>{formatDuration(time.elapsed_ms)}</Row>
         <Row label="Agents working">{formatDuration(time.agent_ms)}</Row>
         <Row label="Waiting on you">{formatDuration(time.waiting_ms)}</Row>

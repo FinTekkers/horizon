@@ -11,6 +11,8 @@
 // and e2e/fixtures/asks-screens-seed.js (HZ-730) the `asks-*` ones.
 // e2e/fixtures/design-screens-seed.js (HO-853) seeds the `design-gate*`
 // screens' items, which sit at a gate and go in before boot.
+// e2e/fixtures/effort-cost-seed.js (HZ-921) seeds the `effort-cost-*` screens'
+// items — paused or closed, so they go in before boot.
 //   node seed.mjs after <db> <server url> — also marks the queued-work run
 //     queued in the server's run-state cache, through the test hook, logged in
 //     with the SCREENSHOT_LOGIN_KEY the runner gives serve.sh.
@@ -21,6 +23,7 @@ import { seedAutopilotOffScreens } from '../fixtures/autopilot-off-screens-seed.
 import { seedJourneyScreensBeforeBoot, seedJourneyScreensAfterBoot, QUEUED_REASON } from '../fixtures/journey-screens-seed.js'
 import { seedAsksScreens } from '../fixtures/asks-screens-seed.js'
 import { seedDesignScreens } from '../fixtures/design-screens-seed.js'
+import { seedEffortCost } from '../fixtures/effort-cost-seed.js'
 
 const [phase, dbPath, serverUrl] = process.argv.slice(2)
 if (!['before', 'after'].includes(phase) || !dbPath) {
@@ -45,6 +48,7 @@ try {
     seedJourneyScreensBeforeBoot(db)
     seedAsksScreens(db)
     seedDesignScreens(db)
+    seedEffortCost(db)
   } else {
     seedAfterBoot(db)
     queuedRun = seedJourneyScreensAfterBoot(db)
