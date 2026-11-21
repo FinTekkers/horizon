@@ -4,7 +4,11 @@
 // embeds their exact source via Function.prototype.toString() so the code
 // under test is the code that actually runs in the browser — no drift.
 
-export const POLL_MS = 2000
+import { envMs } from '../../domain/js/envMs.js'
+
+// The page polls every 2 s in production and only faster with RUN_LOG_POLL_MS
+// in the env (the e2e server sets 200). clientScript() writes it into the page.
+export const POLL_MS = envMs(process.env.RUN_LOG_POLL_MS, 2000)
 export const LOG_KEEP_CHARS = 20_000
 export const TIMEOUT_MS = 3 * 60 * 1000
 // HZ-717: fixed text only — never the farm's own error, URL or host.

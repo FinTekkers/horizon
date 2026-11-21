@@ -31,6 +31,7 @@ from domain.py import run_plan, steps
 from farm import container_runner, db_changes, farmd, preflight, rehearsal, step_agent, task_job
 from farm.agent_runner import AgentError
 from farm.config import QUEUE_DIR
+from farm.tests.podman_env import RUNTIME_DIR as PODMAN_RUNTIME_DIR
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPLAY_DIR = TESTS_DIR / "fixtures" / "run_plans" / "replay"
@@ -42,6 +43,16 @@ PG_IMAGE = os.environ.get("HORIZON_TEST_PG_IMAGE", "docker.io/library/postgres:1
 REQUIRE_REAL = os.environ.get("FARM_REQUIRE_REAL_SANDBOX") == "1"
 SECRET = "hz839-planted-secret-7f3a"
 STDERR_MARK = "hz839-planted-stderr-c41d"
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _podman_runtime_dir():
+    """Real Podman here keeps its runtime dir out of the leak-guarded sandbox
+    (podman_env.py): every podman call in this module inherits it."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("XDG_RUNTIME_DIR", PODMAN_RUNTIME_DIR)
+        yield
+
 
 client = TestClient(farmd.app)
 

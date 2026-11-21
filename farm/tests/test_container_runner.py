@@ -28,6 +28,7 @@ import pytest
 from domain.py import reasons, run_plan
 from farm import container_runner, farmd, job_reports, task_job
 from farm.config import LOGS_DIR, QUEUE_DIR, STATE_DIR
+from farm.tests.podman_env import RUNTIME_DIR as _RUNTIME_DIR
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FAKE_PODMAN = str(Path(__file__).resolve().parent / "fake_podman")
@@ -711,19 +712,7 @@ def test_a_no_runner_block_sent_as_container_still_fails_closed_with_no_image(tm
 # ---- Real rootless Podman: the confinement itself ----
 
 
-# Rootless Podman keeps its runtime dir in XDG_RUNTIME_DIR, else under
-# $TMPDIR — which here is the suite's leak-guarded sandbox, so its
-# podman-run-<uid> and containers-user-<uid> would be left there (HZ-238).
-# A host with no login session (no /run/user/<uid>) gets the dir Podman uses
-# outside the suite: podman-run-<uid> in the real temp dir, the sandbox's parent.
-_SANDBOX = tempfile.gettempdir()
-_HOST_TMP = os.path.dirname(_SANDBOX) if os.path.basename(_SANDBOX).startswith("horizon-run-") else _SANDBOX
-_RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR") or (
-    f"/run/user/{os.getuid()}"
-    if os.path.isdir(f"/run/user/{os.getuid()}")
-    else os.path.join(_HOST_TMP, f"podman-run-{os.getuid()}")
-)
-os.makedirs(_RUNTIME_DIR, mode=0o700, exist_ok=True)
+# Podman's runtime dir stays out of the leak-guarded sandbox (podman_env.py).
 _REAL_ENV = {**os.environ, **({"XDG_RUNTIME_DIR": _RUNTIME_DIR} if _RUNTIME_DIR else {})}
 
 

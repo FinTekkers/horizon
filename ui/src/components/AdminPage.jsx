@@ -18,10 +18,12 @@ import { NewProjectSection } from './admin/ProjectsSection'
 import TenantChecksSection from './admin/TenantChecksSection'
 import { VerifyReportSection } from './admin/VerifyReportSection'
 import { useRepoWebhooks } from './admin/useRepoWebhooks'
+import { envMs } from '../../../domain/js/envMs.js'
 
 // HZ-764: how long bare /admin waits for its three reads before it opens on
-// the first project anyway. A read still out (or failed) adds no row.
-export const LANDING_WAIT_MS = 3000
+// the first project anyway. A read still out (or failed) adds no row. HZ-925:
+// 3 s unless the build sets VITE_ADMIN_LANDING_WAIT_MS (the e2e build does).
+export const LANDING_WAIT_MS = envMs(import.meta.env.VITE_ADMIN_LANDING_WAIT_MS, 3000)
 
 // HZ-564: Admin is one page at a time, picked from the grouped list on the
 // left. App owns the route (parsePath reads `/admin/...`); this shell only

@@ -28,6 +28,7 @@ import pytest
 
 from domain.py import run_plan
 from farm import command_checks, container_runner, egress_proxy, farmd, rehearsal, rehearsal_proxy, task_job
+from farm.tests.podman_env import RUNTIME_DIR as PODMAN_RUNTIME_DIR
 
 FAKE_IMAGE = "localhost/horizon-rehearsal:fake"
 HOST = "api.example.com"
@@ -38,6 +39,15 @@ BODY = "BODY-MARK-840"
 REAL_PODMAN = shutil.which("podman")
 REAL_IMAGE = os.environ.get("HORIZON_TEST_PODMAN_IMAGE", "docker.io/library/python:3.12-slim")
 REQUIRE_REAL = os.environ.get("FARM_REQUIRE_REAL_SANDBOX") == "1"
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _podman_runtime_dir():
+    """Real Podman here keeps its runtime dir out of the leak-guarded sandbox
+    (podman_env.py): every podman call in this module inherits it."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("XDG_RUNTIME_DIR", PODMAN_RUNTIME_DIR)
+        yield
 
 
 # ---- helpers (copied from test_rehearsal.py) ----
