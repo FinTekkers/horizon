@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="2" failures="2" errors="0" time="0.015774591">
+    <testsuite name="ledger.test.js" timestamp="2026-11-21T21:23:16.456Z" hostname="host" tests="2" failures="2" errors="0" skipped="0" time="0.015774591">
+        <testcase classname="ledger.test.js" name="posts the balance once" time="0.012953218">
+            <failure message="expected { balance: 1717 } to deeply equal { balance: 4242 }" type="AssertionError">
+AssertionError: expected { balance: 1717 } to deeply equal { balance: 4242 }
+
+- Expected
++ Received
+
+  {
+-   &quot;balance&quot;: 4242,
++   &quot;balance&quot;: 1717,
+  }
+
+ ❯ ledger.test.js:3:29
+            </failure>
+        </testcase>
+        <testcase classname="ledger.test.js" name="counts the rows" time="0.001605374">
+            <failure message="expected 1717 to be 4242 // Object.is equality" type="AssertionError">
+AssertionError: expected 1717 to be 4242 // Object.is equality
+
+- Expected
++ Received
+
+- 4242
++ 1717
+
+ ❯ ledger.test.js:6:16
+            </failure>
+        </testcase>
+    </testsuite>
+</testsuites>

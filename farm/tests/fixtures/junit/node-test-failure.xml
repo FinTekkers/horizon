@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="" file="/srv/repo/server/test/ledger.test.mjs" tests="1">
+    <testcase name="posts the balance once" file="/srv/repo/server/test/ledger.test.mjs" time="0.007198"><failure message="Expected values to be strictly equal:&#10;&#10;1717 !== 4242&#10;&#10;Expected: 4242&#10;Received: 1717">AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+1717 !== 4242
+
+    at TestContext.&lt;anonymous&gt; (file:///srv/repo/server/test/ledger.test.mjs:4:10)
+    at Test.runInAsyncScope (node:async_hooks:214:14)
+    at Test.run (node:internal/test_runner/test:1047:25)
+    at Test.start (node:internal/test_runner/test:944:17)
+    at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)</failure></testcase>
+  </testsuite>
+</testsuites>

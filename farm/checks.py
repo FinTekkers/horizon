@@ -657,9 +657,9 @@ FLAKE_TEST_MAX_CHARS = 300
 FLAKE_COMMAND_MAX_CHARS = 500
 FLAKES_MAX = 20
 TEST_NAME_MAX_CHARS = 500
-# HZ-605: a failing test's stored first failure-message line. The server cuts
-# it again to the same length (FAILURE_MESSAGE_MAX in
-# server/src/testResults.js) — change the two together.
+# HZ-605/HZ-950: a failing test's stored failure reason (_failure_message()),
+# redacted then cut. The server redacts and cuts it again to the same length
+# (FAILURE_MESSAGE_MAX in server/src/testResults.js) — change the two together.
 FAILURE_MESSAGE_MAX_CHARS = 300
 # HZ-605: the failing-tests list a failed check's message and tail start with.
 # At most ~1,650 chars, so the headline, the list and the DIGEST_MAX_CHARS
@@ -786,20 +786,76 @@ def _failure_kind(case: ET.Element) -> str | None:
     return FAILURE_UNKNOWN
 
 
+# HZ-950: the lines _failure_message() keeps. The reason line: an assertion,
+# an `…Error:` line, or a pytest `assert`. The value lines are labelled,
+# capitalised, at the start of a line — Playwright's and our node reporter's
+# `Expected: 4242`, or a vitest/jest diff header (`- Expected`, optionally
+# with a count) whose value is the first later `- `/`+ ` line. Node's own
+# `Expected values to be strictly equal:` heading has no value after its
+# colon, so it is never the Expected line.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_REASON_LINE = re.compile(r"^\w*Error\b.*:|^(?:E\s+)?assert\b")
+_EXPECTED_LABEL = re.compile(r"^(?:-\s*)?Expected\b")
+_RECEIVED_LABEL = re.compile(r"^(?:\+\s*)?Received\b")
+_DIFF_HEADER = re.compile(r"^([-+])\s*(?:Expected|Received)(?:\s+[-+]\s*\d+)?$")
+REASON_JOINER = " · "
+
+
+def _value_line(lines: list[str], start: int, sign: str) -> str | None:
+    """The first line after lines[start] (a bare diff header) that is a
+    `sign`-marked diff line, or None."""
+    return next(
+        (line for line in lines[start + 1 :] if line.startswith(sign + " ") and not _DIFF_HEADER.match(line)),
+        None,
+    )
+
+
+def _labelled_line(lines: list[str], label: re.Pattern, skip: int) -> str | None:
+    """The first line other than lines[skip] that names its value under
+    `label`: `Expected: 4242`, or a diff header's value line."""
+    for index, line in enumerate(lines):
+        if index == skip or not label.match(line):
+            continue
+        header = _DIFF_HEADER.match(line)
+        if header:
+            value = _value_line(lines, index, header.group(1))
+            if value:
+                return value
+        elif not line.endswith(":"):
+            return line
+    return None
+
+
 def _failure_message(case: ET.Element) -> str | None:
-    """HZ-605: the first non-empty line of a failing <testcase>'s
-    <failure>/<error> `message`, else of its text (some runners write no
-    message attribute). None when it did not fail or says nothing. Raw:
-    _test_rows() redacts it, then cuts it to FAILURE_MESSAGE_MAX_CHARS — in
-    that order, so a cut never splits a secret out of redact()'s reach."""
+    """HZ-605/HZ-950: why a failing <testcase> failed, as one line — its
+    reason line, then its Expected and Received lines, joined by ` · `. Read
+    from the <failure>/<error> `message`, then its text (Playwright puts the
+    values in the text, some runners write no message attribute). The reason
+    line is the first assertion or error line, else the first non-empty line.
+    None when it did not fail or says nothing. Raw: _test_rows() redacts it,
+    then cuts it to FAILURE_MESSAGE_MAX_CHARS — in that order, so a cut never
+    splits a secret out of redact()'s reach."""
     failure = next((child for child in case if child.tag in ("failure", "error")), None)
     if failure is None:
         return None
-    for source in (failure.get("message"), (failure.text or "")[:FAILURE_TEXT_MAX_CHARS]):
-        line = next((line.strip() for line in (source or "").splitlines() if line.strip()), None)
-        if line:
-            return line[:FAILURE_TEXT_MAX_CHARS]
-    return None
+    lines = [
+        stripped
+        for source in (failure.get("message"), (failure.text or "")[:FAILURE_TEXT_MAX_CHARS])
+        for line in _ANSI.sub("", source or "").splitlines()
+        if (stripped := line.strip())
+    ]
+    if not lines:
+        return None
+    reason_index = next(
+        (i for i, line in enumerate(lines) if _REASON_LINE.search(line) or _ASSERTION_PATTERNS.search(line)), 0
+    )
+    reason = lines[reason_index]
+    kept = [reason]
+    for label in (_EXPECTED_LABEL, _RECEIVED_LABEL):
+        line = _labelled_line(lines, label, reason_index)
+        if line and line not in reason:
+            kept.append(line)
+    return REASON_JOINER.join(kept)[:FAILURE_TEXT_MAX_CHARS]
 
 
 def failing_tests_block(rows: list[dict], *, secrets) -> str:
