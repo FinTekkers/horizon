@@ -23,7 +23,8 @@ const store = await import('../src/store.js')
 const orchestrator = await import('../src/orchestrator.js')
 const testResults = await import('../src/testResults.js')
 const checkFlakes = await import('../src/checkFlakes.js')
-const { summarizeTestHistory } = await import('../src/testHistorySummary.js')
+const { RESULT_ROWS_SQL, UNLABELLED_RESULT_ROWS_SQL, summarizeTestHistory } = await import('../src/testHistorySummary.js')
+const { default: Database } = await import('better-sqlite3')
 const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const { loginFixtureUser } = await import('./helpers/session.mjs')
 
@@ -297,6 +298,64 @@ test('summarizeTestHistory counts only postmerge failures as main_failures, and 
     assert.deepEqual(summarizeTestHistory('acme/x', rows(source), flakes).tests, [{ ...hz327, passes: 1, main_failures: 0 }], source)
   }
   assert.deepEqual(summarizeTestHistory('acme/x', rows('postmerge'), flakes).tests, [{ ...hz327, passes: 1, main_failures: 1 }])
+})
+
+// ---- HZ-946: report coverage per command ----
+
+test("GET /api/admin/test-history gives each command its runs and no-report runs; an older NULL row is not one, and tests are unchanged", async () => {
+  item('TR-946', 'acme/coverage')
+  const base = Date.now() - 3 * DAY
+  const lint = (status, extra = {}) =>
+    row('sh -c npm run lint', status, { file: null, command: 'sh -c npm run lint', no_report: true, ...extra })
+  await record('TR-946', [run('cr-cov-1', [lint('pass'), row('adds', 'pass')], '1'.padStart(40, 'c'))], { now: base })
+  await record('TR-946', [run('cr-cov-2', [lint('fail'), row('adds', 'pass')], '2'.padStart(40, 'c'))], { now: base + DAY })
+  // An older farm's row (no key), and a value that is not exactly true.
+  await record('TR-946', [run('cr-cov-3', [lint('pass', { no_report: undefined })], '3'.padStart(40, 'c'))], { now: base + 2 * DAY })
+  await record('TR-946', [run('cr-cov-4', [lint('pass', { no_report: 1 })], '4'.padStart(40, 'c'))], { now: base + 2 * DAY })
+
+  const stored = db.prepare("SELECT check_run, test, no_report FROM test_result WHERE repo = 'acme/coverage' ORDER BY id").all()
+  assert.deepEqual(
+    stored.map((r) => [r.check_run, r.test, r.no_report]),
+    [
+      ['cr-cov-1', 'sh -c npm run lint', 1],
+      ['cr-cov-1', 'adds', null],
+      ['cr-cov-2', 'sh -c npm run lint', 1],
+      ['cr-cov-2', 'adds', null],
+      ['cr-cov-3', 'sh -c npm run lint', null],
+      ['cr-cov-4', 'sh -c npm run lint', null],
+    ],
+  )
+
+  const res = await app.inject({ method: 'GET', url: '/api/admin/test-history?repo=acme/coverage', headers: { cookie } })
+
+  assert.equal(res.statusCode, 200, res.body)
+  const body = res.json()
+  assert.deepEqual(body.commands, [
+    { command: 'sh -c npm run lint', runs: 4, no_report_runs: 2, last_seen: new Date(base + 2 * DAY).toISOString() },
+    { command: 'sh -c npm test', runs: 2, no_report_runs: 0, last_seen: new Date(base + DAY).toISOString() },
+  ])
+  // tests is what it was before HZ-946: the same summary of the same rows.
+  const before = summarizeTestHistory('acme/coverage', db.prepare(RESULT_ROWS_SQL).all('acme/coverage'), []).tests
+  assert.deepEqual(body.tests, before)
+  assert.ok(body.tests.every((t) => !('no_report' in t) && !('command' in t)))
+})
+
+test('an unknown repo has no commands, and the export’s unlabelled query still runs on a DB with no no_report column', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/admin/test-history?repo=acme/none', headers: { cookie } })
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(res.json(), { repo: 'acme/none', tests: [], commands: [] })
+
+  const old = new Database(':memory:')
+  try {
+    old.exec(`CREATE TABLE test_result (repo TEXT, command TEXT, suite TEXT, file TEXT, test TEXT, status TEXT,
+                                        duration_ms INTEGER, created_at_ms INTEGER, source TEXT)`)
+    old.prepare('INSERT INTO test_result VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run('acme/old', 'npm test', null, 'a.test.mjs', 't', 'pass', 3, 1, 'implement')
+    const history = summarizeTestHistory('acme/old', old.prepare(UNLABELLED_RESULT_ROWS_SQL).all('acme/old'), [])
+    assert.equal(history.tests.length, 1)
+    assert.deepEqual(history.commands, [])
+  } finally {
+    old.close()
+  }
 })
 
 test('GET /api/admin/test-history needs a repo', async () => {

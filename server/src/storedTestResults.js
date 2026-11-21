@@ -8,6 +8,7 @@
 import { db } from './db.js'
 import { BOOTED_AT } from './store.js'
 import { msOf } from './sqlTime.js'
+import { commandOutcomes, latestImplementRun, latestImplementRunId } from './checkLine.js'
 import { IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
 export const STORED_RESULTS_INPUT_LABEL = 'Stored test results (step record)'
@@ -19,10 +20,6 @@ export const STORED_RESULTS_MAX_CHARS = 12000
 export const STORED_RESULTS_WAIT_MS = Number(process.env.STORED_RESULTS_WAIT_MS ?? 15000)
 const STORED_RESULTS_POLL_MS = 200
 
-const latestImplementRun = db.prepare(
-  `SELECT id, started_at, ended_at, test_runs_expected AS expected FROM step_run
-    WHERE item_id = ? AND step_index = ? AND substep_id IS NULL AND status = 'done' ORDER BY id DESC LIMIT 1`,
-)
 const selectRows = db.prepare(
   `SELECT id, check_run, commit_sha, run_label, command, attempt, exit_code, suite, file, test, status FROM test_result
     WHERE item_id = ? AND run_id = ? AND source = 'implement' ORDER BY id`,
@@ -39,9 +36,8 @@ const pushedShaDuring = db.prepare(
   `SELECT sha FROM check_pass WHERE item_id = ? AND source = 'implement' AND recorded_at >= ? ORDER BY id DESC LIMIT 1`,
 )
 
-export function latestImplementRunId(itemId) {
-  return latestImplementRun.get(itemId, IMPLEMENT_STEP_INDEX)?.id ?? null
-}
+// HZ-946: moved to checkLine.js, which the item page's check line shares.
+export { latestImplementRunId }
 
 export function storedResultsFor(itemId, runId) {
   const out = { main: [], branch: [] }
@@ -56,21 +52,7 @@ export function storedResultsFor(itemId, runId) {
 // final round, the one the pushed commit was checked with; earlier rounds are
 // history, never a current failure. Rows are only read and filtered here.
 
-// command -> { exit, failed } for one check run. Each command's last attempt
-// decides: it failed on a fail row or an exit that is not 0 or was not
-// recorded — latestBranchRunFailed's rule (store.js).
-function commandOutcomes(rows) {
-  const last = new Map()
-  for (const r of rows) {
-    const seen = last.get(r.command)
-    if (!seen || r.attempt > seen.attempt) last.set(r.command, { attempt: r.attempt, exit: r.exit_code, failed: false })
-  }
-  for (const r of rows) {
-    const o = last.get(r.command)
-    if (r.attempt === o.attempt && (r.status === 'fail' || r.exit_code == null || r.exit_code !== 0)) o.failed = true
-  }
-  return last
-}
+// HZ-946: commandOutcomes (checkLine.js) is each command's pass or fail.
 
 // Earlier check runs of the run, oldest first: one entry per failed command,
 // or one per run that passed. `final` is the final round's outcomes, keyed
@@ -189,7 +171,7 @@ export function finalRoundText(round, runId) {
 // Never throws: a lookup error is "nothing to wait for".
 export function storedResultsPending(itemId, nowMs = Date.now()) {
   try {
-    const run = latestImplementRun.get(itemId, IMPLEMENT_STEP_INDEX)
+    const run = latestImplementRun(itemId)
     if (!run || STORED_RESULTS_WAIT_MS <= 0 || hasRows.get(itemId, run.id)) return null
     const endedMs = Date.parse(`${run.ended_at ?? ''}Z`.replace(' ', 'T'))
     if (!(nowMs - endedMs < STORED_RESULTS_WAIT_MS)) return null

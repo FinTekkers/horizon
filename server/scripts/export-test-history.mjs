@@ -24,6 +24,9 @@ export function exportTestHistory({ dbPath, repo }) {
     const labelled = db.prepare('PRAGMA table_info(test_result)').all().some((column) => column.name === 'run_label')
     const resultRows = db.prepare(labelled ? RESULT_ROWS_SQL : UNLABELLED_RESULT_ROWS_SQL).iterate(repo)
     const history = summarizeTestHistory(repo, resultRows, db.prepare(FLAKE_ROWS_SQL).all(repo))
+    // HZ-946: per-command coverage is the endpoint's; a command line never
+    // reaches this file.
+    delete history.commands
     history.tests.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
     return history
   } finally {

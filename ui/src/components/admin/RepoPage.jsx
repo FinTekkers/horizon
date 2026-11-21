@@ -2,12 +2,14 @@ import { repoHasDeployTarget, webhookNeedsFix } from '../../domain/webhookImpact
 import { adminPath } from './adminRoutes'
 import { FixWebhookForm, RepoRow, WebhookImpact } from './ProjectsSection'
 import { RepoChecks, RepoMarks } from './RepoSettings'
+import { ReportCoverage } from './ReportCoverage'
 
 // HZ-764: one repository's page, at /admin/projects/<id>/repos/<owner>/<name>.
 // Its settings are the controls the old project list showed under each repo,
 // unchanged: check commands and the test login (RepoChecks), No checks / No
 // deploy, a link to its deploy target, and Disconnect. Fix webhook and what a
-// broken hook breaks show only while the hook needs fixing.
+// broken hook breaks show only while the hook needs fixing. HZ-946: then the
+// repo's test report coverage per command (the owner's only).
 export function RepoPage({ project, repo, syncRepos, webhook, webhooksError, deployTargets, onRefreshWebhooks, onNavigate }) {
   const repoConn = project.repos.find((r) => r.repo.toLowerCase() === repo.toLowerCase())
   const backToRepos = () => onNavigate?.(adminPath({ section: 'projects', project: project.id }))
@@ -52,6 +54,7 @@ export function RepoPage({ project, repo, syncRepos, webhook, webhooksError, dep
         </div>
       )}
       <RepoChecks projectId={project.id} repoConn={repoConn} />
+      <ReportCoverage repo={repoConn.repo} />
     </div>
   )
 }

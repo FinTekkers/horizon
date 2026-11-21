@@ -66,6 +66,7 @@ import ScreenshotPanel from './ScreenshotPanel'
 import StepActionMenu from './StepActionMenu'
 import AcceptWithExceptionsButton, { ExceptionsList } from './AcceptWithExceptions'
 import EffortCostCard from './EffortCostCard'
+import CheckLine from './CheckLine'
 import { statsVisible } from '../../../domain/js/itemStats.js'
 import { BackIcon, LinkIcon, PrIcon, CircleXIcon, CircleAlertIcon, PlanIcon } from './icons'
 
@@ -718,6 +719,8 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
               {output.verdictSummary}
             </div>
           )}
+          {/* HZ-946: each check command's pass or fail, and "no per-test results". */}
+          {index === IMPLEMENT_STEP_INDEX && output?.checks?.length > 0 && <CheckLine checks={output.checks} />}
           {humanOnly && (
             <div className="step-card__human-only">
               <div style={{ color: 'var(--warning-ink)', fontWeight: 600 }}>Always a human · even on Autopilot</div>
