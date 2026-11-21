@@ -171,6 +171,7 @@ def _next_unavailable_candidate(
     tried: frozenset,
     disallowed_tools: str | None = None,
     add_dirs: list[str] | None = None,
+    plugin_dirs: list[str] | None = None,
 ) -> tuple[str, str] | None:
     """The next (provider, model) to try after a model-unavailable refusal,
     or None when every candidate is tried. Same-provider selectable models
@@ -187,6 +188,8 @@ def _next_unavailable_candidate(
         if disallowed_tools and not getattr(module, "ENFORCES_DENY_RULES", False):
             continue
         if add_dirs and not getattr(module, "READS_ADD_DIRS", False):
+            continue
+        if plugin_dirs and not getattr(module, "READS_PLUGIN_DIRS", False):
             continue
         entry = catalogue[provider_name]
         for model_entry in entry.get("models", ()):  # type: ignore[attr-defined]
@@ -285,6 +288,7 @@ def run_agent(
     disallowed_tools: str | None = None,
     overlay: dict | None = None,
     add_dirs: list[str] | None = None,
+    plugin_dirs: list[str] | None = None,
     _tried_unavailable: frozenset | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>, "provider": <name>,
@@ -337,12 +341,20 @@ def run_agent(
     provider declaring READS_ADD_DIRS (Claude) can be handed them, so any
     other provider is refused before it is called rather than run without
     the files. They reach the provider only when set.
+
+    plugin_dirs (HZ-930) are local Claude Code plugin folders loaded for this
+    one call (the pinned Modern Web Guidance skills on a marked repo's Eng
+    implement run). Only a provider declaring READS_PLUGIN_DIRS (Claude) can
+    load them, so any other provider is refused rather than run without the
+    skills. They reach the provider only when set.
     """
     name, provider_module = _selected_provider(provider, provider_locked=provider_locked)
     if disallowed_tools and not getattr(provider_module, "ENFORCES_DENY_RULES", False):
         raise AgentError(f"provider '{name}' cannot enforce deny rules (disallowed_tools) — refusing this call")
     if add_dirs and not getattr(provider_module, "READS_ADD_DIRS", False):
         raise AgentError(f"provider '{name}' cannot read add_dirs (evidence files) — refusing this call")
+    if plugin_dirs and not getattr(provider_module, "READS_PLUGIN_DIRS", False):
+        raise AgentError(f"provider '{name}' cannot load plugins (web guidance) — refusing this call")
     model = _model_for(name, agent, step, persona, model_choice, overlay)
     provider_module.assert_subscription_auth()
     if session_id and not provider_module.SUPPORTS_RESUME:
@@ -367,6 +379,7 @@ def run_agent(
             retry_fresh=retry_fresh,
             **({"disallowed_tools": disallowed_tools} if disallowed_tools else {}),
             **({"add_dirs": add_dirs} if add_dirs else {}),
+            **({"plugin_dirs": plugin_dirs} if plugin_dirs else {}),
         )
     except AgentModelUnavailableError as exc:
         # The model, not the step, differs between boxes: retry the same
@@ -379,7 +392,7 @@ def run_agent(
         exc.model = model
         _meter_call(name, model, None)
         tried = frozenset({(name, model)}) | (_tried_unavailable or frozenset())
-        nxt = _next_unavailable_candidate(name, model, provider_locked, tried, disallowed_tools, add_dirs)
+        nxt = _next_unavailable_candidate(name, model, provider_locked, tried, disallowed_tools, add_dirs, plugin_dirs)
         if nxt is None:
             raise
         next_provider, next_model = nxt
@@ -402,6 +415,7 @@ def run_agent(
             disallowed_tools=disallowed_tools,
             overlay=overlay,
             add_dirs=add_dirs,
+            plugin_dirs=plugin_dirs,
             _tried_unavailable=tried,
         )
     except AgentExhaustedError as exc:

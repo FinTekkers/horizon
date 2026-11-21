@@ -755,7 +755,8 @@ export async function saveRepoChecks(projectId, repo, checks, targeted) {
   return data
 }
 
-// HZ-304: a repo's 'no checks' / 'no deploy' marks ({noChecks?, noDeploy?}).
+// HZ-304: a repo's 'no checks' / 'no deploy' marks ({noChecks?, noDeploy?}),
+// HZ-930: and its 'web guidance' mark ({webGuidance?}).
 // Same PIN handling as saveRepoChecks.
 export async function saveRepoMarks(projectId, repo, marks) {
   const res = await pinSend(`/projects/${encodeURIComponent(projectId)}/repos/marks`, 'PUT', { repo, ...marks })

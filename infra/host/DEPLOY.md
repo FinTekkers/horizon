@@ -1404,6 +1404,78 @@ is refused. `venvDir` is relative to the task dir when one is set.
 - **Roll back** by clearing Task dir on the target: Task jobs go back to
   `repoDir`.
 
+## Modern Web Guidance skills (HZ-930)
+
+A repo marked **Web guidance** (Admin → the repo's marks, or
+`"webGuidance": { "repos": [...] }` in its project's `steps.json`) runs its
+Eng implement step with Google's
+[Modern Web Guidance](https://developer.chrome.com/docs/modern-web-guidance/get-started)
+plugin loaded through `claude --plugin-dir`. No other step and no unmarked
+repo sees it. The farm loads it from one fixed, pinned folder and never
+fetches it during a run:
+
+```
+/usr/local/share/horizon/plugins/modern-web-guidance/
+  1.0.1/      the unpacked npm package of that version
+  current ->  1.0.1
+```
+
+The path is fixed in `farm/config.py` (`WEB_GUIDANCE_DIR`), not read from
+`FARM_HOME`, so a tenant run user resolves the same folder farmd does.
+
+**Install once (pin a version).** Use the npm tarball. It holds the
+`.claude-plugin/plugin.json` manifest, the skill and its offline CLI
+(`skills/modern-web-guidance/modern-web.mjs`). The GitHub tag holds no CLI.
+Upstream's `npx modern-web-guidance@latest install` is an interactive wizard
+that writes into an agent's own user config, so don't use it here.
+
+```bash
+V=1.0.1
+D=/usr/local/share/horizon/plugins/modern-web-guidance
+sudo install -d -m 0755 "$D/$V"
+cd "$(mktemp -d)" && npm pack "modern-web-guidance@$V"
+sudo tar -xzf "modern-web-guidance-$V.tgz" -C "$D/$V" --strip-components=1 --no-same-owner
+sudo chmod -R a+rX "$D/$V"
+sudo ln -sfn "$V" "$D/current"
+```
+
+- **Root-owned and world-readable.** The farm user and every tenant run user
+  (`hz-tenants`) must read it, and no agent may write to it. A marked run
+  that can't read the folder fails with `web guidance: the pinned Modern Web
+  Guidance plugin at … cannot be loaded`.
+- **Skills only.** v1.0.0 and v1.0.1 ship no `hooks/`, no `.mcp.json` and no
+  hooks or MCP servers in `plugin.json`. The farm refuses a folder that has
+  any of them (`… not skills only — refusing to load it`), so check a new
+  version before you point `current` at it.
+- **Never enable it globally.** Do not run `/plugin marketplace add` or
+  `/plugin install` (or `claude plugin install`) for this plugin as the farm
+  user. That turns it on at user scope for every run, marked or not.
+- **No fetch during a run.** The skill's own text tells the agent to run
+  `npx -y modern-web-guidance@latest`. A marked run denies `npx`, `pnpx`,
+  `npm exec` and `npm install` of `modern-web-guidance`. Its role note points
+  the agent at `node <current>/skills/modern-web-guidance/modern-web.mjs`
+  instead. That CLI needs Node 22 or later, which this host already has.
+
+**Verify.**
+
+```bash
+D=/usr/local/share/horizon/plugins/modern-web-guidance
+ls "$D/current/.claude-plugin/plugin.json"
+ls -d "$D/current/hooks" "$D/current/.mcp.json" 2>/dev/null   # expect no output
+node "$D/current/skills/modern-web-guidance/modern-web.mjs" search "light dismiss dialog" | head -3
+```
+
+**Upgrade.** Install the new version next to the old one (the block above
+with the new `V`), check it with **Verify**, then repoint `current`. The next
+marked implement run picks it up. Runs already started keep the folder they
+loaded.
+
+**Roll back** by repointing `current` at the previous folder
+(`sudo ln -sfn 1.0.0 "$D/current"`). To stop loading the skills for a repo,
+clear its **Web guidance** mark in Admin, or remove it from `steps.json`. If
+the folder is missing, every marked implement run fails before it touches the
+branch, and unmarked repos are unaffected.
+
 ## Every metric line has a proof (HZ-770)
 
 No host setup. A Run plan's `proof` map may now mark a line `manual` (an

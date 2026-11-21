@@ -1147,6 +1147,12 @@ if (!projectRepoColumns.has('no_checks')) {
 if (!projectRepoColumns.has('no_deploy')) {
   db.exec('ALTER TABLE project_repo ADD COLUMN no_deploy INTEGER NOT NULL DEFAULT 0 CHECK (no_deploy IN (0, 1))')
 }
+// HZ-930: web guidance is the owner's per-repo opt-in to Google's Modern Web
+// Guidance skills on Eng implement runs. Default off; setRepoMarks is its only
+// writer, like the marks above.
+if (!projectRepoColumns.has('web_guidance')) {
+  db.exec('ALTER TABLE project_repo ADD COLUMN web_guidance INTEGER NOT NULL DEFAULT 0 CHECK (web_guidance IN (0, 1))')
+}
 if (!projectRepoColumns.has('enforced_since')) {
   db.transaction(() => {
     db.exec('ALTER TABLE project_repo ADD COLUMN enforced_since TEXT')
