@@ -136,11 +136,11 @@ export function returnTarget(item) {
 // ---- rounds ----
 
 const selectRounds = db.prepare(
-  'SELECT round, kind, run_id, brief, what_changed, override_reason, created_by, created_at FROM substep_round WHERE item_id = ? AND substep_id = ? ORDER BY round',
+  'SELECT round, kind, run_id, brief, what_changed, override_reason, design_tool, design_system, fallback_from, created_by, created_at FROM substep_round WHERE item_id = ? AND substep_id = ? ORDER BY round',
 )
 const selectMaxRound = db.prepare('SELECT COALESCE(MAX(round), 0) AS n FROM substep_round WHERE item_id = ? AND substep_id = ?')
 const insertRound = db.prepare(
-  'INSERT INTO substep_round (item_id, substep_id, round, kind, run_id, brief, what_changed, override_reason, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  'INSERT INTO substep_round (item_id, substep_id, round, kind, run_id, brief, what_changed, override_reason, design_tool, design_system, fallback_from, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
 )
 
 // The number the sub-step's next round gets.
@@ -149,7 +149,13 @@ export function nextRound(itemId, substepId) {
 }
 
 // One round, numbered after the last, in one transaction. Returns its number.
-export function recordRound(itemId, substepId, { kind, runId = null, brief, whatChanged = null, overrideReason = null, who = 'Horizon' }) {
+// HZ-938: designTool, designSystem and fallbackFrom say which tool drew a run
+// round (orchestrator.js designProvenance checks them first).
+export function recordRound(
+  itemId,
+  substepId,
+  { kind, runId = null, brief, whatChanged = null, overrideReason = null, designTool = null, designSystem = null, fallbackFrom = null, who = 'Horizon' },
+) {
   if (!ROUND_KINDS.includes(kind)) throw new Error(`substep_round: unknown kind ${kind}`)
   return db.transaction(() => {
     const round = nextRound(itemId, substepId)
@@ -162,6 +168,9 @@ export function recordRound(itemId, substepId, { kind, runId = null, brief, what
       String(brief ?? '').slice(0, BRIEF_MAX_CHARS) || NOT_STATED,
       whatChanged == null ? null : String(whatChanged),
       overrideReason == null ? null : String(overrideReason),
+      designTool,
+      designSystem,
+      fallbackFrom,
       String(who ?? 'Horizon'),
     )
     return round
@@ -179,6 +188,9 @@ export function listRounds(itemId, substepId) {
     brief: row.brief,
     whatChanged: row.what_changed ?? null,
     overrideReason: row.override_reason ?? null,
+    designTool: row.design_tool ?? null,
+    designSystem: row.design_system ?? null,
+    fallbackFrom: row.fallback_from ?? null,
     runId: row.run_id ?? null,
     createdBy: row.created_by,
     createdAt: isoUtc(row.created_at),

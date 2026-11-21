@@ -305,17 +305,9 @@ def test_a_tenant_project_never_reaches_studio(monkeypatch, agent):
     assert studio.calls == [] and agent[1] == []
 
 
-# ---- no design tool on the box: a skipped round, never a pause ----
-
-
-def test_with_no_design_tool_the_round_answers_the_no_tool_line_and_runs_no_agent(monkeypatch, agent):
-    replies, seen = agent
-    monkeypatch.setattr(design_canvas, "tool_available", lambda: False)
-    monkeypatch.setattr(design_canvas, "run_studio", lambda *a, **k: pytest.fail("Studio must not be called"))
-    out = step_agent._execute_design(_task())
-    first = out["artifacts"]["artifact_md"].split("\n", 1)[0]
-    assert first.startswith(design_canvas.NO_TOOL_MARKER + " ")
-    assert seen == []
+# ---- the HZ-943 no-tool line: no farm writes it now (HZ-938 draws a Horizon
+# page instead, farm/tests/test_design_backend.py), but the server still reads
+# it from an older farm's result ----
 
 
 def test_the_js_reader_parses_the_no_tool_line_the_farm_writes():

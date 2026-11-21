@@ -433,6 +433,7 @@ def test_the_notes_rule_scans_the_modules_that_really_call_the_helper():
         "caretaker_ruling.py": 1,  # HZ-273's ruling proposal
         "concierge_agent.py": 1,
         "conflict_resolver.py": 2,  # the resolution agent and the scoped review
+        "design_backend.py": 1,  # HZ-938's Claude Design probe
         "step_agent.py": 3,  # _run_and_parse, the implement step's own call, the PM step kind's
     }
     found: dict[str, int] = {}

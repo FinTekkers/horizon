@@ -21,7 +21,7 @@ import { db } from './db.js'
 import { hasNoProject } from './membership.js'
 import { FIRST_GATE_INDEXES } from './goldenCases.js'
 import { DESIGN_OUTPUT, designSubstepOf, latestRound } from './designRounds.js'
-import { parseCanvasLine } from '../../domain/js/designCanvas.js'
+import { parseCanvasLine, parseDesignLine } from '../../domain/js/designCanvas.js'
 import { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, laneCheckIndexes, laneSkips, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
 export { DESIGN_OUTPUT, parseCanvasLine }
@@ -77,13 +77,15 @@ export function verdictSkipReason(item) {
 }
 
 // The latest round's canvas — the newest done run of the sub-step at its
-// anchor — as { runId, url, slug, version }, or null when there is none, the
-// run's first line is no canvas line, or the latest round is a skip.
+// anchor — as { runId, tool, url, id, round }, or null when there is none,
+// the run's first line is no design line, or the latest round is a skip.
+// HZ-938: a Studio canvas, a Claude Design project or the item's design page
+// (domain/js/designCanvas.js parseDesignLine), so the gate approves any tool.
 export function pendingCanvas(item) {
   const sub = designSubstepOf(item)
   if (!sub || verdictSkipReason(item) != null) return null
   const run = selectSubstepRuns.all(item.id, sub.id).find((r) => r.step_index === sub.anchor)
-  const canvas = run ? parseCanvasLine(run.artifact) : null
+  const canvas = run ? parseDesignLine(run.artifact) : null
   return canvas ? { runId: run.id, ...canvas } : null
 }
 

@@ -257,7 +257,8 @@ test('metric 3 and 5: the one completion helper stores a round with no what_chan
     assert.ok(from >= 0, start)
     return source.slice(from, source.indexOf('\n}\n', from))
   }
-  const call = 'if (!completeDesignSubstep(id, run, artifactMd)) writeStepCompletion('
+  // HZ-938: the farm site also hands in the result's artifacts (which tool drew the round).
+  const call = 'if (!completeDesignSubstep(id, run, artifactMd'
   assert.ok(body('export async function completeFarmRun(').includes(call), 'the farm completion calls it')
   assert.ok(body('async function runMockStep(').includes(call), 'the mock completion calls it')
 })

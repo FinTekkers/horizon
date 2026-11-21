@@ -75,6 +75,12 @@ class StudioError(Exception):
     redacted and never holds a value from the environment."""
 
 
+class StudioMissing(StudioError):
+    """HZ-938: `meta` itself is not there (FileNotFoundError) — Studio cannot
+    run on this box, which farm/design_backend.py answers with a Horizon page.
+    Every other StudioError fails the round as before."""
+
+
 def canvas_url_for(slug: str) -> str:
     return f"https://{CANVAS_HOST}/canvas/{slug}"
 
@@ -97,6 +103,9 @@ def canvas_slug(item_id: str, substep_id: str) -> str:
 # The line a box with no design tool answers in place of a canvas line
 # (domain/js/designCanvas.js NO_TOOL_MARKER, pinned equal by the tests): the
 # server records the round as a skip, so the item moves on to its gate.
+# HZ-938: the farm no longer writes it — a box with no `meta` draws a Horizon
+# page instead (farm/design_backend.py) — but the server still reads it, so a
+# result from an older farm is recorded the same way.
 NO_TOOL_MARKER = "**No design tool:**"
 NO_TOOL_REASON = "Meta Studio (`meta`) is not installed on this box, so no canvas was made. Approve as it is, or attach a design."
 
@@ -183,6 +192,8 @@ def run_studio(args: list[str], *, stdin: str | None = None) -> tuple[int, dict]
         )
     except subprocess.TimeoutExpired:
         raise StudioError(f"meta {args[0]} {args[1]} timed out after {STUDIO_TIMEOUT_S}s") from None
+    except FileNotFoundError as exc:
+        raise StudioMissing(f"meta {args[0]} {args[1]} could not run ({type(exc).__name__})") from None
     except OSError as exc:
         raise StudioError(f"meta {args[0]} {args[1]} could not run ({type(exc).__name__})") from None
     try:

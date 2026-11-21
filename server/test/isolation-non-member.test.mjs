@@ -230,6 +230,9 @@ const READ_CASES = {
   // HO-862: 404 no_page / no_shot for the owner — ISOA-1 has no web-page round.
   'GET /api/items/:id/page': { expect: '404', url: `${ITEM}/page`, owner: 404 },
   'GET /api/items/:id/page/shots/:name': { expect: '404', url: `${ITEM}/page/shots/page-r1-desktop.png`, owner: 404 },
+  // HZ-938: 404 no_page / no_shot for the owner — ISOA-1 has no design page round.
+  'GET /api/items/:id/design-page': { expect: '404', url: `${ITEM}/design-page`, owner: 404 },
+  'GET /api/items/:id/design-page/shots/:name': { expect: '404', url: `${ITEM}/design-page/shots/page-r1-desktop.png`, owner: 404 },
   'GET /api/items/:id/plan-draft': { expect: '404', url: `${ITEM}/plan-draft`, owner: 404 },
   'GET /api/items/:id/screenshots': { expect: '404', url: `${ITEM}/screenshots`, owner: 200 },
   'GET /api/items/:id/screenshots/:screen/:kind': { expect: '404', url: `${ITEM}/screenshots/home/new`, owner: 200 },

@@ -35,12 +35,12 @@ import { gateActionOf } from '../domain/gateAction'
 import { deployQueueLabel } from '../domain/deployQueue'
 import { STEP_HINTS, moveDialogTargets, retryTarget, returnTargets, stepActionFor, substepReturnTarget } from '../domain/stepActions'
 import { resolveEventColor } from '../domain/eventColors'
-import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, recheckAndRun, patchRunPlan, setAutopilotOff } from '../api'
+import { issueUrl, issueLabel, artifactUrl, outputUrl, pageUrl, pageShotUrl, designPageUrl, runLogViewUrl, subscribeStepOutputs, stopJob, resumeJob, recheckAndRun, patchRunPlan, setAutopilotOff } from '../api'
 import visualPageRules from '../../../domain/visualPage.json'
 import { buildLinkContext } from '../../../domain/js/codeRefs.js'
 import { currentSubstep, skippedText, substepsAt } from '../../../domain/js/substeps.js'
 import DesignAnywayButton from './DesignAnyway.jsx'
-import DesignPanel from './DesignPanel'
+import DesignPanel, { ToolLine } from './DesignPanel'
 import { designSubstepFor, latestRoundOf, roundNumberOf, roundsOf, safeCanvasUrl } from '../../../domain/js/designRounds.js'
 import { metricLines } from '../../../domain/js/goldenCases.js'
 import { parseStoredUtc, runTimeText } from '../../../domain/js/runTime.js'
@@ -1067,6 +1067,9 @@ function SubstepRow({ item, sub, onForceSubstep = null, gateBusy = false }) {
   // round in flight. Any other sub-step has no rounds and draws as before.
   const roundNo = roundNumberOf(sub)
   const latestCanvas = status === 'done' && roundsOf(sub).length > 0 ? safeCanvasUrl(latestRoundOf(sub)?.canvasUrl) : null
+  // HZ-938: a Horizon page round links the item's design page instead, and
+  // the row names the tool that drew the latest round.
+  const latestPage = status === 'done' && latestRoundOf(sub)?.designPageUrl ? designPageUrl(item.id) : null
   const pendingBrief = (status === 'current' || status === 'active') && typeof sub.pendingRound?.brief === 'string' ? sub.pendingRound.brief : null
   return (
     <div className="step step--sub" data-testid="substep-row" data-substep={sub.id}>
@@ -1124,6 +1127,12 @@ function SubstepRow({ item, sub, onForceSubstep = null, gateBusy = false }) {
               Open round {latestRoundOf(sub).round} canvas ↗
             </a>
           )}
+          {latestPage && (
+            <a className="step-card__artifact-link step-card__canvas-link" href={latestPage} target="_blank" rel="noopener noreferrer">
+              Open the design page ↗
+            </a>
+          )}
+          {status === 'done' && <ToolLine round={latestRoundOf(sub)} testId="substep-tool" />}
           {canForce && (
             <div className="step-card__actions">
               <DesignAnywayButton itemId={item.id} sub={sub} onSubmit={onForceSubstep} disabled={gateBusy} />

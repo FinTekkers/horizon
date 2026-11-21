@@ -2099,6 +2099,41 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_item_page_round_run ON item_page_round(step_run_id);
 `)
 
+// HZ-938: which tool drew each design round and in which design system, so
+// the owner can compare boxes; fallback_from is the tool the box chose when it
+// could not run there and the round was drawn as a Horizon page instead.
+// Additive: an older round keeps NULLs (the append-only trigger rules out a
+// backfill, and none is needed — the card then names no tool).
+for (const [name, ddl] of [
+  ['design_tool', "design_tool TEXT CHECK (design_tool IN ('claude','studio','html'))"],
+  ['design_system', 'design_system TEXT'],
+  ['fallback_from', "fallback_from TEXT CHECK (fallback_from IN ('claude','studio'))"],
+]) {
+  if (!db.prepare('PRAGMA table_info(substep_round)').all().some((column) => column.name === name)) {
+    db.exec(`ALTER TABLE substep_round ADD COLUMN ${ddl}`)
+  }
+}
+
+// HZ-938: one row per stored round of an item's design page — the Horizon
+// page a design sub-step drew (farm/visual_page.py's design slot). A sibling
+// of item_page_round rather than a slot column on it: the two pages number
+// their rounds apart, so each keeps its own (item_id, round) key and cascade.
+// The latest row's page is what GET /api/items/:id/design-page serves.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS item_design_page_round (
+    item_id     TEXT    NOT NULL REFERENCES work_item(id) ON DELETE CASCADE,
+    round       INTEGER NOT NULL CHECK (round >= 1),
+    step_run_id INTEGER NOT NULL REFERENCES step_run(id) ON DELETE CASCADE,
+    sha256      TEXT    NOT NULL,
+    bytes       INTEGER NOT NULL,
+    desktop_png TEXT    NOT NULL,
+    phone_png   TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (item_id, round)
+  );
+  CREATE INDEX IF NOT EXISTS idx_item_design_page_round_run ON item_design_page_round(step_run_id);
+`)
+
 const SEED_ITEMS = [
   { id: 'BF-145', title: 'Risk-limit breach dashboard', priority: 'Low', cursor: 1, issue: 412, desc: 'Give risk managers a live view of limit utilization across every desk.', metric: 'Limit breaches acknowledged in < 2 min (from 14 min).', guardrails: 'Read-only — no position mutation. No PII in telemetry.' },
   { id: 'BF-128', title: 'Real-time P&L attribution service', priority: 'High', cursor: 3, issue: 398, desc: 'Attribute intraday P&L to factors, trades and fees in real time.', metric: 'Attribution available < 5s after fill; 99.9% coverage.', guardrails: 'No client identifiers in logs. Must reconcile to EOD books.' },

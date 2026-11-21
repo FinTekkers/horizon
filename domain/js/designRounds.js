@@ -10,6 +10,8 @@
 // Pure: no I/O, and no move rule. Which step a send-back goes to is the
 // server's (item.moves), never worked out here.
 
+import { FALLBACK_TEXT, TOOL_LABEL } from './designCanvas.js'
+
 // The URL, normalised, when it is an absolute https: URL with no credentials
 // in it; else null.
 export function safeCanvasUrl(value) {
@@ -22,6 +24,21 @@ export function safeCanvasUrl(value) {
   }
   if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') return null
   return url.href
+}
+
+// HZ-938: the card's line naming the tool that drew a round — { text,
+// fallback } where fallback is the "<tool> isn't available on this box" line
+// or null — or null for a round with no tool recorded (a skip, or a round from
+// before HZ-938). The words are domain/js/designCanvas.js's, never the farm's.
+export function toolLineOf(round) {
+  const tool = round?.designTool
+  if (typeof tool !== 'string' || !Object.hasOwn(TOOL_LABEL, tool)) return null
+  const system = typeof round.designSystem === 'string' && round.designSystem ? ` (${round.designSystem})` : ''
+  const from = round.fallbackFrom
+  return {
+    text: `Drawn with ${TOOL_LABEL[tool]}${system}`,
+    fallback: typeof from === 'string' && Object.hasOwn(FALLBACK_TEXT, from) ? FALLBACK_TEXT[from] : null,
+  }
 }
 
 // The sub-step's rounds, oldest first, or [] for a sub-step that has none

@@ -1767,6 +1767,83 @@ export function buildApp({
     },
   )
 
+  // HZ-938: an item's design page — the Horizon page its design sub-step drew
+  // (the fallback when the box's design tool cannot run, or its chosen tool).
+  // Served exactly like the web-page visual above: members only, from farmd's
+  // design slot over loopback, under PAGE_CSP (`sandbox allow-scripts`, no
+  // allow-same-origin), so the page's own script runs in an opaque origin
+  // with no cookies, session or API. It deliberately ignores the project's
+  // visual_pages_enabled switch (visualPages.designPagesAllowed): a box with
+  // no design tool must never pause an item over an unrelated switch. A
+  // tenant project has none: 404.
+  const designPageItem = (id) => {
+    const item = store.getItem(id)
+    return item && visualPages.designPagesAllowed(item) ? item : null
+  }
+  fastify.get(
+    '/api/items/:id/design-page',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: { type: 'object', required: ['id'], properties: { id: { type: 'string', minLength: 1 } } },
+        response: {
+          200: { content: { 'text/html': { schema: { type: 'string', description: "The latest design round's page, from farmd" } } } },
+          404: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params
+      if (!designPageItem(id)) return reply.code(404).send({ error: 'not_found' })
+      if (!visualPages.latestDesignPageRound(id)) return reply.code(404).send({ error: 'no_page' })
+      return streamFarmFile(reply, (signal) => orchestrator.fetchPageFile(id, 'page.html', { signal, slot: 'design' }), {
+        notFound: 'no_page',
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Security-Policy': visualPages.PAGE_CSP,
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+          'Cache-Control': 'private, no-store',
+        },
+      })
+    },
+  )
+
+  // HZ-938: one recorded design round's screenshot, like /page/shots/:name.
+  fastify.get(
+    '/api/items/:id/design-page/shots/:name',
+    {
+      config: { scope: 'member:item' },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id', 'name'],
+          properties: { id: { type: 'string', minLength: 1 }, name: { type: 'string', minLength: 1, maxLength: 200 } },
+        },
+        response: {
+          200: { content: { 'image/png': { schema: { type: 'string', format: 'binary', description: 'The PNG, from farmd' } } } },
+          404: ERROR_OBJECT,
+          503: ERROR_OBJECT,
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id, name } = request.params
+      if (!designPageItem(id)) return reply.code(404).send({ error: 'not_found' })
+      if (!visualPages.designPageShotRecorded(id, name)) return reply.code(404).send({ error: 'no_shot' })
+      return streamFarmFile(reply, (signal) => orchestrator.fetchPageFile(id, name, { signal, slot: 'design' }), {
+        notFound: 'no_shot',
+        headers: {
+          'Content-Type': 'image/png',
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+          'Cache-Control': 'private, max-age=300',
+        },
+      })
+    },
+  )
+
   // HZ-407: the Execute card's Stop run. Same session gate as pause; the job
   // ends, its running command is recorded stopped and the item pauses. No job
   // running (a second Stop included) is 409 no_job.
