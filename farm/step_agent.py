@@ -79,7 +79,7 @@ from . import (
     visual_page,
 )
 from .checks import HEADLINE_PREFIX, CheckFailure, redact, run_checks, scrub, secret_values
-from .config import FARM_PORT, ITEM_LOCK_WAIT_S, MAX_TURNS, STEP_TIMEOUT_S
+from .config import FARM_PORT, ITEM_LOCK_WAIT_S, MAX_TURNS, STEP_TIMEOUT_S, WEB_GUIDANCE_DIR
 from .credentials import is_tenant_project
 from .handoff import HandoffContext, HandoffGuard
 from .persona_tools import apply as apply_persona_tools
@@ -3218,6 +3218,14 @@ def _execute_design(task: dict) -> dict:
     # same line web-page visuals keep, visual_page_section).
     if is_tenant_project(task.get("project")):
         raise AgentError(f"{design_canvas.DESIGN_FAILED}: a design sub-step does not run for a tenant project")
+    # No design tool on this box: answer the no-tool line, which the server
+    # records as a skipped round, rather than fail and pause the item.
+    if not design_canvas.tool_available():
+        log("design: no design tool on this box (meta is not installed); the round is skipped")
+        return {
+            "summary": "No design tool on this box, so the design round was skipped.",
+            "artifacts": {"artifact_md": design_canvas.format_no_tool_line()},
+        }
     previous = sub.get("previous_canvas_url")
     previous_slug = design_canvas.slug_from_url(previous)
     if previous is not None and previous_slug is None:
@@ -3687,6 +3695,64 @@ def _check_until_green(
         turns_used = turns_used + used if isinstance(used, int) else None
 
 
+# ---- web guidance (HZ-930) ----
+# A repo the owner marked for web guidance sends `web_guidance: true` on its
+# Eng implement task only. That run loads the pinned Modern Web Guidance
+# plugin with --plugin-dir; every other run is launched exactly as before. The
+# skill's own SKILL.md says to run its CLI through `npx -y ...@latest`, which
+# would fetch from npm mid-run, so those commands are denied and the role note
+# points the agent at the pinned copy's own CLI instead.
+WEB_GUIDANCE_CLI = "skills/modern-web-guidance/modern-web.mjs"
+# Bare and `@latest` (the form SKILL.md uses), so neither relies on how a
+# prefix rule treats the `@`.
+WEB_GUIDANCE_DENY = ",".join(
+    f"Bash({runner} modern-web-guidance{tag}:*)"
+    for runner in ("npx", "npx -y", "npx --yes", "pnpx", "npm exec", "npm install")
+    for tag in ("", "@latest")
+)
+# Anything a plugin can carry besides skills. The pinned version has none; a
+# folder that does is refused, so a run never executes a plugin hook.
+_PLUGIN_EXTRAS = ("hooks", ".mcp.json")
+_MANIFEST_EXTRAS = ("hooks", "mcpServers", "lspServers")
+
+
+def web_guidance_plugin_dirs(task: dict, label: str) -> list[str] | None:
+    """The plugin folders this run loads: None unless the task is marked AND
+    this is the Eng implement step. A marked run whose pinned folder is
+    missing, unreadable or carries more than skills raises AgentError naming
+    the path — it never fetches the skills and never runs without them."""
+    if task.get("web_guidance") is not True or label != IMPLEMENT_LABEL:
+        return None
+    root = WEB_GUIDANCE_DIR
+    fix = "install it per infra/host/DEPLOY.md (Modern Web Guidance skills), or clear the repo's Web guidance mark"
+    try:
+        manifest = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("plugin.json is not an object")
+        if not os.access(root / WEB_GUIDANCE_CLI, os.R_OK):
+            raise FileNotFoundError(f"{WEB_GUIDANCE_CLI} is missing or unreadable")
+    except (OSError, ValueError) as exc:
+        reason = exc.strerror if isinstance(exc, OSError) and exc.strerror else str(exc)
+        raise AgentError(f"web guidance: the pinned Modern Web Guidance plugin at {root} cannot be loaded ({reason}) — {fix}") from None
+    extras = [name for name in _PLUGIN_EXTRAS if (root / name).exists()] + [key for key in _MANIFEST_EXTRAS if key in manifest]
+    if extras:
+        raise AgentError(f"web guidance: the plugin at {root} carries {', '.join(extras)}, not skills only — refusing to load it")
+    return [str(root)]
+
+
+def web_guidance_note(plugin_dir: str) -> str:
+    """Appended to a marked implement run's role, after the plugin loaded."""
+    cli = f"node {plugin_dir}/{WEB_GUIDANCE_CLI}"
+    return (
+        "\n\n## Modern Web Guidance\n"
+        "The Modern Web Guidance skill is loaded from a pinned copy on this host. Run its CLI from that copy, "
+        f"never through npx, pnpx or npm (they fetch from the network and are denied):\n"
+        f'- search: `{cli} search "<query>"`\n'
+        f'- retrieve: `{cli} retrieve "<id>"`\n'
+        "Read anything else the skill names from that copy too.\n"
+    )
+
+
 def _execute(task: dict, guard: HandoffGuard) -> dict:
     label = task["step"]["label"]
     item = task["item"]
@@ -3769,6 +3835,14 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             if item.get("repo"):
                 raise RuntimeError("workspace not provisioned for this repo — restart the farm")
             return {"summary": "no repository attached — implementation skipped (demo item)"}
+        # HZ-930: before prepare_branch, so a host without the pinned copy
+        # fails before the branch is touched. None on an unmarked repo, which
+        # leaves every argument below exactly as before.
+        plugin_dirs = web_guidance_plugin_dirs(task, label)
+        implement_role, implement_deny = role, persona_deny
+        if plugin_dirs:
+            implement_role = role + web_guidance_note(plugin_dirs[0])
+            implement_deny = f"{persona_deny},{WEB_GUIDANCE_DENY}" if persona_deny else WEB_GUIDANCE_DENY
         scope = scope_of(task)
         # HZ-182: a fix pass is never rebased — rewriting history would break
         # the server's base_sha..HEAD diff.
@@ -3807,7 +3881,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 step=label,
                 persona=persona,
                 session_id=session_id,
-                append_system=role,
+                append_system=implement_role,
                 cwd=str(ws),
                 max_turns=max_turns,
                 timeout_s=timeout_s,
@@ -3815,8 +3889,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 provider=provider_override,
                 model_choice=model_choice,
                 provider_locked=provider_locked,
-                disallowed_tools=persona_deny,
+                disallowed_tools=implement_deny,
                 overlay=overlay,
+                plugin_dirs=plugin_dirs,
             )
 
         try:

@@ -71,6 +71,7 @@ test('after migration every existing repo is unmarked and stamped enforced_since
     checks: null,
     noChecks: false,
     noDeploy: false,
+    webGuidance: false,
     enforcedSince: rows[0].enforced_since,
   })
 })
@@ -81,15 +82,15 @@ test('a valid PIN saves a mark; a mark left out keeps its value', async () => {
   reset()
   const res = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', noChecks: true }, asSession(alice.pin))
   assert.equal(res.statusCode, 200, res.body)
-  assert.deepEqual(res.json(), { ok: true, repo: 'FinTekkers/ui-service', marks: { noChecks: true, noDeploy: false } })
+  assert.deepEqual(res.json(), { ok: true, repo: 'FinTekkers/ui-service', marks: { noChecks: true, noDeploy: false, webGuidance: false } })
   assert.deepEqual(marksOf('FinTekkers/ui-service'), { no_checks: 1, no_deploy: 0 })
 
   const second = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', noDeploy: true }, asSession(alice.pin))
-  assert.deepEqual(second.json().marks, { noChecks: true, noDeploy: true })
+  assert.deepEqual(second.json().marks, { noChecks: true, noDeploy: true, webGuidance: false })
   assert.deepEqual(marksOf('FinTekkers/ui-service'), { no_checks: 1, no_deploy: 1 })
 
   const cleared = await put(FINTEKKERS_PROJECT, { repo: 'FinTekkers/ui-service', noChecks: false, noDeploy: false }, asSession(alice.pin))
-  assert.deepEqual(cleared.json().marks, { noChecks: false, noDeploy: false })
+  assert.deepEqual(cleared.json().marks, { noChecks: false, noDeploy: false, webGuidance: false })
   assert.deepEqual(marksOf('FinTekkers/ui-service'), { no_checks: 0, no_deploy: 0 })
 })
 
@@ -175,6 +176,16 @@ test('the snapshot carries each repo’s marks next to its checks', async () => 
   assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').marks, { noChecks: false, noDeploy: true })
   assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/horizon').marks, { noChecks: false, noDeploy: false })
   reset()
+})
+
+test('HZ-930: the snapshot carries webGuidance only on a marked repo', async () => {
+  store.setRepoMarks(FINTEKKERS_PROJECT, 'FinTekkers/ui-service', { webGuidance: true })
+  settings.setSetting('active_project_id', String(FINTEKKERS_PROJECT))
+  const res = await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })
+  const repos = res.json().projects.flatMap((p) => p.repos)
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').marks, { noChecks: false, noDeploy: false, webGuidance: true })
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/horizon').marks, { noChecks: false, noDeploy: false })
+  store.setRepoMarks(FINTEKKERS_PROJECT, 'FinTekkers/ui-service', { webGuidance: false })
 })
 
 // ---- guardrail 1: one writer, and it is the PIN-gated route ----

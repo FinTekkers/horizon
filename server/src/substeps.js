@@ -145,6 +145,22 @@ export function loadSubsteps(projectName) {
   return validateSubsteps(raw)
 }
 
+// HZ-930: the repos the project's steps.json marks for web guidance, from an
+// optional top-level `"webGuidance": { "repos": [...] }`. No file, no key, an
+// unreadable file or bad JSON: none (loadSubsteps reports a bad file). Never
+// throws, so dispatch can't break on it.
+export function webGuidanceRepos(projectName) {
+  const slug = typeof projectName === 'string' ? slugify(projectName) : ''
+  if (!slug) return []
+  try {
+    const raw = JSON.parse(deps.readFile(path.join(PROJECTS_DIR, slug, 'steps.json')))
+    const repos = isEntry(raw) && isEntry(raw.webGuidance) ? raw.webGuidance.repos : null
+    return isStringList(repos) ? repos.map((repo) => repo.trim()) : []
+  } catch {
+    return []
+  }
+}
+
 // `*` and `?` never cross `/`; `**/` is any number of directories, none
 // included; a bare `**` is anything. Anchored at both ends.
 function globToRegExp(glob) {

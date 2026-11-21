@@ -113,9 +113,9 @@ import {
 } from './store.js'
 import { projectPersonaOverlay } from './definitions.js'
 import { isolationFields } from './projectIsolation.js'
-import { snapshotSubsteps } from './substeps.js'
+import { snapshotSubsteps, webGuidanceRepos } from './substeps.js'
 import { currentSubstep, substepsOf } from '../../domain/js/substeps.js'
-import { latestCanvas } from '../../domain/js/designCanvas.js'
+import { latestCanvas, parseNoToolLine } from '../../domain/js/designCanvas.js'
 import { parseWhatChanged } from '../../domain/js/designVerdict.js'
 import {
   GUARDRAILS_STEP_INDEX,
@@ -611,6 +611,16 @@ export function completeDesignSubstep(id, run, artifactMd) {
   const forced = pending?.kind === 'forced'
   const back = returnTarget(item)
   const to = back ?? nextCursor(item)
+  // No design tool on the box: the round is a skip, so the gate can approve
+  // without a canvas instead of the item pausing.
+  const noTool = parseNoToolLine(artifactMd)
+  if (noTool) {
+    const moved = writeStepCompletion(id, to, { substep_cursor: null, substep_pending_json: null })
+    if (moved.error) return true
+    recordRound(id, sub.id, { kind: 'skip', runId: run.id, brief: noTool, who: 'Horizon' })
+    addEvent(id, { who: 'Horizon', text: `Skipped “${sub.label}”: ${noTool}`, color: '#5E6A75', initials: 'HZ' })
+    return true
+  }
   const moved = writeStepCompletion(id, to, { substep_cursor: null, substep_pending_json: null })
   if (moved.error) return true
   recordRound(id, sub.id, {
@@ -2762,6 +2772,10 @@ async function dispatchToFarm(id, stepIndex, runId, attempt, scope, checkoutSha 
     ...checkCommandsField(item),
     ...planScopeField(item),
     ...rulesOverrideField(project?.name, item.repo),
+    // HZ-930: the Eng implement run of a repo marked for web guidance (never a
+    // sub-step run at that anchor). Absent otherwise, so every other body is
+    // unchanged.
+    ...(substep ? {} : webGuidanceField(item, stepIndex, project?.name)),
     // HZ-541: the metric steps and Eng plan prompts then ask for the set and
     // its metric line. Absent on every other step, and for every item without
     // golden cases.
@@ -2824,6 +2838,17 @@ export function checkCommandsField(item) {
   }
   const waiver = checksWaiverFor(item)
   return { ...(waiver ? { checks_waiver: waiver } : {}), ...envField }
+}
+
+// HZ-930: { web_guidance: true } for the implement step of a repo marked in
+// Admin (project_repo.web_guidance) or listed in its project's steps.json
+// `webGuidance.repos`; {} otherwise — never false. The one place the two
+// sources are combined. Read at dispatch, so a new mark applies to the next run.
+export function webGuidanceField(item, stepIndex, projectName) {
+  if (stepIndex !== IMPLEMENT_STEP_INDEX || !item?.repo) return {}
+  const repo = item.repo.toLowerCase()
+  const marked = getRepoConfig(item.repo)?.webGuidance || webGuidanceRepos(projectName).some((r) => r.toLowerCase() === repo)
+  return marked ? { web_guidance: true } : {}
 }
 
 // HZ-447: a Plan's farm steps carry its repo scope — the repos Inventory and

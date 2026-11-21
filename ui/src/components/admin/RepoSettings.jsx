@@ -103,7 +103,7 @@ function RepoMarkToggle({ projectId, repo, mark, label, on }) {
   )
 }
 
-// HZ-304: the repo's two marks, and a plain-words warning while it has no
+// HZ-304: the repo's marks (HZ-930: plus web guidance), and a plain-words warning while it has no
 // check commands and no 'no checks' mark. Read from the snapshot, so it shows
 // what the next dispatch will see.
 export function RepoMarks({ projectId, repoConn }) {
@@ -118,6 +118,14 @@ export function RepoMarks({ projectId, repoConn }) {
         mark="noDeploy"
         label="No deploy"
         on={!!repoConn.marks?.noDeploy}
+      />
+      {/* HZ-930: Eng implement runs load the pinned Modern Web Guidance skills. */}
+      <RepoMarkToggle
+        projectId={projectId}
+        repo={repoConn.repo}
+        mark="webGuidance"
+        label="Web guidance"
+        on={!!repoConn.marks?.webGuidance}
       />
       {!configured && !noChecks && (
         <div className="gh-error repo-marks__warning" role="status">

@@ -60,7 +60,7 @@ test('the actions call their handlers, are disabled while busy, and are absent w
 test('the agent said no design: the panel says why and offers no Approve without design', () => {
   const sub = { id: 'design-screens', rounds: [{ round: 1, kind: 'skip', brief: 'backend only', whatChanged: null, runId: null, canvasUrl: null }], skip: { reason: 'backend only' } }
   const view = render(<DesignPanel item={ITEM} spec={{ ...SPEC, pendingRunId: null, verdictSkipReason: 'backend only' }} sub={sub} />)
-  expect(view.getByText(/The agent said no design is needed: backend only/)).toBeTruthy()
+  expect(view.getByText(/No design this round: backend only/)).toBeTruthy()
   expect(within(view.getByTestId('design-latest')).getByText('Skipped')).toBeTruthy()
   expect(within(view.getByTestId('design-latest')).queryByText('What changed')).toBeNull()
 })
