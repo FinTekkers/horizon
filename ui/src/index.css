@@ -678,8 +678,10 @@ button { font-family: var(--font-sans); }
 .board__narrow-label { font: 600 12px var(--font-sans); color: var(--muted); }
 .board__sort-toggle { border-style: dashed; }
 /* HZ-547: the Plan group — a picker until a Plan is chosen, then one chip with
-   a clear button. A long Plan title is cut off, never widening the strip. */
-.board__plan-select { max-width: min(280px, 100%); text-overflow: ellipsis; }
+   a clear button. A long Plan title is cut off, never widening the strip.
+   HZ-934: capped by the viewport, not a percentage (ignored when the row is
+   sized), so a long title can't widen the page on a phone. */
+.board__plan-select { max-width: min(280px, calc(100vw - 64px)); min-width: 0; text-overflow: ellipsis; }
 .board__plan-chip {
   display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0;
   border: 1.5px solid var(--primary-ink); border-radius: 20px; padding: 3px 4px 3px 12px;
