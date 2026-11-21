@@ -6,7 +6,7 @@
 // { agent: 'qa', persona: ... } rather than the old flat body, and the choice
 // is still there after a reload.
 //
-// Creates its own item (same pattern as 09-gate-confirm.spec.js) so it never
+// Creates its own item (same pattern as 04-gates-lifecycle.spec.js) so it never
 // races another spec's gate state.
 
 import { test, expect } from '../fixtures/test-base.js'

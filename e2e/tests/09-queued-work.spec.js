@@ -14,9 +14,9 @@ import { IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 // reply would populate (see orchestrator.js's setRunStateForTest) — no tmux
 // name involved anywhere in this path, same as production.
 //
-// Filename note: the reject flow below needs a working gate PIN, and
-// 10-gate-key.spec.js deliberately overwrites the shared one in the DB (see
-// global-setup.js) — this file must keep sorting before it.
+// Filename note: the reject flow below needs a working gate PIN, and later
+// specs overwrite the shared one in the DB with setGatePinDirect (see
+// global-setup.js) — this file must keep sorting before them.
 const DB_PATH = process.env.HORIZON_E2E_DB
 
 const SIX_ROWS = [
