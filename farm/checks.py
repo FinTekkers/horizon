@@ -1010,13 +1010,15 @@ def _report_rows(report_dir: Path, ws: Path, log) -> list[dict]:
 # HZ-955: a streamed JSON-lines report's events and statuses.
 _JSONL_EVENTS = ("started", "finished")
 _JSONL_STATUSES = ("pass", "fail", "skip")
+# A test runner's report line, never a model reply (agent_runner parses those).
+_JSONL_DECODER = json.JSONDecoder()
 
 
 def _jsonl_line(raw: bytes) -> dict | None:
     """One report line as an object with a non-empty `name` and `file`, a
     known `event` and, when finished, a known `status`; None when bad."""
     try:
-        entry = json.loads(raw.decode("utf-8"))
+        entry = _JSONL_DECODER.decode(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
         return None
     if not isinstance(entry, dict):
