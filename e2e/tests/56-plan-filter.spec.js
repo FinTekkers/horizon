@@ -2,11 +2,14 @@
 // server. The item page's "From Plan" pill opens the board filtered to that
 // Plan (its open items, with the chip). The filter survives a reload. Clearing
 // the chip drops `plan=` from the URL, and a reload does not bring it back.
-// At 390px the board with the chip, a card with the From Plan chip and the
-// item page with the pill all fit with no sideways scroll.
+// At 390px the board with the Plan picker, the board with the chip, a card
+// with the From Plan chip and the item page with the pill all fit with no
+// sideways scroll. HZ-934: a second Plan's title is over 100 characters, so
+// the picker's longest option would widen the page without its viewport cap.
 //
 // Its own fixtures, seeded straight into the DB: a closed Plan that filed two
-// open items (paused, so no mock agent moves them) and one closed item.
+// open items (paused, so no mock agent moves them) and one closed item, and a
+// closed Plan with a long title that filed one closed item.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertSpawn } from '../fixtures/seed.js'
@@ -15,6 +18,11 @@ import { endIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
 const DB_PATH = process.env.HORIZON_E2E_DB
 const PLAN = 'PF-PLAN'
 const PLAN_TITLE = 'E2E fixture — adjusted cost basis'
+// HZ-934: a second closed Plan with a 100+ character title, so the picker has
+// a long option. It filed one closed item, which planProgress needs to list it.
+const LONG_PLAN = 'PF-LONG'
+const LONG_PLAN_TITLE = 'E2E fixture — adjusted cost basis for every lot held across all taxable and retirement accounts this year'
+const LONG_CHILD = 'PF-LONG-1'
 const OPEN = ['PF-1', 'PF-2']
 const CLOSED = 'PF-3'
 const PHONE = { width: 390, height: 844 }
@@ -29,6 +37,9 @@ test.beforeAll(() => {
     for (const id of OPEN) insertItem(db, { id, title: `E2E fixture — filed item ${id}`, cursor: intake, paused: 1 })
     insertItem(db, { id: CLOSED, title: 'E2E fixture — filed item already shipped', cursor: endIndex('change') })
     ;[...OPEN, CLOSED].forEach((childId, seq) => insertSpawn(db, { parentId: PLAN, childId, requestKey: 'plan:pf', seq }))
+    insertItem(db, { id: LONG_PLAN, title: LONG_PLAN_TITLE, cursor: endIndex('plan'), kind: 'plan' })
+    insertItem(db, { id: LONG_CHILD, title: 'E2E fixture — filed item of the long Plan', cursor: endIndex('change') })
+    insertSpawn(db, { parentId: LONG_PLAN, childId: LONG_CHILD, requestKey: 'plan:pf-long', seq: 0 })
   } finally {
     db.close()
   }
@@ -73,8 +84,13 @@ test("the pill opens the closed Plan's board, which survives a reload until the 
   expect(planParam(page)).toBeNull()
 })
 
-test('at 390px the chip, the card chip and the pill fit with no sideways scroll', async ({ page }) => {
+test('at 390px the picker, the chip, the card chip and the pill fit with no sideways scroll', async ({ page }) => {
+  expect(LONG_PLAN_TITLE.length).toBeGreaterThan(100)
   await page.setViewportSize(PHONE)
+  await page.goto('/')
+  await expect(page.getByRole('combobox', { name: 'Plan' }).getByRole('option', { name: `${LONG_PLAN} · ${LONG_PLAN_TITLE}` })).toHaveCount(1)
+  await expectNoSideScroll(page)
+
   await page.goto(`/?plan=${PLAN}`)
   await expectFilteredBoard(page)
   await expect(page.getByRole('link', { name: `From Plan ${PLAN}`, exact: true }).first()).toBeVisible()
