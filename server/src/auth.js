@@ -474,9 +474,10 @@ export function regenerateGatePin(userId) {
 
 // HZ-935: chosen PINs refused as too easy to guess — all-same digits, and
 // straight ascending or descending runs. 20 values; tests iterate over them.
-const SAME_DIGITS = Array.from({ length: 10 }, (_, d) => String(d).repeat(6))
-const ASCENDING_RUNS = Array.from({ length: 5 }, (_, i) => '0123456789'.slice(i, i + 6))
-const DESCENDING_RUNS = Array.from({ length: 5 }, (_, i) => '9876543210'.slice(i, i + 6))
+const DIGITS = Array.from({ length: 10 }, (_, d) => String(d))
+const SAME_DIGITS = DIGITS.map((d) => d.repeat(6))
+const ASCENDING_RUNS = DIGITS.slice(0, 5).map((_, i) => DIGITS.slice(i, i + 6).join(''))
+const DESCENDING_RUNS = ASCENDING_RUNS.map((run) => [...run].reverse().join(''))
 export const WEAK_PINS = new Set([...SAME_DIGITS, ...ASCENDING_RUNS, ...DESCENDING_RUNS])
 
 // Null when a chosen PIN may be stored, else the reason code the route sends.
