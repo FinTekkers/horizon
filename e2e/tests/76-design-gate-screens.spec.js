@@ -8,7 +8,7 @@
 // comparison with the spec canvas stays a human's, at "Accept the code".
 
 import { readFileSync } from 'node:fs'
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb } from '../fixtures/seed.js'
 import { seedDesignScreens, DS_CANVAS_URLS, DS_BRIEFS, DS_SKIP_REASON } from '../fixtures/design-screens-seed.js'
 
@@ -74,6 +74,7 @@ test('every design-gate screen shows the design panel at desktop and phone as so
     }
     if (screen.name === 'design-gate' && viewport === 'phone') {
       // Nothing scrolls sideways on a phone: long briefs wrap.
+      await waitForFonts(page)
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
       expect(overflow, `${label}: horizontal overflow`).toBeLessThanOrEqual(0)
     }

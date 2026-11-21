@@ -3,7 +3,7 @@
 // same page makes the very next request 401. The server-side matrix lives in
 // server/test/api-tokens.test.mjs; this is the real UI→server path.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 
 test('create a token in Admin, call the API with it, revoke it, and it stops working', async ({ page, playwright, baseURL }) => {
   await page.goto('/admin/account')
@@ -53,6 +53,7 @@ test('the days unit sits inside the expiry field, and the form fits at 375px', a
   const unit = field.getByText('days', { exact: true })
   await expect(unit).toBeVisible()
   await expect(panel.getByText('1 to 365 days')).toBeVisible()
+  await waitForFonts(page)
   const outer = await field.boundingBox()
   const inner = await unit.boundingBox()
   expect(inner.x).toBeGreaterThanOrEqual(outer.x)

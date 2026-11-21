@@ -12,7 +12,7 @@
 // The dialog's desktop and phone screenshots are kept as test artifacts
 // (pin-dialog-desktop.png, pin-dialog-phone.png) for the PR.
 
-import { test, expect, verifySharedSession, adminProjectPath } from '../fixtures/test-base.js'
+import { test, expect, verifySharedSession, adminProjectPath, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, setGatePinDirect } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -40,6 +40,7 @@ const pinDialog = (page) => page.getByRole('dialog', { name: 'Enter your gate PI
 
 // The dialog, its field and its buttons sit wholly inside the viewport.
 async function expectInViewport(page) {
+  await waitForFonts(page)
   const { width, height } = page.viewportSize()
   const dialog = pinDialog(page)
   for (const target of [dialog, dialog.getByLabel('Gate PIN'), dialog.getByRole('button', { name: 'Continue' }), dialog.getByRole('button', { name: 'Cancel' })]) {

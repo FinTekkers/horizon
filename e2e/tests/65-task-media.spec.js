@@ -15,7 +15,7 @@
 // afterAll PIN-verifies the shared session again for the specs after it.
 
 import { readFileSync } from 'node:fs'
-import { test, expect, verifySharedSession } from '../fixtures/test-base.js'
+import { test, expect, verifySharedSession, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS, EXECUTE_STEP_INDEX, TASK_REVIEW_CLOSE_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -156,6 +156,7 @@ test("item page: a task run's media on Execute, Verify & report and Review & clo
     const review = cardFor(page, 'Review & close')
     const media = await expectMedia(review)
     await expectPlayable(media)
+    await waitForFonts(page)
     const sizes = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }))
     expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
     const box = await media.video.boundingBox()

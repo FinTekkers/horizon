@@ -5,7 +5,7 @@
 // HZ-317: a five-repo project gets repo chips; at phone width they wrap inside
 // a menu that stays on screen. Its repos are deleted again in afterAll.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject, insertProjectRepo } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -96,6 +96,7 @@ test('a project badge never widens its card or the tracker header below 700px', 
     await page.goto('/')
     const card = page.locator('.card', { hasText: 'E2E fixture — Alpha item' })
     await expect(card.locator('.proj-badge')).toBeVisible({ timeout: 10_000 })
+    await waitForFonts(page)
     const overflow = await card.evaluate((el) => el.scrollWidth - el.clientWidth)
     expect(overflow, `card overflows at ${width}px`).toBeLessThanOrEqual(0)
     const meta = await card.locator('.card__meta').evaluate((el) => el.scrollWidth - el.clientWidth)
@@ -104,6 +105,7 @@ test('a project badge never widens its card or the tracker header below 700px', 
     await page.goto('/pf-a1')
     const header = page.locator('.tracker__meta')
     await expect(header.locator('.proj-badge')).toHaveText(ALPHA)
+    await waitForFonts(page)
     const badgeWidth = await header.locator('.proj-badge').evaluate((el) => el.getBoundingClientRect().width)
     expect(badgeWidth, `badge clamps at ${width}px`).toBeLessThan(120)
   }
@@ -128,6 +130,7 @@ test('repo chips narrow a project, and wrap inside an on-screen menu at phone wi
   for (const c of chips) await expect(c).toHaveAttribute('aria-pressed', 'true')
 
   const menu = page.locator('.usermenu__menu--left')
+  await waitForFonts(page)
   const box = await menu.boundingBox()
   expect(box.x).toBeGreaterThanOrEqual(0)
   expect(box.x + box.width).toBeLessThanOrEqual(375)

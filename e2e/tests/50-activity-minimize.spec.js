@@ -7,7 +7,7 @@
 // this spec is the real-layout proof: measured widths, reload persistence,
 // and the phone viewport.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -48,6 +48,7 @@ test('item page: minimizing the Activity panel, on desktop and on a phone', asyn
     await expect(activity.locator('.activity-row').first()).toBeVisible()
     await expect(minimize(page)).toHaveAttribute('aria-expanded', 'true')
 
+    await waitForFonts(page)
     const expandedStepper = (await stepper.boundingBox()).width
     const expandedActivity = (await activity.boundingBox()).width
 
@@ -82,6 +83,7 @@ test('item page: minimizing the Activity panel, on desktop and on a phone', asyn
     await expand(page).click()
     await expect(minimize(page)).toBeVisible()
     await expect(activity.getByText('second-item fixture event 1')).toBeVisible()
+    await waitForFonts(page)
     const restoredStepper = (await stepper.boundingBox()).width
     expect(Math.abs(restoredStepper - expandedStepper)).toBeLessThanOrEqual(2)
     expect(await storedChoice(page)).toBe('0')
@@ -104,6 +106,7 @@ test('item page: minimizing the Activity panel, on desktop and on a phone', asyn
     await expect(activity.locator('.activity-row')).toHaveCount(0)
     // In place: still full width, and the label runs horizontally instead of
     // a tall vertical strip.
+    await waitForFonts(page)
     const box = await activity.boundingBox()
     expect(box.width).toBeGreaterThan(300)
     const labelHeight = (await expand(page).locator('.tracker__activity-expand-label').boundingBox()).height
