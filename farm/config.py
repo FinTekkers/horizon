@@ -264,6 +264,12 @@ TENANT_ENTRY = "/usr/local/libexec/horizon/tenant-entry"
 # and no other tenant can. Fixed like TENANT_ENTRY: tenant-entry and
 # infra/host/horizon-provision-run-user name the same path.
 TENANT_JOBS_DIR = Path("/var/lib/horizon/tenant-jobs")
+# HZ-930: the one pinned copy of Google's Modern Web Guidance plugin, loaded
+# with --plugin-dir on a marked repo's Eng implement run only. `current` is a
+# symlink to a versioned folder (infra/host/DEPLOY.md). Fixed like
+# TENANT_ENTRY, never read from the environment or FARM_HOME, so a tenant run
+# user resolves the same root-owned, world-readable path farmd does.
+WEB_GUIDANCE_DIR = Path("/usr/local/share/horizon/plugins/modern-web-guidance/current")
 # HZ-815: besides the run's checkout (and a container run's own /tmp), the
 # only dirs a host Task run's declared `outputs` media may be copied from —
 # `:`-separated. Never offered to a tenant or container run.

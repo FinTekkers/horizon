@@ -5601,11 +5601,12 @@ export function buildApp({
           required: ['repo'],
           // propertyNames, not additionalProperties: false — the latter
           // silently strips an unknown key; a body carrying one is refused.
-          propertyNames: { enum: ['repo', 'noChecks', 'noDeploy'] },
+          propertyNames: { enum: ['repo', 'noChecks', 'noDeploy', 'webGuidance'] },
           properties: {
             repo: { type: 'string', minLength: 1, maxLength: 300 },
             noChecks: { type: 'boolean' },
             noDeploy: { type: 'boolean' },
+            webGuidance: { type: 'boolean' },
           },
         },
         response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 404: ERROR_OBJECT },

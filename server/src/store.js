@@ -814,7 +814,7 @@ export const CHECKS_WAIVER = Object.freeze({
 })
 
 function repoMarks(row) {
-  return { noChecks: row.no_checks === 1, noDeploy: row.no_deploy === 1 }
+  return { noChecks: row.no_checks === 1, noDeploy: row.no_deploy === 1, webGuidance: row.web_guidance === 1 }
 }
 
 // Everything dispatch needs to judge a repo's readiness, read fresh each
@@ -826,7 +826,7 @@ export function getRepoConfig(repoFullName) {
   return { checks: getRepoCheckCommands(repoFullName), ...repoMarks(row), enforcedSince: row.enforced_since ?? null }
 }
 
-// The ONLY writer of no_checks / no_deploy, and its only caller is the
+// The ONLY writer of no_checks / no_deploy / web_guidance (HZ-930), and its only caller is the
 // PIN-gated Admin route in app.js — the same rule as setRepoCheckCommands:
 // no agent may excuse its own repo from checks or deploys. A mark left out
 // of `marks` keeps its stored value. One exception: the one-time HZ-353 seed
@@ -838,9 +838,11 @@ export function setRepoMarks(projectId, repoFullName, marks) {
   const next = { ...repoMarks(row) }
   if (typeof marks?.noChecks === 'boolean') next.noChecks = marks.noChecks
   if (typeof marks?.noDeploy === 'boolean') next.noDeploy = marks.noDeploy
-  db.prepare('UPDATE project_repo SET no_checks = ?, no_deploy = ? WHERE id = ?').run(
+  if (typeof marks?.webGuidance === 'boolean') next.webGuidance = marks.webGuidance
+  db.prepare('UPDATE project_repo SET no_checks = ?, no_deploy = ?, web_guidance = ? WHERE id = ?').run(
     next.noChecks ? 1 : 0,
     next.noDeploy ? 1 : 0,
+    next.webGuidance ? 1 : 0,
     row.id,
   )
   notify()

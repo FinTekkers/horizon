@@ -52,6 +52,8 @@ RESUMES_AFTER_EXHAUSTION = True
 ENFORCES_DENY_RULES = True
 # HZ-771: --add-dir / add_dirs are passed through on both paths.
 READS_ADD_DIRS = True
+# HZ-930: --plugin-dir / plugins load local plugin folders on both paths.
+READS_PLUGIN_DIRS = True
 
 # HZ-424: the SDK reads each CLI message into a buffer capped at 1 MB by
 # default; one Read of a full-page screenshot overflows it and the reader dies.
@@ -189,6 +191,7 @@ def run(
     retry_fresh: bool = True,
     disallowed_tools: str | None = None,
     add_dirs: list[str] | None = None,
+    plugin_dirs: list[str] | None = None,
 ) -> dict:
     """Returns {"result": <final text>, "session_id": <id>}.
 
@@ -209,6 +212,7 @@ def run(
             retry_fresh=retry_fresh,
             disallowed_tools=disallowed_tools,
             add_dirs=add_dirs,
+            plugin_dirs=plugin_dirs,
         )
 
     # This runs inside the agent process (tmux pane), whose environment is
@@ -240,6 +244,7 @@ def run(
                     allowed_tools=allowed_tools,
                     disallowed_tools=disallowed_tools,
                     add_dirs=add_dirs,
+                    plugin_dirs=plugin_dirs,
                     seen=seen,
                     max_buffer_size=buffer_limit,
                 ),
@@ -275,6 +280,7 @@ def run(
                 allowed_tools=allowed_tools,
                 disallowed_tools=disallowed_tools,
                 add_dirs=add_dirs,
+                plugin_dirs=plugin_dirs,
             )
         raise AgentError(f"claude (sdk) failed: {str(exc)[:300]}") from exc
     except Exception as exc:
@@ -296,6 +302,7 @@ async def _stream_query(
     allowed_tools: str | None,
     disallowed_tools: str | None = None,
     add_dirs: list[str] | None = None,
+    plugin_dirs: list[str] | None = None,
     seen: dict | None = None,
     max_buffer_size: int | None = None,
 ) -> dict:
@@ -324,6 +331,8 @@ async def _stream_query(
         strict_mcp_config=True,
         cli_path=CLAUDE_BIN if CLAUDE_BIN != "claude" else None,
         max_buffer_size=max_buffer_size if max_buffer_size is not None else sdk_max_buffer_bytes(),
+        # HZ-930: only when set, so every other run builds today's options.
+        **({"plugins": [{"type": "local", "path": d} for d in plugin_dirs]} if plugin_dirs else {}),
     )
 
     result_text, new_session_id, num_turns, usage = "", None, None, None
@@ -408,6 +417,7 @@ def _run_subprocess(
     retry_fresh: bool = True,
     disallowed_tools: str | None = None,
     add_dirs: list[str] | None = None,
+    plugin_dirs: list[str] | None = None,
 ) -> dict:
     """The pre-HZ-5 path: silent `claude -p --output-format json` subprocess."""
     # --strict-mcp-config: farm agents must NOT inherit the human's personal
@@ -429,6 +439,9 @@ def _run_subprocess(
         cmd += ["--disallowedTools", disallowed_tools]
     for directory in add_dirs or []:
         cmd += ["--add-dir", directory]
+    # HZ-930: a local plugin folder for this one process, never a user-level install.
+    for directory in plugin_dirs or []:
+        cmd += ["--plugin-dir", directory]
 
     try:
         # HZ-140: the model never gets a gate-approving credential, whichever
@@ -476,6 +489,7 @@ def _run_subprocess(
                 allowed_tools=allowed_tools,
                 disallowed_tools=disallowed_tools,
                 add_dirs=add_dirs,
+                plugin_dirs=plugin_dirs,
             )
         raise AgentError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:300]}")
 
