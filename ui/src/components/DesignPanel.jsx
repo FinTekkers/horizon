@@ -42,7 +42,7 @@ function Status({ spec }) {
   if (spec.verdictSkipReason) {
     return (
       <div className="design-panel__status design-panel__status--note">
-        The agent said no design is needed: {spec.verdictSkipReason}. Approve as it is, or use “Design it anyway” on the design row above.
+        No design this round: {spec.verdictSkipReason}. Approve as it is, or use “Design it anyway” on the design row above.
       </div>
     )
   }

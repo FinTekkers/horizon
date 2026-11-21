@@ -91,6 +91,7 @@ def agent(monkeypatch):
 def _studio(monkeypatch, **kwargs) -> FakeStudio:
     fake = FakeStudio(**kwargs)
     monkeypatch.setattr(design_canvas, "run_studio", fake)
+    monkeypatch.setattr(design_canvas, "tool_available", lambda: True)
     return fake
 
 
@@ -102,7 +103,7 @@ def _js_constant(name: str) -> str:
 
 
 def test_the_python_constants_are_the_js_contract():
-    for name in ("CANVAS_MARKER", "CANVAS_LINK_TEXT", "CANVAS_HOST", "CANVAS_SLUG_PATTERN"):
+    for name in ("CANVAS_MARKER", "CANVAS_LINK_TEXT", "CANVAS_HOST", "CANVAS_SLUG_PATTERN", "NO_TOOL_MARKER"):
         assert getattr(design_canvas, name) == _js_constant(name), name
 
 
@@ -302,3 +303,31 @@ def test_a_tenant_project_never_reaches_studio(monkeypatch, agent):
     with pytest.raises(AgentError, match="tenant project"):
         step_agent._execute_design({**_task(), "project": {"id": 4, "name": "Acme", "isolation": "tenant"}})
     assert studio.calls == [] and agent[1] == []
+
+
+# ---- no design tool on the box: a skipped round, never a pause ----
+
+
+def test_with_no_design_tool_the_round_answers_the_no_tool_line_and_runs_no_agent(monkeypatch, agent):
+    replies, seen = agent
+    monkeypatch.setattr(design_canvas, "tool_available", lambda: False)
+    monkeypatch.setattr(design_canvas, "run_studio", lambda *a, **k: pytest.fail("Studio must not be called"))
+    out = step_agent._execute_design(_task())
+    first = out["artifacts"]["artifact_md"].split("\n", 1)[0]
+    assert first.startswith(design_canvas.NO_TOOL_MARKER + " ")
+    assert seen == []
+
+
+def test_the_js_reader_parses_the_no_tool_line_the_farm_writes():
+    node = shutil.which("node")
+    assert node, "node is needed to read the line with the server's own parser"
+    line = design_canvas.format_no_tool_line()
+    script = (
+        f"import {{ parseNoToolLine, parseCanvasLine }} from {json.dumps(JS.as_uri())};"
+        "const a = process.argv[1];"
+        "console.log(JSON.stringify([parseNoToolLine(a), parseCanvasLine(a)]))"
+    )
+    done = subprocess.run([node, "--input-type=module", "-e", script, f"{line}\n\nmore"], capture_output=True, text=True, check=True)
+    reason, canvas = json.loads(done.stdout)
+    assert reason == design_canvas.NO_TOOL_REASON.replace("  ", " ")
+    assert canvas is None

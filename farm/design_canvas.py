@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 
 from .checks import redact, scrub, secret_values
@@ -91,6 +92,22 @@ def canvas_slug(item_id: str, substep_id: str) -> str:
     if not re.fullmatch(CANVAS_SLUG_PATTERN, slug):
         raise ValueError(f"no canvas slug can be made from {item_id!r} and {substep_id!r}")
     return slug
+
+
+# The line a box with no design tool answers in place of a canvas line
+# (domain/js/designCanvas.js NO_TOOL_MARKER, pinned equal by the tests): the
+# server records the round as a skip, so the item moves on to its gate.
+NO_TOOL_MARKER = "**No design tool:**"
+NO_TOOL_REASON = "Meta Studio (`meta`) is not installed on this box, so no canvas was made. Approve as it is, or attach a design."
+
+
+def tool_available() -> bool:
+    """Whether this box can run Studio at all."""
+    return shutil.which("meta") is not None
+
+
+def format_no_tool_line(reason: str = NO_TOOL_REASON) -> str:
+    return f"{NO_TOOL_MARKER} {' '.join(reason.split())}"
 
 
 def format_canvas_line(slug: str, version: int) -> str:
