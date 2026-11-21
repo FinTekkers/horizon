@@ -47,9 +47,9 @@ Have these ready before step 1:
   **`Enter your gate PIN`** dialog. After that it covers your browser session
   for up to 12 hours, until you press **`Lock`** or sign out. The browser never
   stores it. If you don't have it, go to Admin's
-  **`Security · your gate PIN`** panel and press **`Regenerate my PIN`**. The
-  new PIN is shown once, so write it down somewhere safe. Regenerating it
-  makes your old PIN stop working.
+  **`Security · your gate PIN`** panel and press **`Reset PIN`**. Choose your
+  own 6 digits, or generate a random PIN, which is shown once, so write it
+  down somewhere safe. Resetting it makes your old PIN stop working.
 
   ![The gate PIN panel](images/onboarding/00-gate-pin.png)
 
@@ -149,7 +149,7 @@ the row has gone.
 
 **If it fails:**
 
-- **`PIN incorrect — try again.`**: enter the PIN again, or regenerate it
+- **`PIN incorrect — try again.`**: enter the PIN again, or reset it
   (see [Before you start](#before-you-start)).
 - A repo with nothing to check, like a docs-only repo, can be marked
   **`No checks`** with the switch on the same row. Without commands or that

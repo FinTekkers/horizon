@@ -3,8 +3,10 @@
 // Two independent trust boundaries live here, deliberately kept apart:
 //   - Login (password or Google) says WHO you are.
 //   - The gate PIN is a pure cryptographic blocker so an AI agent — which can
-//     read this database — still can't self-approve a gate. It is generated
-//     per account, never chosen, and checked separately from login.
+//     read this database — still can't self-approve a gate. It is set per
+//     account by its human, at sign-up or via Reset (their own 6 digits or a
+//     random value); agents have no path to set it. It is checked separately
+//     from login.
 // Both use the same salted-scrypt hash-at-rest pattern this codebase already
 // used for the (now removed) shared human_key_hash setting.
 
@@ -447,16 +449,54 @@ export function verifyGatePin(userId, pin) {
   return !!row && verifySecret(pin, row.gate_pin_hash)
 }
 
-// Returns the new plaintext PIN — shown once, same as account creation.
-// HZ-704: every session of the user is locked too, so the old PIN's
-// verification does not outlive it.
-export function regenerateGatePin(userId) {
-  const pin = generatePin()
+// HZ-704: replacing the PIN locks every session of the user too, so the old
+// PIN's verification does not outlive it. HZ-935: random and chosen PINs both
+// come through here, so they share one hash and lock path.
+function replaceGatePin(userId, pin, { markRevealed = false } = {}) {
   db.transaction(() => {
     db.prepare('UPDATE user SET gate_pin_hash = ? WHERE id = ?').run(hashSecret(pin), userId)
+    // A chosen PIN counts as shown, so /gate-pin/first can never replace it.
+    if (markRevealed) {
+      db.prepare("UPDATE user SET gate_pin_revealed_at = datetime('now') WHERE id = ? AND gate_pin_revealed_at IS NULL").run(userId)
+    }
     db.prepare('UPDATE session SET pin_verified_until = NULL WHERE user_id = ?').run(userId)
   })()
+}
+
+// Returns the new plaintext PIN — shown once, same as account creation. It
+// comes from crypto.randomInt, and skips the weak-PIN check: 000000 is as
+// likely as any other value.
+export function regenerateGatePin(userId) {
+  const pin = generatePin()
+  replaceGatePin(userId, pin)
   return pin
+}
+
+// HZ-935: chosen PINs refused as too easy to guess — all-same digits, and
+// straight ascending or descending runs. 20 values; tests iterate over them.
+const SAME_DIGITS = Array.from({ length: 10 }, (_, d) => String(d).repeat(6))
+const ASCENDING_RUNS = Array.from({ length: 5 }, (_, i) => '0123456789'.slice(i, i + 6))
+const DESCENDING_RUNS = Array.from({ length: 5 }, (_, i) => '9876543210'.slice(i, i + 6))
+export const WEAK_PINS = new Set([...SAME_DIGITS, ...ASCENDING_RUNS, ...DESCENDING_RUNS])
+
+// Null when a chosen PIN may be stored, else the reason code the route sends.
+// Exactly 6 ASCII digits (leading zeros allowed), a matching confirmation,
+// and not in WEAK_PINS — checked in that order.
+export function validateChosenPin(pin, confirm) {
+  if (typeof pin !== 'string' || !/^[0-9]{6}$/.test(pin)) return 'pin_format'
+  if (pin !== confirm) return 'pin_mismatch'
+  if (WEAK_PINS.has(pin)) return 'pin_weak'
+  return null
+}
+
+// HZ-935: sets a PIN the user chose. Validates it here, so no caller can store
+// an invalid one: returns the reason code and writes nothing, or null once the
+// PIN is stored. Never returns or logs the PIN.
+export function setGatePin(userId, pin, confirm) {
+  const reason = validateChosenPin(pin, confirm)
+  if (reason) return reason
+  replaceGatePin(userId, pin, { markRevealed: true })
+  return null
 }
 
 // HZ-773: a sign-up's first look at its PIN. Its PIN was generated at sign-up

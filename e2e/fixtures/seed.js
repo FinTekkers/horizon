@@ -207,7 +207,7 @@ export function insertAskReview(db, { askId, verdict = 'accept', status = 'done'
 }
 
 // Same salted-scrypt scheme as server/src/auth.js's per-account gate PIN.
-// Writing the hash directly (instead of through Admin's "Regenerate my PIN")
+// Writing the hash directly (instead of through Admin's "Reset PIN")
 // lets a spec know the plaintext. Targets the account global-setup.js already
 // logged in as (its row is created on that first successful login), by email.
 // HZ-704: like regenerateGatePin, it also locks every session of the account,

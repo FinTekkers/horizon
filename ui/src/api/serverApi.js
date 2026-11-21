@@ -306,13 +306,14 @@ export function googleLoginUrl() {
 }
 
 // ---- gate PIN (HZ-704) ----
-// A cryptographic blocker kept separate from login: every account gets its
-// own PIN, auto-generated (never chosen) so an AI agent can't self-approve a
-// gate. The browser never stores it. A correct PIN marks the server's login
-// session PIN-verified for 12 hours, so the PIN dialog (PinDialog.jsx) is
-// asked only when a protected route answers 401, and the PIN lives only in
-// that one request. Every protected request sends x-horizon-csrf, which the
-// server requires on a request that carries no PIN (same-origin check).
+// A cryptographic blocker kept separate from login: every account has its
+// own PIN, set only by its human (HZ-935: their own digits or a random one)
+// so an AI agent can't self-approve a gate. The browser never stores it. A
+// correct PIN marks the server's login session PIN-verified for 12 hours, so
+// the PIN dialog (PinDialog.jsx) is asked only when a protected route answers
+// 401, and the PIN lives only in that one request. Every protected request
+// sends x-horizon-csrf, which the server requires on a request that carries no
+// PIN (same-origin check).
 
 // Before HZ-704 the PIN was kept here in plain text. Removed on load.
 const LEGACY_PIN_STORAGE = 'horizon_gate_pin'
@@ -522,6 +523,27 @@ export async function regenerateGatePin() {
   const result = await postJson('/auth/gate-pin/regenerate', {})
   pinVerifiedUntil = null
   return result
+}
+
+// HZ-935: Reset PIN with a PIN the user chose. Same route as the random reset,
+// plus x-horizon-csrf: it sets a known secret. The server validates it and
+// never echoes it back; neither is it kept here. Rejects with err.code set to
+// the server's reason ('pin_format', 'pin_mismatch', 'pin_weak', …). Like the
+// random reset, it locks every session.
+export async function setGatePin(pin, confirm) {
+  const res = await fetch(`${API_BASE}/auth/gate-pin/regenerate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-horizon-csrf': '1' },
+    body: JSON.stringify({ pin, confirm }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.code = data.error ?? null
+    throw err
+  }
+  pinVerifiedUntil = null
+  return data
 }
 
 // HZ-773: a fresh sign-up's gate PIN, shown once on "Set up your first
