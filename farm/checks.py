@@ -778,6 +778,12 @@ def _failure_kind(case: ET.Element) -> str | None:
     text = "\n".join(
         part for part in (failure.get("type"), failure.get("message"), (failure.text or "")[:FAILURE_TEXT_MAX_CHARS]) if part
     )
+    return _failure_kind_text(text)
+
+
+def _failure_kind_text(text: str) -> str:
+    """The FAILURE_* kind of one failure's text. A failure no table matches,
+    or one with no text, is unknown."""
     for kind, pattern, _reason in _FLAKY_KINDS:
         if pattern.search(text):
             return kind
@@ -795,7 +801,13 @@ def _failure_message(case: ET.Element) -> str | None:
     failure = next((child for child in case if child.tag in ("failure", "error")), None)
     if failure is None:
         return None
-    for source in (failure.get("message"), (failure.text or "")[:FAILURE_TEXT_MAX_CHARS]):
+    return _first_line(failure.get("message"), (failure.text or "")[:FAILURE_TEXT_MAX_CHARS])
+
+
+def _first_line(*sources: str | None) -> str | None:
+    """The first non-empty line of the first source that has one, cut to
+    FAILURE_TEXT_MAX_CHARS, or None."""
+    for source in sources:
         line = next((line.strip() for line in (source or "").splitlines() if line.strip()), None)
         if line:
             return line[:FAILURE_TEXT_MAX_CHARS]
@@ -995,6 +1007,137 @@ def _report_rows(report_dir: Path, ws: Path, log) -> list[dict]:
     return rows
 
 
+# HZ-955: a streamed JSON-lines report's events and statuses.
+_JSONL_EVENTS = ("started", "finished")
+_JSONL_STATUSES = ("pass", "fail", "skip")
+
+
+def _jsonl_line(raw: bytes) -> dict | None:
+    """One report line as an object with a non-empty `name` and `file`, a
+    known `event` and, when finished, a known `status`; None when bad."""
+    try:
+        entry = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(entry, dict):
+        return None
+    name, file, event = entry.get("name"), entry.get("file"), entry.get("event")
+    if not isinstance(name, str) or not name or not isinstance(file, str) or not file:
+        return None
+    if event not in _JSONL_EVENTS:
+        return None
+    if event == "finished" and entry.get("status") not in _JSONL_STATUSES:
+        return None
+    return entry
+
+
+def parse_jsonl(path: Path, ws: Path) -> tuple[list[dict], int]:
+    """HZ-955: (one row per finished test in a JSON-lines report, how many
+    lines were bad). Rows have parse_junit()'s keys. A `started` line adds
+    nothing, so a test that never finished has no row; the last `finished`
+    line per (file, name) wins. Blank lines are not bad. Raises OSError for a
+    file that is too big or unreadable, ValueError when every line is bad."""
+    if path.stat().st_size > REPORT_FILE_MAX_BYTES:
+        raise OSError(f"report is over {REPORT_FILE_MAX_BYTES} bytes")
+    found: dict[tuple, dict] = {}
+    bad = good = 0
+    for raw in path.read_bytes().splitlines():
+        if not raw.strip():
+            continue
+        entry = _jsonl_line(raw)
+        if entry is None:
+            bad += 1
+            continue
+        good += 1
+        if entry["event"] != "finished":
+            continue
+        file = _relative_file(entry["file"], ws)[:TEST_NAME_MAX_CHARS]
+        test = entry["name"][:TEST_NAME_MAX_CHARS]
+        failed = entry["status"] == "fail"
+        failure = entry.get("failure")
+        text = failure[:FAILURE_TEXT_MAX_CHARS] if failed and isinstance(failure, str) else ""
+        duration = entry.get("duration_ms")
+        found[(file, test)] = {
+            "suite": None,
+            "file": file,
+            "test": test,
+            "classname": None,
+            "line": None,
+            "status": entry["status"],
+            "duration_ms": duration if type(duration) is int and duration >= 0 else None,
+            "failure_kind": _failure_kind_text(text) if failed else None,
+            "failure_message": _first_line(text) if failed else None,
+        }
+    if bad and not good:
+        raise ValueError(f"no readable line in {bad} line(s)")
+    return list(found.values()), bad
+
+
+def _jsonl_rows(report_dir: Path, ws: Path, log) -> list[dict]:
+    """HZ-955: every test row from the JSON-lines reports under report_dir —
+    only the attempt's own dir, never the workspace. When two files report
+    the same (file, test), the first file's row is kept. Bad lines are
+    logged and skipped; a file with no readable line is logged like
+    _report_rows()' bad report. Neither changes the check's result."""
+    rows: dict[tuple, dict] = {}
+    for path in sorted(report_dir.rglob("*.jsonl")):
+        try:
+            found, bad = parse_jsonl(path, ws)
+        except (OSError, ValueError) as exc:
+            log(
+                f"checks: could not read test report {path.name} ({exc}) — "
+                "recorded without it; the check's result is unchanged"
+            )
+            continue
+        if bad:
+            log(
+                f"checks: skipped {bad} malformed line(s) in test report {path.name} — "
+                "recorded without them; the check's result is unchanged"
+            )
+        for row in found:
+            rows.setdefault((row["file"], row["test"]), row)
+    return list(rows.values())
+
+
+def _py_module(file: str) -> str | None:
+    """The dotted module pytest's xunit2 classname gives a relative .py
+    file, e.g. farm/tests/test_x.py → farm.tests.test_x; else None."""
+    path = Path(file)
+    if path.suffix != ".py" or path.is_absolute():
+        return None
+    return ".".join(path.with_suffix("").parts)
+
+
+def _xml_index(rows: list[dict]) -> tuple[set[tuple], dict[str, set[str]]]:
+    """The XML rows' (file, test) keys, and each test name's classnames."""
+    files = {(row["file"], row["test"]) for row in rows if row.get("file")}
+    classnames: dict[str, set[str]] = {}
+    for row in rows:
+        if row.get("classname"):
+            classnames.setdefault(row["test"], set()).add(row["classname"])
+    return files, classnames
+
+
+def _xml_duplicate(row: dict, index: tuple[set[tuple], dict[str, set[str]]]) -> bool:
+    """HZ-955: whether an XML row in the same attempt is this JSON-lines
+    row's test — XML wins. Matched on (file, test), or for pytest's xunit2
+    rows (no file) on the classname the JSON-lines file and name give: a
+    `TestY::test_a` name must match `<module>.TestY`; a bare name matches
+    `<module>` or any class in it."""
+    files, classnames = index
+    if (row["file"], row["test"]) in files:
+        return True
+    module = _py_module(row["file"])
+    if module is None:
+        return False
+    head, bracket, params = row["test"].partition("[")
+    classes, _, bare = head.rpartition("::")
+    owners = classnames.get(bare + bracket + params, set())
+    if classes:
+        return ".".join([module, *classes.split("::")]) in owners
+    return any(owner == module or owner.startswith(module + ".") for owner in owners)
+
+
 # HZ-349: the JUnit XML runners write into the workspace on their own —
 # Gradle's build/test-results (also per module), Playwright's and vitest's
 # usual outputs. Read straight after each command, so the next command (a
@@ -1090,7 +1233,10 @@ def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], lo
     HZ-349: the rows also include the workspace's own reports written during
     this run (_workspace_junit). A test in both keeps its report-dir row.
 
-    HO-898: a plain pytest writes its report there too (_attempt_env)."""
+    HO-898: a plain pytest writes its report there too (_attempt_env).
+
+    HZ-955: then the report dir's JSON-lines rows (_jsonl_rows), minus any
+    test an XML row above already has (_xml_duplicate)."""
     report_dir = Path(tempfile.mkdtemp(prefix="horizon-test-report-"))
     try:
         since = time.time()
@@ -1098,6 +1244,8 @@ def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], lo
         rows = _report_rows(report_dir, ws, log)
         reported = {_identity(row) for row in rows}
         rows.extend(row for row in _workspace_junit(ws, since, log) if _identity(row) not in reported)
+        index = _xml_index(rows)
+        rows.extend(row for row in _jsonl_rows(report_dir, ws, log) if not _xml_duplicate(row, index))
         return proc, rows
     finally:
         shutil.rmtree(report_dir, ignore_errors=True)
