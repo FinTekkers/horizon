@@ -15,6 +15,7 @@
 
 import { insertAsk, insertItem, insertStepRun } from './seed.js'
 import { endIndex, stepIndexOf } from '../../domain/js/lifecycle.js'
+import { PROVIDERS } from '../../domain/js/providers.js'
 
 export const EC_EARLY_ID = 'EC-EARLY'
 export const EC_FINAL_ID = 'EC-FINAL'
@@ -31,7 +32,7 @@ const REVIEW = stepIndexOf('change.auto-review')
 const ACCEPT = stepIndexOf('change.accept-code')
 const CLOSE_GATE = endIndex('change') - 1
 const AT = (day, hour) => `2026-11-${String(day).padStart(2, '0')} ${String(hour).padStart(2, '0')}:00:00`
-const MODEL = 'claude-opus-5-5'
+const MODEL = PROVIDERS.find((p) => p.name === 'claude').models[0].id // model ids live in domain/ only
 
 function run(db, itemId, stepIndex, attempt, { agent, start, end, input, output, cacheRead, cacheWrite, cost, turns }) {
   const id = insertStepRun(db, { itemId, stepIndex, attempt, agent, output: 'done', startedAt: start, endedAt: end })
