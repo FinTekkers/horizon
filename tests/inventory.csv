@@ -4,15 +4,14 @@ FinTekkers/horizon,command,,sh -c npm install --no-audit --no-fund,3,3,0,0,0,263
 FinTekkers/horizon,e2e,e2e/tests/01-board.spec.js,board renders phase columns and seeded work items,3,3,0,0,0,740,774,2026-10-07T21:43:21.085Z,0,18
 FinTekkers/horizon,e2e,e2e/tests/02-create-item.spec.js,creating a work item via the modal adds it to the board,3,3,0,0,0,2176,4674,2026-10-07T21:43:21.085Z,0,19
 FinTekkers/horizon,e2e,e2e/tests/03-mock-agents.spec.js,mock agents auto-advance a freshly created item to its first gate,3,3,0,0,0,1549,1569,2026-10-07T21:43:21.085Z,0,18
-FinTekkers/horizon,e2e,e2e/tests/04-gates.spec.js,"approve, approve-with-comments and send-back drive an item through consecutive gates",3,3,0,0,0,5912,6285,2026-10-07T21:43:21.085Z,0,22
+FinTekkers/horizon,e2e,e2e/tests/04-gates-lifecycle.spec.js,approving the closing gate with comments also returns to the board,3,3,0,0,0,2063,2186,2026-10-07T21:43:21.085Z,0,28
+FinTekkers/horizon,e2e,e2e/tests/04-gates-lifecycle.spec.js,"one item travels every gate from creation to closed: approve, approve with comments, move to, close",3,3,0,0,0,15019,15448,2026-10-07T21:43:21.085Z,0,28
 FinTekkers/horizon,e2e,e2e/tests/05-deep-links.spec.js,deep link opens the admin page,3,3,0,0,0,320,386,2026-10-07T21:43:21.085Z,0,22
 FinTekkers/horizon,e2e,e2e/tests/05-deep-links.spec.js,"deep link opens the right item by id, case-insensitively",3,3,0,0,0,374,416,2026-10-07T21:43:21.085Z,0,22
 FinTekkers/horizon,e2e,e2e/tests/06-approvals-drawer.spec.js,pending approvals drawer lists and approves a gated item,3,3,0,0,0,979,1023,2026-10-07T21:43:21.085Z,0,21
 FinTekkers/horizon,e2e,e2e/tests/07-merge-conflict.spec.js,hides the merge-conflict banner for a normal mergeable PR,3,3,0,0,0,312,359,2026-10-07T21:43:21.085Z,0,21
 FinTekkers/horizon,e2e,e2e/tests/07-merge-conflict.spec.js,resolving a conflict in scope reports back at the Accept gate instead of re-implementing,3,3,0,0,0,2313,2395,2026-10-07T21:43:21.085Z,0,21
 FinTekkers/horizon,e2e,e2e/tests/07-merge-conflict.spec.js,shows the merge-conflict banner when the PR cannot be merged,3,3,0,0,0,415,1355,2026-10-07T21:43:21.085Z,0,21
-FinTekkers/horizon,e2e,e2e/tests/08-full-lifecycle.spec.js,approving the closing gate with comments also returns to the board,3,3,0,0,0,2063,2186,2026-10-07T21:43:21.085Z,0,27
-FinTekkers/horizon,e2e,e2e/tests/08-full-lifecycle.spec.js,one item travels the full lifecycle from creation to closed,3,3,0,0,0,9107,9163,2026-10-07T21:43:21.085Z,0,27
 FinTekkers/horizon,e2e,e2e/tests/09-gate-confirm.spec.js,cancelling the confirm dialog sends nothing and leaves the gate untouched,3,3,0,0,0,2114,2129,2026-10-07T21:43:21.085Z,0,20
 FinTekkers/horizon,e2e,e2e/tests/09-gate-confirm.spec.js,"the confirm dialog names the item and gate before any request fires, then confirming sends it",3,3,0,0,0,3425,3528,2026-10-07T21:43:21.085Z,0,20
 FinTekkers/horizon,e2e,e2e/tests/09-queued-work.spec.js,"one running and five queued dispatched steps render as one working card and five Queued cards, and a queued step can be rejected like a running one",3,3,0,0,0,2793,4020,2026-10-07T21:43:21.085Z,0,20
@@ -45,13 +44,12 @@ FinTekkers/horizon,e2e,e2e/tests/22-project-filter.spec.js,"repo chips narrow a 
 FinTekkers/horizon,e2e,e2e/tests/22-project-filter.spec.js,"the filter switches between projects and All projects, and only ever filters",3,3,0,0,0,1143,1260,2026-10-07T21:43:21.085Z,0,22
 FinTekkers/horizon,e2e,e2e/tests/23-project-enabled.spec.js,"flipping a project on with the gate PIN: a wrong PIN changes nothing, the right one enables it",3,3,0,0,0,2353,2380,2026-10-07T21:43:21.085Z,0,24
 FinTekkers/horizon,e2e,e2e/tests/24-mobile-layout.spec.js,"bottom nav switches views, opens approvals with the desktop count, and only shows below 700px",3,3,0,0,0,1719,2241,2026-10-07T21:43:21.085Z,0,26
-FinTekkers/horizon,e2e,e2e/tests/24-mobile-layout.spec.js,dark theme: the bottom nav works the same and paints with the dark tokens,3,3,0,0,0,1700,1840,2026-10-07T21:43:21.085Z,0,26
 FinTekkers/horizon,e2e,e2e/tests/24-mobile-layout.spec.js,"phones never scroll sideways on the board, tracker or an item page",3,3,0,0,0,1456,1475,2026-10-07T21:43:21.085Z,0,26
 FinTekkers/horizon,e2e,e2e/tests/24-mobile-layout.spec.js,the last card and the last activity row end above the bottom nav,3,3,0,0,0,691,3702,2026-10-07T21:43:21.085Z,0,26
 FinTekkers/horizon,e2e,e2e/tests/24-mobile-layout.spec.js,"the phone top bar is one slim row with 44px targets, and the nav is keyboard reachable",3,3,0,0,0,1077,1084,2026-10-07T21:43:21.085Z,0,26
 FinTekkers/horizon,e2e,e2e/tests/25-board-gate-status.spec.js,"Approve on a Board card at Accept shows the run on the card, with no reload",3,3,0,0,0,14622,14647,2026-10-07T21:43:21.085Z,0,21
 FinTekkers/horizon,e2e,e2e/tests/26-board-elapsed.spec.js,"a gate card shows the server-derived time in a non-UTC browser, ticks each minute without a reload, and survives one",3,3,0,0,0,858,869,2026-10-07T21:43:21.085Z,0,20
-FinTekkers/horizon,e2e,e2e/tests/26-board-elapsed.spec.js,"the elapsed line stays on one line at card width in light, dark and phone layouts; paused and closed cards show none",3,3,0,0,0,1372,1612,2026-10-07T21:43:21.085Z,0,20
+FinTekkers/horizon,e2e,e2e/tests/26-board-elapsed.spec.js,the elapsed line stays on one line at card width in desktop and phone layouts; paused and closed cards show none,3,3,0,0,0,1372,1612,2026-10-07T21:43:21.085Z,0,20
 FinTekkers/horizon,e2e,e2e/tests/26-project-autopilot.spec.js,Autopilot defaults to off; a wrong PIN changes nothing; the right one saves and survives a reload,3,3,0,0,0,2189,4862,2026-10-07T21:43:21.085Z,0,15
 FinTekkers/horizon,e2e,e2e/tests/27-pending-while-running.spec.js,"Accept takes the item out of pending approvals while it runs, across a reload, until it ends blocked",3,3,0,0,0,14828,15012,2026-10-07T21:43:21.085Z,0,21
 FinTekkers/horizon,e2e,e2e/tests/27-rules-versions.spec.js,"saving project rules needs the right PIN, lists every version, and restore adds a copy the preview serves",3,3,0,0,0,1434,1614,2026-10-07T21:43:21.085Z,0,15

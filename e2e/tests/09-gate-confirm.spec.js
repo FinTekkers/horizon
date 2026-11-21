@@ -3,7 +3,7 @@
 // asserts directly: (1) the confirm dialog names the real item + gate
 // *before* any request reaches the server, and (2) Cancel sends nothing.
 // HZ-711: an approve is a move — POST /api/items/:id/move, action approve.
-// Each test creates its own item (same pattern as 08-full-lifecycle.spec.js)
+// Each test creates its own item (same pattern as 04-gates-lifecycle.spec.js)
 // so the two tests can't race each other's gate state.
 
 import { test, expect } from '../fixtures/test-base.js'

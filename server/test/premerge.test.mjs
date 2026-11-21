@@ -112,6 +112,59 @@ test('a crashed run keeps the last lines of stderr, not the first', async () => 
   })
 })
 
+// HZ-924: the e2e hold (holdForTest) waits on the result's handling only —
+// the run has already returned — whichever of release and the run comes first.
+const settledYet = (promise) => Promise.race([promise.then(() => true), new Promise((r) => setImmediate(() => r(false)))])
+
+test('a held run settles only after its release, with the result it got', async () => {
+  let finish
+  const spawned = new Promise((resolve) => (finish = resolve))
+  await withRunner(green(), async (calls) => {
+    const real = premerge.runner.spawn
+    premerge.runner.spawn = async (...args) => {
+      await spawned
+      return real(...args)
+    }
+    try {
+      premerge.holdForTest(ITEM.id)
+      const pending = premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+      finish()
+      await new Promise((r) => setImmediate(r))
+      assert.equal(calls.length, 1, 'the run itself was not held back')
+      assert.equal(await settledYet(pending), false, 'still held after the run returned')
+      assert.equal(premerge.releaseForTest(ITEM.id), true)
+      assert.equal((await pending).ok, true)
+      assert.equal(premerge.testHolds.size, 0)
+    } finally {
+      premerge.runner.spawn = real
+    }
+  })
+})
+
+test('a hold released before the run returns adds no wait; a release with no hold is false', async () => {
+  let finish
+  const spawned = new Promise((resolve) => (finish = resolve))
+  await withRunner(green(), async () => {
+    const real = premerge.runner.spawn
+    premerge.runner.spawn = async (...args) => {
+      await spawned
+      return real(...args)
+    }
+    try {
+      premerge.holdForTest(ITEM.id)
+      const pending = premerge.runPreMergeChecks(ITEM, { headSha: HEAD, baseSha: BASE, timeoutMs: 60_000 })
+      assert.equal(premerge.releaseForTest(ITEM.id), true)
+      assert.equal(premerge.testHolds.size, 0)
+      finish()
+      assert.equal((await pending).ok, true)
+    } finally {
+      premerge.runner.spawn = real
+    }
+  })
+  assert.equal(premerge.releaseForTest(ITEM.id), false)
+  assert.equal(premerge.releaseForTest('NO-HOLD-1'), false)
+})
+
 test('describeFailure names the failing check and carries its tail', () => {
   const text = premerge.describeFailure({
     ok: false,

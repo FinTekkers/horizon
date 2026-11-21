@@ -33,10 +33,14 @@ import { hasGithubIssue } from './trackerRefs.js'
 import { sqlTime, msOf } from './sqlTime.js'
 import { addEvent, getDefaultBranch, itemsComingToDeploy, notifyChange, openDependentsOfAny, runningJobsIn } from './store.js'
 import { DEPLOY_STEP_INDEX } from '../../domain/js/lifecycle.js'
+import { envMs } from '../../domain/js/envMs.js'
 
-export const TICK_MS = 5000
+// 5 s in production; only shortened by DEPLOY_TICK_MS in the env (the e2e
+// server sets 200).
+export const TICK_MS = envMs(process.env.DEPLOY_TICK_MS, 5000)
 // HZ-425: failed reads of the branch a due batch releases, in a row, before
-// the batch fails — about 5 minutes at TICK_MS. Never retried silently forever.
+// the batch fails — about 5 minutes at the production TICK_MS, 12 s under the
+// e2e 200 ms tick. Never retried silently forever.
 export const DEFAULT_BRANCH_MAX_ATTEMPTS = 60
 
 export { sqlTime, msOf }
