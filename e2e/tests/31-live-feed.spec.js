@@ -1,6 +1,7 @@
 import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
 import { PRIORITIES, DEFAULT_PRIORITY } from '../../domain/js/priorities.js'
-import { openDb, setGatePinDirect } from '../fixtures/seed.js'
+import { openDb, insertItem, insertStepRun, setGatePinDirect } from '../fixtures/seed.js'
+import { STEPS } from '../../domain/js/lifecycle.js'
 
 // HZ-318: the live feed no longer carries step outputs and sends only what
 // changed, at most once a second. These walk it in the browser: an open item
@@ -10,7 +11,7 @@ import { openDb, setGatePinDirect } from '../fixtures/seed.js'
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ADMIN_EMAIL = 'admin@example.com'
 // Earlier specs rotate the admin's gate PIN, so this one sets its own. Setting
-// it locks the shared session (HZ-704), so the approve below opens the PIN
+// it locks the shared session (HZ-704), so the Retry below opens the PIN
 // dialog, and answering it verifies the session again.
 const GATE_PIN = '318318'
 
@@ -18,6 +19,10 @@ const ITEM = {
   outcome: 'Outcome description long enough to pass validation for this e2e journey.',
   metric: 'Success metric long enough to pass validation.',
 }
+const SEED_ITEM = { desc: ITEM.outcome, metric: ITEM.metric }
+const PLAN_LABEL = 'Plan options & trade-offs (pros / cons)'
+const PLAN_STEP_INDEX = STEPS.findIndex((s) => s.label === PLAN_LABEL)
+const sqliteNow = () => new Date().toISOString().replace('T', ' ').slice(0, 19)
 
 // Two tests create items through the API, which with a connected repository
 // files a GitHub issue. Earlier specs (28-deploy-target-overrides) leave repos
@@ -77,7 +82,7 @@ test('a deep link straight to an item opens its own stream and shows its outputs
   const BOARD_STREAM = /\/stream\?v=2$/
 
   await page.goto('/e2e-5')
-  const card = stepCard(page, 'Plan options & trade-offs (pros / cons)')
+  const card = stepCard(page, PLAN_LABEL)
   for (let pass = 0; pass < 2; pass++) {
     await expect(card.getByRole('link', { name: 'attempt 2 of 2 ↗' })).toBeVisible()
     await expect(card.getByText('no output recorded', { exact: false })).toHaveCount(0)
@@ -92,35 +97,44 @@ test('a deep link straight to an item opens its own stream and shows its outputs
   expect(await streamStates(BOARD_STREAM)).toEqual([EVENTSOURCE_OPEN])
 })
 
-test('a step that finishes while its item is open shows its output with no reload', async ({ request, page }) => {
-  const res = await request.post('/api/items', { data: { title: 'E2E live step output', ...ITEM } })
-  expect(res.ok()).toBeTruthy()
-  const { id } = await res.json()
+test('a step that finishes while its item is open shows its output with no reload', async ({ page }) => {
+  // Seeded at Plan, paused after a failed first run (as failFarmRun leaves
+  // it), so Retry starts the step with the page open — no gate on the way.
+  const id = 'LIVE-318'
+  const now = sqliteNow()
   const db = openDb(DB_PATH)
   try {
+    insertItem(db, { id, title: 'E2E live step output', cursor: PLAN_STEP_INDEX, paused: 1, ...SEED_ITEM })
+    insertStepRun(db, { itemId: id, stepIndex: PLAN_STEP_INDEX, attempt: 1, agent: 'Ensemble', status: 'cancelled', startedAt: now, endedAt: now })
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
     db.close()
   }
 
   await page.goto(`/${id.toLowerCase()}`)
-  await expect(page.locator('.step-card--awaiting')).toContainText('Approve & prioritize this work', {
-    timeout: 10_000,
-  })
-  const plan = stepCard(page, 'Plan options & trade-offs (pros / cons)')
+  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible({ timeout: 10_000 })
+  const plan = stepCard(page, PLAN_LABEL)
+  const retry = plan.getByRole('button', { name: 'Retry', exact: true })
+  await expect(retry).toBeVisible()
   await expect(plan.getByRole('link', { name: 'See agent output ↗' })).toHaveCount(0)
+  // Survives only if the page is never reloaded.
+  await page.evaluate(() => {
+    window.__liveFeedNoReload = 1
+  })
 
-  await page.locator('.btn-gate-approve').click()
-  await page.locator('.composer__submit').click()
+  await retry.click()
+  const dialog = page.getByRole('dialog', { name: `Retry this step · ${id}` })
+  await dialog.getByRole('button', { name: 'Retry', exact: true }).click()
   await answerPinDialog(page, GATE_PIN)
 
-  // The next agent steps run while the page stays open; their outputs arrive
-  // through the item's own stream.
+  // The step runs while the page stays open; its output arrives through the
+  // item's own stream.
   await expect(page.locator('.step-card--awaiting')).toContainText('Approve the high-level design', {
     timeout: 10_000,
   })
   await expect(plan.getByRole('link', { name: 'See agent output ↗' })).toBeVisible()
   await expect(plan.getByText('no output recorded', { exact: false })).toHaveCount(0)
+  expect(await page.evaluate(() => window.__liveFeedNoReload)).toBe(1)
 })
 
 test('a new item and a change to an existing row both reach the Board within 2 s', async ({ request, page }) => {

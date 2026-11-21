@@ -80,11 +80,6 @@
       "suite": "e2e"
     },
     {
-      "file": "e2e/tests/09-gate-confirm.spec.js",
-      "reason": "3 of 10 clean runs",
-      "suite": "e2e"
-    },
-    {
       "file": "e2e/tests/09-queued-work.spec.js",
       "reason": "3 of 10 clean runs",
       "suite": "e2e"
@@ -96,11 +91,6 @@
     },
     {
       "file": "e2e/tests/10-artifact-history.spec.js",
-      "reason": "3 of 10 clean runs",
-      "suite": "e2e"
-    },
-    {
-      "file": "e2e/tests/10-gate-key.spec.js",
       "reason": "3 of 10 clean runs",
       "suite": "e2e"
     },
@@ -1487,7 +1477,7 @@
   ],
   "floor": 0.95,
   "history_through": "2026-10-07T21:43:21.085Z",
-  "inputs_sha256": "c158b8652409caaac3d55510faa68a77b04208c14b08ffff4e0061c474e8e9bc",
+  "inputs_sha256": "ebc653934f96cc991e6fd41300f4387ba6a723e6432775b73e9b78ad31363263",
   "max_age_days": 14,
   "min_clean_runs": 10,
   "repo": "FinTekkers/horizon",

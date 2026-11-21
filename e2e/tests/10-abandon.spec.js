@@ -3,8 +3,8 @@
 // shared login session global-setup.js PIN-verified (HZ-704), so no PIN
 // dialog opens. A missing or wrong PIN is refused by the route
 // (server/test/app.test.mjs and server/test/gate-pin-routes.test.mjs);
-// 10-gate-key.spec.js walks the right / wrong / cancelled PIN dialog once,
-// on a gate.
+// 65-pin-session.spec.js walks the right / wrong / cancelled PIN dialog
+// once, on a gate.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'

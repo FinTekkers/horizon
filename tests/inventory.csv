@@ -12,14 +12,10 @@ FinTekkers/horizon,e2e,e2e/tests/06-approvals-drawer.spec.js,pending approvals d
 FinTekkers/horizon,e2e,e2e/tests/07-merge-conflict.spec.js,hides the merge-conflict banner for a normal mergeable PR,3,3,0,0,0,312,359,2026-10-07T21:43:21.085Z,0,21
 FinTekkers/horizon,e2e,e2e/tests/07-merge-conflict.spec.js,resolving a conflict in scope reports back at the Accept gate instead of re-implementing,3,3,0,0,0,2313,2395,2026-10-07T21:43:21.085Z,0,21
 FinTekkers/horizon,e2e,e2e/tests/07-merge-conflict.spec.js,shows the merge-conflict banner when the PR cannot be merged,3,3,0,0,0,415,1355,2026-10-07T21:43:21.085Z,0,21
-FinTekkers/horizon,e2e,e2e/tests/09-gate-confirm.spec.js,cancelling the confirm dialog sends nothing and leaves the gate untouched,3,3,0,0,0,2114,2129,2026-10-07T21:43:21.085Z,0,20
-FinTekkers/horizon,e2e,e2e/tests/09-gate-confirm.spec.js,"the confirm dialog names the item and gate before any request fires, then confirming sends it",3,3,0,0,0,3425,3528,2026-10-07T21:43:21.085Z,0,20
 FinTekkers/horizon,e2e,e2e/tests/09-queued-work.spec.js,"one running and five queued dispatched steps render as one working card and five Queued cards, and a queued step can be rejected like a running one",3,3,0,0,0,2793,4020,2026-10-07T21:43:21.085Z,0,20
 FinTekkers/horizon,e2e,e2e/tests/10-abandon.spec.js,"a wrong then cancelled gate PIN blocks abandonment, leaving the item untouched",3,3,0,0,0,692,701,2026-10-07T21:43:21.085Z,0,23
 FinTekkers/horizon,e2e,e2e/tests/10-abandon.spec.js,"abandoning an item requires a reason, closes it out distinctly from completed, and drops it from the active count",3,3,0,0,0,2734,3149,2026-10-07T21:43:21.085Z,0,23
 FinTekkers/horizon,e2e,e2e/tests/10-artifact-history.spec.js,"artifact history: board link opens the latest attempt, with a working link to the prior one",3,3,0,0,0,827,858,2026-10-07T21:43:21.085Z,0,17
-FinTekkers/horizon,e2e,e2e/tests/10-gate-key.spec.js,a wrong then cancelled gate key blocks the gate action,3,3,0,0,0,553,574,2026-10-07T21:43:21.085Z,0,20
-FinTekkers/horizon,e2e,e2e/tests/10-gate-key.spec.js,the correct gate PIN approves the gate via the window.prompt() flow,3,3,0,0,0,1872,3244,2026-10-07T21:43:21.085Z,0,20
 FinTekkers/horizon,e2e,e2e/tests/10-login-error.spec.js,"an ?error= redirect lands on the login page with a readable message, and the param is stripped",3,3,0,0,0,249,256,2026-10-07T21:43:21.085Z,0,4
 FinTekkers/horizon,e2e,e2e/tests/10-login-error.spec.js,"an unauthenticated deep link to a specific item lands on the login page, not the board",3,3,0,0,0,208,211,2026-10-07T21:43:21.085Z,0,4
 FinTekkers/horizon,e2e,e2e/tests/10-login-error.spec.js,"with no ?error= param, the login page renders with no error banner",3,3,0,0,0,206,224,2026-10-07T21:43:21.085Z,0,4

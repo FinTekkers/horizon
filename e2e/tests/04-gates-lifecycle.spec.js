@@ -2,7 +2,8 @@
 // walked an item from Plan across the same gates). One item is created and
 // taken through every gate to closed: approve from the board, approve with
 // comments, Move to… with the default and an explicit target, and plain
-// approves through to the closing gate.
+// approves through to the closing gate. HZ-38's confirm dialog (was
+// 09-gate-confirm) gets its own item, seeded at the first gate.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
@@ -134,4 +135,54 @@ test('approving the closing gate with comments also returns to the board', async
   await page.locator('.board__filter-chip', { hasText: 'Closed' }).click()
   const card = page.locator('.card').filter({ has: page.locator('.card__id', { hasText: id }) })
   await expect(card.locator('.status-pill')).toContainText('Closed')
+})
+
+test('the confirm dialog names the item and gate before any request fires; Cancel and Esc send nothing, confirm sends the approve', async ({
+  page,
+}) => {
+  // HZ-38: an approve is an explicit act, never a silent auto-send. Seeded
+  // straight at the first gate; every move request is recorded.
+  const id = 'GATE-CONFIRM'
+  const db = openDb(DB_PATH)
+  try {
+    insertItem(db, { id, title: 'E2E gate-confirm request ordering', cursor: 3 })
+  } finally {
+    db.close()
+  }
+  const calls = []
+  await page.route('**/api/items/*/move', (route) => {
+    calls.push(route.request().postDataJSON())
+    route.continue()
+  })
+  const awaiting = page.locator('.step-card--awaiting')
+
+  await page.goto(`/${id.toLowerCase()}`)
+  await expect(awaiting).toContainText(GATES[0], { timeout: 10_000 })
+
+  // Cancel, then Esc (guardrail: keyboard accessible): no request, gate stays.
+  await page.locator('.btn-gate-approve').click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  await page.locator('.composer__cancel').click()
+  await expect(page.locator('.composer__title')).toHaveCount(0)
+  expect(calls).toEqual([])
+  await expect(awaiting).toContainText(GATES[0])
+
+  await page.locator('.btn-gate-approve').click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.composer__title')).toHaveCount(0)
+  expect(calls).toEqual([])
+  await expect(awaiting).toContainText(GATES[0])
+
+  // The dialog names the real item and gate — nothing has hit the server yet.
+  await page.locator('.btn-gate-approve').click()
+  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+  await expect(page.locator('.composer__sub')).toContainText(id)
+  await expect(page.locator('.composer__sub')).toContainText(GATES[0])
+  expect(calls).toEqual([])
+
+  await page.locator('.composer__submit').click()
+  await expect.poll(() => calls.length, { timeout: 10_000 }).toBe(1)
+  expect(calls).toEqual([{ action: 'approve', from: 'change.approve-prioritize' }])
+  await expect(awaiting).toContainText(GATES[1], { timeout: 10_000 })
 })
