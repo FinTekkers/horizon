@@ -22,7 +22,7 @@ import { hasNoProject } from './membership.js'
 import { FIRST_GATE_INDEXES } from './goldenCases.js'
 import { DESIGN_OUTPUT, designSubstepOf, latestRound } from './designRounds.js'
 import { parseCanvasLine } from '../../domain/js/designCanvas.js'
-import { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, requiredStepIndex } from '../../domain/js/lifecycle.js'
+import { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, laneCheckIndexes, laneSkips, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
 export { DESIGN_OUTPUT, parseCanvasLine }
 
@@ -58,7 +58,13 @@ const deleteSpec = db.prepare('DELETE FROM design_spec WHERE item_id = ?')
 // item is a work_item row or getItem() — either carries project_id and
 // substeps_json.
 export function designRequired(item) {
-  if (!item || hasNoProject(db, item.project_id) || !designSubstepOf(item)) return false
+  const sub = item ? designSubstepOf(item) : null
+  if (!item || hasNoProject(db, item.project_id) || !sub) return false
+  // HZ-943: a lane that skips the step the sub-step follows, or confirms it by
+  // a server-side check instead of an agent (the trivial lane checks "Define
+  // how we measure success"), never gets a design verdict or round, so never
+  // waits on a design.
+  if (laneSkips(item).has(sub.anchor) || laneCheckIndexes(item).has(sub.anchor)) return false
   return selectProjectSwitch.get(item.project_id)?.definitions_enabled === 1
 }
 

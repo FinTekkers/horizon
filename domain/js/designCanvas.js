@@ -25,6 +25,24 @@ const LINE_RE = new RegExp(
   `^${escape(CANVAS_MARKER)} \\[${escape(CANVAS_LINK_TEXT)}\\]\\((https://${escape(CANVAS_HOST)}/canvas/(${CANVAS_SLUG_PATTERN}))\\) · slug \`\\2\` · version ([1-9][0-9]{0,8})$`,
 )
 
+// A box with no design tool (no `meta` on this host) answers this line in
+// place of a canvas line, and the server records the round as a skip, so the
+// item moves on to its gate instead of pausing. Same first-line rule.
+export const NO_TOOL_MARKER = '**No design tool:**'
+
+export function formatNoToolLine(reason) {
+  return `${NO_TOOL_MARKER} ${String(reason).replace(/\s+/g, ' ').trim()}`
+}
+
+// The reason on the artifact's first line when it is a no-tool line, else null.
+export function parseNoToolLine(artifact) {
+  if (typeof artifact !== 'string') return null
+  const first = artifact.split('\n', 1)[0].replace(/\r$/, '')
+  if (!first.startsWith(`${NO_TOOL_MARKER} `)) return null
+  const reason = first.slice(NO_TOOL_MARKER.length + 1).trim()
+  return reason || null
+}
+
 export function canvasUrlFor(slug) {
   return `https://${CANVAS_HOST}/canvas/${slug}`
 }

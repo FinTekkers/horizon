@@ -3218,6 +3218,14 @@ def _execute_design(task: dict) -> dict:
     # same line web-page visuals keep, visual_page_section).
     if is_tenant_project(task.get("project")):
         raise AgentError(f"{design_canvas.DESIGN_FAILED}: a design sub-step does not run for a tenant project")
+    # No design tool on this box: answer the no-tool line, which the server
+    # records as a skipped round, rather than fail and pause the item.
+    if not design_canvas.tool_available():
+        log("design: no design tool on this box (meta is not installed); the round is skipped")
+        return {
+            "summary": "No design tool on this box, so the design round was skipped.",
+            "artifacts": {"artifact_md": design_canvas.format_no_tool_line()},
+        }
     previous = sub.get("previous_canvas_url")
     previous_slug = design_canvas.slug_from_url(previous)
     if previous is not None and previous_slug is None:

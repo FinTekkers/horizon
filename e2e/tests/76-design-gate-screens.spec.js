@@ -36,7 +36,7 @@ const ANCHORS = {
   'design-gate-skipped': (page) => [
     designRow(page).getByText(`Skipped: ${DS_SKIP_REASON}`),
     designRow(page).getByRole('button', { name: 'Design it anyway' }),
-    page.getByTestId('design-panel').getByText(/The agent said no design is needed/),
+    page.getByTestId('design-panel').getByText(/No design this round/),
   ],
 }
 
