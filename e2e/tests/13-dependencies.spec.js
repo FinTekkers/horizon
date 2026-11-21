@@ -18,7 +18,7 @@ import { openDb, insertItem, insertDependency, setGatePinDirect } from '../fixtu
 
 const DB_PATH = process.env.HORIZON_E2E_DB
 const ADMIN_EMAIL = 'admin@example.com'
-// Its own PIN: 10-gate-key.spec.js runs earlier and rotates the admin PIN.
+// Its own PIN: earlier specs rotate the admin PIN.
 // Setting it locks the shared session, so the abandon below opens the PIN
 // dialog (HZ-704).
 const GATE_PIN = '354354'

@@ -73,7 +73,7 @@ test('a failed rehearsal names its reason, offers no Approve before or after a r
     await expect(gate.getByRole('button', { name: GATE, exact: true })).toHaveCount(0)
     await expect(gate.getByRole('button', { name: 'Approve with comments' })).toHaveCount(0)
     await expect(gate.getByRole('button', { name: 'Send back to Run plan' })).toBeVisible()
-    await expect(gate.getByRole('button', { name: 'Return to…' })).toBeVisible()
+    await expect(gate.getByRole('button', { name: 'Move to…' })).toBeVisible()
   }
   await expectBlocked()
   await page.reload()

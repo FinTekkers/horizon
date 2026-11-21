@@ -138,10 +138,8 @@ test('the agent output view says when the farm can’t be reached, and recovers 
   const status = view.locator('#status')
   await expect(status).toHaveText('Can’t reach the farm. Retrying…', { timeout: 10_000 })
   await expect(view.locator('#log')).toHaveText('Waiting for output…')
-  for (const colorScheme of ['light', 'dark']) {
-    await view.emulateMedia({ colorScheme })
-    await testInfo.attach(`agent-output-farm-down-${colorScheme}`, { body: await view.screenshot(), contentType: 'image/png' })
-  }
+  // Light only (HZ-924): dark is the screenshot capture's.
+  await testInfo.attach('agent-output-farm-down-light', { body: await view.screenshot(), contentType: 'image/png' })
 
   await expect(view.locator('#log')).toHaveText(LINE, { timeout: 10_000 })
   await expect(status).toHaveText('Run finished.', { timeout: 10_000 })

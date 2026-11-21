@@ -126,7 +126,7 @@ async function openItem(item) {
 const buttons = (name) => [...document.querySelectorAll('button')].filter((b) => b.textContent.trim() === name)
 const button = (name) => buttons(name)[0] || null
 // HZ-711: the gate card's buttons; Approve is also the header menu's.
-const GATE_BUTTONS = ['Approve', 'Approve with comments', 'Return to…']
+const GATE_BUTTONS = ['Approve', 'Approve with comments', 'Move to…']
 const expectGateButtons = (disabled) => {
   for (const name of GATE_BUTTONS) {
     expect(buttons(name).length, name).toBeGreaterThan(0)

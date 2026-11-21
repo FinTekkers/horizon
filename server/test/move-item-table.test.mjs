@@ -197,7 +197,7 @@ test('moveTargets: a gate lists its approve, its earlier steps and its sub-steps
   const byKey = Object.fromEntries(targets.map((t) => [t.stepKey, t]))
   assert.deepEqual(
     targets.map((t) => t.stepKey),
-    ['change.deploy', ...allowedTargets(gate), `${IMPLEMENT}#impl-audit`],
+    ['change.deploy', ...allowedTargets(gate), `${IMPLEMENT}#impl-audit`, 'change.review-close'],
   )
   assert.deepEqual(byKey['change.deploy'], {
     stepKey: 'change.deploy',
@@ -214,8 +214,8 @@ test('moveTargets: a gate lists its approve, its earlier steps and its sub-steps
   assert.equal(byKey[`${IMPLEMENT}#impl-audit`].redo, 'Redoes “Audit the change” and 2 later steps')
   assert.deepEqual(Object.keys(toPublicTarget(byKey[IMPLEMENT])), ['stepKey', 'isDefault', 'redo', 'reapprovals', 'stopsRunning'])
 
-  // Merged: nothing before Accept the code, sub-steps included.
-  assert.deepEqual(moveTargets({ ...gate, merged_at: '2026-11-01 00:00:00' }).map((t) => t.stepKey), ['change.deploy'])
+  // Merged: nothing before Accept the code, sub-steps included (HZ-920: Close is not before it).
+  assert.deepEqual(moveTargets({ ...gate, merged_at: '2026-11-01 00:00:00' }).map((t) => t.stepKey), ['change.deploy', 'change.review-close'])
   assert.deepEqual(moveTargets(gate, { approvable: false }).map((t) => t.action).filter((a) => a === 'approve'), [])
   assert.deepEqual(moveTargets(gate, { enabled: false }), [])
   assert.deepEqual(moveTargets({ ...gate, abandoned_at: '2026-11-01 00:00:00' }), [])
@@ -229,7 +229,12 @@ test('moveTargets: an agent step lists its retry as the default, the forward to 
   const running = itemAt('change', 'change.draft-plan')
   assert.deepEqual(
     moveTargets(running, { running: true }).map((t) => [t.stepKey, t.action, t.isDefault, t.stopsRunning]),
-    [['change.draft-plan', 'retry', true, true], ...allowedTargets(running).map((key) => [key, 'return', false, true])],
+    [
+      ['change.draft-plan', 'retry', true, true],
+      ...allowedTargets(running).map((key) => [key, 'return', false, true]),
+      // HZ-920: Close, last.
+      ['change.review-close', 'skip', false, true],
+    ],
   )
   assert.equal(moveTargets(running)[0].redo, `Redoes “${rowOf('change.draft-plan').label}”`)
   const sub = itemAt('change', IMPLEMENT, {

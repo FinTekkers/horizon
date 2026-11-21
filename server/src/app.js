@@ -580,7 +580,10 @@ let flushTimer = null
 // the live DB (234 items, 2026-10-06): one flush — slim build plus diff — is
 // ~55 ms; the old per-change full snapshot was ~145 ms to build and 9.4 MB per
 // tab. A single-item delta is ~3 KB (16 KB for the largest item).
-export const STREAM_BATCH_MS = 1000
+// STREAM_BATCH_MS in the env shortens it for the e2e server only
+// (e2e/playwright.config.js sets 100): every live change a spec waits on paid
+// the full window, ~1.3 s each, 84 s of the 19 Nov suite. Floor 50 ms.
+export const STREAM_BATCH_MS = Math.max(Number(process.env.STREAM_BATCH_MS) || 1000, 50)
 
 // A store change, or one of the routes below after a farm/sync state change.
 // Never writes to a socket itself: see flushStream().
@@ -6340,6 +6343,24 @@ export function buildApp({
     fastify.post('/api/test/github-pr', { config: { scope: 'test' } }, async (request) => {
       githubTestHooks.setPrStateForTest(request.body?.pr ?? null)
       return { ok: true }
+    })
+
+    // e2e only (HZ-924): holds what the Accept gate does with one item's
+    // pre-merge result until premerge-release, so a spec controls how long the
+    // run stays in flight instead of sleeping. The farm.premerge run itself is
+    // still the real one (see premerge.holdForTest).
+    fastify.post('/api/test/premerge-hold', { config: { scope: 'test' } }, async (request, reply) => {
+      const itemId = request.body?.itemId
+      if (typeof itemId !== 'string' || !itemId) return reply.code(400).send({ error: 'itemId must be a string' })
+      premerge.holdForTest(itemId)
+      return { ok: true }
+    })
+
+    // `released` is false when no hold was set, so a teardown can always call it.
+    fastify.post('/api/test/premerge-release', { config: { scope: 'test' } }, async (request, reply) => {
+      const itemId = request.body?.itemId
+      if (typeof itemId !== 'string' || !itemId) return reply.code(400).send({ error: 'itemId must be a string' })
+      return { ok: true, released: premerge.releaseForTest(itemId) }
     })
 
     // e2e only (HZ-509), same reasoning: with no GitHub token, nothing can

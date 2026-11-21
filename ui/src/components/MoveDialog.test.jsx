@@ -35,7 +35,7 @@ test('clicking an earlier step opens one dialog with the server’s summary; con
   expect(dialogs).toHaveLength(1)
   const dialog = within(dialogs[0])
   expect(dialogs[0].getAttribute('aria-labelledby')).toBe('move-dialog-title')
-  expect(dialog.getByText('Return to an earlier step · HZ-902', { exact: false })).toBeTruthy()
+  expect(dialog.getByText('Move to an earlier step · HZ-902', { exact: false })).toBeTruthy()
   const summary = dialog.getByTestId('move-summary')
   expect(within(summary).getByText('Review before execution', { selector: '.move-dialog__target' })).toBeTruthy()
   expect(within(summary).getByText('Redoes 2 steps, from “Review before execution” to “Specialist agent implements”.')).toBeTruthy()
@@ -109,13 +109,13 @@ for (const [status, error, message] of [
     const server = stubServer({ moveReply: () => server.json(status, { error }) })
     await mountApp(server, `/${GATE_ITEM.id.toLowerCase()}`)
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Return to…' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Move to…' }))
     fireEvent.change(screen.getByLabelText('Note for the step (optional)'), { target: { value: 'try again' } })
     fireEvent.click(screen.getByRole('button', { name: 'Return here' }))
     await enterPin()
 
     expect((await screen.findByRole('alert')).textContent).toBe(message)
-    expect(screen.getByRole('dialog', { name: /Return to an earlier step/ })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: /Move to an earlier step/ })).toBeTruthy()
     expect(screen.getByLabelText('Note for the step (optional)').value).toBe('try again')
 
     // The item moved: the stream's newer snapshot offers one target only.
@@ -124,7 +124,7 @@ for (const [status, error, message] of [
       moves: { ...GATE_ITEM.moves, targets: [{ ...GATE_ITEM.moves.targets[2], isDefault: true }] },
     }
     act(() => server.push([moved, RUNNING_ITEM]))
-    const radios = within(screen.getByRole('group', { name: 'Return to' })).getAllByRole('radio')
+    const radios = within(screen.getByRole('group', { name: 'Move to' })).getAllByRole('radio')
     expect(radios.map((r) => r.value)).toEqual(['change.summarize-reviews'])
     expect(radios[0].checked).toBe(true)
   })
@@ -164,7 +164,7 @@ test('HO-853: requireNote keeps Request changes unsent until the note has text, 
   const dialog = within(screen.getByRole('dialog', { name: /Request design changes · HZ-953/ }))
   const submit = dialog.getByRole('button', { name: 'Request changes' })
   const note = dialog.getByLabelText('Brief for the next round (required)')
-  expect(dialog.queryByRole('group', { name: 'Return to' })).toBeNull()
+  expect(dialog.queryByRole('group', { name: 'Move to' })).toBeNull()
   expect(submit.disabled).toBe(true)
   fireEvent.click(submit)
   fireEvent.keyDown(window, { key: 'Enter', ctrlKey: true })
@@ -185,8 +185,46 @@ test('HO-853: without the new props the dialog reads and sends exactly as before
   const onConfirm = vi.fn()
   render(<MoveDialog item={DESIGN_ITEM} action="return" stepKey={DESIGN_KEY} onConfirm={onConfirm} onCancel={() => {}} />)
   const dialog = within(screen.getByRole('dialog'))
-  expect(dialog.getByText('Return to an earlier step · HZ-953', { exact: false })).toBeTruthy()
+  expect(dialog.getByText('Move to an earlier step · HZ-953', { exact: false })).toBeTruthy()
   expect(dialog.getByLabelText('Note for the step (optional)')).toBeTruthy()
   fireEvent.click(dialog.getByRole('button', { name: 'Return here' }))
   expect(onConfirm).toHaveBeenCalledWith('return', DESIGN_KEY, '')
+})
+
+// HZ-920 metric 1: Move to… lists the snapshot's earlier steps, then one
+// option labelled Close — the server's skip to the kind's final gate. Picking
+// it shows the server's own line and sends its key; no "Return to" text shows.
+const CLOSE_ITEM = {
+  ...GATE_ITEM,
+  id: 'HZ-920',
+  moves: servedMoves({
+    approve: null,
+    targets: [
+      { key: 'change.define-outcome', label: 'The outcome', action: 'return', redo: 'Redoes “The outcome” and 2 later steps' },
+      { key: 'change.plan-options', label: 'Plan options', action: 'return', isDefault: true, redo: 'Redoes “Plan options” and 1 later step' },
+      { key: 'change.draft-plan', label: 'The plan', action: 'retry', redo: 'Redoes “The plan”' },
+      { key: 'change.review-close', label: 'Close', action: 'skip', redo: 'Skips 10 steps and waits at “The final gate” for approval' },
+    ],
+    canAbandon: true,
+  }),
+}
+
+test('HZ-920: Move to… lists the earlier steps, then Close last; choosing Close sends its key', () => {
+  const onConfirm = vi.fn()
+  render(<MoveDialog item={CLOSE_ITEM} action="return" onConfirm={onConfirm} onCancel={() => {}} />)
+  const panel = screen.getByRole('dialog', { name: /Move to an earlier step · HZ-920/ })
+  const dialog = within(panel)
+  const radios = within(dialog.getByRole('group', { name: 'Move to' })).getAllByRole('radio')
+  expect(radios.map((r) => r.value)).toEqual(['change.define-outcome', 'change.plan-options', 'change.review-close'])
+  expect(radios.map((r) => r.closest('label').textContent)).toEqual(['The outcome', 'Plan optionsDefault', 'Close'])
+  expect(radios[1].checked).toBe(true)
+  expect(panel.textContent).not.toMatch(/Return to/)
+
+  fireEvent.click(dialog.getByRole('radio', { name: 'Close' }))
+  const summary = within(dialog.getByTestId('move-summary'))
+  expect(summary.getByText('Close', { selector: '.move-dialog__target' })).toBeTruthy()
+  expect(summary.getByText('Skips 10 steps and waits at “The final gate” for approval')).toBeTruthy()
+  fireEvent.change(dialog.getByLabelText('Note for the step (optional)'), { target: { value: ' done another way ' } })
+  fireEvent.click(dialog.getByRole('button', { name: 'Return here' }))
+  expect(onConfirm).toHaveBeenCalledWith('return', 'change.review-close', 'done another way')
 })

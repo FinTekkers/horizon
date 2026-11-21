@@ -2304,12 +2304,56 @@ db.exec(`
     who        TEXT NOT NULL,
     from_key   TEXT NOT NULL,
     to_key     TEXT NOT NULL,
-    action     TEXT NOT NULL CHECK (action IN ('approve','return','retry','abandon','reopen','close')),
+    action     TEXT NOT NULL CHECK (action IN ('approve','return','retry','abandon','reopen','close','skip')),
     note       TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS item_move_item ON item_move (item_id, id);
 `)
+
+// HZ-920: `skip` — a human's Move to… → Close, straight to the kind's final
+// gate (moveItem.js). An item_move table whose stored DDL lacks it is rebuilt
+// once, by HZ-697's procedure: only the action CHECK changes, every row, the
+// index and the AUTOINCREMENT high-water mark are kept, foreign keys are off
+// for the rebuild, and a bad shape or a new foreign-key violation throws,
+// rolls back and stops the boot.
+{
+  const LEGACY_ACTIONS = "'reopen','close'))"
+  const ACTIONS = "'reopen','close','skip'))"
+  const stored = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'item_move'").get().sql
+  if (!stored.includes("'skip'")) {
+    if (stored.split(LEGACY_ACTIONS).length !== 2) throw new Error('db: expected one action CHECK on item_move')
+    const head = /^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?["`]?item_move["`]?\s*\(/i
+    if (!head.test(stored)) throw new Error('db: unexpected item_move DDL — will not rebuild it')
+    const ddl = stored.replace(head, 'CREATE TABLE item_move_v2 (').replace(LEGACY_ACTIONS, ACTIONS)
+    const indexes = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'item_move' AND sql IS NOT NULL")
+      .all()
+      .map((row) => row.sql)
+    const seq = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'item_move'").get()?.seq ?? null
+    const violations = () => db.pragma('foreign_key_check').length
+    const before = violations()
+    db.pragma('foreign_keys = OFF')
+    try {
+      db.transaction(() => {
+        db.exec(ddl)
+        const columns = (table) => db.prepare(`SELECT COUNT(*) AS n FROM pragma_table_info('${table}')`).get().n
+        if (columns('item_move_v2') !== columns('item_move')) throw new Error('db: item_move rebuild changed the column count')
+        db.exec(`
+          INSERT INTO item_move_v2 SELECT * FROM item_move;
+          DROP TABLE item_move;
+          ALTER TABLE item_move_v2 RENAME TO item_move;
+        `)
+        for (const sql of indexes) db.exec(sql)
+        // AUTOINCREMENT's high-water mark, so a deleted top id is never reused.
+        if (seq != null) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'item_move'").run(seq)
+        if (violations() > before) throw new Error('db: item_move rebuild left a foreign-key violation')
+      })()
+    } finally {
+      db.pragma('foreign_keys = ON')
+    }
+  }
+}
 
 // HZ-710: the unused `rejected` flag goes. Boot runs it after
 // store.recoverLegacyRejected() has requeued any row still flagged, so the

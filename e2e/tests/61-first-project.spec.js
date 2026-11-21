@@ -67,7 +67,7 @@ async function triggerFrame(request) {
   expect(res.ok()).toBeTruthy()
 }
 
-test('the first-project setup screen: who sees it, creating a project, and its light and dark shots', async ({ browser, request, page }, testInfo) => {
+test('the first-project setup screen: who sees it, creating a project, and its light shot', async ({ browser, request, page }, testInfo) => {
   await test.step('metric 1: a new user in no project sees the setup screen, not the board', async () => {
     const { context, page, errors } = await memberPage(browser, newcomer)
     try {
@@ -164,22 +164,21 @@ test('the first-project setup screen: who sees it, creating a project, and its l
     await expect(page.locator('.board__title')).toBeVisible()
   })
 
-  // Metric 5 (manual): the PR's light and dark shots. The theme follows the
-  // colour scheme only while no choice is stored, so each shot checks
-  // html[data-theme] first — a "dark" shot can never silently be light.
-  await test.step('metric 5: the setup screen renders in light and dark', async () => {
+  // Metric 5 (manual): the PR's shot. Light only (HZ-924): dark is the
+  // screenshot capture's (.horizon/screenshots.json). The theme follows the
+  // colour scheme only while no choice is stored, so the shot checks
+  // html[data-theme] first.
+  await test.step('metric 5: the setup screen renders in light', async () => {
     const { context, page, errors } = await memberPage(browser, shooter)
     try {
       await page.setViewportSize({ width: 1280, height: 800 })
-      for (const theme of ['light', 'dark']) {
-        await page.emulateMedia({ colorScheme: theme })
-        await page.goto('/')
-        await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
-        expect(await page.locator('html').getAttribute('data-theme'), theme).toBe(theme === 'dark' ? 'dark' : null)
-        const path = testInfo.outputPath(`first-project--${theme}.png`)
-        await page.screenshot({ path })
-        await testInfo.attach(`first-project--${theme}`, { path, contentType: 'image/png' })
-      }
+      await page.emulateMedia({ colorScheme: 'light' })
+      await page.goto('/')
+      await expect(page.getByRole('heading', { name: HEADING })).toBeVisible()
+      expect(await page.locator('html').getAttribute('data-theme')).toBe(null)
+      const path = testInfo.outputPath('first-project--light.png')
+      await page.screenshot({ path })
+      await testInfo.attach('first-project--light', { path, contentType: 'image/png' })
       expect(errors).toEqual([])
     } finally {
       await context.close()

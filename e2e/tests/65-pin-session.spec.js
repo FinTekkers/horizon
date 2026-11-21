@@ -4,7 +4,8 @@
 // opens the dialog; the next change and a reload do not; Lock opens it again;
 // a wrong PIN says "PIN incorrect"; a cancel applies nothing; and no PIN is
 // left in localStorage or sessionStorage. The PIN an older build kept in
-// localStorage is purged on load.
+// localStorage is purged on load. On a gate too, a wrong PIN is refused and a
+// cancel leaves the gate where it was.
 //
 // setGatePinDirect locks every session of the account, the shared one too,
 // so afterAll verifies the shared session again for the specs after this.
@@ -25,6 +26,7 @@ test.beforeAll(() => {
   const db = openDb(DB_PATH)
   try {
     insertItem(db, { id: 'PINS-1', title: 'E2E fixture — one PIN per session', cursor: 3 })
+    insertItem(db, { id: 'PINS-2', title: 'E2E fixture — wrong gate PIN', cursor: 3 })
     insertProject(db, { name: PROJECT, enabled: false })
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
@@ -141,4 +143,30 @@ test('the PIN is asked once per session, again after Lock, and never stored', as
   } finally {
     await context.close()
   }
+})
+
+test('a wrong then cancelled PIN on a gate applies nothing and leaves the gate in place', async ({ page }) => {
+  // Lock the shared session here, so this approve is certain to ask.
+  const db = openDb(DB_PATH)
+  try {
+    setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
+  } finally {
+    db.close()
+  }
+  await page.goto('/pins-2')
+  const awaiting = page.locator('.step-card--awaiting')
+  await expect(awaiting).toContainText('Approve & prioritize this work', { timeout: 10_000 })
+
+  await page.locator('.btn-gate-approve').click()
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Approve' }).click()
+  await expect(pinDialog(page)).toBeVisible({ timeout: 10_000 })
+  await pinDialog(page).getByLabel('Gate PIN').fill('totally-wrong-key')
+  await pinDialog(page).getByRole('button', { name: 'Continue' }).click()
+  await expect(pinDialog(page)).toContainText('PIN incorrect — try again.', { timeout: 10_000 })
+  await expect(awaiting).toContainText('Approve & prioritize this work')
+
+  await pinDialog(page).getByRole('button', { name: 'Cancel' }).click()
+  await expect(pinDialog(page)).toBeHidden()
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain('totally-wrong-key')
+  await expect(awaiting).toContainText('Approve & prioritize this work')
 })

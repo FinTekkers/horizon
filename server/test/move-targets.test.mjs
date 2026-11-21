@@ -136,7 +136,8 @@ test('metric 1: an item in a disabled project lists nothing; Approve the run wit
   const id = seed(gate, { kind: 'task' })
   const targets = targetsOf(id)
   assert.ok(targets.length > 0)
-  assert.ok(!targets.some((t) => stepIndexOf(t.stepKey) > gate), 'approve listed with no run plan')
+  // HZ-920: Close (to Review & close) is the one later target that is not an approve.
+  assert.ok(!targets.some((t) => stepIndexOf(t.stepKey) > gate && t.stepKey !== 'task.review-close'), 'approve listed with no run plan')
   for (const t of targets) {
     const fresh = seed(gate, { kind: 'task' })
     assert.equal((await move(fresh, { stepKey: t.stepKey, from: 'task.approve-run' })).statusCode, 200, t.stepKey)
@@ -149,7 +150,8 @@ test('metric 2: a key the item does not list is 400 invalid_target and moves not
   const plain = seed(stepIndexOf('change.draft-plan'))
   const abandoned = seed(stepIndexOf('change.draft-plan'), { abandoned: '2026-11-01 00:00:00' })
   const cases = [
-    [gate, gateKey, 'change.review-close'],
+    // HZ-920: change.review-close is Close from here; a later step that is not is still refused.
+    [plain, 'change.draft-plan', 'change.deploy'],
     [gate, gateKey, 'task.define-outcome'],
     [gate, gateKey, '5'],
     [gate, gateKey, String(IMPLEMENT_STEP_INDEX)],

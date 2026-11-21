@@ -707,11 +707,11 @@ const KILL_RESTART = [
     sent: (id, text) => ({ url: `/api/items/${id}/move`, body: { action: 'abandon', from: 'change.implement', note: text, removeDependentLinks: false } }),
   },
   {
-    name: 'Return to…',
+    name: 'Move to…',
     apiFn: 'moveItem',
     open: async (findByRole, id) => {
-      await chooseFromMenu(findByRole, id, 'Return to…')
-      const dialog = await findByRole('dialog', { name: `Return to an earlier step · ${id}` })
+      await chooseFromMenu(findByRole, id, 'Move to…')
+      const dialog = await findByRole('dialog', { name: `Move to an earlier step · ${id}` })
       // The gate's default is preselected; the phase's first step is a choice.
       expect(within(dialog).getByRole('radio', { name: /Draft implementation plan/ }).checked).toBe(true)
       fireEvent.click(within(dialog).getByRole('radio', { name: new RegExp(FIRST_LABEL) }))

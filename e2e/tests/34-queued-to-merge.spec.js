@@ -59,7 +59,7 @@ test('gate 13 reads Queued to merge while a deploy drains, survives a reload, an
     await expect(page.locator('.tracker__status')).toHaveText('Queued to merge')
     // HZ-711: neither the gate card nor the header's step menu offers
     // Approve, and the gate's step in the step list offers no Approve either.
-    for (const name of ['Approve', 'Approve with comments', 'Return to…']) {
+    for (const name of ['Approve', 'Approve with comments', 'Move to…']) {
       await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0)
     }
     await expect(page.getByRole('button', { name: 'Accept the code', exact: true })).toHaveCount(1)
@@ -70,7 +70,7 @@ test('gate 13 reads Queued to merge while a deploy drains, survives a reload, an
     await expect(page.locator('.step-card__queued')).toHaveCount(0)
     // HZ-711: the gate card's Approve and the header's (the shared step menu).
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(2)
-    await expect(page.getByRole('button', { name: 'Return to…', exact: true })).toHaveCount(1)
+    await expect(page.getByRole('button', { name: 'Move to…', exact: true })).toHaveCount(1)
   } finally {
     await request.delete(DRAIN_URL, { headers: FARM })
   }

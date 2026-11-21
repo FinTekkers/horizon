@@ -2,8 +2,9 @@
 // state. The real chain end to end: a SQLite-format step_run time, through
 // listItems' state_since, parsed by a browser in a non-UTC zone (local-time
 // parsing would be hours off), ticked by the Board's one clock with no
-// reload. Plus the layout guardrail (one line, no overflow, in both themes and
-// on a phone) and no timer on paused or closed cards.
+// reload. Plus the layout guardrail (one line, no overflow, on desktop and on
+// a phone; light only, HZ-924 — dark is the screenshot capture's) and no timer
+// on paused or closed cards.
 //
 // Rows are seeded directly (fixtures/seed.js), so the orchestrator never
 // kicks them. Two consolidated journeys: the suite shares one time budget.
@@ -67,7 +68,7 @@ test('a gate card shows the server-derived time in a non-UTC browser, ticks each
   expect(minutesOf(await elapsed.textContent())).toBeGreaterThanOrEqual(first)
 })
 
-test('the elapsed line stays on one line at card width in light, dark and phone layouts; paused and closed cards show none', async ({
+test('the elapsed line stays on one line at card width in desktop and phone layouts; paused and closed cards show none', async ({
   page,
 }) => {
   await page.goto('/')
@@ -103,22 +104,11 @@ test('the elapsed line stays on one line at card width in light, dark and phone 
     expect(rowHeights.shown, `${label}: status row height changed`).toBe(rowHeights.hidden)
   }
 
-  await expectOneLine('light')
-  await page.locator('.topbar__avatar').click()
-  await page.getByRole('switch', { name: 'Dark mode' }).click()
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-  await page.locator('.usermenu__scrim').click()
-  await expectOneLine('dark')
+  await expectOneLine('desktop')
 
   await page.setViewportSize(PHONE)
   // HZ-586: a phone shows one column at a time; EL-LONG's is Technical Plan.
   await page.getByRole('tab', { name: /^Technical Plan, / }).click()
   await long.scrollIntoViewIfNeeded()
   await expectOneLine('phone')
-
-  // Leave the shared storage state as other specs expect it: light mode.
-  await page.setViewportSize({ width: 1024, height: 640 })
-  await page.locator('.topbar__avatar').click()
-  await page.getByRole('switch', { name: 'Dark mode' }).click()
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
 })

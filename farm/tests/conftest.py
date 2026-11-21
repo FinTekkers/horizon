@@ -50,6 +50,17 @@ os.environ.setdefault("PYTEST_DEBUG_TEMPROOT", _REAL_TMP)
 RUN_TMP = tempfile.mkdtemp(prefix=f"horizon-run-{os.getpid()}-", dir=_REAL_TMP)
 os.environ["TMPDIR"] = RUN_TMP
 tempfile.tempdir = RUN_TMP
+# Rootless Podman keeps its runtime dir in XDG_RUNTIME_DIR, else under
+# $TMPDIR — now the sandbox, where every real-podman test (rehearsal, its
+# egress proxy, the container runner) would leave podman-run-<uid> and
+# containers-user-<uid>. A host with no login session (no /run/user/<uid>)
+# gets the dir Podman uses outside the suite: podman-run-<uid> in the real
+# temp dir, as test_container_runner.py's _RUNTIME_DIR does.
+if not os.environ.get("XDG_RUNTIME_DIR"):
+    _user_run = f"/run/user/{os.getuid()}"
+    _podman_run = _user_run if os.path.isdir(_user_run) else os.path.join(_REAL_TMP, f"podman-run-{os.getuid()}")
+    os.makedirs(_podman_run, mode=0o700, exist_ok=True)
+    os.environ["XDG_RUNTIME_DIR"] = _podman_run
 TEST_FARM_HOME = tempfile.mkdtemp(prefix="horizon-farm-test-")
 # The host's instrumented CLIs (/usr/local/bin/git, sl, hg) cache their
 # tracing control file as $TMPDIR/artillery_cli_control.<uid>.json unless this

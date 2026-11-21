@@ -3,7 +3,7 @@
 // (10-abandon, 23-project-enabled, 26-project-autopilot, 27-rules-versions,
 // 28-deploy-target-overrides, 30-repo-marks, 36-project-step-provider,
 // 56-project-definitions) now
-// walk only the right-PIN path; 10-gate-key.spec.js keeps the full
+// walk only the right-PIN path; 65-pin-session.spec.js keeps the full
 // wrong / cancelled / right prompt flow in the browser.
 //
 // Each call carries a valid browser session, so the 401 body must be

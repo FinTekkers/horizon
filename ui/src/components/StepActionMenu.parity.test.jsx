@@ -43,10 +43,10 @@ async function offered(surface, item) {
     fireEvent.click(toggle)
     const menu = within(scope).getByRole('menu')
     actions.push(...within(menu).getAllByRole('menuitem').map((el) => el.textContent))
-    const back = within(menu).queryByRole('menuitem', { name: 'Return to…' })
+    const back = within(menu).queryByRole('menuitem', { name: 'Move to…' })
     if (back) {
       fireEvent.click(back)
-      const radios = within(screen.getByRole('group', { name: 'Return to' })).getAllByRole('radio')
+      const radios = within(screen.getByRole('group', { name: 'Move to' })).getAllByRole('radio')
       choices = radios.map((r) => ({ key: r.value, checked: r.checked }))
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
     }
@@ -59,11 +59,11 @@ const expectedChoices = (item) =>
   item.moves.targets.filter((t) => item.moves.actions[t.stepKey] === 'return').map((t) => ({ key: t.stepKey, checked: t.isDefault }))
 
 for (const [name, surface] of Object.entries(SURFACES)) {
-  test(`waiting gate on the ${name}: Approve, Return to… and Abandon — the snapshot's targets only`, async () => {
+  test(`waiting gate on the ${name}: Approve, Move to… and Abandon — the snapshot's targets only`, async () => {
     const server = stubServer()
     await mountApp(server, surface.path(GATE_ITEM))
     const { actions, choices } = await offered(surface, GATE_ITEM)
-    expect(actions).toEqual(['Approve', 'Return to…', 'Abandon'])
+    expect(actions).toEqual(['Approve', 'Move to…', 'Abandon'])
     expect(choices).toEqual(expectedChoices(GATE_ITEM))
     expect(choices.map((c) => c.key)).not.toContain('change.arch-review')
     // Guardrail 3: steps are never shown by number.
@@ -72,12 +72,12 @@ for (const [name, surface] of Object.entries(SURFACES)) {
 }
 
 for (const name of ['item page', 'board card']) {
-  test(`running step on the ${name}: Return to…, Retry and Abandon, and no Approve`, async () => {
+  test(`running step on the ${name}: Move to…, Retry and Abandon, and no Approve`, async () => {
     const server = stubServer()
     const surface = SURFACES[name]
     await mountApp(server, surface.path(RUNNING_ITEM))
     const { actions, choices } = await offered(surface, RUNNING_ITEM)
-    expect(actions).toEqual(['Return to…', 'Retry', 'Abandon'])
+    expect(actions).toEqual(['Move to…', 'Retry', 'Abandon'])
     expect(choices).toEqual(expectedChoices(RUNNING_ITEM))
   })
 }
@@ -95,7 +95,7 @@ for (const [name, surface] of Object.entries(SURFACES)) {
     const kept = { ...GATE_ITEM, moves: { ...GATE_ITEM.moves, canAbandon: false } }
     await mountApp(server, surface.path(kept), [kept, RUNNING_ITEM])
     const { actions } = await offered(surface, kept)
-    expect(actions).toEqual(['Approve', 'Return to…'])
+    expect(actions).toEqual(['Approve', 'Move to…'])
   })
 }
 
@@ -105,4 +105,75 @@ test('an item whose snapshot offers nothing shows no menu on the item page', asy
   await mountApp(server, '/hz-901', [none, RUNNING_ITEM])
   await screen.findByText(none.title)
   expect(within(document.querySelector('.tracker__actions')).queryByRole('button', { name: /More actions|^Approve$/ })).toBeNull()
+})
+
+// HZ-920 metric 1: with Close in the snapshot (a `skip` target), every
+// surface's ⋯ menu reads Move to…, its dialog lists the earlier steps then
+// Close, and neither the menu nor the dialog shows "Return to" — on the item
+// page, a board card and the Approvals drawer, and from the Tracker gate
+// card's own Move to… button.
+const withClose = (item) => ({
+  ...item,
+  moves: {
+    ...item.moves,
+    targets: [
+      ...item.moves.targets,
+      { stepKey: 'change.review-close', isDefault: false, redo: 'Skips 5 steps and waits at “Review the work & close” for approval', reapprovals: [], stopsRunning: false },
+    ],
+    actions: { ...item.moves.actions, 'change.review-close': 'skip' },
+    labels: { ...item.moves.labels, 'change.review-close': 'Close' },
+  },
+})
+const CLOSE_GATE = withClose(GATE_ITEM)
+
+function expectCloseDialog(item) {
+  const dialog = screen.getByRole('dialog', { name: `Move to an earlier step · ${item.id}` })
+  expect(dialog.textContent).not.toMatch(/Return to/)
+  const radios = within(within(dialog).getByRole('group', { name: 'Move to' })).getAllByRole('radio')
+  expect(radios.map((r) => r.value)).toEqual([...expectedChoices(item).map((c) => c.key), 'change.review-close'])
+  expect(radios.at(-1).closest('label').textContent).toBe('Close')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+}
+
+for (const [name, surface] of Object.entries(SURFACES)) {
+  test(`HZ-920: the ${name}'s ⋯ menu reads Move to…, and its dialog ends with Close; no "Return to" shows`, async () => {
+    const server = stubServer()
+    await mountApp(server, surface.path(CLOSE_GATE), [CLOSE_GATE, RUNNING_ITEM])
+    const scope = await vi.waitFor(() => {
+      const el = surface.scope(CLOSE_GATE)
+      if (!el) throw new Error('not shown')
+      return el
+    })
+    fireEvent.click(within(scope).getByRole('button', { name: `More actions for ${CLOSE_GATE.id}` }))
+    const menu = within(scope).getByRole('menu')
+    expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Move to…', 'Abandon'])
+    expect(within(menu).queryByText(/Return to/)).toBeNull()
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to…' }))
+    expectCloseDialog(CLOSE_GATE)
+  })
+}
+
+test('HZ-920: the Tracker gate card’s Move to… opens the same dialog, ending with Close', async () => {
+  const server = stubServer()
+  await mountApp(server, `/${CLOSE_GATE.id.toLowerCase()}`, [CLOSE_GATE, RUNNING_ITEM])
+  const gate = await vi.waitFor(() => {
+    const el = document.querySelector('.step-card--awaiting')
+    if (!el) throw new Error('not shown')
+    return el
+  })
+  expect(within(gate).queryByText(/Return to/)).toBeNull()
+  fireEvent.click(within(gate).getByRole('button', { name: 'Move to…' }))
+  expectCloseDialog(CLOSE_GATE)
+})
+
+test('HZ-920: clicking the final gate in the step list only selects it — no dialog opens with Close', async () => {
+  const server = stubServer()
+  await mountApp(server, `/${CLOSE_GATE.id.toLowerCase()}`, [CLOSE_GATE, RUNNING_ITEM])
+  const row = await screen.findByRole('button', { name: /^Review the work & close/ })
+  // No hint and no action style: the row offers nothing to do.
+  expect(row.classList.contains('step-card__select--action')).toBe(false)
+  expect(row.querySelector('.step-card__hint')).toBeNull()
+  fireEvent.click(row)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(server.moves()).toEqual([])
 })

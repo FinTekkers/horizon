@@ -7,7 +7,7 @@
 
 export const ACTION_LABELS = Object.freeze({
   approve: 'Approve',
-  return: 'Return to…',
+  return: 'Move to…',
   retry: 'Retry',
   abandon: 'Abandon',
 })
@@ -28,13 +28,14 @@ const own = (map, key) => (map && typeof map === 'object' && Object.hasOwn(map, 
 // `key` is what POST /move takes (a sub-step's is `<step>#<sub-step>`),
 // `step` the step-list row it sits on, `reapprovals` the gates' labels.
 // Approve targets are left out — `approve` names the gate the item waits at.
+// HZ-920: a `skip` target is Move to…'s Close, on to the kind's final gate.
 function movesOf(item) {
   const moves = item?.moves
   if (!moves || typeof moves !== 'object') return NO_MOVES
   const labelOf = (key) => own(moves.labels, key) ?? key
   const targets = (Array.isArray(moves.targets) ? moves.targets : [])
     .map((t) => ({ ...t, action: own(moves.actions, t.stepKey) }))
-    .filter((t) => t.action === 'return' || t.action === 'retry')
+    .filter((t) => t.action === 'return' || t.action === 'retry' || t.action === 'skip')
     .map((t) => ({
       key: t.stepKey,
       step: t.stepKey.split('#')[0],
@@ -57,6 +58,13 @@ function movesOf(item) {
 // The return targets, in the snapshot's order.
 export function returnTargets(item) {
   return movesOf(item).targets.filter((t) => t.action === 'return')
+}
+
+// HZ-920: what Move to… lists — the return targets in the snapshot's order,
+// then Close (the skip target) when the snapshot offers it.
+export function moveDialogTargets(item) {
+  const { targets } = movesOf(item)
+  return [...targets.filter((t) => t.action === 'return'), ...targets.filter((t) => t.action === 'skip')]
 }
 
 // HO-853: the served return target that runs the sub-step `substepId` again
@@ -90,13 +98,13 @@ export function amendMove(item) {
 }
 
 // The menu's actions, in its order: [{ id, label }]. Approve only at a gate,
-// Return to… with at least one target, Retry when the step can run again,
-// Abandon while the item is open.
+// Move to… with at least one target (Close included), Retry when the step
+// can run again, Abandon while the item is open.
 export function menuActions(item) {
   const moves = movesOf(item)
   const actions = []
   if (moves.approve) actions.push({ id: 'approve', label: ACTION_LABELS.approve })
-  if (moves.targets.some((t) => t.action === 'return')) actions.push({ id: 'return', label: ACTION_LABELS.return })
+  if (moveDialogTargets(item).length > 0) actions.push({ id: 'return', label: ACTION_LABELS.return })
   const retry = moves.targets.find((t) => t.action === 'retry')
   if (retry) actions.push({ id: 'retry', label: ACTION_LABELS.retry, key: retry.key })
   if (moves.canAbandon) actions.push({ id: 'abandon', label: ACTION_LABELS.abandon })
@@ -104,10 +112,11 @@ export function menuActions(item) {
 }
 
 // What clicking the step `key` in the step list does: 'approve', 'return',
-// 'retry' or null (it is only selected).
+// 'retry' or null (it is only selected). HZ-920: Close is only offered from
+// Move to…, so a click on the final gate's row only selects it.
 export function stepActionFor(item, key) {
   const moves = movesOf(item)
   if (moves.approve?.key === key) return 'approve'
   const target = moves.targets.find((t) => t.key === key) ?? moves.targets.find((t) => t.action === 'retry' && t.step === key)
-  return target ? target.action : null
+  return target && target.action !== 'skip' ? target.action : null
 }

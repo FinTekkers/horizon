@@ -57,6 +57,11 @@ test('at a gate: every target is named by its action and label, and Approve name
   assert.equal(moves.labels['change.review-before-exec'], label('change.review-before-exec'))
   for (const t of moves.targets) {
     if (moves.actions[t.stepKey] === 'approve') continue
+    // HZ-920: Close, named as such.
+    if (moves.actions[t.stepKey] === 'skip') {
+      assert.equal(moves.labels[t.stepKey], 'Close')
+      continue
+    }
     assert.equal(moves.actions[t.stepKey], 'return')
     assert.equal(moves.labels[t.stepKey], label(t.stepKey))
     for (const key of t.reapprovals) assert.equal(moves.labels[key], label(key))

@@ -12,9 +12,10 @@
 //
 // Same set-up as 20-premerge-checks.spec.js: only GitHub's answer is canned;
 // the real `python -m farm.premerge` and the real `npm test` run inside the
-// e2e server's own FARM_HOME. The PR's test sleeps a few seconds before it
-// fails, which is the window the checks and the reload land in — so the
-// time-sensitive "Merging" checks come first in each phase.
+// e2e server's own FARM_HOME. The PR's test fails at once; the window the
+// checks and the reload land in is a server test hook (HZ-924): premerge-hold
+// keeps the server from acting on the run's result until premerge-release,
+// so the "Merging" checks can't race it, and nothing sleeps.
 
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -40,7 +41,7 @@ const git = (cwd, ...args) =>
     encoding: 'utf8',
   }).trim()
 
-// main: a passing test. The PR: the same test, now sleeping, then failing.
+// main: a passing test. The PR: the same test, now failing.
 function buildRepoHub() {
   const fixture = join(FARM_HOME, 'fixture-accept-in-flight')
   const seed = join(fixture, 'seed')
@@ -56,11 +57,8 @@ function buildRepoHub() {
   git(seed, 'commit', '-q', '-m', 'green main')
   const baseSha = git(seed, 'rev-parse', 'HEAD')
   git(seed, 'checkout', '-q', '-b', 'horizon/aif-1')
-  writeFileSync(
-    join(seed, 'test.js'),
-    "setTimeout(() => { console.log('not ok 1 - slow and red'); process.exit(1) }, 6000)\n",
-  )
-  git(seed, 'commit', '-q', '-am', 'PR: a slow red test')
+  writeFileSync(join(seed, 'test.js'), "console.log('not ok 1 - red')\nprocess.exit(1)\n")
+  git(seed, 'commit', '-q', '-am', 'PR: a red test')
   const headSha = git(seed, 'rev-parse', 'HEAD')
   execFileSync('git', ['clone', '-q', '--bare', seed, origin])
   mkdirSync(join(FARM_HOME, 'workspaces'), { recursive: true })
@@ -69,6 +67,13 @@ function buildRepoHub() {
 }
 
 let shas
+
+// Teardown, pass or fail: no later spec on the shared server sees AIF-1's run
+// held. `released` is not asserted — a test that failed early set no hold.
+test.afterEach(async ({ request }) => {
+  const res = await request.post('/api/test/premerge-release', { data: { itemId: ID } })
+  expect(res.ok()).toBeTruthy()
+})
 
 test.beforeAll(() => {
   expect(FARM_HOME, 'playwright.config.js must give the e2e server its own FARM_HOME').toBeTruthy()
@@ -105,6 +110,9 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
     data: { pr: { repo: REPO, pr: PR, headSha: shas.headSha, headRef: 'horizon/aif-1', baseRef: 'main', baseSha: shas.baseSha } },
   })
   expect(canned.ok()).toBeTruthy()
+  // The run's result waits for premerge-release below, however fast it is.
+  const hold = await request.post('/api/test/premerge-hold', { data: { itemId: ID } })
+  expect(hold.ok()).toBeTruthy()
 
   // Tab 1: the Board, where Accept is clicked.
   await page.goto('/')
@@ -124,7 +132,7 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await itemPage.goto(`/${ID.toLowerCase()}`)
   const gate = itemPage.locator('.step-card--awaiting', { hasText: 'Accept the code' })
   const gateApprove = gate.locator('.btn-gate-approve')
-  const gateReject = gate.getByRole('button', { name: 'Return to…' })
+  const gateReject = gate.getByRole('button', { name: 'Move to…' })
   const gateStatus = gate.locator('.gate-action-status')
   await expect(gateApprove).toBeEnabled({ timeout: 10_000 })
 
@@ -147,7 +155,8 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await answerPinDialog(page, GATE_PIN)
 
   // Checks on both tabs while the run is in flight. The "Merging" text is a
-  // hard expect: if the result lands first, this fails rather than skips.
+  // hard expect: if the result lands first, this fails rather than skips —
+  // it can't while the hold is on.
   async function expectInFlight(timeout) {
     await expect(cardStatus).toContainText('Merging:', { timeout })
     await expect(gateStatus).toContainText(MERGING, { timeout })
@@ -169,6 +178,11 @@ test('Accept on a Board card shows the run on the card and the gate, and takes t
   await Promise.all([page.reload(), itemPage.reload()])
   navigations = 0
   await expectInFlight(10_000)
+
+  // Let the server act on the run's result.
+  const release = await request.post('/api/test/premerge-release', { data: { itemId: ID } })
+  expect(release.ok()).toBeTruthy()
+  expect((await release.json()).released).toBe(true)
 
   // The run ends red: the card and the gate name the check, their buttons
   // come back, and the item is waiting on the owner again.

@@ -119,7 +119,7 @@ export default async function globalSetup() {
   // session cookie to disk — playwright.config.js's `use.storageState` loads
   // it into every spec's browser context, so no spec needs its own login
   // step. This also creates the admin account row (first successful login
-  // does), which 10-gate-key.spec.js needs a stable row for.
+  // does), which setGatePinDirect (fixtures/seed.js) needs a stable row for.
   const api = await request.newContext({ baseURL: `http://localhost:${PORT}` })
   try {
     const loginRes = await api.post('/api/auth/login', {

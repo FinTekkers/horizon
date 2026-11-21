@@ -103,9 +103,9 @@ test.beforeAll(() => {
     // command. A disabled project, so no board or filter spec sees it.
     const project = insertProject(db, { name: 'E2E Premerge Fixture', enabled: false })
     db.prepare("INSERT INTO project_repo (project_id, repo, prefix, check_test) VALUES (?, ?, 'EPM', 'npm test --silent')").run(project, REPO)
-    // 10-gate-key.spec.js rewrites the account's PIN directly in the DB, so
-    // this spec sets its own (which locks the shared session, HZ-704) and
-    // answers the PIN dialog, like that one does.
+    // Earlier specs rewrite the account's PIN directly in the DB, so this
+    // spec sets its own (which locks the shared session, HZ-704) and answers
+    // the PIN dialog.
     setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
   } finally {
     db.close()

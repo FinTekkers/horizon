@@ -58,7 +58,7 @@ test('Preflight blocks Approve the run naming the secret; Re-run preflight passe
   await expectBlocked()
 
   await gate.getByRole('button', { name: 'Re-run preflight' }).click()
-  const moveDialog = page.getByRole('dialog', { name: `Return to an earlier step · ${ID}` })
+  const moveDialog = page.getByRole('dialog', { name: `Move to an earlier step · ${ID}` })
   await moveDialog.getByRole('button', { name: 'Return here' }).click()
   await answerPinDialog(page, GATE_PIN)
   await expect(moveDialog).toHaveCount(0)

@@ -103,7 +103,7 @@ test("the Task's awaiting card shows the human-only line, the plan's size, and b
   expect(card.querySelector('.step-card__run-plan').textContent).toBe('Run plan: 3 commands · budget 20 min · Container')
 
   expect(within(card).queryByRole('button', { name: 'Reject with feedback' })).toBeNull()
-  fireEvent.click(within(card).getByRole('button', { name: 'Return to…' }))
+  fireEvent.click(within(card).getByRole('button', { name: 'Move to…' }))
   expect(onMove).toHaveBeenCalledWith('TK-1', 'return', null)
 
   fireEvent.click(getByRole('button', { name: 'Approve the run' }))
@@ -273,7 +273,7 @@ test("a change item's gate card is unchanged: no human-only line, the usual butt
   expect(card.textContent).not.toContain('Always a human')
   expect(card.querySelector('.step-card__run-plan')).toBeNull()
   expect(within(card).getByRole('button', { name: 'Approve' })).toBeTruthy()
-  expect(within(card).getByRole('button', { name: 'Return to…' })).toBeTruthy()
+  expect(within(card).getByRole('button', { name: 'Move to…' })).toBeTruthy()
 })
 
 // HZ-446: a Plan's Approve & file is human-only too — the same Autopilot line
@@ -304,7 +304,7 @@ test("a Plan's Approve & file card shows the human-only line, no run plan, and b
   expect(card.textContent).not.toContain('Run plan')
 
   expect(within(card).queryByRole('button', { name: 'Reject with feedback' })).toBeNull()
-  fireEvent.click(within(card).getByRole('button', { name: 'Return to…' }))
+  fireEvent.click(within(card).getByRole('button', { name: 'Move to…' }))
   expect(onMove).toHaveBeenCalledWith('PL-1', 'return', null)
   fireEvent.click(getByRole('button', { name: 'Approve & file' }))
   expect(getByRole('alertdialog').textContent).toContain('PL-1 · Approve & file')
@@ -371,7 +371,7 @@ const FAILED = {
   failures: [{ what: 'proof command 2 (metric line 1)', reason: 'rehearsal_parser_failed', exit: 5 }],
 }
 
-test('a failed rehearsal names its reason and finding, hides Approve the run and Approve with comments, and keeps Send back and Return to…', () => {
+test('a failed rehearsal names its reason and finding, hides Approve the run and Approve with comments, and keeps Send back and Move to…', () => {
   const onMove = vi.fn()
   const { container } = render(<Harness item={withRehearsal(FAILED)} onMove={onMove} />)
   const card = awaitingCard(container)
@@ -385,7 +385,7 @@ test('a failed rehearsal names its reason and finding, hides Approve the run and
   expect(onMove).toHaveBeenLastCalledWith('TK-1', 'return', 'task.run-plan')
   fireEvent.click(within(card).getByRole('button', { name: 'Re-run preflight' }))
   expect(onMove).toHaveBeenLastCalledWith('TK-1', 'return', 'task.preflight')
-  expect(within(card).getByRole('button', { name: 'Return to…' })).toBeTruthy()
+  expect(within(card).getByRole('button', { name: 'Move to…' })).toBeTruthy()
 })
 
 test('no rehearsal on record for the plan hides Approve the run and says why; a clean one shows it, enabled', () => {

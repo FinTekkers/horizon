@@ -1,7 +1,8 @@
 // HZ-335: a card held up by an open dependency reads Blocked, names its
-// blocker as a link inside the card, and fits the card in light, dark and
-// phone layouts. Read-only: global-setup.js seeds DEP-2 (at implement)
-// depending on DEP-1; 13-dependencies.spec.js reads the same edge.
+// blocker as a link inside the card, and fits the card in desktop and phone
+// layouts (light only, HZ-924: dark is the screenshot capture's). Read-only:
+// global-setup.js seeds DEP-2 (at implement) depending on DEP-1;
+// 13-dependencies.spec.js reads the same edge.
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertDependency } from '../fixtures/seed.js'
@@ -25,7 +26,7 @@ const PHONE = { width: 375, height: 667 }
 
 const card = (page, id) => page.locator('.card', { has: page.locator('.card__id', { hasText: new RegExp(`^${id}$`) }) })
 
-test('a blocked card reads Blocked and keeps its blocker link inside the card in light, dark and phone layouts', async ({
+test('a blocked card reads Blocked and keeps its blocker link inside the card in desktop and phone layouts', async ({
   page,
 }) => {
   await page.goto('/')
@@ -49,24 +50,12 @@ test('a blocked card reads Blocked and keeps its blocker link inside the card in
     expect(scroll, `${label}: card overflows horizontally`).toBeLessThanOrEqual(client)
   }
 
-  await expectLayout('light')
-
-  await page.locator('.topbar__avatar').click()
-  await page.getByRole('switch', { name: 'Dark mode' }).click()
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-  await page.locator('.usermenu__scrim').click()
-  await expectLayout('dark')
+  await expectLayout('desktop')
 
   await page.setViewportSize(PHONE)
   // HZ-586: a phone shows one column at a time; DEP-2's is Execute.
   await page.getByRole('tab', { name: /^Execute, / }).click()
   await expectLayout('phone')
-
-  // Leave the shared storage state as other specs expect it: light mode.
-  await page.setViewportSize({ width: 1024, height: 640 })
-  await page.locator('.topbar__avatar').click()
-  await page.getByRole('switch', { name: 'Dark mode' }).click()
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'dark')
 })
 
 test("board: the Blocked by dependencies filter, and a planning item's open blocker", async ({ page }) => {
