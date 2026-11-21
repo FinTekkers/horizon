@@ -173,9 +173,19 @@ test('the snapshot carries each repo’s marks next to its checks', async () => 
   settings.setSetting('active_project_id', String(FINTEKKERS_PROJECT))
   const res = await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })
   const repos = res.json().projects.flatMap((p) => p.repos)
-  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').marks, { noChecks: false, noDeploy: true, webGuidance: false })
-  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/horizon').marks, { noChecks: false, noDeploy: false, webGuidance: false })
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').marks, { noChecks: false, noDeploy: true })
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/horizon').marks, { noChecks: false, noDeploy: false })
   reset()
+})
+
+test('HZ-930: the snapshot carries webGuidance only on a marked repo', async () => {
+  store.setRepoMarks(FINTEKKERS_PROJECT, 'FinTekkers/ui-service', { webGuidance: true })
+  settings.setSetting('active_project_id', String(FINTEKKERS_PROJECT))
+  const res = await app.inject({ method: 'GET', url: '/api/items', headers: { cookie: alice.cookie } })
+  const repos = res.json().projects.flatMap((p) => p.repos)
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/ui-service').marks, { noChecks: false, noDeploy: false, webGuidance: true })
+  assert.deepEqual(repos.find((r) => r.repo === 'FinTekkers/horizon').marks, { noChecks: false, noDeploy: false })
+  store.setRepoMarks(FINTEKKERS_PROJECT, 'FinTekkers/ui-service', { webGuidance: false })
 })
 
 // ---- guardrail 1: one writer, and it is the PIN-gated route ----
