@@ -12,7 +12,7 @@
 // dialog; answering it verifies the session, and the later steps' and the
 // phone test's panels show their images at once.
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 import { solidPng } from '../fixtures/png.js'
 import { blobsOf, clearScreenshotSnapshot, publication, seedScreenshotSnapshot } from '../fixtures/screenshot-snapshot.js'
@@ -81,6 +81,7 @@ async function openBoard(page, item, { pin } = {}) {
     await answerPinDialog(page, pin)
   }
   for (const name of KINDS) await expect.poll(() => naturalWidth(board.getByRole('img', { name, exact: true }))).toBe(WIDTH)
+  await waitForFonts(page)
   return board
 }
 
@@ -203,6 +204,7 @@ test('the screenshot viewer on desktop: tabs, swipe, and the stacked layout', as
     expect(side[2].y).toBe(side[0].y)
 
     const expectStacked = async () => {
+      await waitForFonts(page)
       await expect(page.getByRole('button', { name: 'Stacked' })).toHaveAttribute('aria-pressed', 'true')
       const content = await board.locator('.shots__images').evaluate((el) => {
         const style = getComputedStyle(el)

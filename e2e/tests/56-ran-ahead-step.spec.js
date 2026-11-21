@@ -7,7 +7,7 @@
 // leaves it); item B's review ran twice. insertItem has no field for
 // fix_findings_json, so it is set with a direct UPDATE.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
 import { STEPS, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -86,6 +86,7 @@ test('item page: a review step that ran ahead, with one attempt and with two', a
     await expect(step.getByRole('link', { name: 'View attempt 1 ↗' })).toBeVisible()
     // HZ-803: the time and label wrap inside the card instead of overflowing it.
     await expect(step.getByTestId('run-time')).toBeVisible()
+    await waitForFonts(page)
     const overflow = await step.locator('.step-card').evaluate((card) => ({
       card: card.scrollWidth - card.clientWidth,
       page: document.documentElement.scrollWidth - document.documentElement.clientWidth,

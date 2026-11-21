@@ -11,7 +11,7 @@
 // open items (paused, so no mock agent moves them) and one closed item, and a
 // closed Plan with a long title that filed one closed item.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertSpawn } from '../fixtures/seed.js'
 import { endIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
 
@@ -57,6 +57,7 @@ async function expectFilteredBoard(page) {
 }
 
 async function expectNoSideScroll(page) {
+  await waitForFonts(page)
   const { scroll, client } = await page.evaluate(() => ({
     scroll: document.documentElement.scrollWidth,
     client: document.documentElement.clientWidth,

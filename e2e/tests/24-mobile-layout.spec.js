@@ -4,7 +4,7 @@
 // set per test. Kept to a few consolidated journeys: the whole suite shares
 // one global time budget (see playwright.config.js).
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertEvent, insertProject } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -41,6 +41,7 @@ const pageWidths = (page) =>
   page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }))
 
 async function expectNoSideScroll(page) {
+  await waitForFonts(page)
   const { scroll, client } = await pageWidths(page)
   expect(scroll).toBe(client)
 }
@@ -139,6 +140,7 @@ test('the phone top bar is one slim row with 44px targets, and the nav is keyboa
   await page.goto('/')
   await expect(nav(page)).toBeVisible()
 
+  await waitForFonts(page)
   const bar = await page.locator('.topbar').boundingBox()
   expect(bar.height).toBeLessThanOrEqual(64)
   const parts = await Promise.all(
@@ -191,6 +193,7 @@ test('the last card and the last activity row end above the bottom nav', async (
   await page.setViewportSize(PHONE)
 
   const lowestAboveNav = async (selector) => {
+    await waitForFonts(page)
     const { scrollHeight, innerHeight } = await page.evaluate(() => ({
       scrollHeight: document.documentElement.scrollHeight,
       innerHeight: window.innerHeight,
