@@ -1,6 +1,7 @@
 // HO-853 metric line 1, the capture half: the `design-gate*` screens in
 // .horizon/screenshots.json really show the first gate's design panel — not a
-// login wall or an empty gate — at desktop and phone (375×667), in each theme.
+// login wall or an empty gate — at desktop and phone (375×667), in light (the
+// screenshot capture itself shoots dark too; HZ-924 keeps e2e to light).
 // Each shot is loaded the way farm/capture/worker.mjs loads it (`load`, then
 // the screen's own waitFor), and its anchors are then read once, with no
 // auto-wait, so a waitFor that settles before the panel would fail here. The
@@ -42,7 +43,7 @@ const ANCHORS = {
 const shots = CONFIG.screens
   .filter((screen) => screen.name.startsWith('design-gate'))
   .flatMap((screen) =>
-    (screen.viewports || Object.keys(VIEWPORTS)).flatMap((viewport) => (screen.themes || CONFIG.themes).map((theme) => ({ screen, viewport, theme }))),
+    (screen.viewports || Object.keys(VIEWPORTS)).map((viewport) => ({ screen, viewport, theme: 'light' })),
   )
 
 test.beforeAll(() => {

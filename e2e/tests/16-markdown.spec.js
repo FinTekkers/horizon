@@ -106,8 +106,9 @@ test('a markdown description renders as formatted, readable, correctly scaled ma
 
   // A code chip sits on the tile's own --canvas background, so --subtle (the
   // chip colour used elsewhere on white surfaces) would be near-invisible
-  // there. Assert the two actually differ — in both themes, since
-  // theme.contrast.test.jsx audits tokens and never sees these rules.
+  // there. Assert the two actually differ, since theme.contrast.test.jsx
+  // audits tokens and never sees these rules. Light only (HZ-924): dark is
+  // the screenshot capture's (.horizon/screenshots.json).
   const readChipContrast = () =>
     page.evaluate(() => {
       const chip = document.querySelector('.tile__value code')
@@ -120,14 +121,4 @@ test('a markdown description renders as formatted, readable, correctly scaled ma
 
   const light = await readChipContrast()
   expect(light.chip).not.toBe(light.tile)
-
-  // Flipping the attribute is exactly what the user menu's toggle does at
-  // runtime (see 11-theme.spec.js) — done directly here to keep this spec to
-  // a single page load, and reverted below so the shared browser context is
-  // left in light mode like every other spec assumes.
-  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
-  const dark = await readChipContrast()
-  expect(dark.chip).not.toBe(dark.tile)
-  expect(dark.tile).not.toBe(light.tile)
-  await page.evaluate(() => document.documentElement.removeAttribute('data-theme'))
 })

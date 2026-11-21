@@ -138,9 +138,8 @@ test('repo chips narrow a project, and wrap inside an on-screen menu at phone wi
   const widths = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth])
   expect(widths[0]).toBe(widths[1])
 
-  // Dark theme: a pressed chip's border is the --primary token.
+  // A pressed chip's border is the --primary token (light only, HZ-924).
   const [border, primary] = await chips[0].evaluate((el) => {
-    document.documentElement.dataset.theme = 'dark'
     const probe = document.createElement('div')
     probe.style.color = 'var(--primary)'
     document.body.appendChild(probe)

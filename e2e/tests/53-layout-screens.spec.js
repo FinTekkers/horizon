@@ -2,7 +2,8 @@
 // each old layout-only test checked, not an empty board or a login wall. Each
 // shot is loaded the way farm/capture/worker.mjs loads it — `load`, then the
 // screen's own waitFor — and its anchor is then read once, with no auto-wait,
-// so a waitFor that settles before the data would fail here.
+// so a waitFor that settles before the data would fail here. Light shots only
+// (HZ-924): the capture itself still shoots dark, and that is its coverage.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -47,9 +48,7 @@ const ANCHORS = {
 const shots = CONFIG.screens
   .filter((screen) => screen.name.startsWith('layout-'))
   .flatMap((screen) =>
-    (screen.viewports || Object.keys(VIEWPORTS)).flatMap((viewport) =>
-      (screen.themes || CONFIG.themes).map((theme) => ({ screen, viewport, theme })),
-    ),
+    (screen.viewports || Object.keys(VIEWPORTS)).map((viewport) => ({ screen, viewport, theme: 'light' })),
   )
 
 test.beforeAll(() => {
@@ -72,14 +71,14 @@ test('every layout screen shows its seeded layout as soon as its waitFor does', 
     for (const anchor of ANCHORS[screen.name](page, viewport)) {
       expect(await anchor.isVisible(), `${label}: ${anchor}`).toBe(true)
     }
-    expect(await page.locator('html').getAttribute('data-theme'), label).toBe(theme === 'dark' ? 'dark' : null)
+    expect(await page.locator('html').getAttribute('data-theme'), label).toBe(null)
   }
 })
 
 // The capture journey itself: the config's `serve` command and the farm's own
 // capture worker, sent each shot the way farm/screenshot_runner.py sends it.
-// Two passes on one build must give 7 PNGs that the runner's own diff
-// (farm/capture/diff.mjs, at the runner's thresholds) reads as `same`.
+// Two passes on one build must give a PNG per light shot that the runner's own
+// diff (farm/capture/diff.mjs, at the runner's thresholds) reads as `same`.
 const REPO = fileURLToPath(new URL('../../', import.meta.url))
 const WORKER = join(REPO, 'farm/capture/worker.mjs')
 const DIFF = join(REPO, 'farm/capture/diff.mjs')
@@ -211,7 +210,7 @@ test("the config serve path and the farm worker capture every screen twice, matc
       }
       passes.push(pngs)
     }
-    expect(Object.keys(passes[0])).toHaveLength(7)
+    expect(Object.keys(passes[0])).toHaveLength(shots.length)
     const outDir = join(out, 'diff')
     const resultFile = join(out, 'diff-result.json')
     mkdirSync(outDir)
@@ -223,7 +222,7 @@ test("the config serve path and the farm worker capture every screen twice, matc
     })
     expect(run.status, `diff.mjs failed: ${run.error ?? run.stderr}`).toBe(0)
     const { shots: diffed } = JSON.parse(readFileSync(resultFile, 'utf8'))
-    expect(diffed).toHaveLength(7)
+    expect(diffed).toHaveLength(shots.length)
     for (const shot of diffed) {
       const why = `${shot.name} differs between passes: diffRatio ${shot.diffRatio}${shot.error ? ` (${shot.error})` : ''}`
       expect(shot.status, why).toBe('same')

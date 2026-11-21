@@ -297,6 +297,31 @@ export const runner = {
   },
 }
 
+// e2e only (HZ-924): a hold, by item id, on what runPreMergeChecks does with
+// its run's result. The real run still happens and still exits — its slot is
+// the child's, so it is freed on exit — and only the handling waits for
+// releaseForTest. Filled only through the /api/test/premerge-* routes, which
+// exist only with HORIZON_TEST_HOOKS=1, so in production it stays empty.
+export const testHolds = new Map()
+
+// A second hold on the same item keeps the first, so no run already waiting
+// on it is stranded.
+export function holdForTest(itemId) {
+  if (testHolds.has(itemId)) return
+  let release
+  const promise = new Promise((resolve) => (release = resolve))
+  testHolds.set(itemId, { promise, release })
+}
+
+// True when a hold was set and is now released, false when there was none.
+export function releaseForTest(itemId) {
+  const hold = testHolds.get(itemId)
+  if (!hold) return false
+  testHolds.delete(itemId)
+  hold.release()
+  return true
+}
+
 // Returns the CLI's parsed result with a guaranteed boolean `ok`, plus
 // `reason` on every ok:false. Never throws.
 //
@@ -368,6 +393,7 @@ export async function runPreMergeChecks(
     }
   }
   const out = await runner.spawn(args, spawnOpts)
+  await testHolds.get(item.id)?.promise
   // HZ-822: stopped because the PR merged on GitHub — not a failure of it.
   if (out.interrupted && out.cause === 'pr_merged') {
     return { ok: false, reason: 'superseded', detail: PR_MERGED_DETAIL, ...shas }

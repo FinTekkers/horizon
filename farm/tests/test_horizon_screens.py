@@ -55,11 +55,11 @@ REMOVED_LAYOUT_TESTS = {
         "22-project-filter.spec.js",
         [(BOARD, "phone", "light")],
     ),
-    "the elapsed line stays on one line at card width in light, dark and phone layouts; paused and closed cards show none": (
+    "the elapsed line stays on one line at card width in desktop and phone layouts; paused and closed cards show none": (
         "26-board-elapsed.spec.js",
         [(BOARD, "desktop", "light"), (BOARD, "desktop", "dark"), (BOARD, "phone", "light")],
     ),
-    "a blocked card reads Blocked and keeps its blocker link inside the card in light, dark and phone layouts": (
+    "a blocked card reads Blocked and keeps its blocker link inside the card in desktop and phone layouts": (
         "33-board-blocked.spec.js",
         [(BOARD, "desktop", "light"), (BOARD, "desktop", "dark"), (BOARD, "phone", "light")],
     ),
@@ -67,6 +67,12 @@ REMOVED_LAYOUT_TESTS = {
         "19-api-tokens.spec.js",
         [(TOKENS, "phone", "light")],
     ),
+}
+
+# HZ-924: e2e checks light mode only, so these tests are gone from their specs;
+# their dark shots in the config still show what they checked.
+DELETED_LAYOUT_TESTS = {
+    "dark theme: the bottom nav works the same and paints with the dark tokens",
 }
 
 
@@ -88,9 +94,11 @@ def test_the_inventory_names_nine_tests_in_the_five_specs():
 
 
 def test_each_removed_layout_test_exists_once_in_its_spec():
+    assert DELETED_LAYOUT_TESTS <= REMOVED_LAYOUT_TESTS.keys()
     for title, (spec, _) in REMOVED_LAYOUT_TESTS.items():
         source = (SPECS / spec).read_text(encoding="utf-8")
-        assert source.count(f"test('{title}'") == 1, f"{spec}: {title}"
+        wanted = 0 if title in DELETED_LAYOUT_TESTS else 1
+        assert source.count(f"test('{title}'") == wanted, f"{spec}: {title}"
 
 
 def test_each_removed_layout_test_has_a_screen():

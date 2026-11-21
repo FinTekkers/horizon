@@ -47,13 +47,10 @@ test('the item page shows and clears the farm banner live, adds no polling, and 
 
   await setReachable(request, false)
   await expect(banner).toBeVisible({ timeout: 10_000 })
-  for (const colorScheme of ['light', 'dark']) {
-    await page.emulateMedia({ colorScheme })
-    await page.reload()
-    await expect(banner).toBeVisible()
-    await testInfo.attach(`item-page-farm-banner-${colorScheme}`, { body: await page.screenshot(), contentType: 'image/png' })
-  }
-  await page.emulateMedia({ colorScheme: 'light' })
+  // Light only (HZ-924): dark is the screenshot capture's.
+  await page.reload()
+  await expect(banner).toBeVisible()
+  await testInfo.attach('item-page-farm-banner-light', { body: await page.screenshot(), contentType: 'image/png' })
 
   // No new polling: only API calls the page already made before the outage
   // (static assets such as a lazily loaded font aside), and never the farm.
@@ -61,13 +58,15 @@ test('the item page shows and clears the farm banner live, adds no polling, and 
   expect(during.filter((p) => p.startsWith('/api/') && !before.has(p))).toEqual([])
   expect(during.filter((p) => p.includes('/farm/'))).toEqual([])
 
-  await setReachable(request, true)
-  await expect(banner).toHaveCount(0, { timeout: 10_000 })
-
-  await setReachable(request, false)
-  await expect(banner).toBeVisible({ timeout: 10_000 })
+  // The link, in the same outage (HZ-924: no second one to cause).
   await banner.getByRole('button', { name: 'Farm health' }).click()
   await expect(page).toHaveURL(/\/farm-health$/)
   await expect(page.getByRole('heading', { level: 1, name: 'Farm health' })).toBeVisible()
+
+  // Back on the item page (client-side, no reload), the banner clears live.
+  await page.goBack()
+  await expect(page.locator('.tracker__id')).toHaveText(ID)
+  await expect(banner).toBeVisible()
   await setReachable(request, true)
+  await expect(banner).toHaveCount(0, { timeout: 10_000 })
 })

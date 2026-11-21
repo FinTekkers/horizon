@@ -6,6 +6,7 @@
 // lift and its downward menu, and the Approvals drawer's menu still shows
 // above the drawer. Rows are seeded at a gate (fixtures/seed.js), so the
 // orchestrator never moves them; every dialog opened here is cancelled.
+// Light only (HZ-924): dark is the screenshot capture's (.horizon/screenshots.json).
 
 import { test, expect } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
@@ -96,12 +97,6 @@ async function shoot(page, testInfo, name) {
   await testInfo.attach(name, { body: await page.screenshot(), contentType: 'image/png' })
 }
 
-async function useDark(page) {
-  await page.evaluate(() => localStorage.setItem('horizon_theme', 'dark'))
-  await page.reload()
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-}
-
 async function openPhoneBoard(page) {
   await page.goto('/')
   await page.getByRole('tablist', { name: 'Board columns' }).getByRole('tab', { name: /^Technical Plan, / }).tap()
@@ -135,18 +130,6 @@ test.describe('on a 390px touch phone', () => {
     await expect(page.locator('.composer__title')).toHaveCount(0)
   })
 
-  test('in dark, the board card menu also opens above the tab bar', async ({ page }, testInfo) => {
-    await page.goto('/')
-    await useDark(page)
-    await openPhoneBoard(page)
-    const id = await placeableGateId(page)
-    expect(id).not.toBeNull()
-    await placeAboveNav(page, toggleFor(page, id))
-    await toggleFor(page, id).tap()
-    await expectMenuClearOfNav(page)
-    await shoot(page, testInfo, 'phone-board-menu-dark')
-  })
-
   test('the item page ⋯ just above the tab bar opens above it, and Abandon opens the abandon dialog', async ({ page }, testInfo) => {
     await page.goto(`/${TRACKER_ID.toLowerCase()}`)
     await expect(page.locator('.tracker__id')).toHaveText(TRACKER_ID)
@@ -164,13 +147,6 @@ test.describe('on a 390px touch phone', () => {
     expect(page.url()).toBe(url)
     await page.locator('.composer__cancel').tap()
     await expect(page.locator('.composer__title')).toHaveCount(0)
-
-    await useDark(page)
-    await expect(page.locator('.tracker__id')).toHaveText(TRACKER_ID)
-    await placeAboveNav(page, toggle)
-    await toggle.tap()
-    await expectMenuClearOfNav(page)
-    await shoot(page, testInfo, 'phone-tracker-menu-dark')
   })
 })
 
