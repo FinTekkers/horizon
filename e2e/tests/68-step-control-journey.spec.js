@@ -146,79 +146,81 @@ test('the item page: an earlier step opens the Move dialog, and the return lands
   await expectAtTarget()
 })
 
-test('a board card: ⋯ → Move to… lists the snapshot’s return targets in order, with its default chosen', async ({ page, request }) => {
-  const item = await itemFromApi(request, BOARD_ID)
-  // HZ-920: the return targets, then Close (the snapshot's skip target).
-  const targets = [...targetsOf(item, 'return'), ...targetsOf(item, 'skip')]
-  expect(targets.length).toBeGreaterThan(1)
-  expect(targets.at(-1).label).toBe('Close')
+test('the board: a card’s Move to… dialog and the Approvals drawer’s Approve', async ({ page, request }) => {
+  await test.step('a board card: ⋯ → Move to… lists the snapshot’s return targets in order, with its default chosen', async () => {
+    const item = await itemFromApi(request, BOARD_ID)
+    // HZ-920: the return targets, then Close (the snapshot's skip target).
+    const targets = [...targetsOf(item, 'return'), ...targetsOf(item, 'skip')]
+    expect(targets.length).toBeGreaterThan(1)
+    expect(targets.at(-1).label).toBe('Close')
 
-  const moves = recordMoves(page, BOARD_ID)
-  await page.goto('/')
-  const more = page.getByRole('button', { name: `More actions for ${BOARD_ID}` })
-  await expect(more).toBeVisible({ timeout: 10_000 })
-  await more.click()
-  const menu = page.getByRole('menu', { name: `Actions for ${BOARD_ID}` })
-  await expect(menu.getByRole('menuitem')).toHaveText(['Move to…', 'Abandon'])
-  await menu.getByRole('menuitem', { name: 'Move to…' }).click()
+    const moves = recordMoves(page, BOARD_ID)
+    await page.goto('/')
+    const more = page.getByRole('button', { name: `More actions for ${BOARD_ID}` })
+    await expect(more).toBeVisible({ timeout: 10_000 })
+    await more.click()
+    const menu = page.getByRole('menu', { name: `Actions for ${BOARD_ID}` })
+    await expect(menu.getByRole('menuitem')).toHaveText(['Move to…', 'Abandon'])
+    await menu.getByRole('menuitem', { name: 'Move to…' }).click()
 
-  await expect(page.getByRole('dialog')).toHaveCount(1)
-  const dialog = page.getByRole('dialog', { name: `Move to an earlier step · ${BOARD_ID}` })
-  const group = dialog.getByRole('group', { name: 'Move to' })
-  const radios = group.getByRole('radio')
-  await expect(radios).toHaveCount(targets.length)
-  // The snapshot's order, by key and by label.
-  expect(await radios.evaluateAll((els) => els.map((el) => el.value))).toEqual(targets.map((t) => t.key))
-  for (const [i, t] of targets.entries()) {
-    await expect(radios.nth(i)).toHaveAccessibleName(new RegExp(`^${escape(t.label)}`))
-    if (t.isDefault) await expect(radios.nth(i)).toBeChecked()
-    else await expect(radios.nth(i)).not.toBeChecked()
-  }
-  // The summary follows the choice.
-  const other = targets.find((t) => !t.isDefault)
-  await group.getByRole('radio', { name: new RegExp(`^${escape(other.label)}`) }).check()
-  await expect(dialog.getByTestId('move-summary')).toContainText(other.redo)
+    await expect(page.getByRole('dialog')).toHaveCount(1)
+    const dialog = page.getByRole('dialog', { name: `Move to an earlier step · ${BOARD_ID}` })
+    const group = dialog.getByRole('group', { name: 'Move to' })
+    const radios = group.getByRole('radio')
+    await expect(radios).toHaveCount(targets.length)
+    // The snapshot's order, by key and by label.
+    expect(await radios.evaluateAll((els) => els.map((el) => el.value))).toEqual(targets.map((t) => t.key))
+    for (const [i, t] of targets.entries()) {
+      await expect(radios.nth(i)).toHaveAccessibleName(new RegExp(`^${escape(t.label)}`))
+      if (t.isDefault) await expect(radios.nth(i)).toBeChecked()
+      else await expect(radios.nth(i)).not.toBeChecked()
+    }
+    // The summary follows the choice.
+    const other = targets.find((t) => !t.isDefault)
+    await group.getByRole('radio', { name: new RegExp(`^${escape(other.label)}`) }).check()
+    await expect(dialog.getByTestId('move-summary')).toContainText(other.redo)
 
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-  await expect(page.getByRole('dialog')).toHaveCount(0)
-  expect(moves).toEqual([])
-  expect((await itemFromApi(request, BOARD_ID)).currentStepKey).toBe(item.currentStepKey)
-})
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    expect(moves).toEqual([])
+    expect((await itemFromApi(request, BOARD_ID)).currentStepKey).toBe(item.currentStepKey)
+  })
 
-test('the Approvals drawer: Approve → confirm → PIN approves the gate through /move', async ({ page, request }) => {
-  const item = await itemFromApi(request, DRAWER_ID)
-  expect(item.moves.approveKey).toBe('change.approve-prioritize')
-  const gateLabel = item.moves.labels['change.approve-prioritize']
-  expect(gateLabel).toBe('Approve & prioritize this work')
-  // Lock the session again (the first test verified it), so this approve asks.
-  const db = openDb(DB_PATH)
-  try {
-    setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
-  } finally {
-    db.close()
-  }
+  await test.step('the Approvals drawer: Approve → confirm → PIN approves the gate through /move', async () => {
+    const item = await itemFromApi(request, DRAWER_ID)
+    expect(item.moves.approveKey).toBe('change.approve-prioritize')
+    const gateLabel = item.moves.labels['change.approve-prioritize']
+    expect(gateLabel).toBe('Approve & prioritize this work')
+    // Lock the session again (the first test verified it), so this approve asks.
+    const db = openDb(DB_PATH)
+    try {
+      setGatePinDirect(db, ADMIN_EMAIL, GATE_PIN)
+    } finally {
+      db.close()
+    }
 
-  const moves = recordMoves(page, DRAWER_ID)
-  await page.goto('/')
-  await page.getByRole('button', { name: /Pending approvals/ }).click()
-  const approval = page.locator('.drawer .approval').filter({ has: page.getByText(DRAWER_ID, { exact: true }) })
-  await expect(approval).toContainText(gateLabel)
-  await approval.getByRole('button', { name: 'Approve', exact: true }).click()
+    const moves = recordMoves(page, DRAWER_ID)
+    await page.goto('/')
+    await page.getByRole('button', { name: /Pending approvals/ }).click()
+    const approval = page.locator('.drawer .approval').filter({ has: page.getByText(DRAWER_ID, { exact: true }) })
+    await expect(approval).toContainText(gateLabel)
+    await approval.getByRole('button', { name: 'Approve', exact: true }).click()
 
-  const confirm = page.getByRole('alertdialog', { name: 'Approve this gate?' })
-  await expect(confirm).toContainText(DRAWER_ID)
-  expect(moves).toEqual([])
-  const answered = page.waitForResponse((res) => res.url().endsWith(`/api/items/${DRAWER_ID}/move`) && res.status() !== 401)
-  await confirm.getByRole('button', { name: 'Approve', exact: true }).click()
-  await answerPinDialog(page, GATE_PIN)
-  const res = await answered
-  expect(res.status()).toBe(200)
-  expect((await res.json()).move).toMatchObject({ action: 'approve', fromKey: 'change.approve-prioritize' })
-  expect(moves.length).toBeGreaterThan(0)
-  for (const body of moves) expect(body).toEqual({ action: 'approve', from: 'change.approve-prioritize' })
+    const confirm = page.getByRole('alertdialog', { name: 'Approve this gate?' })
+    await expect(confirm).toContainText(DRAWER_ID)
+    expect(moves).toEqual([])
+    const answered = page.waitForResponse((res) => res.url().endsWith(`/api/items/${DRAWER_ID}/move`) && res.status() !== 401)
+    await confirm.getByRole('button', { name: 'Approve', exact: true }).click()
+    await answerPinDialog(page, GATE_PIN)
+    const res = await answered
+    expect(res.status()).toBe(200)
+    expect((await res.json()).move).toMatchObject({ action: 'approve', fromKey: 'change.approve-prioritize' })
+    expect(moves.length).toBeGreaterThan(0)
+    for (const body of moves) expect(body).toEqual({ action: 'approve', from: 'change.approve-prioritize' })
 
-  // The gate is approved: the item has moved past it (the mock agents may
-  // already have carried it on to the next gate).
-  await expect.poll(async () => (await itemFromApi(request, DRAWER_ID)).currentStepKey, { timeout: 10_000 }).not.toBe('change.approve-prioritize')
-  await expect(approval).not.toContainText(gateLabel)
+    // The gate is approved: the item has moved past it (the mock agents may
+    // already have carried it on to the next gate).
+    await expect.poll(async () => (await itemFromApi(request, DRAWER_ID)).currentStepKey, { timeout: 10_000 }).not.toBe('change.approve-prioritize')
+    await expect(approval).not.toContainText(gateLabel)
+  })
 })

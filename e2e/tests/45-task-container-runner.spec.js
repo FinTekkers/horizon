@@ -103,61 +103,63 @@ test.afterAll(() => {
 const stepCard = (page, label) =>
   page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: new RegExp(`^${label}(\\s*(Return here|Retry|Approve))?$`) }) })
 
-test('Approve the run names the effective runner, and a reload keeps it', async ({ page }) => {
-  const runPlanLine = () => stepCard(page, 'Approve the run').locator('.step-card__run-plan')
-  for (const [id, label] of [
-    [HOST_GATE, HOST_LABEL],
-    [CONTAINER_GATE, 'Container'],
-  ]) {
-    await page.goto(`/${id.toLowerCase()}`)
-    await expect(runPlanLine()).toHaveText(`Run plan: 2 commands · budget 10 min · ${label}`, { timeout: 15_000 })
-    await expect(page.getByTestId('run-plan-runner-warning')).toHaveCount(0)
+test("Execute runners: the run plan's runner, a refused container run, and each runner's result", async ({ page, request }) => {
+  await test.step('Approve the run names the effective runner, and a reload keeps it', async () => {
+    const runPlanLine = () => stepCard(page, 'Approve the run').locator('.step-card__run-plan')
+    for (const [id, label] of [
+      [HOST_GATE, HOST_LABEL],
+      [CONTAINER_GATE, 'Container'],
+    ]) {
+      await page.goto(`/${id.toLowerCase()}`)
+      await expect(runPlanLine()).toHaveText(`Run plan: 2 commands · budget 10 min · ${label}`, { timeout: 15_000 })
+      await expect(page.getByTestId('run-plan-runner-warning')).toHaveCount(0)
+      await page.reload()
+      await expect(runPlanLine()).toHaveText(`Run plan: 2 commands · budget 10 min · ${label}`, { timeout: 15_000 })
+    }
+    await expect(page.getByText(HOST_LABEL)).toHaveCount(0)
+  })
+
+  await test.step('an explicit container plan with no image is warned about before approval, and a reload keeps it', async () => {
+    await page.goto(`/${NO_IMAGE_GATE.toLowerCase()}`)
+    const card = stepCard(page, 'Approve the run')
+    await expect(card.locator('.step-card__run-plan')).toHaveText('Run plan: 2 commands · budget 10 min · Container', { timeout: 15_000 })
+    await expect(card.getByTestId('run-plan-runner-warning')).toContainText('no container image for this repo')
     await page.reload()
-    await expect(runPlanLine()).toHaveText(`Run plan: 2 commands · budget 10 min · ${label}`, { timeout: 15_000 })
-  }
-  await expect(page.getByText(HOST_LABEL)).toHaveCount(0)
-})
-
-test('an explicit container plan with no image is warned about before approval, and a reload keeps it', async ({ page }) => {
-  await page.goto(`/${NO_IMAGE_GATE.toLowerCase()}`)
-  const card = stepCard(page, 'Approve the run')
-  await expect(card.locator('.step-card__run-plan')).toHaveText('Run plan: 2 commands · budget 10 min · Container', { timeout: 15_000 })
-  await expect(card.getByTestId('run-plan-runner-warning')).toContainText('no container image for this repo')
-  await page.reload()
-  await expect(stepCard(page, 'Approve the run').getByTestId('run-plan-runner-warning')).toContainText('no container image for this repo', {
-    timeout: 15_000,
+    await expect(stepCard(page, 'Approve the run').getByTestId('run-plan-runner-warning')).toContainText('no container image for this repo', {
+      timeout: 15_000,
+    })
   })
-})
 
-test('a container run with no Podman pauses with its own reason, and a reload keeps it', async ({ page, request }) => {
-  const res = await request.post(`${SERVER}/api/farm/steps/${runIds[REFUSED]}/fail`, {
-    headers: FARM,
-    data: { error: 'Execute refused: podman is not installed', reason: REASON.JOB_CONTAINER_UNAVAILABLE },
-  })
-  expect(res.status()).toBe(200)
-  await page.goto(`/${REFUSED.toLowerCase()}`)
-  await expect(page.getByText('Run refused: no container to run in')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByText(/podman is not installed/).first()).toBeVisible()
-  await page.reload()
-  await expect(page.getByText('Run refused: no container to run in')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
-})
-
-for (const [id, runner, logLines] of [
-  [CONTAINER_RUN, 'container', 'env: system\ncontainer: docker.io/library/python@sha256:e2e\n$ scripts/backfill.sh (cwd=/opt/x)\nexit 0 in 1.0s\n'],
-  [HOST_RUN, 'host', 'env: system\n$ scripts/backfill.sh (cwd=/opt/x)\nexit 0 in 1.0s\n'],
-]) {
-  test(`a ${runner} run's result reaches Execute and survives a reload`, async ({ page, request }) => {
-    const summary = `2 command(s) run, 2 passed, 0 failed (${runner})`
-    const res = await request.post(`${SERVER}/api/farm/steps/${runIds[id]}/complete`, {
+  await test.step('a container run with no Podman pauses with its own reason, and a reload keeps it', async () => {
+    const res = await request.post(`${SERVER}/api/farm/steps/${runIds[REFUSED]}/fail`, {
       headers: FARM,
-      data: { summary, artifacts: { artifact_md: `## Commands\n${summary}\n\n## Log (this attempt)\n${logLines}` } },
+      data: { error: 'Execute refused: podman is not installed', reason: REASON.JOB_CONTAINER_UNAVAILABLE },
     })
     expect(res.status()).toBe(200)
-    await page.goto(`/${id.toLowerCase()}`)
-    const activity = page.locator('.tracker__activity')
-    await expect(activity.getByText(summary).first()).toBeVisible({ timeout: 15_000 })
+    await page.goto(`/${REFUSED.toLowerCase()}`)
+    await expect(page.getByText('Run refused: no container to run in')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText(/podman is not installed/).first()).toBeVisible()
     await page.reload()
-    await expect(page.locator('.tracker__activity').getByText(summary).first()).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByText('Run refused: no container to run in')).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
   })
-}
+
+  for (const [id, runner, logLines] of [
+    [CONTAINER_RUN, 'container', 'env: system\ncontainer: docker.io/library/python@sha256:e2e\n$ scripts/backfill.sh (cwd=/opt/x)\nexit 0 in 1.0s\n'],
+    [HOST_RUN, 'host', 'env: system\n$ scripts/backfill.sh (cwd=/opt/x)\nexit 0 in 1.0s\n'],
+  ]) {
+    await test.step(`a ${runner} run's result reaches Execute and survives a reload`, async () => {
+      const summary = `2 command(s) run, 2 passed, 0 failed (${runner})`
+      const res = await request.post(`${SERVER}/api/farm/steps/${runIds[id]}/complete`, {
+        headers: FARM,
+        data: { summary, artifacts: { artifact_md: `## Commands\n${summary}\n\n## Log (this attempt)\n${logLines}` } },
+      })
+      expect(res.status()).toBe(200)
+      await page.goto(`/${id.toLowerCase()}`)
+      const activity = page.locator('.tracker__activity')
+      await expect(activity.getByText(summary).first()).toBeVisible({ timeout: 15_000 })
+      await page.reload()
+      await expect(page.locator('.tracker__activity').getByText(summary).first()).toBeVisible({ timeout: 15_000 })
+    })
+  }
+})

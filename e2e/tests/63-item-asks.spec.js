@@ -93,75 +93,77 @@ async function expectItemPage(page) {
   return { banner, followUps }
 }
 
-test('the blocking ask is in the banner and the Approvals drawer; the soft ask only under Suggested follow-ups', async ({ page }, testInfo) => {
-  let alerted = false
-  page.on('dialog', async (dialog) => {
-    alerted = true
-    await dialog.dismiss()
-  })
-  await page.goto(`/${ID.toLowerCase()}`)
-  const { banner, followUps } = await expectItemPage(page)
-  await testInfo.attach('item-page-banner', { body: await banner.screenshot(), contentType: 'image/png' })
-  await testInfo.attach('item-page-follow-ups', { body: await followUps.screenshot(), contentType: 'image/png' })
-
-  await page.getByRole('button', { name: /Pending approvals/ }).click()
-  const drawer = page.locator('.drawer__panel')
-  await expect(drawer).toBeVisible()
-  const asks = drawer.getByRole('region', { name: 'Blocking asks' })
-  await expect(asks).toBeVisible()
-  const entry = asks.getByTestId('approval-ask').filter({ hasText: ID })
-  await expect(entry).toHaveCount(1)
-  await expect(entry).toContainText(BLOCKING.title)
-  await expect(drawer).not.toContainText(SCRIPT_TITLE)
-  await expectEscapedAndNamed(drawer)
-  await testInfo.attach('approvals-drawer-ask', { body: await entry.screenshot(), contentType: 'image/png' })
-  await drawer.locator('.drawer__close').click()
-
-  await page.reload()
-  await expectItemPage(page)
-  expect(alerted).toBe(false)
-})
-
-test('the soft ask is on /follow-ups, reached from the TopBar and after a reload; the blocking ask is not', async ({ page }, testInfo) => {
-  await page.goto(`/${ID.toLowerCase()}`)
-  await expect(page.locator('.tracker__id')).toHaveText(ID)
-  await page.getByRole('link', { name: /Follow-ups/ }).click()
-  await expect(page).toHaveURL(/\/follow-ups$/)
-
-  const expectList = async () => {
-    const group = page.getByRole('region', { name: `Follow-ups from ${ID}` })
-    await expect(group).toBeVisible()
-    await expect(group.getByTestId('ask-card')).toHaveCount(1)
-    await expect(group).toContainText(SCRIPT_TITLE)
-    await expect(group).toContainText(SOFT.why)
-    await expect(page.locator('.follow-ups')).not.toContainText(BLOCKING.title)
-    await expect(page.locator('.follow-ups')).not.toContainText(SUPERSEDED.title)
-    await expectEscapedAndNamed(page.locator('.follow-ups'))
-    return group
-  }
-  const group = await expectList()
-  await testInfo.attach('follow-ups-list', { body: await group.screenshot(), contentType: 'image/png' })
-
-  await page.reload()
-  await expectList()
-})
-
-test('the owner sees the reviewer’s contradiction on that ask’s card only, after a reload too', async ({ page }) => {
-  await page.goto(`/${ID.toLowerCase()}`)
-  const expectContradiction = async () => {
+test('item page: blocking and soft asks in the banner, drawer and follow-ups', async ({ page }, testInfo) => {
+  await test.step('the blocking ask is in the banner and the Approvals drawer; the soft ask only under Suggested follow-ups', async () => {
+    let alerted = false
+    page.on('dialog', async (dialog) => {
+      alerted = true
+      await dialog.dismiss()
+    })
+    await page.goto(`/${ID.toLowerCase()}`)
     const { banner, followUps } = await expectItemPage(page)
-    const card = followUps.getByTestId('ask-card').filter({ hasText: SCRIPT_TITLE })
-    await expect(card.getByText(`Contradicts the parent: ${CONTRADICTION}`)).toBeVisible()
-    await expect(banner).not.toContainText('Contradicts the parent')
-  }
-  await expectContradiction()
-  await page.reload()
-  await expectContradiction()
-})
+    await testInfo.attach('item-page-banner', { body: await banner.screenshot(), contentType: 'image/png' })
+    await testInfo.attach('item-page-follow-ups', { body: await followUps.screenshot(), contentType: 'image/png' })
 
-test('an item with no open asks shows no banner and no follow-ups panel', async ({ page }) => {
-  await page.goto(`/${EMPTY_ID.toLowerCase()}`)
-  await expect(page.locator('.tracker__id')).toHaveText(EMPTY_ID)
-  await expect(page.locator('.ask-banner')).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Suggested follow-ups' })).toHaveCount(0)
+    await page.getByRole('button', { name: /Pending approvals/ }).click()
+    const drawer = page.locator('.drawer__panel')
+    await expect(drawer).toBeVisible()
+    const asks = drawer.getByRole('region', { name: 'Blocking asks' })
+    await expect(asks).toBeVisible()
+    const entry = asks.getByTestId('approval-ask').filter({ hasText: ID })
+    await expect(entry).toHaveCount(1)
+    await expect(entry).toContainText(BLOCKING.title)
+    await expect(drawer).not.toContainText(SCRIPT_TITLE)
+    await expectEscapedAndNamed(drawer)
+    await testInfo.attach('approvals-drawer-ask', { body: await entry.screenshot(), contentType: 'image/png' })
+    await drawer.locator('.drawer__close').click()
+
+    await page.reload()
+    await expectItemPage(page)
+    expect(alerted).toBe(false)
+  })
+
+  await test.step('the soft ask is on /follow-ups, reached from the TopBar and after a reload; the blocking ask is not', async () => {
+    await page.goto(`/${ID.toLowerCase()}`)
+    await expect(page.locator('.tracker__id')).toHaveText(ID)
+    await page.getByRole('link', { name: /Follow-ups/ }).click()
+    await expect(page).toHaveURL(/\/follow-ups$/)
+
+    const expectList = async () => {
+      const group = page.getByRole('region', { name: `Follow-ups from ${ID}` })
+      await expect(group).toBeVisible()
+      await expect(group.getByTestId('ask-card')).toHaveCount(1)
+      await expect(group).toContainText(SCRIPT_TITLE)
+      await expect(group).toContainText(SOFT.why)
+      await expect(page.locator('.follow-ups')).not.toContainText(BLOCKING.title)
+      await expect(page.locator('.follow-ups')).not.toContainText(SUPERSEDED.title)
+      await expectEscapedAndNamed(page.locator('.follow-ups'))
+      return group
+    }
+    const group = await expectList()
+    await testInfo.attach('follow-ups-list', { body: await group.screenshot(), contentType: 'image/png' })
+
+    await page.reload()
+    await expectList()
+  })
+
+  await test.step('the owner sees the reviewer’s contradiction on that ask’s card only, after a reload too', async () => {
+    await page.goto(`/${ID.toLowerCase()}`)
+    const expectContradiction = async () => {
+      const { banner, followUps } = await expectItemPage(page)
+      const card = followUps.getByTestId('ask-card').filter({ hasText: SCRIPT_TITLE })
+      await expect(card.getByText(`Contradicts the parent: ${CONTRADICTION}`)).toBeVisible()
+      await expect(banner).not.toContainText('Contradicts the parent')
+    }
+    await expectContradiction()
+    await page.reload()
+    await expectContradiction()
+  })
+
+  await test.step('an item with no open asks shows no banner and no follow-ups panel', async () => {
+    await page.goto(`/${EMPTY_ID.toLowerCase()}`)
+    await expect(page.locator('.tracker__id')).toHaveText(EMPTY_ID)
+    await expect(page.locator('.ask-banner')).toHaveCount(0)
+    await expect(page.getByRole('region', { name: 'Suggested follow-ups' })).toHaveCount(0)
+  })
 })

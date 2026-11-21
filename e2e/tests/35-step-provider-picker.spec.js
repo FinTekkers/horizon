@@ -43,77 +43,79 @@ test.beforeAll(() => {
 const stepCard = (page, index) =>
   page.locator('.step-card', { has: page.locator('.step-card__label', { hasText: STEPS[index].label }) })
 
-test('picking Muse for a step saves it, highlights it, and survives a reload', async ({ page, request }) => {
-  const bodies = []
-  await page.route(`**/api/items/${ID}/steps/*/provider`, (route) => {
-    bodies.push({ url: route.request().url(), method: route.request().method(), body: route.request().postDataJSON() })
-    route.continue()
+test('item page: the "Runs on" provider picker', async ({ page, request }) => {
+  await test.step('picking Muse for a step saves it, highlights it, and survives a reload', async () => {
+    const bodies = []
+    await page.route(`**/api/items/${ID}/steps/*/provider`, (route) => {
+      bodies.push({ url: route.request().url(), method: route.request().method(), body: route.request().postDataJSON() })
+      route.continue()
+    })
+
+    await page.goto(`/${ID.toLowerCase()}`)
+    const select = stepCard(page, ARCH).getByLabel('Runs on')
+    await expect(select).toHaveValue('default', { timeout: 10_000 })
+
+    await select.selectOption('muse')
+    await expect.poll(() => bodies.length, { timeout: 10_000 }).toBe(1)
+    expect(bodies[0].method).toBe('PUT')
+    expect(bodies[0].url).toContain(`/api/items/${ID}/steps/${ARCH}/provider`)
+    expect(bodies[0].body).toEqual({ provider: 'muse' })
+    await expect(select).toHaveClass(/step-card__provider-select--override/)
+
+    // A step that can't be switched.
+    await expect(stepCard(page, DEPLOY).locator('.step-card__provider')).toHaveText('Claude only')
+    await expect(stepCard(page, DEPLOY).getByLabel('Runs on')).toHaveCount(0)
+    // HZ-369: QA reviews the test plan can be switched now.
+    await expect(stepCard(page, QA).getByLabel('Runs on')).toHaveCount(1)
+    // HZ-370: so can step 9, the PM step after intake; 0-2 are below.
+    await expect(stepCard(page, SUMMARIZE).getByLabel('Runs on')).toHaveCount(1)
+
+    await select.scrollIntoViewIfNeeded()
+
+    // Persisted on the server, not just local state.
+    await page.reload()
+    await expect(stepCard(page, ARCH).getByLabel('Runs on')).toHaveValue('muse', { timeout: 10_000 })
+    await expect(stepCard(page, ARCH).getByLabel('Runs on')).toHaveClass(/step-card__provider-select--override/)
+    const items = (await (await request.get('/api/items')).json()).items
+    expect(items.find((it) => it.id === ID).providerChoices).toEqual({ [ARCH]: 'muse' })
   })
 
-  await page.goto(`/${ID.toLowerCase()}`)
-  const select = stepCard(page, ARCH).getByLabel('Runs on')
-  await expect(select).toHaveValue('default', { timeout: 10_000 })
+  await test.step('picking Muse for implement saves it, shows the allowlist note, and survives a reload', async () => {
+    const bodies = []
+    await page.route(`**/api/items/${ID}/steps/*/provider`, (route) => {
+      bodies.push({ url: route.request().url(), method: route.request().method(), body: route.request().postDataJSON() })
+      route.continue()
+    })
 
-  await select.selectOption('muse')
-  await expect.poll(() => bodies.length, { timeout: 10_000 }).toBe(1)
-  expect(bodies[0].method).toBe('PUT')
-  expect(bodies[0].url).toContain(`/api/items/${ID}/steps/${ARCH}/provider`)
-  expect(bodies[0].body).toEqual({ provider: 'muse' })
-  await expect(select).toHaveClass(/step-card__provider-select--override/)
+    await page.goto(`/${ID.toLowerCase()}`)
+    const select = stepCard(page, IMPLEMENT).getByLabel('Runs on')
+    await expect(select).toHaveValue('default', { timeout: 10_000 })
+    await expect(stepCard(page, IMPLEMENT).getByText(ALLOWLIST_NOTE)).toBeVisible()
+    await expect(stepCard(page, ARCH).getByText(ALLOWLIST_NOTE)).toHaveCount(0)
 
-  // A step that can't be switched.
-  await expect(stepCard(page, DEPLOY).locator('.step-card__provider')).toHaveText('Claude only')
-  await expect(stepCard(page, DEPLOY).getByLabel('Runs on')).toHaveCount(0)
-  // HZ-369: QA reviews the test plan can be switched now.
-  await expect(stepCard(page, QA).getByLabel('Runs on')).toHaveCount(1)
-  // HZ-370: so can step 9, the PM step after intake; 0-2 are below.
-  await expect(stepCard(page, SUMMARIZE).getByLabel('Runs on')).toHaveCount(1)
+    await select.selectOption('muse')
+    await expect.poll(() => bodies.length, { timeout: 10_000 }).toBe(1)
+    expect(bodies[0].method).toBe('PUT')
+    expect(bodies[0].url).toMatch(new RegExp(`/api/items/${ID}/steps/${IMPLEMENT}/provider$`))
+    expect(bodies[0].body).toEqual({ provider: 'muse' })
+    await expect(select).toHaveClass(/step-card__provider-select--override/)
 
-  await select.scrollIntoViewIfNeeded()
-
-  // Persisted on the server, not just local state.
-  await page.reload()
-  await expect(stepCard(page, ARCH).getByLabel('Runs on')).toHaveValue('muse', { timeout: 10_000 })
-  await expect(stepCard(page, ARCH).getByLabel('Runs on')).toHaveClass(/step-card__provider-select--override/)
-  const items = (await (await request.get('/api/items')).json()).items
-  expect(items.find((it) => it.id === ID).providerChoices).toEqual({ [ARCH]: 'muse' })
-})
-
-test('picking Muse for implement saves it, shows the allowlist note, and survives a reload', async ({ page, request }) => {
-  const bodies = []
-  await page.route(`**/api/items/${ID}/steps/*/provider`, (route) => {
-    bodies.push({ url: route.request().url(), method: route.request().method(), body: route.request().postDataJSON() })
-    route.continue()
+    // A refused save would put the select back to Default; a reload proves the
+    // server kept it.
+    await page.reload()
+    await expect(stepCard(page, IMPLEMENT).getByLabel('Runs on')).toHaveValue('muse', { timeout: 10_000 })
+    await expect(stepCard(page, IMPLEMENT).getByText(ALLOWLIST_NOTE)).toBeVisible()
+    const items = (await (await request.get('/api/items')).json()).items
+    expect(items.find((it) => it.id === ID).providerChoices[IMPLEMENT]).toBe('muse')
   })
 
-  await page.goto(`/${ID.toLowerCase()}`)
-  const select = stepCard(page, IMPLEMENT).getByLabel('Runs on')
-  await expect(select).toHaveValue('default', { timeout: 10_000 })
-  await expect(stepCard(page, IMPLEMENT).getByText(ALLOWLIST_NOTE)).toBeVisible()
-  await expect(stepCard(page, ARCH).getByText(ALLOWLIST_NOTE)).toHaveCount(0)
-
-  await select.selectOption('muse')
-  await expect.poll(() => bodies.length, { timeout: 10_000 }).toBe(1)
-  expect(bodies[0].method).toBe('PUT')
-  expect(bodies[0].url).toMatch(new RegExp(`/api/items/${ID}/steps/${IMPLEMENT}/provider$`))
-  expect(bodies[0].body).toEqual({ provider: 'muse' })
-  await expect(select).toHaveClass(/step-card__provider-select--override/)
-
-  // A refused save would put the select back to Default; a reload proves the
-  // server kept it.
-  await page.reload()
-  await expect(stepCard(page, IMPLEMENT).getByLabel('Runs on')).toHaveValue('muse', { timeout: 10_000 })
-  await expect(stepCard(page, IMPLEMENT).getByText(ALLOWLIST_NOTE)).toBeVisible()
-  const items = (await (await request.get('/api/items')).json()).items
-  expect(items.find((it) => it.id === ID).providerChoices[IMPLEMENT]).toBe('muse')
-})
-
-test('HZ-370: the four PM steps offer the "Runs on" select; deploy stays "Claude only"', async ({ page }) => {
-  expect(PM_STEPS).toEqual([0, 1, 2, 9])
-  await page.goto(`/${PM_ID.toLowerCase()}`)
-  for (const index of PM_STEPS) {
-    await expect(stepCard(page, index).getByLabel('Runs on'), STEPS[index].label).toHaveValue('default', { timeout: 10_000 })
-  }
-  await expect(stepCard(page, DEPLOY).locator('.step-card__provider')).toHaveText('Claude only')
-  await expect(stepCard(page, DEPLOY).getByLabel('Runs on')).toHaveCount(0)
+  await test.step('HZ-370: the four PM steps offer the "Runs on" select; deploy stays "Claude only"', async () => {
+    expect(PM_STEPS).toEqual([0, 1, 2, 9])
+    await page.goto(`/${PM_ID.toLowerCase()}`)
+    for (const index of PM_STEPS) {
+      await expect(stepCard(page, index).getByLabel('Runs on'), STEPS[index].label).toHaveValue('default', { timeout: 10_000 })
+    }
+    await expect(stepCard(page, DEPLOY).locator('.step-card__provider')).toHaveText('Claude only')
+    await expect(stepCard(page, DEPLOY).getByLabel('Runs on')).toHaveCount(0)
+  })
 })

@@ -79,50 +79,52 @@ async function expectTable(table) {
   await expect(rows.nth(2).getByRole('cell')).toHaveText(['audit', 'could not be counted'])
 }
 
-test('the Execute card shows the run’s database changes as a table, one row per declared table', async ({ page, request }) => {
-  const res = await request.post(`${SERVER}/api/farm/steps/${runId}/progress`, {
-    headers: FARM,
-    data: {
-      status: 'running',
-      elapsedS: 12,
-      budgetS: 600,
-      startedAt: new Date(Date.now() - 12_000).toISOString(),
-      updatedAt: new Date().toISOString(),
-      commands: [{ command: 'scripts/backfill.sh', status: 'done', exit_code: 0 }],
-      logTail: ['db changes: 2 table(s) counted, 1 failed'],
-      // Stripped by the server's whitelist: never reaches the page.
-      dbChanges: { ...DB_CHANGES, dsn: 'postgresql://user:hunter2@db/mdi' },
-    },
+test('item page: the run’s database changes table on Execute, Verify & report and Review & close', async ({ page, request }) => {
+  await test.step('the Execute card shows the run’s database changes as a table, one row per declared table', async () => {
+    const res = await request.post(`${SERVER}/api/farm/steps/${runId}/progress`, {
+      headers: FARM,
+      data: {
+        status: 'running',
+        elapsedS: 12,
+        budgetS: 600,
+        startedAt: new Date(Date.now() - 12_000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        commands: [{ command: 'scripts/backfill.sh', status: 'done', exit_code: 0 }],
+        logTail: ['db changes: 2 table(s) counted, 1 failed'],
+        // Stripped by the server's whitelist: never reaches the page.
+        dbChanges: { ...DB_CHANGES, dsn: 'postgresql://user:hunter2@db/mdi' },
+      },
+    })
+    expect(res.status()).toBe(200)
+
+    await page.goto(`/${ITEM.toLowerCase()}`)
+    await expectTable(changesTable(cardFor(page, 'Execute')))
+    await expect(page.getByText(/hunter2/)).toHaveCount(0)
   })
-  expect(res.status()).toBe(200)
 
-  await page.goto(`/${ITEM.toLowerCase()}`)
-  await expectTable(changesTable(cardFor(page, 'Execute')))
-  await expect(page.getByText(/hunter2/)).toHaveCount(0)
-})
+  await test.step('Verify & report shows the same table, Review & close links to it, and a reload keeps both', async () => {
+    const db = openDb(DB_PATH)
+    try {
+      // The job finished: its run closes with the view it stored, and the
+      // item moves on to the last gate.
+      db.prepare("UPDATE step_run SET status = 'done', output = '1 command(s) run, 1 passed, 0 failed', ended_at = ? WHERE id = ?").run(sqliteNow(), runId)
+      db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(TASK_REVIEW_CLOSE_GATE_INDEX, ITEM)
+    } finally {
+      db.close()
+    }
 
-test('Verify & report shows the same table, Review & close links to it, and a reload keeps both', async ({ page }) => {
-  const db = openDb(DB_PATH)
-  try {
-    // The job finished: its run closes with the view it stored, and the
-    // item moves on to the last gate.
-    db.prepare("UPDATE step_run SET status = 'done', output = '1 command(s) run, 1 passed, 0 failed', ended_at = ? WHERE id = ?").run(sqliteNow(), runId)
-    db.prepare('UPDATE work_item SET cursor = ? WHERE id = ?').run(TASK_REVIEW_CLOSE_GATE_INDEX, ITEM)
-  } finally {
-    db.close()
-  }
+    await page.goto(`/${ITEM.toLowerCase()}`)
+    await expectTable(changesTable(cardFor(page, 'Verify & report')))
 
-  await page.goto(`/${ITEM.toLowerCase()}`)
-  await expectTable(changesTable(cardFor(page, 'Verify & report')))
+    const link = cardFor(page, 'Review & close').getByRole('link', { name: /Database changes/ })
+    await expect(link).toBeVisible()
+    await link.click()
+    await expect(page).toHaveURL(/#db-changes$/)
+    const executeTable = changesTable(cardFor(page, 'Execute'))
+    await expect(executeTable).toBeInViewport()
 
-  const link = cardFor(page, 'Review & close').getByRole('link', { name: /Database changes/ })
-  await expect(link).toBeVisible()
-  await link.click()
-  await expect(page).toHaveURL(/#db-changes$/)
-  const executeTable = changesTable(cardFor(page, 'Execute'))
-  await expect(executeTable).toBeInViewport()
-
-  await page.reload()
-  await expectTable(changesTable(cardFor(page, 'Execute')))
-  await expectTable(changesTable(cardFor(page, 'Verify & report')))
+    await page.reload()
+    await expectTable(changesTable(cardFor(page, 'Execute')))
+    await expectTable(changesTable(cardFor(page, 'Verify & report')))
+  })
 })

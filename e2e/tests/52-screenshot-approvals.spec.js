@@ -79,78 +79,79 @@ async function expectImagesRendered(row, names) {
   }
 }
 
-test('the owner reviews each shot, approves one and then all, and a republish resets only the changed shot', async ({
-  page,
-  request,
-}) => {
-  await seedGithub(request)
-  await page.goto(`/${ITEMS.journey.toLowerCase()}`)
-  const panel = panelOf(page)
-  await expect(panel.getByRole('listitem')).toHaveCount(3)
-  // The session is locked: no image is fetched until asked, then the PIN.
-  await expect(panel.getByRole('img')).toHaveCount(0)
-  await panel.getByRole('button', { name: 'Show images' }).click()
-  await answerPinDialog(page, GATE_PIN)
-  await expectImagesRendered(rowOf(page, 'board'), ['Baseline', 'Current', 'Diff'])
-  await expectImagesRendered(rowOf(page, 'gates'), ['Current'])
-  await expectImagesRendered(rowOf(page, 'old'), ['Baseline'])
-  await expect(rowOf(page, 'old')).toContainText('will be deleted')
-  await expect(panel).toContainText('0 of 3 approved')
+test('item page: the Screenshots panel, reviewed, at 375px, and absent', async ({ page, request }) => {
+  await test.step('the owner reviews each shot, approves one and then all, and a republish resets only the changed shot', async () => {
+    await seedGithub(request)
+    await page.goto(`/${ITEMS.journey.toLowerCase()}`)
+    const panel = panelOf(page)
+    await expect(panel.getByRole('listitem')).toHaveCount(3)
+    // The session is locked: no image is fetched until asked, then the PIN.
+    await expect(panel.getByRole('img')).toHaveCount(0)
+    await panel.getByRole('button', { name: 'Show images' }).click()
+    await answerPinDialog(page, GATE_PIN)
+    await expectImagesRendered(rowOf(page, 'board'), ['Baseline', 'Current', 'Diff'])
+    await expectImagesRendered(rowOf(page, 'gates'), ['Current'])
+    await expectImagesRendered(rowOf(page, 'old'), ['Baseline'])
+    await expect(rowOf(page, 'old')).toContainText('will be deleted')
+    await expect(panel).toContainText('0 of 3 approved')
 
-  // One screen: only that row is approved, and it survives a reload.
-  await rowOf(page, 'gates').getByRole('button', { name: 'Approve', exact: true }).click()
-  await expect(panel).toContainText('1 of 3 approved')
-  await page.reload()
-  await expect(panel).toContainText('1 of 3 approved')
-  await expect(rowOf(page, 'gates')).toContainText('✓ Approved')
-  await expect(rowOf(page, 'board').getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
+    // One screen: only that row is approved, and it survives a reload.
+    await rowOf(page, 'gates').getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(panel).toContainText('1 of 3 approved')
+    await page.reload()
+    await expect(panel).toContainText('1 of 3 approved')
+    await expect(rowOf(page, 'gates')).toContainText('✓ Approved')
+    await expect(rowOf(page, 'board').getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
 
-  // All screens — and the gate itself is still open, its Approve still there.
-  await panel.getByRole('button', { name: 'Approve all' }).click()
-  await expect(panel).toContainText('3 of 3 approved')
-  const gate = page.locator('.step-card--awaiting', { hasText: 'Accept the code' })
-  await expect(gate.locator('.btn-gate-approve')).toBeVisible()
+    // All screens — and the gate itself is still open, its Approve still there.
+    await panel.getByRole('button', { name: 'Approve all' }).click()
+    await expect(panel).toContainText('3 of 3 approved')
+    const gate = page.locator('.step-card--awaiting', { hasText: 'Accept the code' })
+    await expect(gate.locator('.btn-gate-approve')).toBeVisible()
 
-  // A later publish re-captures only the board: only its approval lapses.
-  await seedGithub(request, { journey: publication('e'.repeat(40), 5) })
-  await page.reload()
-  await expect(panel).toContainText('2 of 3 approved')
-  await expect(rowOf(page, 'board').getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
-  await expect(rowOf(page, 'gates')).toContainText('✓ Approved')
-  await expect(rowOf(page, 'old')).toContainText('✓ Approved')
-  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
-})
+    // A later publish re-captures only the board: only its approval lapses.
+    await seedGithub(request, { journey: publication('e'.repeat(40), 5) })
+    await page.reload()
+    await expect(panel).toContainText('2 of 3 approved')
+    await expect(rowOf(page, 'board').getByRole('button', { name: 'Approve', exact: true })).toBeVisible()
+    await expect(rowOf(page, 'gates')).toContainText('✓ Approved')
+    await expect(rowOf(page, 'old')).toContainText('✓ Approved')
+    expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain(GATE_PIN)
+  })
 
-test('at 375px the panel fits the screen, its images stack, and Approve all works', async ({ page, request }) => {
-  await seedGithub(request)
-  await page.setViewportSize({ width: 375, height: 667 })
-  await page.goto(`/${ITEMS.phone.toLowerCase()}`)
-  const board = rowOf(page, 'board')
-  await expectImagesRendered(board, ['Baseline', 'Current', 'Diff'])
-  const { scroll, client } = await page.evaluate(() => ({
-    scroll: document.documentElement.scrollWidth,
-    client: document.documentElement.clientWidth,
-  }))
-  expect(scroll).toBe(client)
-  const ys = []
-  for (const name of ['Baseline', 'Current', 'Diff']) ys.push((await board.getByRole('img', { name, exact: true }).boundingBox()).y)
-  expect(ys[1]).toBeGreaterThan(ys[0])
-  expect(ys[2]).toBeGreaterThan(ys[1])
+  await test.step('at 375px the panel fits the screen, its images stack, and Approve all works', async () => {
+    await seedGithub(request)
+    await page.setViewportSize({ width: 375, height: 667 })
+    await page.goto(`/${ITEMS.phone.toLowerCase()}`)
+    const board = rowOf(page, 'board')
+    await expectImagesRendered(board, ['Baseline', 'Current', 'Diff'])
+    const { scroll, client } = await page.evaluate(() => ({
+      scroll: document.documentElement.scrollWidth,
+      client: document.documentElement.clientWidth,
+    }))
+    expect(scroll).toBe(client)
+    const ys = []
+    for (const name of ['Baseline', 'Current', 'Diff']) ys.push((await board.getByRole('img', { name, exact: true }).boundingBox()).y)
+    expect(ys[1]).toBeGreaterThan(ys[0])
+    expect(ys[2]).toBeGreaterThan(ys[1])
 
-  const approveAll = panelOf(page).getByRole('button', { name: 'Approve all' })
-  await approveAll.scrollIntoViewIfNeeded()
-  await expect(approveAll).toBeVisible()
-  await approveAll.click()
-  await expect(panelOf(page)).toContainText('3 of 3 approved')
-})
+    const approveAll = panelOf(page).getByRole('button', { name: 'Approve all' })
+    await approveAll.scrollIntoViewIfNeeded()
+    await expect(approveAll).toBeVisible()
+    await approveAll.click()
+    await expect(panelOf(page)).toContainText('3 of 3 approved')
+  })
 
-test('an item with no changed, new or removed shots shows no panel, and the gate is unchanged', async ({ page, request }) => {
-  await seedGithub(request)
-  const listed = page.waitForResponse((res) => res.url().includes(`/items/${ITEMS.none}/screenshots`))
-  await page.goto(`/${ITEMS.none.toLowerCase()}`)
-  expect((await listed).status()).toBe(200)
-  const gate = page.locator('.step-card--awaiting', { hasText: 'Accept the code' })
-  await expect(gate.locator('.btn-gate-approve')).toBeVisible()
-  await expect(gate.locator('.btn-gate-approve')).toBeEnabled()
-  await expect(panelOf(page)).toHaveCount(0)
+  await test.step('an item with no changed, new or removed shots shows no panel, and the gate is unchanged', async () => {
+    // Back to the project's viewport (playwright.config.js) after the 375px step.
+    await page.setViewportSize({ width: 1024, height: 640 })
+    await seedGithub(request)
+    const listed = page.waitForResponse((res) => res.url().includes(`/items/${ITEMS.none}/screenshots`))
+    await page.goto(`/${ITEMS.none.toLowerCase()}`)
+    expect((await listed).status()).toBe(200)
+    const gate = page.locator('.step-card--awaiting', { hasText: 'Accept the code' })
+    await expect(gate.locator('.btn-gate-approve')).toBeVisible()
+    await expect(gate.locator('.btn-gate-approve')).toBeEnabled()
+    await expect(panelOf(page)).toHaveCount(0)
+  })
 })

@@ -88,55 +88,57 @@ const executeCard = (page) =>
 const commandRow = (card, command) =>
   card.locator('.job-panel__command').filter({ has: card.page().locator('.job-panel__command-text').getByText(command, { exact: true }) })
 
-test('the Execute card shows the job and a new log line and status arrive within 5 s, with no navigation', async ({ page, request }) => {
-  await sendProgress(request, LIVE, frame(['done', 'running', 'pending'], ['$ scripts/backfill.sh', 'batch 1 of 3 written']))
-  await page.goto(`/${LIVE.toLowerCase()}`)
-  const card = executeCard(page)
-  await expect(card.getByText('batch 1 of 3 written')).toBeVisible({ timeout: 15_000 })
-  await expect(commandRow(card, COMMANDS[0]).locator('.job-chip')).toHaveText('done')
-  await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('running')
-  await expect(commandRow(card, COMMANDS[2]).locator('.job-chip')).toHaveText('pending')
-  await expect(card.getByTestId('job-elapsed')).toContainText('of 10:00 budget')
-  await expect(card.getByRole('link', { name: /Full log/ })).toHaveAttribute('href', new RegExp(`/api/items/${LIVE}/job/log\\?format=text$`))
-  await expect(card.getByRole('button', { name: 'Stop run' })).toBeVisible()
+test('item page: the Execute card follows a live job and stops it', async ({ page, request }) => {
+  await test.step('the Execute card shows the job and a new log line and status arrive within 5 s, with no navigation', async () => {
+    await sendProgress(request, LIVE, frame(['done', 'running', 'pending'], ['$ scripts/backfill.sh', 'batch 1 of 3 written']))
+    await page.goto(`/${LIVE.toLowerCase()}`)
+    const card = executeCard(page)
+    await expect(card.getByText('batch 1 of 3 written')).toBeVisible({ timeout: 15_000 })
+    await expect(commandRow(card, COMMANDS[0]).locator('.job-chip')).toHaveText('done')
+    await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('running')
+    await expect(commandRow(card, COMMANDS[2]).locator('.job-chip')).toHaveText('pending')
+    await expect(card.getByTestId('job-elapsed')).toContainText('of 10:00 budget')
+    await expect(card.getByRole('link', { name: /Full log/ })).toHaveAttribute('href', new RegExp(`/api/items/${LIVE}/job/log\\?format=text$`))
+    await expect(card.getByRole('button', { name: 'Stop run' })).toBeVisible()
 
-  // From here on the page must not navigate: a marker on window survives
-  // only if it is never reloaded, and the main frame records no navigation.
-  await page.evaluate(() => {
-    window.__hz407 = 1
+    // From here on the page must not navigate: a marker on window survives
+    // only if it is never reloaded, and the main frame records no navigation.
+    await page.evaluate(() => {
+      window.__hz407 = 1
+    })
+    let navigations = 0
+    page.on('framenavigated', (f) => {
+      if (f === page.mainFrame()) navigations += 1
+    })
+    const url = page.url()
+
+    await sendProgress(request, LIVE, frame(['done', 'done', 'running'], ['$ scripts/verify-ledger.sh', 'ledger totals match: 1,204 rows']))
+    await expect(card.getByText('ledger totals match: 1,204 rows')).toBeVisible({ timeout: 5_000 })
+    await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('done', { timeout: 5_000 })
+    await expect(commandRow(card, COMMANDS[2]).locator('.job-chip')).toHaveText('running')
+    expect(await page.evaluate(() => window.__hz407)).toBe(1)
+    expect(navigations).toBe(0)
+    expect(page.url()).toBe(url)
   })
-  let navigations = 0
-  page.on('framenavigated', (f) => {
-    if (f === page.mainFrame()) navigations += 1
+
+  await test.step('Stop run on the card: command 2 shows stopped, Resume appears, the item pauses, and a reload keeps it', async () => {
+    await sendProgress(request, STOP, frame(['done', 'running', 'pending'], ['$ scripts/backfill.sh', 'batch 2 of 3 written']))
+    await page.goto(`/${STOP.toLowerCase()}`)
+    const card = executeCard(page)
+    await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('running', { timeout: 15_000 })
+    await expect(card.getByRole('button', { name: 'Resume' })).toHaveCount(0)
+
+    await card.getByRole('button', { name: 'Stop run' }).click()
+    await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('stopped', { timeout: 5_000 })
+    await expect(commandRow(card, COMMANDS[0]).locator('.job-chip')).toHaveText('done')
+    await expect(commandRow(card, COMMANDS[2]).locator('.job-chip')).toHaveText('pending')
+    await expect(card.getByRole('button', { name: 'Stop run' })).toHaveCount(0)
+    await expect(card.getByRole('button', { name: 'Resume' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
+
+    await page.reload()
+    const after = executeCard(page)
+    await expect(commandRow(after, COMMANDS[1]).locator('.job-chip')).toHaveText('stopped', { timeout: 15_000 })
+    await expect(after.getByRole('button', { name: 'Resume' })).toBeVisible()
   })
-  const url = page.url()
-
-  await sendProgress(request, LIVE, frame(['done', 'done', 'running'], ['$ scripts/verify-ledger.sh', 'ledger totals match: 1,204 rows']))
-  await expect(card.getByText('ledger totals match: 1,204 rows')).toBeVisible({ timeout: 5_000 })
-  await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('done', { timeout: 5_000 })
-  await expect(commandRow(card, COMMANDS[2]).locator('.job-chip')).toHaveText('running')
-  expect(await page.evaluate(() => window.__hz407)).toBe(1)
-  expect(navigations).toBe(0)
-  expect(page.url()).toBe(url)
-})
-
-test('Stop run on the card: command 2 shows stopped, Resume appears, the item pauses, and a reload keeps it', async ({ page, request }) => {
-  await sendProgress(request, STOP, frame(['done', 'running', 'pending'], ['$ scripts/backfill.sh', 'batch 2 of 3 written']))
-  await page.goto(`/${STOP.toLowerCase()}`)
-  const card = executeCard(page)
-  await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('running', { timeout: 15_000 })
-  await expect(card.getByRole('button', { name: 'Resume' })).toHaveCount(0)
-
-  await card.getByRole('button', { name: 'Stop run' }).click()
-  await expect(commandRow(card, COMMANDS[1]).locator('.job-chip')).toHaveText('stopped', { timeout: 5_000 })
-  await expect(commandRow(card, COMMANDS[0]).locator('.job-chip')).toHaveText('done')
-  await expect(commandRow(card, COMMANDS[2]).locator('.job-chip')).toHaveText('pending')
-  await expect(card.getByRole('button', { name: 'Stop run' })).toHaveCount(0)
-  await expect(card.getByRole('button', { name: 'Resume' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Resume work' })).toBeVisible()
-
-  await page.reload()
-  const after = executeCard(page)
-  await expect(commandRow(after, COMMANDS[1]).locator('.job-chip')).toHaveText('stopped', { timeout: 15_000 })
-  await expect(after.getByRole('button', { name: 'Resume' })).toBeVisible()
 })

@@ -86,109 +86,111 @@ async function expectOneFullWidthColumn(page, name) {
 
 const tabCount = async (page, name) => Number((await tab(page, name).getAttribute('aria-label')).match(/, (\d+) items?$/)[1])
 
-test('at 390px one column shows at full width, the tabs switch columns, and nothing overflows', async ({ page }) => {
-  await page.setViewportSize(PHONE)
-  await page.goto('/')
-  await expect(card(page, 'PB-PLAN')).toBeVisible({ timeout: 10_000 })
+test('phone board: one column at a time, picked with the tabs', async ({ page }) => {
+  await test.step('at 390px one column shows at full width, the tabs switch columns, and nothing overflows', async () => {
+    await page.setViewportSize(PHONE)
+    await page.goto('/')
+    await expect(card(page, 'PB-PLAN')).toBeVisible({ timeout: 10_000 })
 
-  await expectOneFullWidthColumn(page, 'Plan')
-  await expect(tab(page, 'Plan')).toHaveAttribute('aria-selected', 'true')
-  await expect(tab(page, 'Technical Plan')).toHaveAttribute('aria-selected', 'false')
-  await expectNoPageOverflow(page, 'Plan column')
-  await expectHeaderInsideCard(page, 'PB-PLAN')
-  await card(page, 'PB-PLAN').scrollIntoViewIfNeeded()
+    await expectOneFullWidthColumn(page, 'Plan')
+    await expect(tab(page, 'Plan')).toHaveAttribute('aria-selected', 'true')
+    await expect(tab(page, 'Technical Plan')).toHaveAttribute('aria-selected', 'false')
+    await expectNoPageOverflow(page, 'Plan column')
+    await expectHeaderInsideCard(page, 'PB-PLAN')
+    await card(page, 'PB-PLAN').scrollIntoViewIfNeeded()
 
-  // The project and repo show whole: wrapped, never cut off.
-  for (const sel of ['.proj-badge', '.card__repo']) {
-    const el = card(page, 'PB-PLAN').locator(sel)
-    const { scroll, client, overflow } = await el.evaluate((n) => ({
-      scroll: n.scrollWidth,
-      client: n.clientWidth,
-      overflow: getComputedStyle(n).textOverflow,
-    }))
-    expect(scroll, `${sel} is clipped`).toBeLessThanOrEqual(client)
-    expect(overflow, `${sel} is truncated`).not.toBe('ellipsis')
-  }
-  await expect(card(page, 'PB-PLAN').locator('.proj-badge')).toHaveText(PROJECT)
-  await expect(card(page, 'PB-PLAN').locator('.card__repo')).toHaveText(REPO.split('/')[1])
+    // The project and repo show whole: wrapped, never cut off.
+    for (const sel of ['.proj-badge', '.card__repo']) {
+      const el = card(page, 'PB-PLAN').locator(sel)
+      const { scroll, client, overflow } = await el.evaluate((n) => ({
+        scroll: n.scrollWidth,
+        client: n.clientWidth,
+        overflow: getComputedStyle(n).textOverflow,
+      }))
+      expect(scroll, `${sel} is clipped`).toBeLessThanOrEqual(client)
+      expect(overflow, `${sel} is truncated`).not.toBe('ellipsis')
+    }
+    await expect(card(page, 'PB-PLAN').locator('.proj-badge')).toHaveText(PROJECT)
+    await expect(card(page, 'PB-PLAN').locator('.card__repo')).toHaveText(REPO.split('/')[1])
 
-  await tab(page, 'Technical Plan').click()
-  await expectOneFullWidthColumn(page, 'Technical Plan')
-  await expect(tab(page, 'Technical Plan')).toHaveAttribute('aria-selected', 'true')
-  await expect(tab(page, 'Plan')).toHaveAttribute('aria-selected', 'false')
-  await expect(card(page, 'PB-TECH')).toBeVisible()
-  await expect(card(page, 'PB-PLAN')).toHaveCount(0)
-  await expectNoPageOverflow(page, 'Technical Plan column')
-  await expectHeaderInsideCard(page, 'PB-TECH')
-  await card(page, 'PB-TECH').scrollIntoViewIfNeeded()
+    await tab(page, 'Technical Plan').click()
+    await expectOneFullWidthColumn(page, 'Technical Plan')
+    await expect(tab(page, 'Technical Plan')).toHaveAttribute('aria-selected', 'true')
+    await expect(tab(page, 'Plan')).toHaveAttribute('aria-selected', 'false')
+    await expect(card(page, 'PB-TECH')).toBeVisible()
+    await expect(card(page, 'PB-PLAN')).toHaveCount(0)
+    await expectNoPageOverflow(page, 'Technical Plan column')
+    await expectHeaderInsideCard(page, 'PB-TECH')
+    await card(page, 'PB-TECH').scrollIntoViewIfNeeded()
 
-  // Keyboard: the arrow keys move along the tabs.
-  await tab(page, 'Technical Plan').focus()
-  await page.keyboard.press('ArrowRight')
-  await expect(tab(page, PHASES[2])).toBeFocused()
-  await expectOneFullWidthColumn(page, PHASES[2])
-  await page.keyboard.press('ArrowLeft')
-  await expectOneFullWidthColumn(page, 'Technical Plan')
-})
+    // Keyboard: the arrow keys move along the tabs.
+    await tab(page, 'Technical Plan').focus()
+    await page.keyboard.press('ArrowRight')
+    await expect(tab(page, PHASES[2])).toBeFocused()
+    await expectOneFullWidthColumn(page, PHASES[2])
+    await page.keyboard.press('ArrowLeft')
+    await expectOneFullWidthColumn(page, 'Technical Plan')
+  })
 
-test('filters, gate actions and opening a card work on a column reached with the tabs', async ({ page }) => {
-  await page.setViewportSize(PHONE)
-  await page.goto('/')
-  await tab(page, 'Technical Plan').click()
-  await expect(card(page, 'PB-TECH')).toBeVisible({ timeout: 10_000 })
-  await expect(card(page, 'PB-GATE')).toBeVisible()
-  const before = await tabCount(page, 'Technical Plan')
+  await test.step('filters, gate actions and opening a card work on a column reached with the tabs', async () => {
+    await page.setViewportSize(PHONE)
+    await page.goto('/')
+    await tab(page, 'Technical Plan').click()
+    await expect(card(page, 'PB-TECH')).toBeVisible({ timeout: 10_000 })
+    await expect(card(page, 'PB-GATE')).toBeVisible()
+    const before = await tabCount(page, 'Technical Plan')
 
-  const high = page.getByRole('group', { name: 'Priority' }).getByRole('button', { name: PRIORITY.HIGH, exact: true })
-  await high.click()
-  await expect(high).toHaveAttribute('aria-pressed', 'true')
-  await expect(card(page, 'PB-TECH')).toHaveCount(0)
-  await expect(card(page, 'PB-GATE')).toBeVisible()
-  await expectOneFullWidthColumn(page, 'Technical Plan')
-  const after = await tabCount(page, 'Technical Plan')
-  expect(after).toBeLessThan(before)
-  await expect(page.locator('.board .col .card')).toHaveCount(after)
-  await expect(page.locator('.board .col .col__count')).toHaveText(String(after))
+    const high = page.getByRole('group', { name: 'Priority' }).getByRole('button', { name: PRIORITY.HIGH, exact: true })
+    await high.click()
+    await expect(high).toHaveAttribute('aria-pressed', 'true')
+    await expect(card(page, 'PB-TECH')).toHaveCount(0)
+    await expect(card(page, 'PB-GATE')).toBeVisible()
+    await expectOneFullWidthColumn(page, 'Technical Plan')
+    const after = await tabCount(page, 'Technical Plan')
+    expect(after).toBeLessThan(before)
+    await expect(page.locator('.board .col .card')).toHaveCount(after)
+    await expect(page.locator('.board .col .col__count')).toHaveText(String(after))
 
-  await card(page, 'PB-GATE').getByRole('button', { name: 'Approve' }).click()
-  await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
-  await expect(page.locator('.composer__sub')).toContainText('PB-GATE')
-  await page.locator('.composer__cancel').click()
-  await expect(page.locator('.composer__title')).toHaveCount(0)
-  await expect(card(page, 'PB-GATE').getByRole('button', { name: 'Approve' })).toBeVisible()
+    await card(page, 'PB-GATE').getByRole('button', { name: 'Approve' }).click()
+    await expect(page.locator('.composer__title')).toHaveText('Approve this gate?')
+    await expect(page.locator('.composer__sub')).toContainText('PB-GATE')
+    await page.locator('.composer__cancel').click()
+    await expect(page.locator('.composer__title')).toHaveCount(0)
+    await expect(card(page, 'PB-GATE').getByRole('button', { name: 'Approve' })).toBeVisible()
 
-  await high.click()
-  await expect(high).toHaveAttribute('aria-pressed', 'false')
-  await expect(tab(page, 'Technical Plan')).toHaveAttribute('aria-selected', 'true')
-  await card(page, 'PB-TECH').locator('.card__title').click()
-  await expect(page.locator('.tracker__id')).toHaveText('PB-TECH')
-})
+    await high.click()
+    await expect(high).toHaveAttribute('aria-pressed', 'false')
+    await expect(tab(page, 'Technical Plan')).toHaveAttribute('aria-selected', 'true')
+    await card(page, 'PB-TECH').locator('.card__title').click()
+    await expect(page.locator('.tracker__id')).toHaveText('PB-TECH')
+  })
 
-test('the tabs show only below 700px, and follow a resize without a reload', async ({ page }) => {
-  await page.setViewportSize(DESKTOP)
-  await page.goto('/')
-  await expect(card(page, 'PB-PLAN')).toBeVisible({ timeout: 10_000 })
-  await expect(page.locator('.board .col')).toHaveCount(PHASES.length)
-  await expect(tablist(page)).toHaveCount(0)
-  await page.evaluate(() => (window.__hz586NoReload = true))
+  await test.step('the tabs show only below 700px, and follow a resize without a reload', async () => {
+    await page.setViewportSize(DESKTOP)
+    await page.goto('/')
+    await expect(card(page, 'PB-PLAN')).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('.board .col')).toHaveCount(PHASES.length)
+    await expect(tablist(page)).toHaveCount(0)
+    await page.evaluate(() => (window.__hz586NoReload = true))
 
-  await page.setViewportSize(PHONE)
-  await expect(tablist(page)).toBeVisible()
-  await expectOneFullWidthColumn(page, 'Plan')
-  await page.setViewportSize(DESKTOP)
-  await expect(tablist(page)).toHaveCount(0)
-  await expect(page.locator('.board .col')).toHaveCount(PHASES.length)
-  expect(await page.evaluate(() => window.__hz586NoReload)).toBe(true)
-
-  // One breakpoint: 699 is a phone; 700 and a 768 tablet keep the desktop board.
-  await page.setViewportSize({ width: 699, height: 800 })
-  await expect(tablist(page)).toBeVisible()
-  await expect(page.locator('.board .col')).toHaveCount(1)
-  for (const width of [700, 768]) {
-    await page.setViewportSize({ width, height: 800 })
+    await page.setViewportSize(PHONE)
+    await expect(tablist(page)).toBeVisible()
+    await expectOneFullWidthColumn(page, 'Plan')
+    await page.setViewportSize(DESKTOP)
     await expect(tablist(page)).toHaveCount(0)
     await expect(page.locator('.board .col')).toHaveCount(PHASES.length)
-  }
-  const overflow = await card(page, 'PB-PLAN').locator('.proj-badge').evaluate((n) => getComputedStyle(n).textOverflow)
-  expect(overflow).toBe('ellipsis')
+    expect(await page.evaluate(() => window.__hz586NoReload)).toBe(true)
+
+    // One breakpoint: 699 is a phone; 700 and a 768 tablet keep the desktop board.
+    await page.setViewportSize({ width: 699, height: 800 })
+    await expect(tablist(page)).toBeVisible()
+    await expect(page.locator('.board .col')).toHaveCount(1)
+    for (const width of [700, 768]) {
+      await page.setViewportSize({ width, height: 800 })
+      await expect(tablist(page)).toHaveCount(0)
+      await expect(page.locator('.board .col')).toHaveCount(PHASES.length)
+    }
+    const overflow = await card(page, 'PB-PLAN').locator('.proj-badge').evaluate((n) => getComputedStyle(n).textOverflow)
+    expect(overflow).toBe('ellipsis')
+  })
 })

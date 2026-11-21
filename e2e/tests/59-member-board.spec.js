@@ -47,45 +47,47 @@ async function memberPage(browser, who) {
   return { context, page, errors }
 }
 
-test("a member sees only their project's item, and loses it live when removed from the project", async ({ browser, request }) => {
-  const { context, page, errors } = await memberPage(browser, member)
-  try {
-    await page.goto('/')
-    await expect(page.getByText(A_TITLE)).toBeVisible()
-    await expect(page.getByText(B_TITLE)).toHaveCount(0)
-
-    const db = openDb(DB_PATH)
+test("a non-owner's board: a member's project items, and no project at all", async ({ browser, request }) => {
+  await test.step("a member sees only their project's item, and loses it live when removed from the project", async () => {
+    const { context, page, errors } = await memberPage(browser, member)
     try {
-      db.prepare('DELETE FROM project_member WHERE project_id = ? AND user_id = ?').run(projectA, member.userId)
+      await page.goto('/')
+      await expect(page.getByText(A_TITLE)).toBeVisible()
+      await expect(page.getByText(B_TITLE)).toHaveCount(0)
+
+      const db = openDb(DB_PATH)
+      try {
+        db.prepare('DELETE FROM project_member WHERE project_id = ? AND user_id = ?').run(projectA, member.userId)
+      } finally {
+        db.close()
+      }
+      // Any store change schedules the frame; the owner changes B's item.
+      const priority = PRIORITIES.find((value) => value !== DEFAULT_PRIORITY)
+      const res = await request.post('/api/items/MB-B1/priority', { data: { priority } })
+      expect(res.ok()).toBeTruthy()
+      await expect(page.getByText(A_TITLE)).toBeHidden({ timeout: 2000 })
+
+      await page.reload()
+      await expect(page.getByRole('heading', { name: 'Set up your first project' })).toBeVisible()
+      await expect(page.locator('.board__title')).toHaveCount(0)
+      await expect(page.getByText(A_TITLE)).toHaveCount(0)
+      await expect(page.getByText(B_TITLE)).toHaveCount(0)
+      expect(errors).toEqual([])
     } finally {
-      db.close()
+      await context.close()
     }
-    // Any store change schedules the frame; the owner changes B's item.
-    const priority = PRIORITIES.find((value) => value !== DEFAULT_PRIORITY)
-    const res = await request.post('/api/items/MB-B1/priority', { data: { priority } })
-    expect(res.ok()).toBeTruthy()
-    await expect(page.getByText(A_TITLE)).toBeHidden({ timeout: 2000 })
+  })
 
-    await page.reload()
-    await expect(page.getByRole('heading', { name: 'Set up your first project' })).toBeVisible()
-    await expect(page.locator('.board__title')).toHaveCount(0)
-    await expect(page.getByText(A_TITLE)).toHaveCount(0)
-    await expect(page.getByText(B_TITLE)).toHaveCount(0)
-    expect(errors).toEqual([])
-  } finally {
-    await context.close()
-  }
-})
-
-test('a user in no project gets the first-project screen, not an empty board, with no page error', async ({ browser }) => {
-  const { context, page, errors } = await memberPage(browser, nobody)
-  try {
-    await page.goto('/')
-    await expect(page.getByRole('heading', { name: 'Set up your first project' })).toBeVisible()
-    await expect(page.locator('.board__title')).toHaveCount(0)
-    await expect(page.locator('.card')).toHaveCount(0)
-    expect(errors).toEqual([])
-  } finally {
-    await context.close()
-  }
+  await test.step('a user in no project gets the first-project screen, not an empty board, with no page error', async () => {
+    const { context, page, errors } = await memberPage(browser, nobody)
+    try {
+      await page.goto('/')
+      await expect(page.getByRole('heading', { name: 'Set up your first project' })).toBeVisible()
+      await expect(page.locator('.board__title')).toHaveCount(0)
+      await expect(page.locator('.card')).toHaveCount(0)
+      expect(errors).toEqual([])
+    } finally {
+      await context.close()
+    }
+  })
 })
