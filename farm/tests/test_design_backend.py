@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from domain.py.personas import resolve_model
+
 from farm import design_backend, design_canvas, step_agent, visual_page
 from farm.agent_runner import AgentError
 from farm.tests.test_design_substep import SLUG, URL, FakeStudio, _reply, _task
@@ -320,6 +322,9 @@ def test_the_probe_records_a_pass_with_its_project():
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["checkedAt"])
     assert design_backend.read_probe() == record
     assert seen["allowed_tools"] == "DesignSync" and seen["provider"] == "claude"
+    # The real run_agent resolves a model from this agent name; a name with no
+    # model fails the probe before any agent runs.
+    assert resolve_model(seen["agent"], seen["step"])
     assert design_backend.claude_availability() == (True, None)
 
 
