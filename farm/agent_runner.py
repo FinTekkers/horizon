@@ -221,12 +221,16 @@ USAGE_FIGURES = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_wr
 class UsageMeter:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str | None, dict | None]] = []
+        # HZ-921: each call's num_turns as the provider reported it, or None.
+        self.turns: list[int | None] = []
 
-    def record(self, provider: str, model: str | None, usage) -> None:
+    def record(self, provider: str, model: str | None, usage, num_turns=None) -> None:
         known = isinstance(usage, dict) and all(
             isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool) for key in USAGE_FIGURES
         )
         self.calls.append((provider, model, dict(usage) if known else None))
+        counted = isinstance(num_turns, int) and not isinstance(num_turns, bool) and num_turns >= 0
+        self.turns.append(num_turns if counted else None)
 
     def last_ran(self) -> tuple[str, str | None] | None:
         """(provider, model) of the last call — after a fallback, the one that
@@ -236,14 +240,17 @@ class UsageMeter:
     def report(self) -> dict:
         """artifacts.usage for the run (server/src/stepUsage.js). No call: a
         non-agent run, 0 tokens. Any call with unknown usage: every figure
-        None, since a partial sum would under-count."""
+        None, since a partial sum would under-count. num_turns (HZ-921) is
+        the turns of every call summed, by the same rule: None when any call
+        reported none, and None — not 0 — for a run with no call."""
+        turns = None if not self.turns or any(t is None for t in self.turns) else sum(self.turns)
         if not self.calls:
-            return {"agent_run": False, **{key: 0 for key in USAGE_FIGURES}}
+            return {"agent_run": False, **{key: 0 for key in USAGE_FIGURES}, "num_turns": None}
         if any(usage is None for _, _, usage in self.calls):
-            return {"agent_run": True, **{key: None for key in USAGE_FIGURES}}
+            return {"agent_run": True, **{key: None for key in USAGE_FIGURES}, "num_turns": turns}
         totals = {key: sum(usage[key] for _, _, usage in self.calls) for key in USAGE_FIGURES}
         totals["cost_usd"] = round(totals["cost_usd"], 9)
-        return {"agent_run": True, **totals}
+        return {"agent_run": True, **totals, "num_turns": turns}
 
 
 _METER: contextvars.ContextVar[UsageMeter | None] = contextvars.ContextVar("usage_meter", default=None)
@@ -259,12 +266,12 @@ def usage_meter() -> Iterator[UsageMeter]:
         _METER.reset(token)
 
 
-def _meter_call(provider: str, model: str | None, usage) -> None:
+def _meter_call(provider: str, model: str | None, usage, num_turns=None) -> None:
     """Adds one call to the open meter, if any. Never raises."""
     try:
         meter = _METER.get()
         if meter is not None:
-            meter.record(provider, model, usage)
+            meter.record(provider, model, usage, num_turns)
     except Exception:
         pass
 
@@ -435,7 +442,12 @@ def run_agent(
         # HZ-550: a call that raised used tokens nobody reported.
         _meter_call(name, model, None)
         raise
-    _meter_call(name, model, result.get("usage") if isinstance(result, dict) else None)
+    _meter_call(
+        name,
+        model,
+        result.get("usage") if isinstance(result, dict) else None,
+        result.get("num_turns") if isinstance(result, dict) else None,
+    )
     # Provenance (HZ-102): which provider actually ran, plus its run-level
     # id where one exists (Muse's command_id; Claude has no equivalent).
     result["provider"] = name

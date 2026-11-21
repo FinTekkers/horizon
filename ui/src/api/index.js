@@ -66,6 +66,7 @@ export const {
   setPinRequester,
   getScreenshots,
   getScreenshotImage,
+  getItemStats,
   approveScreenshots,
   moveItem,
   getRestartSent,

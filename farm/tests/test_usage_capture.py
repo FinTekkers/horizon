@@ -28,7 +28,7 @@ STUB = json.loads((Path(__file__).resolve().parent / "fixtures" / "usage_stub.js
 FIGURES = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
 PROVIDER_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 DRAFT_PLAN = "Draft implementation plan"
-NON_AGENT = {"agent_run": False, **{key: 0 for key in FIGURES}}
+NON_AGENT = {"agent_run": False, **{key: 0 for key in FIGURES}, "num_turns": None}
 
 
 def turn(reply, figures=None, *, cost=None, raw_usage=None, effect=None):
@@ -133,7 +133,8 @@ def test_a_completed_agent_step_posts_the_stubbed_model_provider_tokens_and_cost
     assert STUB["prompt_marker"] not in json.dumps(posted)
     # Guardrail 1: no log line carries a figure.
     out = capsys.readouterr()
-    for value in STUB["usage"].values():
+    for key in FIGURES:
+        value = STUB["usage"][key]
         if not isinstance(value, bool):
             assert str(value) not in out.out + out.err
 
@@ -177,11 +178,12 @@ def test_an_agent_deploy_records_the_model_that_ran(tmp_path, monkeypatch, cli):
 # ---- metric 5: every turn summed; a run with no agent is 0, non-agent ----
 
 
-def _sum(*turns):
+def _sum(*turns, num_turns=None):
     return {
         "agent_run": True,
         **{key: sum(t[i] for t in turns) for i, key in enumerate(FIGURES[:4])},
         "cost_usd": sum(t[4] for t in turns),
+        "num_turns": num_turns,
     }
 
 
@@ -196,7 +198,7 @@ def test_a_parse_retry_is_summed_with_the_first_try(tmp_path, monkeypatch, cli):
     posted = run_main(tmp_path, monkeypatch, plan_task(5505))
 
     assert posted["ok"] is True and len(cli.prompts) == 2
-    assert_usage(posted["artifacts"]["usage"], _sum(first, retry))
+    assert_usage(posted["artifacts"]["usage"], _sum(first, retry, num_turns=6))
 
 
 def test_a_fix_loop_turn_is_summed_with_the_first_try(tmp_path, monkeypatch, cli, checks_notify):
@@ -219,7 +221,7 @@ def test_a_fix_loop_turn_is_summed_with_the_first_try(tmp_path, monkeypatch, cli
     assert posted["ok"] is True, posted
     assert "fix loops: 1" in posted["summary"]
     assert "--resume" in cli.argv[1]  # the fix turn ran in the same session
-    assert_usage(posted["artifacts"]["usage"], _sum(first, fix))
+    assert_usage(posted["artifacts"]["usage"], _sum(first, fix, num_turns=6))
 
 
 def test_three_metered_calls_sum_exactly():
@@ -247,8 +249,60 @@ def test_one_call_with_unknown_usage_nulls_the_run_rather_than_under_counting():
     with agent_runner.usage_meter() as meter:
         agent_runner._meter_call("claude", STUB["model"], dict(STUB["usage"]))
         agent_runner._meter_call("muse", "muse-spark-1.3", None)
-    assert meter.report() == {"agent_run": True, **{key: None for key in FIGURES}}
+    assert meter.report() == {"agent_run": True, **{key: None for key in FIGURES}, "num_turns": None}
     assert meter.last_ran() == ("muse", "muse-spark-1.3")
+
+
+# ---- HZ-921 metric 1: the turns the provider reported, summed; None, never 0 ----
+
+
+def test_the_turns_of_every_call_are_summed():
+    with agent_runner.usage_meter() as meter:
+        agent_runner._meter_call("claude", STUB["model"], dict(STUB["usage"]), 3)
+        agent_runner._meter_call("claude", STUB["model"], dict(STUB["usage"]), 4)
+    assert meter.report()["num_turns"] == 7
+
+
+def test_one_call_with_no_turns_reported_nulls_the_turns_rather_than_under_counting():
+    with agent_runner.usage_meter() as meter:
+        agent_runner._meter_call("claude", STUB["model"], dict(STUB["usage"]), 3)
+        agent_runner._meter_call("claude", STUB["model"], dict(STUB["usage"]))
+    report = meter.report()
+    assert report["num_turns"] is None
+    assert report["input_tokens"] == 2 * STUB["usage"]["input_tokens"]  # tokens are unaffected
+
+
+def test_a_run_with_no_agent_call_reports_turns_none_not_zero():
+    with agent_runner.usage_meter() as meter:
+        pass
+    assert "num_turns" in meter.report() and meter.report()["num_turns"] is None
+
+
+@pytest.mark.parametrize("bad", ["7", -1, 1.5, True], ids=["text", "negative", "fraction", "bool"])
+def test_a_malformed_turn_count_is_none(bad):
+    with agent_runner.usage_meter() as meter:
+        agent_runner._meter_call("claude", STUB["model"], dict(STUB["usage"]), bad)
+    assert meter.report()["num_turns"] is None
+
+
+def test_an_agent_step_posts_the_num_turns_the_provider_reported(tmp_path, monkeypatch, cli):
+    cli.turns = [turn(reply(), **STUB_TURN)]
+    posted = run_main(tmp_path, monkeypatch, plan_task(5509))
+    assert posted["artifacts"]["usage"]["num_turns"] == 3  # the CLI stub's num_turns
+
+
+def test_a_reply_with_no_num_turns_posts_none(monkeypatch):
+    _stub_provider(monkeypatch, lambda prompt, **kwargs: {"result": "ok", "session_id": "s", "usage": dict(STUB["usage"])})
+    with agent_runner.usage_meter() as meter:
+        agent_runner.run_agent("p", agent="eng")
+    assert meter.report()["num_turns"] is None
+
+
+def test_a_reply_with_num_turns_n_reports_n(monkeypatch):
+    _stub_provider(monkeypatch, lambda prompt, **kwargs: {"result": "ok", "session_id": "s", "usage": None, "num_turns": 11})
+    with agent_runner.usage_meter() as meter:
+        agent_runner.run_agent("p", agent="eng")
+    assert meter.report()["num_turns"] == 11
 
 
 # ---- guardrail 2: capture never changes how a step runs ----
@@ -281,7 +335,7 @@ def test_normalize_usage_never_raises():
 
     assert base.normalize_usage(Exploding(), 1.0) is None
     assert base.normalize_usage(STUB["provider_usage"], STUB["total_cost_usd"]) == {
-        k: v for k, v in STUB["usage"].items() if k != "agent_run"
+        k: v for k, v in STUB["usage"].items() if k not in ("agent_run", "num_turns")
     }
 
 
@@ -292,7 +346,8 @@ def test_malformed_usage_leaves_the_figures_null_and_the_result_otherwise_unchan
     bad = run_main(tmp_path, monkeypatch, plan_task(5508))
 
     assert bad["ok"] is True
-    assert bad["artifacts"]["usage"] == {"agent_run": True, **{key: None for key in FIGURES}}
+    # Turns are counted apart from tokens: the CLI still reported its 3.
+    assert bad["artifacts"]["usage"] == {"agent_run": True, **{key: None for key in FIGURES}, "num_turns": 3}
     strip = lambda posted: {**posted, "artifacts": {k: v for k, v in posted["artifacts"].items() if k != "usage"}}
     assert strip(bad) == strip(good)
 
@@ -400,5 +455,5 @@ def test_the_sdk_result_message_usage_and_cost_reach_the_reply(monkeypatch):
     monkeypatch.setattr(sdk, "query", fake_query)
     with agent_runner.usage_meter() as meter:
         reply_ = agent_runner.run_agent("p", agent="eng")
-    assert reply_["usage"] == {k: v for k, v in STUB["usage"].items() if k != "agent_run"}
-    assert meter.report() == STUB["usage"]
+    assert reply_["usage"] == {k: v for k, v in STUB["usage"].items() if k not in ("agent_run", "num_turns")}
+    assert meter.report() == {**STUB["usage"], "num_turns": 2}

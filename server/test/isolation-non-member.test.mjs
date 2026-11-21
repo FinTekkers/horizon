@@ -233,6 +233,8 @@ const READ_CASES = {
   'GET /api/items/:id/plan-draft': { expect: '404', url: `${ITEM}/plan-draft`, owner: 404 },
   'GET /api/items/:id/screenshots': { expect: '404', url: `${ITEM}/screenshots`, owner: 200 },
   'GET /api/items/:id/screenshots/:screen/:kind': { expect: '404', url: `${ITEM}/screenshots/home/new`, owner: 200 },
+  // HZ-921: ISOA-1 is not at its last step, so the owner gets { visible: false }.
+  'GET /api/items/:id/stats': { expect: '404', url: `${ITEM}/stats`, owner: 200 },
   'GET /api/items/:id/stream': { expect: '404', url: `/api/items/ISOB-1/stream`, owner: 200 },
   'GET /api/projects/:id/repos/check-defaults': { expect: '404', url: `/api/projects/${A}/repos/check-defaults?repo=${REPO_A}`, owner: 200 },
   'GET /api/projects/:id/validation': { expect: '404', url: `/api/projects/${B}/validation`, owner: 200 },

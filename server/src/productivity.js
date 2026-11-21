@@ -95,7 +95,10 @@ function digitAt(sql, i) {
   const d = sql.charCodeAt(i) - 48
   return d >= 0 && d <= 9 ? d : NaN
 }
-function msOf(sql) {
+// HZ-921: exported, as are addNullable, gateWaitFor, itemTimeSplit,
+// itemUsageTotals and itemReviewFails, so server/src/itemStats.js reads an
+// item's effort by these same rules and the two pages can never disagree.
+export function msOf(sql) {
   if (sql.length === 19 && sql[10] === ' ' && sql[13] === ':' && sql[16] === ':') {
     const day = dayMsOf(sql.slice(0, 10))
     const h = digitAt(sql, 11) * 10 + digitAt(sql, 12)
@@ -121,12 +124,12 @@ export function median(values) {
 }
 
 // A sum that stays null until some value in it was captured.
-function addNullable(total, value) {
+export function addNullable(total, value) {
   if (value == null) return total
   return (total ?? 0) + value
 }
 
-const money = (value) => (value == null ? null : round(value, 6))
+export const money = (value) => (value == null ? null : round(value, 6))
 
 // Monday of the week `date` (YYYY-MM-DD) falls in.
 function mondayOf(date) {
@@ -197,6 +200,19 @@ const selectCloses = db.prepare(`
    WHERE ${IN_PROJECTS}
    GROUP BY c.item_id`)
 
+// HZ-921: one item's latest close, by the same two close events.
+const selectItemClose = db.prepare(`
+  SELECT MAX(at) AS closed_at FROM (
+    SELECT created_at AS at FROM gate_decision WHERE item_id = @id AND decision = 'approved' AND step_index = @lastGate
+    UNION ALL
+    SELECT created_at AS at FROM event WHERE item_id = @id AND who = 'GitHub' AND text LIKE 'closed issue #%'
+  )`)
+
+// The stored time of an item's latest close (selectCloses' rule), or null.
+export function itemClosedAt(itemId, kind) {
+  return selectItemClose.get({ id: itemId, lastGate: endIndex(kind) - 1 })?.closed_at ?? null
+}
+
 const selectApprovals = db.prepare(`
   SELECT g.item_id, g.step_index, g.created_at
     FROM gate_decision g JOIN work_item w ON w.id = g.item_id
@@ -211,10 +227,21 @@ const selectItemDecisions = db.prepare(`
 
 // orchestrator.finalizeReviewStep's two failing-review events: sent back to
 // implement, or forwarded to the gate at the cap.
+const REVIEW_FAIL_SENT_BACK = 'automated review failed%'
+const REVIEW_FAIL_AT_CAP = 'automated review cap%'
+const IS_REVIEW_FAIL = `(text LIKE '${REVIEW_FAIL_SENT_BACK}' OR text LIKE '${REVIEW_FAIL_AT_CAP}')`
 const selectReviewFails = db.prepare(`
   SELECT item_id, COUNT(*) AS n FROM event
-   WHERE ${IN_ITEMS} AND (text LIKE 'automated review failed%' OR text LIKE 'automated review cap%')
+   WHERE ${IN_ITEMS} AND ${IS_REVIEW_FAIL}
    GROUP BY item_id`)
+const selectOneItemReviewFails = db.prepare(`
+  SELECT text LIKE '${REVIEW_FAIL_AT_CAP}' AS at_cap FROM event WHERE item_id = ? AND ${IS_REVIEW_FAIL} ORDER BY id`)
+
+// HZ-921: one item's review fails, oldest first — the events selectReviewFails
+// counts — each 'sent_back' (to implement) or 'at_cap' (forwarded to the gate).
+export function itemReviewFails(itemId) {
+  return selectOneItemReviewFails.all(itemId).map((row) => (row.at_cap ? 'at_cap' : 'sent_back'))
+}
 
 // orchestrator.failFarmRun's pause event, `agent step failed (<reason>): ...`.
 const selectStepFailures = db.prepare(`
@@ -418,7 +445,7 @@ function groupBy(rows, key) {
 // Minutes from a gate opening to a decision on it. The gate opened when the
 // item's last run before the decision ended, or at its previous decision when
 // that came later (two gates in a row). null when neither exists.
-function gateWaitFor(runsByItem, decisionsByItem) {
+export function gateWaitFor(runsByItem, decisionsByItem) {
   // Each item's run ends and decision times, parsed once.
   const times = new Map()
   const timesOf = (itemId) => {
@@ -442,13 +469,23 @@ function gateWaitFor(runsByItem, decisionsByItem) {
   }
 }
 
-function closedItem(row, runs, decisions, reviewFails, gateWait) {
+// An item's cost and tokens (input + output) over `runs`: each null until a
+// run in it was captured.
+export function itemUsageTotals(runs) {
   let cost = null
   let tokens = null
-  const split = { agentsWorking: 0, waitingOnYou: 0, queued: 0, checksAndDeploy: 0 }
   for (const run of runs) {
     cost = addNullable(cost, run.cost_usd)
     if (run.input_tokens != null && run.output_tokens != null) tokens = addNullable(tokens, run.input_tokens + run.output_tokens)
+  }
+  return { cost, tokens }
+}
+
+// Where an item's time went, in ms: each finished run's slot wait (queued),
+// its agent's work and its checks or deploy, and each gate decision's wait.
+export function itemTimeSplit(runs, decisions, gateWait, itemId) {
+  const split = { agentsWorking: 0, waitingOnYou: 0, queued: 0, checksAndDeploy: 0 }
+  for (const run of runs) {
     if (run.ended_at == null) continue
     const started = msOf(run.started_at)
     const working = run.agent_started_at ? msOf(run.agent_started_at) : started
@@ -463,9 +500,15 @@ function closedItem(row, runs, decisions, reviewFails, gateWait) {
     }
   }
   for (const decision of decisions) {
-    const wait = gateWait(row.item_id, decision.created_at)
+    const wait = gateWait(itemId, decision.created_at)
     if (wait != null) split.waitingOnYou += wait * 60_000
   }
+  return split
+}
+
+function closedItem(row, runs, decisions, reviewFails, gateWait) {
+  const { cost, tokens } = itemUsageTotals(runs)
+  const split = itemTimeSplit(runs, decisions, gateWait, row.item_id)
   return {
     id: row.item_id,
     kind: itemKindOf(row),

@@ -65,6 +65,8 @@ import FiledAutopilotSelect from './FiledAutopilotSelect'
 import ScreenshotPanel from './ScreenshotPanel'
 import StepActionMenu from './StepActionMenu'
 import AcceptWithExceptionsButton, { ExceptionsList } from './AcceptWithExceptions'
+import EffortCostCard from './EffortCostCard'
+import { statsVisible } from '../../../domain/js/itemStats.js'
 import { BackIcon, LinkIcon, PrIcon, CircleXIcon, CircleAlertIcon, PlanIcon } from './icons'
 
 const STEP_GLYPHS = { done: '✓', active: '•', awaiting: '!', pending: '', blocked: '✕', skipped: '–' }
@@ -1729,6 +1731,9 @@ export default function Tracker({ item, projects, knownItemIds = null, deployBlo
         <DependencyBadge key={item.id} item={item} onRemove={onRemoveDependency} />
         <AsksPanel item={item} />
       </div>
+
+      {/* HZ-921: what the item took — at its last step and once it is done. */}
+      {statsVisible(item) && <EffortCostCard key={`effort-${item.id}`} item={item} />}
 
       <div className={`tracker__body${activityMin ? ' tracker__body--activity-min' : ''}`}>
         <div className="panel tracker__stepper">

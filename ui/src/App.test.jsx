@@ -17,6 +17,8 @@ let projects = []
 const listeners = new Set()
 
 vi.mock('./api', () => ({
+  // HZ-921: the Effort & cost card asks; these items show none.
+  getItemStats: async () => ({ visible: false, stats: null }),
   subscribe: (fn) => {
     listeners.add(fn)
     return () => listeners.delete(fn)

@@ -106,6 +106,12 @@ import {
   productivityReport,
   verifyVerdictReport,
 } from './productivity.js'
+import { ITEM_STATS_RESPONSE_SCHEMA, itemStats } from './itemStats.js'
+import { queueItemStats } from './statsComment.js'
+// HZ-921: the stats post's Tracker port, handed in so statsComment.js stays
+// off the backend registry.
+const trackerOf = (item) => forItem(item).tracker
+import { statsVisible } from '../../domain/js/itemStats.js'
 import { RULE_MAX_CHARS, NEEDS_MAX_CHARS } from './ruleBlock.js'
 import {
   API_SECURITY,
@@ -1327,6 +1333,24 @@ export function buildApp({
     },
   )
 
+  // HZ-921: the item's Effort & cost summary (server/src/itemStats.js) — the
+  // same object its stats comment holds. Shown only at the kind's last step
+  // and once closed or abandoned (domain/js/itemStats.js statsVisible); before
+  // that nothing is computed. Contract: domain/itemStats.schema.json.
+  fastify.get(
+    '/api/items/:id/stats',
+    {
+      config: { scope: 'member:item' },
+      schema: { params: idParam, response: { 200: ITEM_STATS_RESPONSE_SCHEMA, 404: ERROR_OBJECT } },
+    },
+    (request, reply) => {
+      const item = store.getItem(request.params.id)
+      if (!item) return reply.code(404).send({ error: 'not_found' })
+      if (!statsVisible(item)) return { visible: false, stats: null }
+      return { visible: true, stats: itemStats(item.id) }
+    },
+  )
+
   // HZ-378: a Task Execute job's status and log. The job's session and files
   // live in farmd; these routes proxy them the way /api/runs/:runId/log does
   // for agent runs. No active job is a 404, like an unknown run there.
@@ -2423,6 +2447,7 @@ export function buildApp({
     // issue state and the board state can't drift. No close, no gate.
     // HZ-493: "final" is the item kind's own last step row, never a label —
     // an open issue on a closed item makes the sync reopen it from step 0.
+    let closedTracker = false
     if (
       item &&
       item.cursor === stepIndex &&
@@ -2435,6 +2460,7 @@ export function buildApp({
       const onGithub = hasGithubIssue(item)
       try {
         await forItem(item).tracker.closeIssueWithSummary(item)
+        closedTracker = true
         store.addEvent(id, {
           who: 'Horizon',
           text: `closed ${trackerRefText(item)}${onGithub ? ' on GitHub' : ''} with a summary`,
@@ -2462,6 +2488,9 @@ export function buildApp({
     }
     const result = store.approveGate(id, stepIndex, notes, actor, human)
     if (result.error === 'human_pin_required') return { ...result, status: 403 }
+    // HZ-921: the closed item's Effort & cost stats comment. Not awaited and
+    // never rejects, so it can't block or undo the close.
+    if (!result.error && closedTracker) queueItemStats(store.getItem(id), trackerOf, fastify.log)
     // Approval notes are decisions — mirror them onto the issue thread.
     if (!result.error && notes && item?.repo && hasTrackerRef(item)) {
       forItem(item)
@@ -3256,6 +3285,8 @@ export function buildApp({
         })
       }
       store.notifyChange()
+      // HZ-921: the abandoned item's stats comment, as at the final gate.
+      queueItemStats(store.getItem(id), trackerOf, fastify.log)
     }
     return result
   }

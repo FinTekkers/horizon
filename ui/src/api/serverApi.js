@@ -463,6 +463,22 @@ async function gateAction(path, body, method = 'POST') {
   return data
 }
 
+// ---- Effort & cost (HZ-921) ----
+
+// { visible, stats } — the item's Effort & cost summary (domain/itemStats.schema.json);
+// stats is null with visible false before the kind's last step. Rejects with
+// Error(<error code>) and `status` on a non-2xx.
+export async function getItemStats(id) {
+  const res = await fetch(`${API_BASE}/items/${encodeURIComponent(id)}/stats`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // ---- screenshots at Accept the code (HZ-509) ----
 
 // { commit, shots } — the item's changed, new and removed shots and whether

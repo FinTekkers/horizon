@@ -46,6 +46,15 @@ function makeHarness() {
       comments.push(body.body)
       return json(201, {})
     }
+    // HZ-921: the comment list (one page) and a comment edit, for upsertStatsComment.
+    if (method === 'GET' && url.pathname === `${issuePath}/comments`) {
+      return json(200, comments.map((text, i) => ({ id: i + 1, body: text, user: { login: 'someone', type: 'User' } })))
+    }
+    const edit = /^\/repos\/[^/]+\/[^/]+\/issues\/comments\/(\d+)$/.exec(url.pathname)
+    if (method === 'PATCH' && edit && comments[Number(edit[1]) - 1] != null) {
+      comments[Number(edit[1]) - 1] = body.body
+      return json(200, {})
+    }
     if (method === 'PATCH' && url.pathname === issuePath && body.state === 'closed') {
       closes.push({ summary: comments.at(-1) ?? '', reason: body.state_reason })
       return json(200, {})

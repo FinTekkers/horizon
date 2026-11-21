@@ -1255,6 +1255,28 @@ button { font-family: var(--font-sans); }
 .panel__title { font: 700 18px var(--font-sans); letter-spacing: -0.3px; margin-bottom: 6px; }
 .panel__subtitle { font: 500 13px var(--font-sans); color: var(--muted); margin-bottom: 20px; }
 
+/* ===== Effort & cost (HZ-921) ===== */
+/* Three sections side by side on a wide screen; they stack below 760px. */
+.effort-card { padding: 24px 30px; margin-bottom: 22px; }
+.effort-card .panel__title { margin: 0 0 14px; }
+.effort-card__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.effort-card__section { background: var(--canvas); border-radius: 14px; padding: 14px 16px; min-width: 0; }
+.effort-card__section h3 { margin: 0 0 8px; }
+.effort-card__subhead { font: 700 12px var(--font-sans); color: var(--deep); margin: 12px 0 4px; }
+.effort-card__list { margin: 0; }
+.effort-card__row {
+  display: flex; justify-content: space-between; gap: 12px; padding: 3px 0;
+  font: 500 13px var(--font-sans); line-height: 1.4;
+}
+.effort-card__row dt { color: var(--muted); }
+.effort-card__row dd { margin: 0; color: var(--deep); text-align: right; overflow-wrap: anywhere; }
+.effort-card__note { font: 500 13px var(--font-sans); color: var(--muted); margin: 0 0 6px; }
+.effort-card__none { font: 600 14px var(--font-sans); color: var(--success-ink); margin: 0 0 8px; }
+@media (max-width: 760px) {
+  .effort-card { padding: 18px 16px; }
+  .effort-card__grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ===== Stepper ===== */
 .phase { margin-bottom: 18px; }
 .phase__head { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }

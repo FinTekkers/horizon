@@ -893,6 +893,15 @@ for (const sql of [
     // column already exists
   }
 }
+// HZ-921: the agent turns a run used, summed over its calls as the provider
+// reported them (server/src/stepUsage.js writes it). NULL = not recorded —
+// every earlier row, any run whose provider reported no turns, and a run with
+// no agent — never 0 or an estimate. Read by server/src/itemStats.js.
+try {
+  db.exec('ALTER TABLE step_run ADD COLUMN num_turns INTEGER')
+} catch {
+  // column already exists
+}
 // HZ-550: the Productivity report's windows — runs by start, gate decisions
 // and events by time.
 db.exec(`

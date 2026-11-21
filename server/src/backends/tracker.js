@@ -1,7 +1,8 @@
 // HO-875: the Tracker port's methods — the part of forRepo(repo).tracker every
 // backend implements. Items are created, commented on, closed, deduped,
-// polled and ingested through these twelve; the result types are written down
-// in test/contracts/tracker.contract.mjs.
+// polled and ingested through these thirteen; the result types are written
+// down in test/contracts/tracker.contract.mjs and (HZ-921's
+// upsertStatsComment) test/contracts/tracker-port.contract.mjs.
 //
 // The tracker group's other six methods (syncIssueBodyFields, pushIssueScope,
 // getIssueBody, patchIssueBodyLines, setPriorityLabel, setAutopilotOffLabel)
@@ -24,4 +25,5 @@ export const TRACKER_PORT_METHODS = Object.freeze([
   'pollOnce',
   'startPolling',
   'getSyncState',
+  'upsertStatsComment',
 ])

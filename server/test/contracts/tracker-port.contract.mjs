@@ -9,7 +9,8 @@
 //   tracker      the adapter under test
 //   repo         the repo the adapter acts on
 //   item         an item on `repo` with a tracker record (issue or Task)
-//   comments()   the comment bodies the tracker received for `item`, in order
+//   comments()   the comment bodies the tracker holds for `item`, in order
+//                (HZ-921: as edited, where the tracker can edit one)
 //   closes()     the closes the tracker received for `item`: [{ summary, reason }]
 //                with reason 'completed' or 'not_planned'
 //   restore()    undoes everything the harness changed
@@ -52,6 +53,16 @@ export function runTrackerPortContract(name, makeHarness) {
     assert.equal(closes.length, 1)
     assert.equal(closes[0].reason, 'not_planned')
     assert.ok(closes[0].summary.includes('Superseded by another item.'))
+  })
+
+  // HZ-921: at most one stats comment per item, however often it is upserted.
+  portCase('upsertStatsComment posts the stats comment once; a second call never posts another', async (h) => {
+    const body = (cost) => `**Effort & cost:** Cost ${cost}\n\n<!-- horizon-stats v1 -->\n\`\`\`json\n{}\n\`\`\`\n\n_posted by Horizon_`
+    assert.equal(await h.tracker.upsertStatsComment(h.item, body('$1.00')), 'posted')
+    assert.equal(await h.tracker.upsertStatsComment(h.item, body('$1.00')), 'unchanged')
+    assert.ok(['updated', 'kept'].includes(await h.tracker.upsertStatsComment(h.item, body('$2.00'))))
+    const stats = h.comments().filter((c) => c.includes('<!-- horizon-stats v1 -->'))
+    assert.equal(stats.length, 1, 'exactly one stats comment')
   })
 
   portCase('pollComments resolves to { changed: <number> }', async (h) => {

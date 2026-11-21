@@ -1,7 +1,7 @@
 // HO-875: the sl backend's Tracker port (backends/tracker.js) — each sl item is
 // one Task, created, commented on, closed and read through farmd's
 // /api/farm/tasks routes (farm/farmd.py, over farm/task_driver.py). forRepo(repo)
-// hands these twelve methods out for an sl repo through backends/sl.js; they
+// hands these thirteen methods out for an sl repo through backends/sl.js; they
 // pass test/contracts/tracker.contract.mjs like GitHub's do.
 //
 // Results are issue-shaped, as the port's callers read them: a Task comes back
@@ -26,7 +26,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { db } from '../db.js'
 import * as store from '../store.js'
 import { FARM_SHARED_SECRET, FARM_URL, POLL_INTERVAL_MS, UI_URL } from '../config.js'
-import { HORIZON_FOOTER, composeIssueBody } from '../trackerText.js'
+import { HORIZON_FOOTER, STATS_MARKER, composeIssueBody } from '../trackerText.js'
 import { priorityLabelName } from '../priorityLabels.js'
 import { kindLabelName } from '../kindLabels.js'
 import { AUTOPILOT_OFF_LABEL } from '../autopilotOffLabel.js'
@@ -146,6 +146,20 @@ export async function closeIssueAsAbandoned(item, reason) {
 export async function findSplitIssue(repo, marker, since) {
   const { tasks } = await farmTasks('Task list', 'GET', repoQuery(repo))
   return (Array.isArray(tasks) ? tasks : []).map(asIssue).find((task) => task && task.body.includes(marker)) ?? null
+}
+
+// HZ-921: the item's one stats comment. farmd lists a repo's Task comments
+// but cannot edit one, so the first post stands: found with the same body,
+// 'unchanged'; with another, 'kept' (never a second post); none, 'posted'.
+export async function upsertStatsComment(item, body) {
+  const number = taskNumberOf(item)
+  const { comments } = await farmTasks('Task list', 'GET', repoQuery(item.repo, '&after_comment=0'))
+  const found = (Array.isArray(comments) ? comments : []).find(
+    (c) => c?.task === number && typeof c.body === 'string' && c.body.includes(HORIZON_FOOTER) && c.body.includes(STATS_MARKER),
+  )
+  if (found) return found.body === body ? 'unchanged' : 'kept'
+  await postIssueComment(item, body)
+  return 'posted'
 }
 
 // ---- inbound sync: farmd → items ----

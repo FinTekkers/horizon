@@ -961,6 +961,11 @@ export async function getScreenshots() {
   return { commit: null, shots: [] }
 }
 
+// HZ-921: mock mode records no step runs, so no Effort & cost card shows.
+export async function getItemStats() {
+  return { visible: false, stats: null }
+}
+
 export async function getScreenshotImage() {
   throw new Error('not_found')
 }

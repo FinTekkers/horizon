@@ -6,6 +6,11 @@
 // ingestion (GitHub's and sl's) can skip Horizon's own text.
 export const HORIZON_FOOTER = 'posted by Horizon_'
 
+// HZ-921: heads the one Effort & cost stats comment on an item's tracker
+// record (server/src/statsComment.js). Each adapter's upsertStatsComment finds
+// that comment by it, so a re-post never adds a second one.
+export const STATS_MARKER = '<!-- horizon-stats v1 -->'
+
 // An item's body in Horizon's section format. Inverse of parseIssueBody in
 // store.js.
 export function composeIssueBody({ outcome, metric, guardrails }) {

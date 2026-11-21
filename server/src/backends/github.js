@@ -83,6 +83,7 @@ import {
   setScreenshotSnapshotForTest,
   startPolling,
   syncIssueBodyFields,
+  upsertStatsComment,
   validateRepo,
   validateToken,
   verifySignature,
@@ -118,6 +119,8 @@ export const githubAdapters = Object.freeze({
     pollOnce,
     startPolling,
     getSyncState,
+    // HZ-921: the item's one Effort & cost stats comment.
+    upsertStatsComment,
   }),
   // Pull requests.
   review: Object.freeze({
