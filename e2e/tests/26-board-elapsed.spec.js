@@ -9,7 +9,7 @@
 // Rows are seeded directly (fixtures/seed.js), so the orchestrator never
 // kicks them. Two consolidated journeys: the suite shares one time budget.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun } from '../fixtures/seed.js'
 import { STEPS, IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -82,6 +82,7 @@ test('the elapsed line stays on one line at card width in desktop and phone layo
   await expect(card(page, 'EL-CLOSED').locator('.card__elapsed')).toHaveCount(0)
 
   async function expectOneLine(label) {
+    await waitForFonts(page)
     const line = long.locator('.card__elapsed')
     const { scroll, client, height, lineHeight } = await line.evaluate((el) => ({
       scroll: el.scrollWidth,

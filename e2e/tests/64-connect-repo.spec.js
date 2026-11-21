@@ -10,7 +10,7 @@
 // and no PIN dialog opens; the members' sessions are their own, so locking
 // them leaves the shared owner session as it was.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
 import { openDb, insertItem, insertProject, insertMemberSession, setGatePinDirect } from '../fixtures/seed.js'
 
@@ -257,6 +257,7 @@ test('metric 5: the card in its empty, refused and connected states, and at phon
     await page.setViewportSize({ width: 390, height: 1400 })
     await page.goto('/')
     await expect(page.getByRole('heading', { name: CARD })).toBeVisible()
+    await waitForFonts(page)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
     expect(overflow).toBeLessThanOrEqual(0)
     await shot('connect-repo--phone--light')
