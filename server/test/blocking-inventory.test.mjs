@@ -86,6 +86,38 @@ test('the inventory has one row per test with its history, and joins every runne
   assert.deepEqual(parseCsv(csv), rows.map((r) => Object.fromEntries(INVENTORY_COLUMNS.map((c) => [c, String(r[c])]))))
 })
 
+test('HZ-953: per-test rows from the script suites stay in always_run, never in a V8 suite', () => {
+  const history = {
+    repo: 'acme/inv',
+    tests: [
+      hist(null, 'server/test/a.test.mjs', 'stores a row'),
+      hist(null, 'ui/scripts/ensure-build.test.mjs', 'builds once'),
+      hist('verify-base-build', 'ui/scripts/verify-base-build.mjs', 'the build runs'),
+      hist(null, 'e2e/smoke/check.test.mjs', 'passes'),
+      hist('host-shell', 'infra/host/test/deploy.test.sh', 'deploy.test.sh'),
+      hist('github.com/FinTekkers/horizon/infra/whatsapp-bridge/hzpoll', 'infra/whatsapp-bridge/hzpoll', 'TestVote'),
+    ],
+  }
+  const { rows } = buildInventory({ repo: 'acme/inv', history, coverage: COVERAGE })
+  assert.deepEqual(
+    rows.map((r) => [r.suite, r.file]),
+    [
+      ['other', 'e2e/smoke/check.test.mjs'],
+      ['other', 'infra/host/test/deploy.test.sh'],
+      ['other', 'infra/whatsapp-bridge/hzpoll'],
+      ['other', 'ui/scripts/ensure-build.test.mjs'],
+      ['other', 'ui/scripts/verify-base-build.mjs'],
+      ['server', 'server/test/a.test.mjs'],
+    ],
+  )
+  const out = selectBlocking({ rows, coverageMap: COVERAGE })
+  const always = out.always_run.map((a) => a.command)
+  for (const file of ['ui/scripts/ensure-build.test.mjs', 'ui/scripts/verify-base-build.mjs', 'e2e/smoke/check.test.mjs', 'infra/whatsapp-bridge/hzpoll']) {
+    assert.ok(always.includes(file), file)
+  }
+  assert.ok(![...out.blocking, ...out.excluded, ...out.demoted].some((e) => e.file.includes('/scripts/') || e.file.includes('/smoke/')))
+})
+
 test('collectServerCoverage runs one test file under V8 and keeps the server/src lines it ran', async () => {
   const root = mkdtempSync(join(tmpdir(), 'horizon-inventory-fixture-'))
   mkdirSync(join(root, 'server/src'), { recursive: true })

@@ -31,13 +31,39 @@ import path from 'node:path'
 import { STEPS } from '../../domain/js/lifecycle.js'
 import { REASON_IDS } from '../../domain/js/reasons.js'
 import { PRIORITIES } from '../../domain/js/priorities.js'
+import { orderedCases, writeJunitCases } from '../../server/scripts/junit-cases.mjs'
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..')
 const DIST = path.join(REPO_ROOT, 'ui/dist')
 const INDEX_HTML = path.join(DIST, 'index.html')
 const EXPECTED = '/horizon/assets/'
 
+// HZ-953: with HORIZON_TEST_REPORT_DIR set, each assertion below is one case
+// of ui-verify-base-build.xml, in this order. The first failure ends the run,
+// so the ones after it are skipped. Nothing printed changes.
+const CHECKS = [
+  'HORIZON_BASE=/horizon/ npm --prefix ui run build succeeds',
+  'the build emits ui/dist/index.html',
+  `ui/dist/index.html references ${EXPECTED}`,
+  'the build emits ui/dist/assets/',
+  'the build emits a JS bundle',
+  'the bundle inlines domain/steps.json',
+  'the bundle inlines domain/reasons.json',
+  'the bundle inlines domain/priorities.json',
+  'the build emits no JSON asset',
+]
+let check = 0 // CHECKS[check] is the one running
+const checkSeconds = []
+
+function writeReport(failedAt, message) {
+  const dir = process.env.HORIZON_TEST_REPORT_DIR
+  if (!dir) return
+  const cases = orderedCases(CHECKS, failedAt, { file: 'ui/scripts/verify-base-build.mjs', message, seconds: checkSeconds })
+  writeJunitCases(path.join(dir, 'ui-verify-base-build.xml'), cases, { suite: 'verify-base-build' })
+}
+
 function fail(message) {
+  writeReport(check, message)
   console.error(`verify-base-build: ${message}`)
   process.exit(1)
 }
@@ -55,10 +81,13 @@ const build = spawnSync('npm', ['--prefix', 'ui', 'run', 'build'], {
   env: { ...process.env, HORIZON_BASE: '/horizon/' },
 })
 const seconds = Number(process.hrtime.bigint() - started) / 1e9
+checkSeconds[0] = seconds
 
 if (build.error) fail(`could not run npm --prefix ui run build (${build.error.message})`)
 if (build.status !== 0) fail(`HORIZON_BASE=/horizon/ npm --prefix ui run build exited ${build.status}`)
+check++
 if (!existsSync(INDEX_HTML)) fail('the build produced no ui/dist/index.html')
+check++
 
 const html = readFileSync(INDEX_HTML, 'utf8')
 if (!html.includes(EXPECTED)) {
@@ -67,13 +96,16 @@ if (!html.includes(EXPECTED)) {
       'deploy-horizon.sh greps for exactly this, so a deploy would serve a bundle the browser cannot fetch.',
   )
 }
+check++
 
 // The step data must be IN the bundle, not fetched beside it.
 const assetsDir = path.join(DIST, 'assets')
 if (!existsSync(assetsDir)) fail('the build produced no ui/dist/assets/')
+check++
 
 const jsBundles = readdirSync(assetsDir).filter((f) => f.endsWith('.js'))
 if (jsBundles.length === 0) fail('the build emitted no JS bundle')
+check++
 
 // HZ-132 added a SECOND JSON under domain/, reached from ui/src/domain/
 // pauseReason.js. It needs its own probe for the same reason the step label
@@ -119,6 +151,7 @@ for (const probe of PROBES) {
         `Rollup emitted it as a separate asset, which 404s under the production base: ${probe.effect}.`,
     )
   }
+  check++
 }
 
 // A stray steps.json, reasons.json or priorities.json beside the bundle means it
@@ -128,6 +161,7 @@ const strayJson = readdirSync(assetsDir).filter((f) => f.endsWith('.json'))
 if (strayJson.length > 0) {
   fail(`the build emitted JSON asset(s) ${strayJson.join(', ')} — the domain data must be inlined, not fetched`)
 }
+writeReport(-1)
 
 console.log(
   `verify-base-build: ui/dist/index.html references ${EXPECTED}, and the bundle inlines the step table, the reason vocabulary and the priority vocabulary (${seconds.toFixed(1)}s)`,

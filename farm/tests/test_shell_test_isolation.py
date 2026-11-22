@@ -38,7 +38,8 @@ def test_run_all_leaves_the_host_farm_daemon_alone(tmp_path):
     # must fit in ~108 bytes, which a pytest tmp_path can exceed.
     runner_tmp = tempfile.mkdtemp(prefix="hz716-")
     marker = tmp_path / "marker"
-    env = {k: v for k, v in os.environ.items() if k != "FARM_HOME"}
+    # HZ-953: no report dir either, or the stub runs land in the real report.
+    env = {k: v for k, v in os.environ.items() if k not in ("FARM_HOME", "HORIZON_TEST_REPORT_DIR")}
     # Everything the runner inherits points at the stand-in host's server.
     env.update(TMUX=f"{host_socket},{pane_pid},0", TMPDIR=runner_tmp, HZ716_MARKER=str(marker))
     try:
@@ -85,7 +86,8 @@ def _run_stub_shell_tests(tmp_path, middle_status):
         stub = stubs / f"{name}.test.sh"
         stub.write_text(f'echo > "$HZ952_MARKERS/{name}"\nexit {status}\n')
         files.append(stub)
-    env = {k: v for k, v in os.environ.items() if k != "FARM_HOME"}
+    # HZ-953: no report dir either, or the stub runs land in the real report.
+    env = {k: v for k, v in os.environ.items() if k not in ("FARM_HOME", "HORIZON_TEST_REPORT_DIR")}
     env.update(TMPDIR=str(runner_tmp), HZ952_MARKERS=str(stubs))
     result = subprocess.run(
         ["bash", str(RUN_ALL), *map(str, files)],

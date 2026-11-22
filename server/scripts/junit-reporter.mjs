@@ -4,14 +4,7 @@
 // the same name. One <testsuite> per (file, describe path); a top-level test's
 // suite name is empty. farm/checks.py's parse_junit reads it.
 
-const escapeXml = (value) =>
-  String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    // XML 1.0 has no escape for most control characters.
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+import { escapeXml } from './junit-cases.mjs'
 
 export default async function* junitReporter(source) {
   // file -> names of the tests started at each nesting level, so a case can be
