@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Playwright suite driving the real Horizon server + built UI in demo mode (no GitHub, mock agents, temp DB). Run via `npm run test:e2e` at the repo root.",
   "scripts": {
-    "test": "bash ../scripts/node-test-report.sh e2e-unit fixtures/test-base.test.mjs ports.test.mjs && bash ../scripts/node-test-report.sh e2e-smoke-check smoke/check.test.mjs && playwright test",
+    "test": "bash ../scripts/node-test-report.sh e2e-unit fixtures/test-base.test.mjs ports.test.mjs jsonl-reporter.test.mjs && bash ../scripts/node-test-report.sh e2e-smoke-check smoke/check.test.mjs && playwright test",
     "screenshots:onboarding": "playwright test -c onboarding.config.js"
   },
   "devDependencies": {
