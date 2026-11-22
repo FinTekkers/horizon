@@ -63,3 +63,70 @@ export function latestCanvas(runs) {
   }
   return null
 }
+
+// ---- HZ-938: the tool that drew a round ----
+//
+// A box draws its design rounds with the tool FARM_DESIGN_BACKEND names
+// (farm/design_backend.py): Meta Studio (the canvas line above), Claude Design
+// or a Horizon page. Each writes its own first line, by the same first-line
+// rule; farm/tests/test_design_backend.py pins the Python side to these
+// constants.
+//
+//   **Design page:** [Open the design page](/api/items/<id>/design-page) · round <n>
+//   **Claude Design:** [Open the Claude Design project](https://claude.ai/design/p/<uuid>) · project `<uuid>` · round <n>
+//
+// The design page link is the server's own sandboxed route, never anything
+// else; the Claude link is https on claude.ai only, with no query or fragment.
+
+export const DESIGN_TOOLS = Object.freeze(['studio', 'claude', 'html'])
+export const PAGE_MARKER = '**Design page:**'
+export const PAGE_LINK_TEXT = 'Open the design page'
+export const PAGE_ITEM_ID_PATTERN = '[A-Za-z0-9][A-Za-z0-9_-]{0,63}'
+export const CLAUDE_MARKER = '**Claude Design:**'
+export const CLAUDE_LINK_TEXT = 'Open the Claude Design project'
+export const CLAUDE_HOST = 'claude.ai'
+export const CLAUDE_PROJECT_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+// What the card says, by tool. The server and the UI read these; the farm
+// never writes card text.
+export const TOOL_LABEL = Object.freeze({ studio: 'Meta Studio', claude: 'Claude Design', html: 'Horizon page' })
+export const FALLBACK_TEXT = Object.freeze({
+  studio: "Studio isn't available on this box; drawn as a Horizon page",
+  claude: "Claude Design isn't available on this box; drawn as a Horizon page",
+})
+
+const PAGE_LINE_RE = new RegExp(
+  `^${escape(PAGE_MARKER)} \\[${escape(PAGE_LINK_TEXT)}\\]\\((/api/items/(${PAGE_ITEM_ID_PATTERN})/design-page)\\) · round ([1-9][0-9]{0,8})$`,
+)
+const CLAUDE_LINE_RE = new RegExp(
+  `^${escape(CLAUDE_MARKER)} \\[${escape(CLAUDE_LINK_TEXT)}\\]\\((https://${escape(CLAUDE_HOST)}/design/p/(${CLAUDE_PROJECT_PATTERN}))\\) · project \`\\2\` · round ([1-9][0-9]{0,8})$`,
+)
+
+export function claudeProjectUrlFor(projectId) {
+  return `https://${CLAUDE_HOST}/design/p/${projectId}`
+}
+
+// { tool, url, id, round } from the artifact's first line — a Studio canvas
+// (id is the slug, round its version), a design page (id is the item) or a
+// Claude Design project — or null.
+export function parseDesignLine(artifact) {
+  if (typeof artifact !== 'string') return null
+  const first = artifact.split('\n', 1)[0].replace(/\r$/, '')
+  const studio = parseCanvasLine(first)
+  if (studio) return { tool: 'studio', url: studio.url, id: studio.slug, round: studio.version }
+  const page = PAGE_LINE_RE.exec(first)
+  if (page) return { tool: 'html', url: page[1], id: page[2], round: Number(page[3]) }
+  const claude = CLAUDE_LINE_RE.exec(first)
+  if (claude) return { tool: 'claude', url: claude[1], id: claude[2], round: Number(claude[3]) }
+  return null
+}
+
+// The newest design among a sub-step's done runs (oldest first) whose tool is
+// one of `tools`, or null.
+export function latestDesign(runs, tools = DESIGN_TOOLS) {
+  for (const run of [...(runs ?? [])].reverse()) {
+    const design = parseDesignLine(run?.artifact)
+    if (design && tools.includes(design.tool)) return design
+  }
+  return null
+}

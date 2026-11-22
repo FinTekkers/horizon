@@ -11,7 +11,7 @@ import subprocess
 import httpx
 import pytest
 
-from farm import design_review
+from farm import design_review, visual_page
 
 CANVAS = "https://blueprint-studio.internalmeta.com/canvas/horizon-t-1-design-screens"
 PUBLIC = "93.184.216.34"
@@ -175,6 +175,57 @@ def test_no_listed_commit_stages_no_shots(repo, staged_list, commit):
     staged = stage(staged_list, ws, commit)
     assert staged.shots == []
     assert staged.shots_problem == "no git commit of the implement run's screenshots was named"
+
+
+def _store_design_round(item_id, round_no, tmp_path):
+    shots_dir = tmp_path / f"shots-r{round_no}"
+    shots_dir.mkdir()
+    for viewport, name in visual_page.shot_names(round_no).items():
+        (shots_dir / name).write_bytes(PNG + f"r{round_no}-{viewport}".encode())
+    visual_page.store(item_id, "<html></html>", shots_dir, round_no, slot=visual_page.DESIGN_SLOT)
+
+
+def never_fetched(request):
+    raise AssertionError(f"the design page link was fetched: {request.url}")
+
+
+def test_a_design_page_link_stages_the_latest_rounds_local_shots_and_is_never_fetched(repo, staged_list, tmp_path, monkeypatch):
+    """HZ-938: an html round's approved link is relative; the review gets the
+    latest design-slot round's desktop and phone PNGs from this box."""
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    ws, commit = repo
+    _store_design_round("T-1", 1, tmp_path)
+    _store_design_round("T-1", 2, tmp_path)
+    url = "/api/items/T-1/design-page"
+    staged = stage(staged_list, ws, commit, handler=never_fetched, url=url)
+    assert staged.canvas_problem is None
+    staged_files = [staged.canvas_path, *staged.canvas_more]
+    assert [p.name for p in staged_files] == ["canvas-page-r2-desktop.png", "canvas-page-r2-phone.png"]
+    assert staged_files[1].read_bytes() == PNG + b"r2-phone"
+    assert all(staged.root in p.parents for p in staged_files)
+    section = design_review.prompt_section(staged)
+    assert f"- Approved design canvas: {url}" in section
+    assert all(f"  - Staged image: `{p}`" in section for p in staged_files)
+    assert len(staged.shots) == 2, "the implement shots are staged as before"
+
+
+@pytest.mark.parametrize(
+    "url, stored, reason",
+    [
+        ("/api/items/T-1/design-page", False, "no design page round is stored on this box"),
+        ("/api/items/T-2/design-page", True, "names another item"),
+        ("/api/items/T-1/design-page/../page", True, "names another item"),
+    ],
+)
+def test_a_design_page_with_nothing_to_stage_is_not_checked(repo, staged_list, tmp_path, monkeypatch, url, stored, reason):
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    ws, commit = repo
+    if stored:
+        _store_design_round("T-2", 1, tmp_path)
+    staged = stage(staged_list, ws, commit, handler=never_fetched, url=url)
+    assert staged.canvas_path is None and staged.canvas_more == []
+    assert reason in staged.canvas_problem
+    assert f"Not checked as an image: {staged.canvas_problem}" in design_review.prompt_section(staged)
 
 
 def test_a_provider_that_takes_no_folders_stages_nothing(repo):

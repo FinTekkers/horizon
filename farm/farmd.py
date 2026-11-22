@@ -2984,10 +2984,22 @@ def page_file(item_id: str, name: str, request: Request):
     a recorded name whose realpath is a regular file inside the item's pages
     dir; never a listing. No tenant dir: the server never turns pages on for
     a tenant project."""
+    return _page_slot_file(item_id, name, request, visual_page.VISUAL_SLOT)
+
+
+@app.get("/design-pages/{item_id}/{name}")
+def design_page_file(item_id: str, name: str, request: Request):
+    """HZ-938, loopback only: the same, from the item's design page slot — the
+    Horizon page a design sub-step drew — for the server's member-only GET
+    /api/items/:id/design-page routes."""
+    return _page_slot_file(item_id, name, request, visual_page.DESIGN_SLOT)
+
+
+def _page_slot_file(item_id: str, name: str, request: Request, slot: str):
     host = request.client.host if request.client else None
     if host not in LOOPBACK_HOSTS:
         return JSONResponse({"error": "loopback only"}, status_code=403)
-    real = visual_page.stored_file(item_id, name) if _JOB_ITEM_ID_RE.match(item_id) else None
+    real = visual_page.stored_file(item_id, name, slot) if _JOB_ITEM_ID_RE.match(item_id) else None
     if real is None:
         return JSONResponse({"error": "unknown page file"}, status_code=404)
     media_type = "text/html; charset=utf-8" if name == visual_page.PAGE_NAME else "image/png"

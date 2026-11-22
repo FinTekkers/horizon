@@ -114,6 +114,14 @@ export function pageShotUrl() {
   return '#'
 }
 
+export function designPageUrl() {
+  return '#'
+}
+
+export function designPageShotUrl() {
+  return '#'
+}
+
 // HO-879: links come from the server, and the mock has none — like the
 // other links here, a demo item's issue link goes nowhere.
 export function issueUrl() {

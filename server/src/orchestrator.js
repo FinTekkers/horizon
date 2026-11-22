@@ -115,7 +115,7 @@ import { projectPersonaOverlay } from './definitions.js'
 import { isolationFields } from './projectIsolation.js'
 import { snapshotSubsteps, webGuidanceRepos } from './substeps.js'
 import { currentSubstep, substepsOf } from '../../domain/js/substeps.js'
-import { latestCanvas, parseNoToolLine } from '../../domain/js/designCanvas.js'
+import { DESIGN_TOOLS, FALLBACK_TEXT, TOOL_LABEL, latestDesign, parseDesignLine, parseNoToolLine } from '../../domain/js/designCanvas.js'
 import { parseWhatChanged } from '../../domain/js/designVerdict.js'
 import {
   GUARDRAILS_STEP_INDEX,
@@ -130,7 +130,7 @@ import {
   recordRound,
   returnTarget,
 } from './designRounds.js'
-import { recordPageRound, visualPagesFor } from './visualPages.js'
+import { recordDesignPageRound, recordPageRound, visualPagesFor } from './visualPages.js'
 import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
 import { approvedDesign, canvasInput, designRequired } from './designSpec.js'
 import { reviewShotsInput } from './screenshots.js'
@@ -541,13 +541,16 @@ export function artifactUrl(itemId, stepIndex, substepId = null) {
 // id, label and output — or null for a global run, whose body is unchanged.
 // A design sub-step also names the canvas its last round made, so the farm
 // updates that canvas rather than starting another (domain/js/designCanvas.js).
+// HZ-938: a Studio canvas or a Claude Design project — the farm keeps only the
+// one its own tool can update. A Horizon page needs no link: there is one per
+// item, and the farm reads its rounds from its own slot.
 export function substepTaskField(item, stepIndex, substepId) {
   if (substepId == null) return null
   const sub = substepsOf(item).find((s) => s.id === substepId && s.anchor === stepIndex)
   if (!sub) return null
   const field = { id: sub.id, label: sub.label, output: sub.output ?? null }
   if (sub.output === 'design') {
-    const previous = latestCanvas(substepDoneRuns(item.id, stepIndex, sub.id))
+    const previous = latestDesign(substepDoneRuns(item.id, stepIndex, sub.id), LINKED_DESIGN_TOOLS)
     if (previous) field.previous_canvas_url = previous.url
   }
   return field
@@ -577,7 +580,7 @@ export function designTaskFields(item, stepIndex, substepId) {
 //   - A design run: its round is stored, and the item goes straight back to
 //     the gate it was sent back from when "Set guardrails" need not re-run
 //     (designRounds.js returnTarget), else walks on.
-export function completeDesignSubstep(id, run, artifactMd) {
+export function completeDesignSubstep(id, run, artifactMd, artifacts = null) {
   const item = getItem(id)
   const sub = item && run ? designSubstepOf(item, run.step_index) : null
   if (!sub || item.cursor !== run.step_index) return false
@@ -623,14 +626,30 @@ export function completeDesignSubstep(id, run, artifactMd) {
   }
   const moved = writeStepCompletion(id, to, { substep_cursor: null, substep_pending_json: null })
   if (moved.error) return true
+  const design = designProvenance(artifacts, artifactMd)
+  if (design.problem) {
+    addEvent(id, { who: 'Horizon', text: `did not record which tool drew “${sub.label}”: ${design.problem}`, color: '#DFA200', initials: 'HZ' })
+  }
+  if (design.tool === 'html' && artifacts?.design_page !== undefined) {
+    const recorded = recordDesignPageRound(run.id, item, artifacts.design_page)
+    if (recorded.error) {
+      addEvent(id, { who: 'Horizon', text: `did not record the design page from “${sub.label}”: ${recorded.error}`, color: '#DFA200', initials: 'HZ' })
+    }
+  }
   recordRound(id, sub.id, {
     kind: forced ? 'forced' : 'run',
     runId: run.id,
     brief: pending?.brief || NOT_STATED,
     whatChanged: parseWhatChanged(artifactMd) ?? NOT_STATED,
     overrideReason: forced ? (pending?.overrideReason ?? null) : null,
+    designTool: design.tool,
+    designSystem: design.system,
+    fallbackFrom: design.fallbackFrom,
     who: pending?.who ?? 'Horizon',
   })
+  if (design.fallbackFrom) {
+    addEvent(id, { who: 'Horizon', text: `“${sub.label}”: ${FALLBACK_TEXT[design.fallbackFrom]}`, color: '#5E6A75', initials: 'HZ' })
+  }
   if (back != null) {
     addEvent(id, {
       who: 'Horizon',
@@ -640,6 +659,31 @@ export function completeDesignSubstep(id, run, artifactMd) {
     })
   }
   return true
+}
+
+// HZ-938: the tools whose link the next round is sent back to update.
+export const LINKED_DESIGN_TOOLS = Object.freeze(['studio', 'claude'])
+const DESIGN_SYSTEM_RE = /^[a-z0-9-]{1,40}$/
+
+// HZ-938: which tool drew a design run's round, from the farm's
+// `artifacts.design` ({ tool, system, fallback_from }), checked against the
+// artifact's own first line: { tool, system, fallbackFrom } with nulls for an
+// older farm's result, plus `problem` naming why a value sent was dropped.
+// Card text is never taken from the farm (domain/js/designCanvas.js
+// FALLBACK_TEXT and TOOL_LABEL are the card's words).
+export function designProvenance(artifacts, artifactMd) {
+  const none = { tool: null, system: null, fallbackFrom: null }
+  const design = artifacts?.design
+  if (design === undefined || design === null) return none
+  if (typeof design !== 'object' || Array.isArray(design)) return { ...none, problem: 'not an object' }
+  const tool = Object.hasOwn(design, 'tool') ? design.tool : null
+  if (!DESIGN_TOOLS.includes(tool)) return { ...none, problem: 'unknown tool' }
+  const system = Object.hasOwn(design, 'system') ? design.system : null
+  if (typeof system !== 'string' || !DESIGN_SYSTEM_RE.test(system)) return { ...none, problem: 'bad design system' }
+  const from = Object.hasOwn(design, 'fallback_from') ? design.fallback_from : null
+  if (from !== null && (tool !== 'html' || !Object.hasOwn(FALLBACK_TEXT, from))) return { ...none, problem: 'bad fallback_from' }
+  if (parseDesignLine(artifactMd)?.tool !== tool) return { ...none, problem: `the artifact's first line is not a ${TOOL_LABEL[tool]} link` }
+  return { tool, system, fallbackFrom: from }
 }
 
 // HZ-434: Verify & report is told when its evidence was cut — which section,
@@ -4369,7 +4413,7 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
     // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
     // back to (store.js requestChanges). HO-851: unless its design sub-step
     // decides where it goes.
-    if (!completeDesignSubstep(id, run, artifactMd)) writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
+    if (!completeDesignSubstep(id, run, artifactMd, artifacts)) writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
     if (impact) {
       addEvent(id, {
         who: 'Horizon',
@@ -4761,9 +4805,11 @@ export async function fetchJobMedia(itemId, projectId, name, { range, signal } =
 }
 
 // HO-862: one web-page file of an item from farmd — page.html or a recorded
-// round's PNG — as the raw fetch Response.
-export async function fetchPageFile(itemId, name, { signal } = {}) {
-  return fetch(`${FARM_URL}/pages/${encodeURIComponent(itemId)}/${encodeURIComponent(name)}`, { signal })
+// round's PNG — as the raw fetch Response. HZ-938: `slot: 'design'` reads the
+// design sub-step's Horizon page instead (farmd /design-pages).
+export async function fetchPageFile(itemId, name, { signal, slot = 'visual' } = {}) {
+  const base = slot === 'design' ? 'design-pages' : 'pages'
+  return fetch(`${FARM_URL}/${base}/${encodeURIComponent(itemId)}/${encodeURIComponent(name)}`, { signal })
 }
 
 // The whitelisted, capped copy of a view, or null when it is not one.

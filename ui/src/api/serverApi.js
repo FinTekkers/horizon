@@ -1000,6 +1000,16 @@ export function pageShotUrl(itemId, name) {
   return `${API_BASE}/items/${encodeURIComponent(itemId)}/page/shots/${encodeURIComponent(name)}`
 }
 
+// HZ-938: the item's design page — the Horizon page its design sub-step drew —
+// served sandboxed like the web page above, and one round's screenshot.
+export function designPageUrl(itemId) {
+  return `${API_BASE}/items/${encodeURIComponent(itemId)}/design-page`
+}
+
+export function designPageShotUrl(itemId, name) {
+  return `${API_BASE}/items/${encodeURIComponent(itemId)}/design-page/shots/${encodeURIComponent(name)}`
+}
+
 // HO-879: an item's link is its repo's server-built issueUrlTemplate with the
 // item's number for {n} — null until the links load, and null when the
 // server has no link for that backend. A legacy item with no repo keeps the

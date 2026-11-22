@@ -56,6 +56,10 @@ PAGE_NAME: str = RULES["pageName"]
 SHOT_NAME = re.compile(RULES["shotName"])
 MANIFEST = "manifest.json"
 PAGES_DIR = "pages"
+# HZ-938: the design sub-step's Horizon page lives in its own slot, a subdir of
+# the item's pages dir, so it never overwrites the web-page visual.
+VISUAL_SLOT, DESIGN_SLOT = "visual", "design"
+SLOTS = (VISUAL_SLOT, DESIGN_SLOT)
 OUTPUT_KEY = "page_html"
 MAX_PROBLEMS = 10
 PROBLEM_MAX_CHARS = 300
@@ -161,30 +165,34 @@ def _clean(text: str) -> str:
 # ---- storage ----
 
 
-def page_dir_for(item_id: str) -> Path:
-    """FARM_HOME/state/pages/<item>, FARM_HOME read at call time. Raises
-    ValueError for an id that could leave the pages dir."""
+def page_dir_for(item_id: str, slot: str = VISUAL_SLOT) -> Path:
+    """FARM_HOME/state/pages/<item> for the visual slot, .../<item>/design for
+    the design slot (HZ-938), FARM_HOME read at call time. Raises ValueError
+    for an id that could leave the pages dir, or an unknown slot."""
     if not isinstance(item_id, str) or not _ITEM_ID.fullmatch(item_id):
         raise ValueError("bad item id")
-    return config.farm_home() / "state" / PAGES_DIR / item_id
+    if slot not in SLOTS:
+        raise ValueError("bad page slot")
+    base = config.farm_home() / "state" / PAGES_DIR / item_id
+    return base if slot == VISUAL_SLOT else base / slot
 
 
-def read_manifest(item_id: str) -> list[dict]:
+def read_manifest(item_id: str, slot: str = VISUAL_SLOT) -> list[dict]:
     """The item's recorded rounds, oldest first; [] when there are none."""
     try:
-        data = json.loads((page_dir_for(item_id) / MANIFEST).read_text())
+        data = json.loads((page_dir_for(item_id, slot) / MANIFEST).read_text())
     except (OSError, ValueError):
         return []
     rounds = data.get("rounds") if isinstance(data, dict) else None
     return [r for r in rounds if isinstance(r, dict) and isinstance(r.get("round"), int)] if isinstance(rounds, list) else []
 
 
-def next_round(item_id: str) -> int:
+def next_round(item_id: str, slot: str = VISUAL_SLOT) -> int:
     """One past the highest round in the manifest or on disk, so a round
     number is never reused — even after a store that died half-way."""
-    highest = max((r["round"] for r in read_manifest(item_id)), default=0)
+    highest = max((r["round"] for r in read_manifest(item_id, slot)), default=0)
     with contextlib.suppress(OSError, ValueError):
-        for path in page_dir_for(item_id).glob("page-r*-*.png"):
+        for path in page_dir_for(item_id, slot).glob("page-r*-*.png"):
             if SHOT_NAME.fullmatch(path.name):
                 highest = max(highest, int(path.name.split("-")[1][1:]))
     return highest + 1
@@ -206,10 +214,10 @@ def _write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def store(item_id: str, html: str, shots_dir: Path, round_no: int) -> dict:
+def store(item_id: str, html: str, shots_dir: Path, round_no: int, slot: str = VISUAL_SLOT) -> dict:
     """Moves the round's PNGs in, replaces page.html, then records the round.
     Returns the result's `artifacts.page`: {round, sha256, bytes, shots}."""
-    page_dir = page_dir_for(item_id)
+    page_dir = page_dir_for(item_id, slot)
     page_dir.mkdir(parents=True, exist_ok=True)
     names = shot_names(round_no)
     for name in names.values():
@@ -223,22 +231,22 @@ def store(item_id: str, html: str, shots_dir: Path, round_no: int) -> dict:
         "shots": names,
         "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    rounds = [r for r in read_manifest(item_id) if r["round"] != round_no] + [entry]
+    rounds = [r for r in read_manifest(item_id, slot) if r["round"] != round_no] + [entry]
     _write_atomic(page_dir / MANIFEST, (json.dumps({"version": 1, "rounds": rounds}, indent=2) + "\n").encode())
     return {k: entry[k] for k in ("round", "sha256", "bytes", "shots")}
 
 
-def stored_file(item_id: str, name: str) -> Path | None:
+def stored_file(item_id: str, name: str, slot: str = VISUAL_SLOT) -> Path | None:
     """page.html (once a round is recorded) or a PNG the manifest records,
     whose realpath is a regular file directly inside the item's pages dir.
     None for anything else — farmd's /pages route serves nothing else."""
     try:
-        page_dir = page_dir_for(item_id)
+        page_dir = page_dir_for(item_id, slot)
     except ValueError:
         return None
     if not isinstance(name, str):
         return None
-    rounds = read_manifest(item_id)
+    rounds = read_manifest(item_id, slot)
     if name == PAGE_NAME:
         if not rounds:
             return None
@@ -316,20 +324,20 @@ def capture(html: str, out_dir: Path, round_no: int, *, deadline: float, log=lam
     return {"ok": ok, "problems": unique, "shots": shots if ok else {}}
 
 
-def publish(item_id: str, html: str, *, deadline: float, log=lambda _msg: None) -> dict:
+def publish(item_id: str, html: str, *, deadline: float, log=lambda _msg: None, slot: str = VISUAL_SLOT) -> dict:
     """Captures `html` as the item's next round and stores it. Returns the
     result's `artifacts.page`. Raises VisualPageError naming the cause; then
     nothing is stored and the previous round stays live."""
-    page_dir = page_dir_for(item_id)
+    page_dir = page_dir_for(item_id, slot)
     page_dir.mkdir(parents=True, exist_ok=True)
-    round_no = next_round(item_id)
+    round_no = next_round(item_id, slot)
     tmp = Path(tempfile.mkdtemp(dir=str(page_dir), prefix=".capture-"))
     try:
         outcome = capture(html, tmp, round_no, deadline=deadline, log=log)
         if not outcome["ok"]:
             raise VisualPageError("; ".join(outcome["problems"]) or "capture failed")
-        page = store(item_id, html, tmp, round_no)
+        page = store(item_id, html, tmp, round_no, slot)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    log(f"visual page: round {round_no} stored ({page['bytes']} bytes, shots {', '.join(page['shots'].values())})")
+    log(f"{slot} page: round {round_no} stored ({page['bytes']} bytes, shots {', '.join(page['shots'].values())})")
     return page

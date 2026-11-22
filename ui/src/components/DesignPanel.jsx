@@ -1,4 +1,5 @@
-import { latestRoundOf, roundsOf, safeCanvasUrl } from '../../../domain/js/designRounds.js'
+import { latestRoundOf, roundsOf, safeCanvasUrl, toolLineOf } from '../../../domain/js/designRounds.js'
+import { designPageShotUrl, designPageUrl } from '../api'
 
 // HO-853: an item's design on its first gate, beside the golden cases — the
 // server's item.designSpec (HO-852) and the design sub-step's rounds (HO-851).
@@ -8,7 +9,10 @@ import { latestRoundOf, roundsOf, safeCanvasUrl } from '../../../domain/js/desig
 // through MoveDialog: `onRequestChanges` is null when the snapshot lists none),
 // and "Approve without design" asks for a reason. Once approved it says what
 // was approved. A canvas link is drawn only as an https URL (safeCanvasUrl);
-// every value renders as React text.
+// every value renders as React text. HZ-938: each round names the tool that
+// drew it, and says so when the box's own tool could not run and the round was
+// drawn as a Horizon page; such a round links the item's design page (served
+// sandboxed) and shows its desktop screenshot.
 
 const KIND_TEXT = { skip: 'Skipped', forced: 'Designed anyway' }
 
@@ -17,6 +21,30 @@ function CanvasLink({ url, children }) {
   if (!href) return null
   return (
     <a className="design-panel__canvas" href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  )
+}
+
+// The card's tool line and, for a fallback round, why.
+export function ToolLine({ round, testId = 'design-tool' }) {
+  const line = toolLineOf(round)
+  if (!line) return null
+  return (
+    <div className="design-panel__tool" data-testid={testId}>
+      {line.text}
+      {line.fallback && (
+        <div className="design-panel__fallback" data-testid={`${testId}-fallback`}>
+          {line.fallback}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DesignPageLink({ itemId, children }) {
+  return (
+    <a className="design-panel__canvas" href={designPageUrl(itemId)} target="_blank" rel="noopener noreferrer">
       {children}
     </a>
   )
@@ -71,8 +99,22 @@ export default function DesignPanel({ item, spec, sub, busy = false, onRequestCh
           <div className="design-panel__round-head">
             <span className="design-panel__round">Round {latest.round}</span>
             {Object.hasOwn(KIND_TEXT, latest.kind) && <span className="design-panel__kind">{KIND_TEXT[latest.kind]}</span>}
-            <CanvasLink url={latest.canvasUrl}>Open the latest canvas ↗</CanvasLink>
+            {latest.designPageUrl ? (
+              <DesignPageLink itemId={item.id}>Open the design page ↗</DesignPageLink>
+            ) : (
+              <CanvasLink url={latest.canvasUrl}>Open the latest canvas ↗</CanvasLink>
+            )}
           </div>
+          <ToolLine round={latest} />
+          {latest.designPageUrl && latest.shots?.desktop && (
+            <img
+              className="design-panel__shot"
+              src={designPageShotUrl(item.id, latest.shots.desktop)}
+              alt={`Design page round ${latest.round}, desktop screenshot`}
+              loading="lazy"
+              style={{ width: 240, maxWidth: '100%', height: 'auto', border: '1px solid var(--border, #d0d7de)', borderRadius: 4 }}
+            />
+          )}
           <dl className="design-panel__facts">
             <dt>Brief</dt>
             <dd>{latest.brief || '—'}</dd>
@@ -89,7 +131,9 @@ export default function DesignPanel({ item, spec, sub, busy = false, onRequestCh
         <ol className="design-panel__rounds" aria-label="Design rounds">
           {rounds.map((r) => (
             <li key={r.round} className="design-panel__round-item">
-              {safeCanvasUrl(r.canvasUrl) ? (
+              {r.designPageUrl ? (
+                <DesignPageLink itemId={item.id}>Round {r.round} design page ↗</DesignPageLink>
+              ) : safeCanvasUrl(r.canvasUrl) ? (
                 <CanvasLink url={r.canvasUrl}>Round {r.round} canvas ↗</CanvasLink>
               ) : (
                 <span className="design-panel__round-plain">

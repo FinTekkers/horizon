@@ -43,7 +43,7 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 import { DESIGN_OUTPUT, currentDesignSubstep, designSubstepOf, encodePending, latestRound, listRounds, readPending } from './designRounds.js'
-import { parseCanvasLine } from '../../domain/js/designCanvas.js'
+import { parseDesignLine } from '../../domain/js/designCanvas.js'
 import { safeCanvasUrl } from '../../domain/js/designRounds.js'
 import { isPriority } from '../../domain/js/priorities.js'
 import { choiceLabel, choiceValues, parseChoice, providerNames } from '../../domain/js/providers.js'
@@ -65,7 +65,7 @@ import { msOf, sqlTime } from './sqlTime.js'
 import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
-import { visualPageFields } from './visualPages.js'
+import { designPageShots, visualPageFields } from './visualPages.js'
 import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
 import { approveCanvas, checkDesignApproval, clearDesignSpec, designApprovable, designRequired, designSpecFields, skipDesign } from './designSpec.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
@@ -2871,13 +2871,22 @@ const selectDesignRunHeads = db.prepare(
 // no credentials (safeCanvasUrl) — nothing else of the run is served. While
 // the item is at the sub-step, `pendingRound` is the round in flight and its
 // brief (the send-back note, or the override reason), else null.
+// HZ-938: each round also says which tool drew it (designTool, designSystem,
+// fallbackFrom). A Studio or Claude Design round's link is its `canvasUrl`; a
+// Horizon page round has `designPageUrl` (the item's own sandboxed route) and
+// its recorded `shots` instead.
 function designRoundFields(row, sub) {
   if (sub.output !== DESIGN_OUTPUT) return {}
   const heads = new Map(selectDesignRunHeads.all(row.id, sub.id).map((run) => [run.id, run.head]))
-  const rounds = listRounds(row.id, sub.id).map((round) => ({
-    ...round,
-    canvasUrl: round.runId == null ? null : safeCanvasUrl(parseCanvasLine(heads.get(round.runId))?.url),
-  }))
+  const rounds = listRounds(row.id, sub.id).map((round) => {
+    const design = round.runId == null ? null : parseDesignLine(heads.get(round.runId))
+    const page = design?.tool === 'html' && design.id === row.id ? design : null
+    return {
+      ...round,
+      canvasUrl: design && !page ? safeCanvasUrl(design.url) : null,
+      ...(page ? { designPageUrl: `/api/items/${encodeURIComponent(row.id)}/design-page`, shots: designPageShots(row.id, page.round) } : {}),
+    }
+  })
   const latest = rounds.at(-1)
   const pending = currentDesignSubstep(row)?.id === sub.id ? readPending(row) : null
   return {

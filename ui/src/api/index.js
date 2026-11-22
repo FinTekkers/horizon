@@ -56,6 +56,8 @@ export const {
   mediaUrl,
   pageUrl,
   pageShotUrl,
+  designPageUrl,
+  designPageShotUrl,
   issueUrl,
   issueLabel,
   approveGate,

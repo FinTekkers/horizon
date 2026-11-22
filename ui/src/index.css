@@ -1134,6 +1134,8 @@ button { font-family: var(--font-sans); }
 .design-panel__round-plain { color: var(--muted-strong); font-weight: 600; }
 .design-panel__round-brief { color: var(--text-secondary); min-width: 0; flex: 1 1 160px; }
 .design-panel__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.design-panel__tool { color: var(--text-secondary); font-size: 12px; }
+.design-panel__fallback { color: var(--warning-ink); }
 .step-card__round {
   margin-right: auto; padding: 1px 8px; border-radius: 999px;
   background: var(--chip); color: var(--muted-strong); font: 600 11px var(--font-sans);

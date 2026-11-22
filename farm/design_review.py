@@ -16,7 +16,10 @@ this module stages, into a temp folder outside the checkout:
   resolved for the check and again by the request, so a host that changes
   its answer in between is not caught; the link is Studio's own
   (domain/js/designCanvas.js), so this guards against a bad link, not a
-  hostile DNS server.
+  hostile DNS server;
+- for a Horizon design page (HZ-938, `/api/items/<id>/design-page`), never
+  fetched: the latest round's desktop and phone PNGs, copied from the
+  item's design slot on this box (farm/visual_page.py).
 
 Anything that cannot be staged is said in the prompt, and the role note
 (farm/roles/design_review_addendum.md) has those screens marked "not
@@ -38,6 +41,7 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from . import visual_page
 from .checks import scrub
 from .egress_proxy import address_allowed
 from .workspaces import _git_bytes, hub_lock
@@ -54,6 +58,8 @@ CANVAS_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"
 NOT_CHECKED = "not checked"
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHOT_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,100}\.png")
+# The html tool's link (domain/js/designCanvas.js PAGE_ITEM_ID_PATTERN).
+_DESIGN_PAGE_RE = re.compile(r"/api/items/([A-Za-z0-9][A-Za-z0-9_-]{0,63})/design-page")
 
 
 # Why nothing is staged when the review's provider can be handed no folder
@@ -67,6 +73,8 @@ class Staged:
     canvas_url: str
     canvas_path: Path | None = None
     canvas_problem: str | None = None
+    # A design page's phone shot, after canvas_path (its desktop shot).
+    canvas_more: list[Path] = field(default_factory=list)
     shots: list[Path] = field(default_factory=list)
     shots_problem: str | None = None
 
@@ -144,6 +152,33 @@ def fetch_canvas_image(url: str, dest_dir: Path, *, resolve=_resolve, client: ht
             client.close()
 
 
+def stage_design_page(item: dict, url: str, dest_dir: Path):
+    """([staged PNG paths], None) or ([], why they are not checked), for a
+    design page link: the latest design-slot round's shots, desktop first.
+    Read from disk, never fetched; only this item's page is staged."""
+    match = _DESIGN_PAGE_RE.fullmatch(url)
+    if not match or match.group(1) != item.get("id"):
+        return [], "the design page link names another item"
+    item_id = match.group(1)
+    rounds = visual_page.read_manifest(item_id, visual_page.DESIGN_SLOT)
+    if not rounds:
+        return [], "no design page round is stored on this box"
+    latest = max(rounds, key=lambda r: r["round"])
+    shots = latest.get("shots") if isinstance(latest.get("shots"), dict) else {}
+    staged: list[Path] = []
+    for viewport in visual_page.VIEWPORTS:
+        name = shots.get(viewport["name"])
+        source = visual_page.stored_file(item_id, name, visual_page.DESIGN_SLOT) if isinstance(name, str) else None
+        if source is None or source.stat().st_size > SHOT_MAX_BYTES:
+            continue
+        path = dest_dir / f"canvas-{name}"
+        shutil.copyfile(source, path)
+        staged.append(path)
+    if not staged:
+        return [], f"design page round {latest['round']} has no stored screenshots"
+    return staged, None
+
+
 def stage_shots(ws: Path | None, item: dict, commit, dest: Path, *, lock=hub_lock):
     """([staged PNG paths], None) or ([], why they are not checked)."""
     if not isinstance(commit, str) or not _COMMIT_RE.fullmatch(commit):
@@ -196,7 +231,11 @@ def stage(
     root = Path(tempfile.mkdtemp(prefix="horizon-design-review-"))
     staged = Staged(root=root, canvas_url=url)
     try:
-        if url:
+        if url.startswith("/api/items/"):
+            paths, staged.canvas_problem = stage_design_page(item, url, root)
+            if paths:
+                staged.canvas_path, staged.canvas_more = paths[0], paths[1:]
+        elif url:
             staged.canvas_path, staged.canvas_problem = fetch_canvas_image(url, root, resolve=resolve, client=client)
         else:
             staged.canvas_problem = "no canvas link was sent"
@@ -235,7 +274,7 @@ def prompt_section(staged: Staged) -> str:
         f"- Approved design canvas: {staged.canvas_url or '(no link)'}",
     ]
     if staged.canvas_path:
-        lines.append(f"  - Staged image: `{staged.canvas_path}`")
+        lines += [f"  - Staged image: `{path}`" for path in [staged.canvas_path, *staged.canvas_more]]
     else:
         lines.append(f"  - {NOT_CHECKED.capitalize()} as an image: {staged.canvas_problem}")
     if staged.shots:

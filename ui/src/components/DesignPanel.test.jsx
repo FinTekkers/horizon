@@ -64,3 +64,43 @@ test('the agent said no design: the panel says why and offers no Approve without
   expect(within(view.getByTestId('design-latest')).getByText('Skipped')).toBeTruthy()
   expect(within(view.getByTestId('design-latest')).queryByText('What changed')).toBeNull()
 })
+
+// HZ-938: each round names the tool that drew it; a round drawn as a Horizon
+// page because the box's own tool could not run says so, links the item's
+// design page and shows its desktop shot. An older round names no tool.
+test('a fallback round names its tool, says the box’s tool was missing, and links the design page and its shot', () => {
+  const page = {
+    round: 2,
+    kind: 'run',
+    brief: 'Brief 2',
+    whatChanged: 'Changed 2',
+    runId: 12,
+    canvasUrl: null,
+    designTool: 'html',
+    designSystem: 'horizon-production',
+    fallbackFrom: 'studio',
+    designPageUrl: '/api/items/HZ-953/design-page',
+    shots: { desktop: 'page-r1-desktop.png', phone: 'page-r1-phone.png' },
+  }
+  const studio = round(1, URLS[0], { designTool: 'studio', designSystem: 'fds', fallbackFrom: null })
+  const view = render(<DesignPanel item={ITEM} spec={SPEC} sub={{ id: 'design-screens', rounds: [studio, page] }} />)
+  const latest = within(view.getByTestId('design-latest'))
+  expect(latest.getByTestId('design-tool').firstChild.textContent).toBe('Drawn with Horizon page (horizon-production)')
+  expect(latest.getByText("Studio isn't available on this box; drawn as a Horizon page")).toBeTruthy()
+  const link = latest.getByRole('link', { name: 'Open the design page ↗' })
+  expect([link.getAttribute('href'), link.getAttribute('target'), link.getAttribute('rel')]).toEqual([
+    '/api/items/HZ-953/design-page',
+    '_blank',
+    'noopener noreferrer',
+  ])
+  expect(latest.getByAltText('Design page round 2, desktop screenshot').getAttribute('src')).toBe('/api/items/HZ-953/design-page/shots/page-r1-desktop.png')
+  const list = within(view.getByRole('list', { name: 'Design rounds' }))
+  expect(list.getByRole('link', { name: 'Round 2 design page ↗' }).getAttribute('href')).toBe('/api/items/HZ-953/design-page')
+  expect(list.getByRole('link', { name: 'Round 1 canvas ↗' }).getAttribute('href')).toBe(URLS[0])
+
+  view.rerender(<DesignPanel item={ITEM} spec={SPEC} sub={{ id: 'design-screens', rounds: [studio] }} />)
+  expect(view.getByTestId('design-tool').textContent).toBe('Drawn with Meta Studio (fds)')
+  expect(view.queryByText(/isn't available on this box/)).toBeNull()
+  view.rerender(<DesignPanel item={ITEM} spec={SPEC} sub={{ id: 'design-screens', rounds: [round(1, URLS[0])] }} />)
+  expect(view.queryByTestId('design-tool')).toBeNull()
+})

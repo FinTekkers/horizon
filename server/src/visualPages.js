@@ -43,12 +43,22 @@ const selectRounds = db.prepare(
      FROM item_page_round r JOIN step_run s ON s.id = r.step_run_id
     WHERE r.item_id = ? ORDER BY r.round`,
 )
-const selectLatest = db.prepare('SELECT round, sha256, bytes FROM item_page_round WHERE item_id = ? ORDER BY round DESC LIMIT 1')
-const selectShot = db.prepare('SELECT 1 FROM item_page_round WHERE item_id = ? AND (desktop_png = ? OR phone_png = ?)')
-const insertRound = db.prepare(
-  `INSERT OR IGNORE INTO item_page_round (item_id, round, step_run_id, sha256, bytes, desktop_png, phone_png)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`,
-)
+// HZ-938: the same three statements per page slot — the web-page visual
+// (item_page_round) and the design sub-step's Horizon page
+// (item_design_page_round). Only the gate in front of each differs.
+function slotStatements(table) {
+  return {
+    selectLatest: db.prepare(`SELECT round, sha256, bytes FROM ${table} WHERE item_id = ? ORDER BY round DESC LIMIT 1`),
+    selectShot: db.prepare(`SELECT 1 FROM ${table} WHERE item_id = ? AND (desktop_png = ? OR phone_png = ?)`),
+    selectShots: db.prepare(`SELECT desktop_png, phone_png FROM ${table} WHERE item_id = ? AND round = ?`),
+    insertRound: db.prepare(
+      `INSERT OR IGNORE INTO ${table} (item_id, round, step_run_id, sha256, bytes, desktop_png, phone_png)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ),
+  }
+}
+const VISUAL = slotStatements('item_page_round')
+const DESIGN = slotStatements('item_design_page_round')
 
 // Whether the item's project has web-page visuals on. Fails closed: no
 // project, a missing row, or any isolation but 'internal' is off.
@@ -83,20 +93,60 @@ function pageProblem(page) {
 // recorded — the caller logs it and never fails the run for it.
 export function recordPageRound(runId, item, stepIndex, page) {
   if (!visualPagesFor(item, stepIndex)) return { error: 'web-page visuals are off for this step' }
+  return recordSlotRound(VISUAL, runId, item, page)
+}
+
+function recordSlotRound(slot, runId, item, page) {
   const problem = pageProblem(page)
   if (problem) return { error: problem }
-  insertRound.run(item.id, page.round, runId, page.sha256, page.bytes, page.shots.desktop, page.shots.phone)
+  slot.insertRound.run(item.id, page.round, runId, page.sha256, page.bytes, page.shots.desktop, page.shots.phone)
   return { ok: true }
 }
 
+const shotRecorded = (slot, itemId, name) => typeof name === 'string' && SHOT_NAME.test(name) && !!slot.selectShot.get(itemId, name, name)
+
 // The latest recorded round { round, sha256, bytes }, or null.
 export function latestPageRound(itemId) {
-  return selectLatest.get(itemId) ?? null
+  return VISUAL.selectLatest.get(itemId) ?? null
 }
 
 // Whether `name` is a recorded round's PNG for the item.
 export function pageShotRecorded(itemId, name) {
-  return typeof name === 'string' && SHOT_NAME.test(name) && !!selectShot.get(itemId, name, name)
+  return shotRecorded(VISUAL, itemId, name)
+}
+
+// ---- HZ-938: the design sub-step's Horizon page ----
+//
+// Gated on the project being internal (or the item having none) only — NOT on
+// visual_pages_enabled, on purpose: the design page is the fallback a box
+// draws when its design tool cannot run, and an item must never pause because
+// a switch about something else is off. A tenant project never gets one: its
+// design sub-step never runs (farm/step_agent.py _execute_design).
+export function designPagesAllowed(item) {
+  if (!item) return false
+  if (item.project_id == null || hasNoProject(db, item.project_id)) return true
+  return selectProject.get(item.project_id)?.isolation === 'internal'
+}
+
+// Records one design page round from a design run's `artifacts.design_page`.
+// Idempotent, and { ok } or { error } like recordPageRound.
+export function recordDesignPageRound(runId, item, page) {
+  if (!designPagesAllowed(item)) return { error: 'design pages are off for this project' }
+  return recordSlotRound(DESIGN, runId, item, page)
+}
+
+export function latestDesignPageRound(itemId) {
+  return DESIGN.selectLatest.get(itemId) ?? null
+}
+
+export function designPageShotRecorded(itemId, name) {
+  return shotRecorded(DESIGN, itemId, name)
+}
+
+// The recorded shots of one design page round, { desktop, phone }, or null.
+export function designPageShots(itemId, round) {
+  const row = Number.isInteger(round) ? DESIGN.selectShots.get(itemId, round) : null
+  return row ? { desktop: row.desktop_png, phone: row.phone_png } : null
 }
 
 // The item view's `visualPage`, only once a round is recorded. `url` is the

@@ -163,3 +163,93 @@ test('a run that is not a sub-step keeps substep_id NULL and today’s payload',
   assert.equal(body.artifact_url, `${config.UI_URL}/api/items/${id}/artifacts/1`)
   assert.deepEqual(runs(id).map((r) => r.substep_id), [null])
 })
+
+// HZ-938 metric 3: every round's stored record names the tool that drew it
+// and its design system, and a fallback round records `html` with the tool it
+// fell back from. Round 1 Studio, round 2 Claude Design, round 3 a Horizon
+// page because Studio could not run (a tool switch: a new link, the new tool).
+// The project's web-page visuals switch stays off: the design page is stored
+// and served all the same (metric 2), and the next round is told only a link
+// its own tool can update.
+test('every round records its tool and design system; a fallback round records html and links the design page', async () => {
+  const id = 'D-2'
+  const { FALLBACK_TEXT, claudeProjectUrlFor } = await import('../../domain/js/designCanvas.js')
+  const designSpec = await import('../src/designSpec.js')
+  const PROJECT_ID = '0b9f3c2e-5d41-4c6a-9e7b-2f1a8c3d4e5f'
+  const CLAUDE = claudeProjectUrlFor(PROJECT_ID)
+  const SHA = 'a'.repeat(64)
+  assert.equal(db.prepare('SELECT visual_pages_enabled FROM project WHERE id = ?').get(projectId).visual_pages_enabled, 0)
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id, substeps_json) VALUES (?, 'Compare tools', 'Medium', ?, ?, ?)").run(id, FIRST_GATE, projectId, SNAPSHOT)
+  db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact) VALUES (?, 1, 1, 'PM', 'done', 'The metric artifact.')").run(id)
+
+  async function round(n, artifacts) {
+    const moved = await sendBackToDesign(id)
+    assert.equal(moved.statusCode, 200, moved.body)
+    const body = await waitForPost(id, n, { substep: true })
+    assert.ok(body, `round ${n} reached the farm`)
+    await orchestrator.completeFarmRun(runs(id).at(-1).id, { summary: `round ${n}`, artifacts })
+    assert.equal(db.prepare('SELECT paused FROM work_item WHERE id = ?').get(id).paused, 0, `round ${n} never pauses the item`)
+    orchestrator.cancel(id)
+    db.prepare('UPDATE work_item SET cursor = ?, substep_cursor = NULL, paused = 0 WHERE id = ?').run(FIRST_GATE, id)
+    return body
+  }
+
+  await round(1, { artifact_md: canvasArtifact(2, 'New canvas.'), design: { tool: 'studio', system: 'fds', fallback_from: null } })
+  const body2 = await round(2, {
+    artifact_md: `**Claude Design:** [Open the Claude Design project](${CLAUDE}) · project \`${PROJECT_ID}\` · round 2\n\nNew Claude Design project.`,
+    design: { tool: 'claude', system: 'claude-design', fallback_from: null },
+  })
+  assert.equal(body2.substep.previous_canvas_url, CANVAS, 'round 2 is told the Studio canvas')
+  const body3 = await round(3, {
+    artifact_md: `**Design page:** [Open the design page](/api/items/${id}/design-page) · round 1\n\nNew design page.`,
+    design: { tool: 'html', system: 'horizon-production', fallback_from: 'studio' },
+    design_page: { round: 1, sha256: SHA, bytes: 120, shots: { desktop: 'page-r1-desktop.png', phone: 'page-r1-phone.png' } },
+  })
+  assert.equal(body3.substep.previous_canvas_url, CLAUDE, 'round 3 is told the Claude Design project')
+
+  const records = db
+    .prepare('SELECT round, kind, design_tool, design_system, fallback_from FROM substep_round WHERE item_id = ? ORDER BY round')
+    .all(id)
+    .map((r) => [r.round, r.kind, r.design_tool, r.design_system, r.fallback_from])
+  assert.deepEqual(records, [
+    [1, 'run', 'studio', 'fds', null],
+    [2, 'run', 'claude', 'claude-design', null],
+    [3, 'run', 'html', 'horizon-production', 'studio'],
+  ])
+  const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all(id).map((e) => e.text)
+  assert.ok(events.includes(`“${DESIGN.label}”: ${FALLBACK_TEXT.studio}`), events.join('\n'))
+  assert.deepEqual(db.prepare('SELECT round, desktop_png FROM item_design_page_round WHERE item_id = ?').all(id), [{ round: 1, desktop_png: 'page-r1-desktop.png' }])
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM item_page_round WHERE item_id = ?').get(id).n, 0, 'the web-page visual is untouched')
+
+  const res = await get('/api/items')
+  assert.equal(res.statusCode, 200, res.body)
+  const sub = res.json().items.find((it) => it.id === id).substeps.find((s) => s.id === DESIGN.id)
+  assert.deepEqual(
+    sub.rounds.map((r) => [r.round, r.designTool, r.designSystem, r.fallbackFrom, r.canvasUrl, r.designPageUrl ?? null, r.shots ?? null]),
+    [
+      [1, 'studio', 'fds', null, CANVAS, null, null],
+      [2, 'claude', 'claude-design', null, CLAUDE, null, null],
+      [3, 'html', 'horizon-production', 'studio', null, `/api/items/${id}/design-page`, { desktop: 'page-r1-desktop.png', phone: 'page-r1-phone.png' }],
+    ],
+  )
+  const pending = designSpec.pendingCanvas(store.getItem(id))
+  assert.deepEqual([pending.tool, pending.url], ['html', `/api/items/${id}/design-page`], 'the first gate can approve a design page')
+})
+
+test('a design value that does not check out is dropped with an event, never recorded', async () => {
+  const id = 'D-3'
+  db.prepare("INSERT INTO work_item (id, title, priority, cursor, project_id, substeps_json) VALUES (?, 'Bad tool', 'Medium', ?, ?, ?)").run(id, FIRST_GATE, projectId, SNAPSHOT)
+  db.prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status, artifact) VALUES (?, 1, 1, 'PM', 'done', 'm')").run(id)
+  assert.equal((await sendBackToDesign(id)).statusCode, 200)
+  assert.ok(await waitForPost(id, 1, { substep: true }))
+  // A Studio line claimed as an html fallback: the line and the tool disagree.
+  await orchestrator.completeFarmRun(runs(id).at(-1).id, {
+    summary: 'r',
+    artifacts: { artifact_md: canvasArtifact(2, 'New canvas.'), design: { tool: 'html', system: 'horizon-production', fallback_from: 'studio' } },
+  })
+  orchestrator.cancel(id)
+  const row = db.prepare('SELECT design_tool, design_system, fallback_from FROM substep_round WHERE item_id = ?').get(id)
+  assert.deepEqual(row, { design_tool: null, design_system: null, fallback_from: null })
+  const events = db.prepare('SELECT text FROM event WHERE item_id = ?').all(id).map((e) => e.text)
+  assert.ok(events.some((t) => t.startsWith(`did not record which tool drew “${DESIGN.label}”`)), events.join('\n'))
+})
