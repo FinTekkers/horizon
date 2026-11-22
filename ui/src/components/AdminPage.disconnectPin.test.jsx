@@ -25,6 +25,7 @@ vi.mock('../api', () => ({
   fixRepoWebhook: vi.fn(),
   dryRunDeployTarget: vi.fn(),
   getCheckFlakes: vi.fn(async () => ({ repos: [] })),
+  getTestHistory: vi.fn(async () => ({ repo: '', tests: [], commands: [] })),
   getDeployTargets: vi.fn(async () => ({ targets: [] })),
 }))
 

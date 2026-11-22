@@ -158,6 +158,39 @@ export function insertStepRun(
     }).lastInsertRowid
 }
 
+// HZ-327/HZ-946: one test_result row, written directly as the farm's upload
+// stores it. A command that wrote no per-test report stores one row named
+// after the command, with noReport: true (no_report 1); noReport null is an
+// older row from before the farm flagged it. createdAtMs defaults to now, so
+// the row stays inside the 90-day history window whenever the suite runs.
+export function insertTestResult(
+  db,
+  {
+    repo,
+    itemId = null,
+    runId = null,
+    source = 'implement',
+    checkRun,
+    command,
+    suite = null,
+    file = null,
+    test = command,
+    status = 'pass',
+    attempt = 1,
+    runLabel = 'main',
+    exitCode = status === 'pass' ? 0 : 1,
+    noReport = null,
+    createdAtMs = Date.now(),
+  },
+) {
+  db.prepare(
+    `INSERT INTO test_result (repo, item_id, run_id, source, check_run, command, suite, file, test, status, duration_ms,
+                              attempt, created_at_ms, run_label, exit_code, no_report)
+     VALUES (@repo, @itemId, @runId, @source, @checkRun, @command, @suite, @file, @test, @status, 5,
+             @attempt, @createdAtMs, @runLabel, @exitCode, @noReport)`,
+  ).run({ repo, itemId, runId, source, checkRun, command, suite, file, test, status, attempt, createdAtMs, runLabel, exitCode, noReport: noReport ? 1 : null })
+}
+
 // A feedback row with an explicit created_at, so it can be placed inside the
 // time window store.js's selectDrivingFeedback uses to attribute it to one
 // specific attempt (between the previous attempt's ended_at and this

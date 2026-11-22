@@ -6,6 +6,11 @@
 // A test is (suite, file, test). `passes` is runs that were neither a failure
 // nor a skip. `main_failures` counts only failures from a run on main
 // (source 'postmerge', which HZ-328c adds); until then it is 0.
+//
+// HZ-946: `commands` is the same rows grouped by the command that ran them —
+// how many check runs ran it, and in how many it wrote no per-test report
+// (a no_report = 1 row; NULL, an older row, counts as unknown, not no
+// report). `tests` is unchanged by it.
 
 export const MAIN_SOURCE = 'postmerge'
 
@@ -20,14 +25,17 @@ function median(sorted) {
   return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2)
 }
 
-// resultRows: {suite, file, test, status, duration_ms, created_at_ms, source}.
+// resultRows: {suite, file, test, status, duration_ms, created_at_ms, source,
+// command, check_run, no_report}.
 // flakeRows: {suite, file, test, n} — the check_flake count per test.
 // Each test's run count, passes, failures (all and on main), skips, flake
 // count, last seen, and median and p95 duration (ms, over the rows that have
 // one). Newest last_seen first.
 export function summarizeTestHistory(repo, resultRows, flakeRows) {
   const tests = new Map()
+  const commands = new Map()
   for (const row of resultRows) {
+    countCommand(commands, row)
     const key = JSON.stringify([row.suite, row.file, row.test])
     let t = tests.get(key)
     if (!t) {
@@ -69,8 +77,35 @@ export function summarizeTestHistory(repo, resultRows, flakeRows) {
       p95_ms: percentile(sorted, 0.95),
     }
   })
-  out.sort((a, b) => (a.last_seen < b.last_seen ? 1 : a.last_seen > b.last_seen ? -1 : 0))
-  return { repo, tests: out }
+  out.sort(newestFirst)
+  return { repo, tests: out, commands: commandsOf(commands) }
+}
+
+function newestFirst(a, b) {
+  return a.last_seen < b.last_seen ? 1 : a.last_seen > b.last_seen ? -1 : 0
+}
+
+function countCommand(commands, row) {
+  if (!row.command) return
+  let c = commands.get(row.command)
+  if (!c) {
+    c = { runs: new Set(), noReportRuns: new Set(), lastMs: 0 }
+    commands.set(row.command, c)
+  }
+  c.runs.add(row.check_run)
+  if (row.no_report === 1) c.noReportRuns.add(row.check_run)
+  if (row.created_at_ms > c.lastMs) c.lastMs = row.created_at_ms
+}
+
+// One entry per command, newest last_seen first.
+function commandsOf(commands) {
+  const out = [...commands.entries()].map(([command, c]) => ({
+    command,
+    runs: c.runs.size,
+    no_report_runs: c.noReportRuns.size,
+    last_seen: new Date(c.lastMs).toISOString(),
+  }))
+  return out.sort((a, b) => newestFirst(a, b) || (a.command < b.command ? -1 : a.command > b.command ? 1 : 0))
 }
 
 // The two queries both callers run, so the export reads exactly what the
@@ -83,5 +118,11 @@ export const RESULT_ROWS_SQL = `SELECT suite, file, test, status, duration_ms, c
   WHERE repo = ? AND run_label = 'main' ORDER BY suite, file, test`
 export const UNLABELLED_RESULT_ROWS_SQL = `SELECT suite, file, test, status, duration_ms, created_at_ms, source FROM test_result
   WHERE repo = ? ORDER BY suite, file, test`
+// HZ-946: the endpoint's rows — RESULT_ROWS_SQL's, plus what `commands` is
+// counted from. Only the migrated DB has no_report; the export keeps the two
+// queries above, so it never needs the column, and drops `commands` so no
+// command line reaches its file.
+export const COMMAND_RESULT_ROWS_SQL = `SELECT suite, file, test, status, duration_ms, created_at_ms, source, command, check_run, no_report
+  FROM test_result WHERE repo = ? AND run_label = 'main' ORDER BY suite, file, test`
 export const FLAKE_ROWS_SQL =
   'SELECT suite, file, test, COUNT(*) AS n FROM check_flake WHERE repo = ? GROUP BY suite, file, test'

@@ -733,6 +733,11 @@ export async function getCheckFlakes() {
   return { repos: [] }
 }
 
+// HZ-946: no stored test history in the demo.
+export async function getTestHistory(repo) {
+  return { repo, tests: [], commands: [] }
+}
+
 // ---- productivity (HZ-549, read-only) ----
 // The same checked-in fixture the server serves until HZ-550.
 

@@ -21,6 +21,7 @@ vi.mock('../../api', () => ({
   saveRepoMarks: vi.fn(),
   saveRepoTestEnvFile: vi.fn(),
   getRepoCheckDefaults: vi.fn(async () => ({ defaults: {} })),
+  getTestHistory: vi.fn(async () => ({ repo: '', tests: [], commands: [] })),
 }))
 
 import { ProjectPage } from './ProjectPage'

@@ -1367,6 +1367,20 @@ export function getCheckFlakes() {
   return getJson('/admin/check-flakes')
 }
 
+// HZ-946: one repo's test history — each test, and each command's report
+// coverage (`commands`). Owner-only: rejects with Error(<error code>) and its
+// `status`, so a member's 403/404 can hide the section.
+export async function getTestHistory(repo) {
+  const res = await fetch(`${API_BASE}/admin/test-history?repo=${encodeURIComponent(repo)}`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return data
+}
+
 // HZ-549: Admin's Productivity report, read-only. The response follows
 // domain/productivity.schema.json; cost and token fields are null when not
 // captured, never 0.

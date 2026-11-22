@@ -101,6 +101,7 @@ export const {
   restoreRule,
   getDeployTargets,
   getCheckFlakes,
+  getTestHistory,
   getProductivity,
   getVerifyReport,
   getFarmHealth,

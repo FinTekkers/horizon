@@ -1138,6 +1138,10 @@ if (!testResultColumns.has('exit_code')) db.exec('ALTER TABLE test_result ADD CO
 // HZ-605: a failing test's first failure-message line (from JUnit's
 // <failure message>). Additive and nullable: older rows stay NULL.
 if (!testResultColumns.has('failure_message')) db.exec('ALTER TABLE test_result ADD COLUMN failure_message TEXT')
+// HZ-946: 1 on the row farm/checks.py stores for a command that wrote no
+// per-test report. Additive and nullable: older rows stay NULL (unknown), and
+// no pass or fail ever reads it.
+if (!testResultColumns.has('no_report')) db.exec('ALTER TABLE test_result ADD COLUMN no_report INTEGER')
 db.exec('CREATE INDEX IF NOT EXISTS idx_test_result_run ON test_result(run_id, run_label)')
 // HZ-406: store.latestBranchRunFailed() — the item's newest branch and main rows.
 db.exec('CREATE INDEX IF NOT EXISTS idx_test_result_item_label ON test_result(item_id, run_label, id)')

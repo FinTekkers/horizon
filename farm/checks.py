@@ -1325,7 +1325,11 @@ def _test_rows(
     stores nothing — host pressure, not a test result.
 
     HZ-605: `secrets` is required, so no caller can store or show a failure
-    message unredacted."""
+    message unredacted.
+
+    HZ-946: the command's own row carries no_report: True, so a reader can
+    tell it from a test without guessing from its name. Its name and status
+    are unchanged; JUnit rows never carry the key."""
     command = shown[:FLAKE_COMMAND_MAX_CHARS]
     if junit:
         return [
@@ -1352,6 +1356,7 @@ def _test_rows(
             "failure_message": None,
             "command": command,
             "attempt": attempt,
+            "no_report": True,
         }
     ]
 

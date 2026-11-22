@@ -58,6 +58,7 @@ vi.mock('./api', () => ({
   // Admin's reads.
   getDeployTargets: vi.fn(async () => ({ targets: [] })),
   getCheckFlakes: vi.fn(async () => ({ repos: [] })),
+  getTestHistory: vi.fn(async () => ({ repo: '', tests: [], commands: [] })),
   getDeployTargetConfig: vi.fn(async () => ({ targets: [] })),
   getRepoWebhooks: vi.fn(async () => ({ webhooks: [] })),
   listApiTokens: vi.fn(async () => ({ tokens: [] })),

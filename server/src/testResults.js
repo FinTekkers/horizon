@@ -4,7 +4,7 @@
 // {check_run, commit_sha, tree_sha, tests: [{suite, file, test, status,
 // duration_ms, command, attempt, failure_message}]} — from the JUnit XML its
 // commands wrote to HORIZON_TEST_REPORT_DIR, or one row per command that
-// wrote none. This module stores them (test_result), finds flakes across
+// wrote none (HZ-946: that row also carries no_report: true). This module stores them (test_result), finds flakes across
 // runs, answers the history query HZ-328 picks its blocking test set from,
 // and prunes rows after 90 days.
 //
@@ -29,7 +29,7 @@ import { db } from './db.js'
 import { IMPLEMENT_STEP_INDEX } from '../../domain/js/lifecycle.js'
 import { redact } from './caretakerRules.js'
 import { FLAKE_LIMITS, FLAKE_SOURCES, itemRepo, pingRepeatOffenders, runOwner, storeFlakes } from './checkFlakes.js'
-import { FLAKE_ROWS_SQL, RESULT_ROWS_SQL, summarizeTestHistory } from './testHistorySummary.js'
+import { COMMAND_RESULT_ROWS_SQL, FLAKE_ROWS_SQL, summarizeTestHistory } from './testHistorySummary.js'
 
 export const TEST_RESULT_RETENTION_MS = 90 * 24 * 3600 * 1000
 export const TEST_STATUSES = ['pass', 'fail', 'skip']
@@ -51,9 +51,9 @@ const redactReason = (value) => (typeof value === 'string' ? redact(value, { one
 
 const insertRow = db.prepare(`
   INSERT INTO test_result (repo, commit_sha, tree_sha, item_id, run_id, source, check_run, command, suite, file,
-                           test, status, duration_ms, attempt, created_at_ms, run_label, exit_code, failure_message)
+                           test, status, duration_ms, attempt, created_at_ms, run_label, exit_code, failure_message, no_report)
   VALUES (@repo, @commitSha, @treeSha, @itemId, @runId, @source, @checkRun, @command, @suite, @file,
-          @test, @status, @durationMs, @attempt, @createdAtMs, @runLabel, @exitCode, @failureMessage)
+          @test, @status, @durationMs, @attempt, @createdAtMs, @runLabel, @exitCode, @failureMessage, @noReport)
 `)
 
 // "command attempt" -> exit code, from an entry's commands list.
@@ -97,6 +97,9 @@ function rowsOf(run, base) {
       runLabel,
       exitCode: codes.get(`${t.attempt === 2 ? 2 : 1} ${command}`) ?? null,
       failureMessage: t.status === 'fail' ? text(redactReason(t.failure_message), FAILURE_MESSAGE_MAX) : null,
+      // HZ-946: only an explicit true is the farm's no-report row; anything
+      // else (an older farm sends no key) stays NULL, which shows no marker.
+      noReport: t.no_report === true ? 1 : null,
     })
   }
   return rows
@@ -273,8 +276,8 @@ export async function testRunsHold(stage, runId, dir = process.env.HORIZON_TEST_
   while (existsSync(gate)) await new Promise((resolve) => setTimeout(resolve, 50))
 }
 
-// For one repo: each test's history (see testHistorySummary.js). Newest
-// last_seen first.
+// For one repo: each test's history and (HZ-946) each command's report
+// coverage (see testHistorySummary.js). Newest last_seen first.
 export function testHistory(repo) {
-  return summarizeTestHistory(repo, db.prepare(RESULT_ROWS_SQL).iterate(repo), db.prepare(FLAKE_ROWS_SQL).all(repo))
+  return summarizeTestHistory(repo, db.prepare(COMMAND_RESULT_ROWS_SQL).iterate(repo), db.prepare(FLAKE_ROWS_SQL).all(repo))
 }

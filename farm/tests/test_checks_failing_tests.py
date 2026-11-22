@@ -668,3 +668,38 @@ def test_the_farm_parser_reads_the_real_reporters_escaped_message_back_exactly(w
     assert case.find("failure").get("message") == 'a<b>&"c\nd'
     reason = checks._failure_message(case)
     assert "\n" not in reason and 'a<b>&"c' in reason
+
+
+# ---- HZ-946: the row for a command with no report is flagged ----
+
+
+@pytest.mark.parametrize("exit_code, status", [(0, "pass"), (1, "fail")])
+def test_a_command_with_no_report_stores_one_flagged_row_named_after_it(ws, monkeypatch, exit_code, status):
+    command = f"echo no report here; exit {exit_code}"
+    monkeypatch.setenv("FARM_CHECK_CMD", command)
+    test_runs: list = []
+
+    if exit_code:
+        with pytest.raises(CheckFailure):
+            run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+    else:
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    [row] = test_runs[0]["tests"]
+    assert row["no_report"] is True
+    assert row["test"] == row["command"]
+    assert row["suite"] is None and row["file"] is None
+    assert row["status"] == status
+
+
+def test_a_command_that_writes_junit_stores_rows_with_no_no_report_key(ws, tmp_path, monkeypatch):
+    xml = report(tmp_path / "r.xml", [("S", "breaks", "boom")])
+    monkeypatch.setenv("FARM_CHECK_CMD", f'cp {xml} "$HORIZON_TEST_REPORT_DIR/r.xml"; exit 1')
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    stored = test_runs[0]["tests"]
+    assert [row["test"] for row in stored] == ["breaks", "passes"]
+    assert all("no_report" not in row for row in stored)

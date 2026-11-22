@@ -70,6 +70,7 @@ import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGolde
 import { approveCanvas, checkDesignApproval, clearDesignSpec, designApprovable, designRequired, designSpecFields, skipDesign } from './designSpec.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
+import { itemCheckLine } from './checkLine.js'
 import { DEFAULT_BACKEND, isBackend } from './backends/names.js'
 import { GITHUB_TOKEN_PAGES, repoLinks } from './links.js'
 import { IMPORTED_ITEM_ERROR, isImportedItem } from './importedItem.js'
@@ -1383,6 +1384,19 @@ function stepOutputs(itemId) {
       }
     } catch {
       // an unreadable view shows no panel
+    }
+  }
+  // HZ-946: the Implement card's check line — each command of its final main
+  // check round, pass or fail, and whether it wrote no per-test report. Only
+  // read once Implement has an output, so an item before it pays no query.
+  // Rows that land after the output show on the next board flush.
+  if (map[IMPLEMENT_STEP_INDEX]) {
+    try {
+      const checks = itemCheckLine(itemId)
+      if (checks.length > 0) map[IMPLEMENT_STEP_INDEX].checks = checks
+    } catch (err) {
+      // a read error shows no line, never a broken item view
+      console.warn(`[check line] could not read ${itemId}'s check line: ${err.message}`)
     }
   }
   return map
