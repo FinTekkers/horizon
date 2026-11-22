@@ -158,6 +158,18 @@ def test_xml_and_jsonl_are_merged_and_a_shared_test_is_stored_once_from_the_xml(
     assert tests == [("only streamed", "pass", None), ("posts once", "pass", "ledger")]
 
 
+def test_a_playwright_junit_row_with_no_file_matches_the_streamed_line_by_its_suite(ws, tmp_path, monkeypatch):
+    """HZ-949: Playwright's junit names the spec file only as the testsuite;
+    e2e/jsonl-reporter.js writes that same name as `file`."""
+    xml = tmp_path / "e2e.xml"
+    xml.write_text('<testsuite name="05-board.spec.js"><testcase name="board › shows lanes"/></testsuite>')
+    report = jsonl(tmp_path / "e2e.jsonl", [finished("board › shows lanes", file="05-board.spec.js")])
+
+    stored, _, _ = run(ws, monkeypatch, f"{copy(xml, report)}; exit 1")
+
+    assert [(r["test"], r["suite"]) for r in stored] == [("board › shows lanes", "05-board.spec.js")]
+
+
 # ---- metric 5: a cut last line ----
 
 

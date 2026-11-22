@@ -375,6 +375,10 @@ All three levers are config; no code revert is needed.
   because the suite alone needed about 8 minutes (HZ-920 cut off at 6.0m
   three times with nothing failing). HZ-327 did not replace the fixed
   number; it added flake reruns.
+  Lowered on 2026-11-22 (HZ-949): 600s to 540s, so it sits under the farm's
+  600s budget for the whole `npm run test:e2e` (installs and unit tests
+  included) and Playwright ends a slow run and writes `e2e.xml` before the
+  farm kills it. Still a fixed number and still the contention detector.
 
 Stale slot files under `$FARM_HOME/locks/checks/` need no cleanup — `flock`
 state is held by the kernel, not by the files' contents.

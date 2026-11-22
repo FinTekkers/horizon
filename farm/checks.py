@@ -1243,8 +1243,10 @@ def _py_module(file: str) -> str | None:
 
 
 def _xml_index(rows: list[dict]) -> tuple[set[tuple], dict[str, set[str]]]:
-    """The XML rows' (file, test) keys, and each test name's classnames."""
-    files = {(row["file"], row["test"]) for row in rows if row.get("file")}
+    """The XML rows' (file, test) keys, and each test name's classnames.
+    HZ-949: a row with no file (Playwright's junit) is keyed by its suite,
+    which is the spec file there; e2e/jsonl-reporter.js writes that as `file`."""
+    files = {(row.get("file") or row.get("suite"), row["test"]) for row in rows if row.get("file") or row.get("suite")}
     classnames: dict[str, set[str]] = {}
     for row in rows:
         if row.get("classname"):

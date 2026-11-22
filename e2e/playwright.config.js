@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { pickOffset, OFFSET_RANGE, UI_BASE, SERVER_BASE } from './ports.js'
+import { e2eReporters } from './reporters.js'
 
 // A private temp DB and non-default ports, isolated from anything a
 // developer might have running locally (~/.horizon-farm state, a real dev
@@ -99,13 +100,21 @@ export default defineConfig({
   // HZ-920 ran 140-165 tests green in exactly 6.0m three times and the rest
   // never ran. 600s, owner's call; a rule derived from measured suite time
   // is still to come (HZ-327 added flake reruns, not this).
-  globalTimeout: 600_000,
+  // HZ-949: 540s, a lowering. FARM_CHECK_TIMEOUT_S (600s by default,
+  // farm/checks.py) bounds the whole `npm run test:e2e` — four npm installs,
+  // `playwright install chromium` and the node --test units come first — so
+  // at 600s this limit could never fire: the farm killed the run instead and
+  // e2e.xml was never written. The 60s margin is for that overhead, so
+  // Playwright usually ends the run itself and writes e2e.xml first. Measured
+  // 2026-11-22 at load 0.5: 470s wall, 426s of it Playwright (152 tests), so
+  // ~44s of overhead.
+  globalTimeout: 540_000,
   globalSetup: './global-setup.js',
   // HZ-327: under a farm check run, also JUnit XML into the run's report dir —
-  // one row per spec in the repo's test history.
-  reporter: process.env.HORIZON_TEST_REPORT_DIR
-    ? [['list'], ['junit', { outputFile: join(process.env.HORIZON_TEST_REPORT_DIR, 'e2e.xml') }]]
-    : [['list']],
+  // one row per spec in the repo's test history. HZ-949: plus e2e.jsonl, one
+  // line per test at start and finish, so a killed run keeps its results
+  // (reporters.js).
+  reporter: e2eReporters(process.env.HORIZON_TEST_REPORT_DIR),
   use: {
     baseURL: BASE_URL,
     storageState: STORAGE_STATE_PATH,
