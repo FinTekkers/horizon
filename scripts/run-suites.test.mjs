@@ -119,7 +119,8 @@ test('guardrail 1: the root test script runs every suite of the old chain, in it
     { name: 'ui', command: 'npm --prefix ui install --no-audit --no-fund && npm --prefix ui run test' },
     { name: 'shell', command: 'bash infra/host/test/run-all.sh' },
     { name: 'whatsapp-bridge', command: 'bash infra/whatsapp-bridge/run-checks.sh' },
-    { name: 'ensure-build', command: 'node --test ui/scripts/ensure-build.test.mjs' },
+    // HZ-953: through the wrapper that adds a JUnit report when the farm asks.
+    { name: 'ensure-build', command: 'bash scripts/node-test-report.sh ui-ensure-build ui/scripts/ensure-build.test.mjs' },
     { name: 'verify-base-build', command: 'node ui/scripts/verify-base-build.mjs' },
     { name: 'recorder', command: 'npm --prefix scripts/recorder install --no-audit --no-fund && npm --prefix scripts/recorder test' },
     { name: 'tenant-sites', command: 'npm --prefix scripts/tenant-sites test' },

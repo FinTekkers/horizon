@@ -10,8 +10,14 @@
 // It finds pages by walking the folder, so a page added later (Chapter B adds
 // neighbourhoods.html) is checked with no change here. No network calls:
 // http(s), mailto, tel and data targets are skipped.
+//
+// With HORIZON_TEST_REPORT_DIR set it also writes parvati-links.xml there: one
+// JUnit case per local link and image, and one for data/sales.csv. Nothing
+// printed changes, and a report that cannot be written is skipped. Its own
+// small writer: this folder is pushed as a standalone repo, so it imports
+// nothing from outside it.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { checkSales, formatSales } from './data/check-sales.mjs'
@@ -85,13 +91,53 @@ export async function checkSite(dir) {
   const sources = files.filter((f) => f.endsWith('.html') || f.endsWith('.css'))
   const broken = []
   const missingImages = []
+  // Every local reference once per (file, kind, target), for the report.
+  const checked = new Map()
   for (const file of sources) {
     for (const ref of references(readFileSync(path.join(root, file), 'utf8'), file.endsWith('.html'))) {
-      if (isExternal(ref.target) || resolves(root, file, ref.target)) continue
+      if (isExternal(ref.target)) continue
+      const ok = resolves(root, file, ref.target)
+      checked.set(`${file}\u0000${ref.kind}\u0000${ref.target}`, { file, kind: ref.kind, target: ref.target, ok })
+      if (ok) continue
       ;(ref.kind === 'link' ? broken : missingImages).push({ file, target: ref.target })
     }
   }
-  return { pages, broken, missingImages }
+  return { pages, broken, missingImages, checked: [...checked.values()] }
+}
+
+const escapeXml = (value) =>
+  String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    // XML 1.0 has no escape for most control characters.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+
+// The JUnit report: one case per checked link or image, then data/sales.csv.
+// Never throws; false when it could not be written.
+export function writeReport(outPath, site, sales) {
+  try {
+    const cases = site.checked.map((c) => ({
+      name: `${c.file} -> ${c.target}`,
+      file: c.file,
+      failure: c.ok ? null : c.kind === 'link' ? 'broken link' : 'missing image',
+    }))
+    cases.push({ name: 'data/sales.csv', file: 'data/sales.csv', failure: sales.problems[0]?.message ?? null })
+    const body = cases
+      .map(({ name, file, failure }) => {
+        const result = failure === null ? '' : `<failure message="${escapeXml(failure)}"/>`
+        return `    <testcase name="${escapeXml(name)}" file="${escapeXml(file)}" time="0">${result}</testcase>\n`
+      })
+      .join('')
+    writeFileSync(
+      outPath,
+      `<?xml version="1.0" encoding="utf-8"?>\n<testsuites>\n  <testsuite name="parvati-site" tests="${cases.length}">\n${body}  </testsuite>\n</testsuites>\n`,
+    )
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function formatResult(r) {
@@ -110,6 +156,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const sales = checkSales(path.join(here, 'data', 'sales.csv'))
   console.log(formatResult(site))
   console.log(formatSales(sales))
+  if (process.env.HORIZON_TEST_REPORT_DIR) writeReport(path.join(process.env.HORIZON_TEST_REPORT_DIR, 'parvati-links.xml'), site, sales)
   const failed = site.pages.length === 0 || site.broken.length > 0 || site.missingImages.length > 0 || sales.problems.length > 0
   process.exit(failed ? 1 : 0)
 }

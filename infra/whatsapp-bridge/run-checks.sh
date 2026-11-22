@@ -29,4 +29,18 @@ if [ -n "$unformatted" ]; then
 fi
 
 go vet ./...
+
+# HZ-953: with HORIZON_TEST_REPORT_DIR set, a second, silent `go test -json`
+# writes whatsapp-bridge-go.xml there, one JUnit case per Go test
+# (go-junit.mjs). The plain run above it is the one that prints and sets the
+# exit status, so both stay exactly as without the report; the second run
+# reuses the test cache for passing packages.
+if [ -z "${HORIZON_TEST_REPORT_DIR:-}" ] || ! command -v node >/dev/null 2>&1; then
+  go test ./...
+  exit
+fi
+set +e
 go test ./...
+status=$?
+go test -json ./... 2>/dev/null | node go-junit.mjs --out "$HORIZON_TEST_REPORT_DIR/whatsapp-bridge-go.xml" >/dev/null 2>&1
+exit "$status"

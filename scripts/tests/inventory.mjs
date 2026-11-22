@@ -46,10 +46,18 @@ const RUN_TIMEOUT_MS = 5 * 60_000
 // JUnit names the file; vitest's and Playwright's leave file null and put the
 // path in the suite name ('src/App.test.jsx', '01-board.spec.js'). A row with
 // neither is a whole command (pytest, the shell tests): suite 'command'.
+// HZ-953: a file is in a V8 suite only when it is one of that suite's test
+// files (discoverTestFiles below). ui/scripts/*.test.mjs and e2e's node --test
+// files have no coverage the rule can price, so they stay in always_run.
+const V8_TEST_FILE = {
+  server: /^server\/test\/[^/]+\.test\.mjs$/,
+  ui: /^ui\/src\/.+\.test\.[jt]sx?$/,
+  e2e: /^e2e\/tests\/.+\.spec\.[cm]?[jt]sx?$/,
+}
 export function classifyTest({ suite, file }) {
   if (file) {
     const top = file.split('/')[0]
-    return { suite: V8_SUITES.includes(top) ? top : 'other', file }
+    return { suite: V8_SUITES.includes(top) && V8_TEST_FILE[top].test(file) ? top : 'other', file }
   }
   if (suite && SPEC_RE.test(suite)) return { suite: 'e2e', file: `e2e/tests/${suite}` }
   if (suite && suite.startsWith('src/')) return { suite: 'ui', file: `ui/${suite}` }
