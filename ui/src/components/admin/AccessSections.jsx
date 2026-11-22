@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
   saveToken,
-  regenerateGatePin,
   listApiTokens,
   createApiToken,
   revokeApiToken,
@@ -10,30 +9,18 @@ import {
   pinSessionLikelyVerified,
 } from '../../api'
 import { GithubIcon, LockIcon } from '../icons'
+import { ResetPinDialog } from './ResetPinDialog'
 
 const timeOf = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 function SecurityPanel() {
-  const [pin, setPin] = useState(null)
+  // HZ-935: the Reset PIN dialog holds every PIN; closing it unmounts it.
+  const [resetting, setResetting] = useState(false)
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
   // HZ-704: whether this browser session is PIN-verified, as this tab knows it.
   const [verified, setVerified] = useState(() => pinSessionLikelyVerified())
   const verifiedUntil = verified ? getPinVerifiedUntil() : null
-
-  const submit = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await regenerateGatePin()
-      setPin(result.pin)
-      setVerified(false)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   const lock = async () => {
     setBusy(true)
@@ -56,9 +43,10 @@ function SecurityPanel() {
       </h2>
       <div className="panel__subtitle">
         A gate PIN is a cryptographic blocker, separate from your login, so an AI agent can never approve its own
-        work — every account gets its own, generated automatically. Gate actions (approve, send back, restart
-        phase) and Admin changes require it; the server stores only a hash. You enter it once per browser session:
-        it then covers this session for up to 12 hours, until you Lock or sign out. This browser never stores it.
+        work — every account has its own. Reset PIN lets you choose your own 6 digits or generate a random one.
+        Gate actions (approve, send back, restart phase) and Admin changes require it; the server stores only a
+        hash. You enter it once per browser session: it then covers this session for up to 12 hours, until you Lock
+        or sign out. This browser never stores it.
       </div>
 
       <div className="admin-status" aria-live="polite">
@@ -70,24 +58,23 @@ function SecurityPanel() {
           : 'PIN not entered in this session — the next gate or Admin change asks for it'}
       </div>
 
-      {pin && (
-        <div className="admin-status">
-          <span className="admin-status__dot" style={{ background: 'var(--success)' }} />
-          Your new PIN: <strong style={{ fontFamily: 'var(--font-mono)', marginLeft: 4 }}>{pin}</strong> — shown
-          once, never saved. Every open session is locked and asks for it again.
-        </div>
-      )}
-
       {error && <div className="gh-error">{error}</div>}
 
       <div className="composer__actions">
         <button className="composer__cancel" onClick={lock} disabled={busy}>
           Lock
         </button>
-        <button className="composer__submit" style={{ background: 'var(--success)' }} onClick={submit} disabled={busy}>
-          {busy ? 'Working…' : 'Regenerate my PIN'}
+        <button
+          className="composer__submit"
+          style={{ background: 'var(--success)' }}
+          onClick={() => setResetting(true)}
+          disabled={busy}
+        >
+          Reset PIN
         </button>
       </div>
+
+      {resetting && <ResetPinDialog onClose={() => setResetting(false)} onReset={() => setVerified(false)} />}
     </div>
   )
 }

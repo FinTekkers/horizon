@@ -78,7 +78,7 @@ function PinDialog({ retry, onSubmit, onCancel }) {
         </div>
         <div className="composer__sub" id="pin-dialog-sub">
           Once per browser session: it covers gates and Admin changes here for up to 12 hours, until you Lock or sign
-          out. Lost it? Regenerate it in Admin → Your PIN and API tokens.
+          out. Lost it? Reset it in Admin → Your PIN and API tokens.
         </div>
         {retry && (
           <div className="gh-error" role="alert">

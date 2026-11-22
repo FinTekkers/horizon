@@ -214,6 +214,10 @@ export async function regenerateGatePin() {
   return { ok: true, pin: '000000' }
 }
 
+export async function setGatePin() {
+  return { ok: true }
+}
+
 // HZ-773: the mock user is the owner, never a fresh sign-up.
 export async function revealFirstGatePin() {
   const err = new Error('pin_already_shown')

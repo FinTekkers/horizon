@@ -10,6 +10,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import crypto from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -323,6 +324,23 @@ test('a token cannot regenerate the gate PIN', async () => {
   const res = await app.inject({ method: 'POST', url: '/api/auth/gate-pin/regenerate', headers: bearer(token) })
   assert.equal(res.statusCode, 401)
   assert.deepEqual(res.json(), { error: 'login_required' })
+  assert.ok(auth.verifyGatePin(alice.user.id, alice.pin), 'the PIN changed')
+})
+
+// HZ-935: nor set one it chose — an agent with a token has no path to a PIN.
+test('a token cannot set a chosen gate PIN either, even with x-horizon-csrf', async () => {
+  const { token } = await newToken(alice, 'pin-set')
+  const hashBefore = db.prepare('SELECT gate_pin_hash FROM user WHERE id = ?').get(alice.user.id).gate_pin_hash
+  const pin = String(crypto.randomInt(100_000, 1_000_000))
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/auth/gate-pin/regenerate',
+    headers: { ...bearer(token), 'x-horizon-csrf': '1' },
+    payload: { pin, confirm: pin },
+  })
+  assert.equal(res.statusCode, 401)
+  assert.deepEqual(res.json(), { error: 'login_required' })
+  assert.equal(db.prepare('SELECT gate_pin_hash FROM user WHERE id = ?').get(alice.user.id).gate_pin_hash, hashBefore)
   assert.ok(auth.verifyGatePin(alice.user.id, alice.pin), 'the PIN changed')
 })
 

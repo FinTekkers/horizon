@@ -16,6 +16,7 @@ export const {
   logout,
   googleLoginUrl,
   regenerateGatePin,
+  setGatePin,
   revealFirstGatePin,
   listApiTokens,
   createApiToken,

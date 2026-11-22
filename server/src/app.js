@@ -3977,15 +3977,50 @@ export function buildApp({
     },
   )
 
-  // Requires only a login session (not the PIN itself) — regenerating your
-  // own PIN can't be gated behind the PIN it's replacing.
+  // Requires only a login session (not the PIN itself) — resetting your own
+  // PIN can't be gated behind the PIN it's replacing. HZ-935: Admin's "Reset
+  // PIN" has two modes on this one route (it keeps the `regenerate` name so
+  // existing callers keep working):
+  //   - random: no body, or one without a `pin`/`confirm` key. The server
+  //     picks the PIN (crypto.randomInt) and returns it in this body, once. A
+  //     cross-site request gets 403 cross_site_refused.
+  //   - chosen: a body with a `pin` or `confirm` key, even null or empty, so a
+  //     bad value never falls back to a random reset. Needs x-horizon-csrf
+  //     (403 csrf_required): it sets a known secret. auth.setGatePin validates
+  //     it (400 with a reason code) and the reply never echoes it.
+  // Error bodies are reason codes only, and a body that fails to parse is 400
+  // pin_format: the parser's own message can quote the PIN.
   fastify.post(
     '/api/auth/gate-pin/regenerate',
-    { config: { scope: 'public' }, schema: { response: { 200: OK_OBJECT, 401: ERROR_OBJECT }, security: SESSION_SECURITY } },
+    {
+      config: { scope: 'public' },
+      schema: {
+        response: { 200: OK_OBJECT, 400: ERROR_OBJECT, 401: ERROR_OBJECT, 403: ERROR_OBJECT },
+        security: SESSION_SECURITY,
+      },
+      errorHandler: (err, request, reply) => {
+        if ((err.statusCode ?? 500) < 500) return reply.code(400).send({ error: 'pin_format' })
+        request.log.error({ code: err.code }, 'gate PIN reset failed')
+        return reply.code(500).send({ error: 'internal_error' })
+      },
+    },
     (request, reply) => {
       const user = auth.getSessionUser(request.cookies[SESSION_COOKIE_NAME])
       if (!user) return reply.code(401).send({ error: 'login_required' })
-      return { ok: true, pin: auth.regenerateGatePin(user.id) }
+      reply.header('Cache-Control', 'no-store')
+      const body = request.body
+      if (body != null && (typeof body !== 'object' || Array.isArray(body))) {
+        return reply.code(400).send({ error: 'pin_format' })
+      }
+      const chosen = body != null && (Object.hasOwn(body, 'pin') || Object.hasOwn(body, 'confirm'))
+      if (!chosen) {
+        if (sameOrigin(request) === 'refused') return reply.code(403).send({ error: 'cross_site_refused' })
+        return { ok: true, pin: auth.regenerateGatePin(user.id) }
+      }
+      if (sameOrigin(request) !== 'ok') return reply.code(403).send({ error: 'csrf_required' })
+      const reason = auth.setGatePin(user.id, body.pin, body.confirm)
+      if (reason) return reply.code(400).send({ error: reason })
+      return { ok: true }
     },
   )
 

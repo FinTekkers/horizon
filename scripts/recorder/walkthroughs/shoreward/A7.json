@@ -1,8 +1,12 @@
 {
   "setup": [
     {"action": "goto", "path": "/horizon/admin/account"},
-    {"action": "waitFor", "selector": "button:has-text(\"Regenerate my PIN\")", "timeoutMs": 30000},
-    {"action": "click", "selector": "button:has-text(\"Regenerate my PIN\")"},
+    {"action": "waitFor", "selector": "button:has-text(\"Reset PIN\")", "timeoutMs": 30000},
+    {"action": "click", "selector": "button:has-text(\"Reset PIN\")"},
+    {"action": "click", "selector": "[role=\"dialog\"] [role=\"tab\"]:has-text(\"Generate random\")"},
+    {"action": "click", "selector": "[role=\"dialog\"] button:has-text(\"Generate and replace my PIN\")"},
+    {"action": "waitFor", "selector": "[data-testid=\"reset-pin-value\"]", "timeoutMs": 30000},
+    {"action": "click", "selector": "[role=\"dialog\"] button:has-text(\"Done\")"},
     {"action": "waitFor", "selector": ".admin-status", "timeoutMs": 30000}
   ],
   "actions": [
