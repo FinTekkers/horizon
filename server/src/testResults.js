@@ -37,13 +37,17 @@ export const TEST_STATUSES = ['pass', 'fail', 'skip']
 export const TEST_ROWS_MAX = 50_000
 const NAME_MAX = 500
 // HZ-605: farm/checks.py FAILURE_MESSAGE_MAX_CHARS caps it first; this is the
-// same cap again at the trust boundary — change the two together.
+// same cap again at the trust boundary — change the two together. HZ-950:
+// redacted before it is cut, like the farm, so a cut never splits a secret
+// out of redact()'s reach. Multi-line mode: one-line mode cuts at REASON_MAX.
 const FAILURE_MESSAGE_MAX = 300
 const SHA_RE = /^[0-9a-f]{40,64}$/
 
 function text(value, max) {
   return typeof value === 'string' && value !== '' ? value.slice(0, max) : null
 }
+
+const redactReason = (value) => (typeof value === 'string' ? redact(value, { oneLine: false }) : value)
 
 const insertRow = db.prepare(`
   INSERT INTO test_result (repo, commit_sha, tree_sha, item_id, run_id, source, check_run, command, suite, file,
@@ -92,7 +96,7 @@ function rowsOf(run, base) {
       attempt: t.attempt === 2 ? 2 : 1,
       runLabel,
       exitCode: codes.get(`${t.attempt === 2 ? 2 : 1} ${command}`) ?? null,
-      failureMessage: t.status === 'fail' ? text(t.failure_message, FAILURE_MESSAGE_MAX) : null,
+      failureMessage: t.status === 'fail' ? text(redactReason(t.failure_message), FAILURE_MESSAGE_MAX) : null,
     })
   }
   return rows

@@ -1,6 +1,7 @@
 """HZ-605: a failed check lists its failing tests above the log tail — each
 as `<suite> › <test> — <first failure-message line>`, at most 10, then
-`+N more` — and test_result stores that first line.
+`+N more` — and test_result stores that line. HZ-950: the line is the
+failure's reason plus its Expected and Received lines, for every runner.
 
 The list is built from the JUnit rows run_checks already holds when it
 raises CheckFailure, so it lands in both the message (the build step's /fail
@@ -125,10 +126,10 @@ def test_the_check_message_lists_the_failing_tests_between_the_command_and_the_d
     assert "not ok 1 - posts_once" in exc.digest
 
 
-# ---- metric 4: only the first line of a multi-line message is stored ----
+# ---- metric 4: a multi-line message stores its reason and values as one line ----
 
 
-def test_a_multi_line_failure_message_stores_only_its_first_line(ws, tmp_path):
+def test_a_multi_line_failure_message_stores_its_reason_and_values(ws, tmp_path):
     path = tmp_path / "r.xml"
     path.write_text(
         '<testsuite name="S">'
@@ -137,13 +138,17 @@ def test_a_multi_line_failure_message_stores_only_its_first_line(ws, tmp_path):
         '<testcase name="text only"><failure>\n  first text line\nsecond</failure></testcase>'
         '<testcase name="nothing"><failure/></testcase>'
         '<testcase name="long"><failure message="' + "x" * 1000 + '"/></testcase>'
+        '<testcase name="labelled"><failure message="noise&#10;Error: boom&#10;more&#10;Expected: 4242&#10;Received: 1717"/></testcase>'
         '<testcase name="passes"/>'
         "</testsuite>"
     )
 
     messages = {row["test"]: row["failure_message"] for row in parse_junit(path, ws)}
 
+    # No error or assertion line, no labelled value: the first line, as before.
     assert messages["multi"] == "line one"
+    # HZ-950: the error line, then the Expected and Received lines.
+    assert messages["labelled"] == "Error: boom · Expected: 4242 · Received: 1717"
     assert messages["blank first"] == "the real line"
     # No message attribute: the first line of the failure's text.
     assert messages["text only"] == "first text line"
@@ -151,7 +156,7 @@ def test_a_multi_line_failure_message_stores_only_its_first_line(ws, tmp_path):
     assert messages["passes"] is None
 
 
-def test_the_stored_row_carries_the_first_line_only_cut_to_the_cap(ws, tmp_path, monkeypatch):
+def test_the_stored_row_carries_the_reason_cut_to_the_cap(ws, tmp_path, monkeypatch):
     xml = report(tmp_path / "r.xml", [("S", "multi", "line one&#10;line two"), ("S", "long", "x" * 1000)])
     monkeypatch.setenv("FARM_CHECK_CMD", f'cp {xml} "$HORIZON_TEST_REPORT_DIR/r.xml"; exit 1')
     test_runs: list = []
@@ -531,3 +536,135 @@ def test_o1_a_pytest_failure_of_assertions_only_is_not_rerun(ws, monkeypatch):
     assert any(line.endswith("failed on assertions in 1 test; not re-running") for line in logs), logs
     assert not any("re-running it once" in line for line in logs)
     assert {row["attempt"] for row in stored_rows(test_runs)} == {1}
+
+
+# ---- HZ-950: every runner's failure stores its expected and received values ----
+
+FIXTURES = Path(__file__).parent / "fixtures" / "junit"
+REPORTER = REPO_ROOT / "server" / "scripts" / "junit-reporter.mjs"
+RUNNERS = ["pytest", "node-test", "vitest", "playwright"]
+
+
+def fixture_reasons(runner: str, ws: Path, junit: list[dict] | None = None) -> list[str]:
+    """The stored (redacted, capped) reason of each failing case in one
+    runner's captured report: expected 4242, received 1717."""
+    junit = junit if junit is not None else parse_junit(FIXTURES / f"{runner}-failure.xml", ws)
+    stored = checks._test_rows(junit, "cmd", 1, 0.1, attempt=1, secrets={})
+    return [row["failure_message"] for row in stored if row["status"] == "fail"]
+
+
+@pytest.mark.parametrize("runner", RUNNERS)
+def test_each_runners_failure_stores_both_values_under_the_cap(runner, ws):
+    reasons = fixture_reasons(runner, ws)
+
+    assert reasons
+    for reason in reasons:
+        assert len(reason) <= checks.FAILURE_MESSAGE_MAX_CHARS
+        if runner == "pytest":
+            # pytest names both values in its assert line, unlabelled.
+            assert reason == "assert 1717 == 4242"
+            continue
+        *_, expected, received = reason.split(checks.REASON_JOINER)
+        assert "4242" in expected and "1717" not in expected, reason
+        assert "1717" in received and "4242" not in received, reason
+        if runner != "vitest":  # vitest's own message line names both values too.
+            assert reason.count("4242") == reason.count("1717") == 1, reason
+
+
+def test_a_playwright_title_over_200_chars_still_leaves_both_values_stored(ws):
+    junit = parse_junit(FIXTURES / "playwright-failure.xml", ws)
+
+    assert len(junit[0]["test"]) > 200
+    assert fixture_reasons("playwright", ws, junit) == [
+        "expect(received).toBe(expected) // Object.is equality · Expected: 4242 · Received: 1717"
+    ]
+
+
+def test_node_tests_strictly_equal_heading_never_hides_the_expected_value(ws):
+    """Node's `Expected values to be strictly equal:` heading matches
+    Expected; the stored reason must still carry the reporter's value line."""
+    (reason,) = fixture_reasons("node-test", ws)
+
+    assert "Expected: 4242" in reason and "Received: 1717" in reason
+    assert reason.count("Expected values to be strictly equal:") == 1
+
+
+def test_vitests_bare_diff_headers_store_their_value_lines(ws):
+    reasons = fixture_reasons("vitest", ws)
+
+    assert reasons[1].endswith(" · - 4242 · + 1717")
+    assert all("- Expected" not in r and "+ Received" not in r for r in reasons)
+    assert reasons[0].endswith(' · -   "balance": 4242, · +   "balance": 1717,')
+
+
+def test_a_token_in_a_received_value_across_the_cap_is_redacted_before_it(ws, tmp_path, monkeypatch):
+    """Metric 5: the Playwright fixture with a token as its received value,
+    placed so the joined reason crosses the 300 cut mid-token."""
+    token = "ghp_" + "A1b2C3d4E5" * 4
+    marker = "MARKER"
+    template = (FIXTURES / "playwright-failure.xml").read_text()
+    (head,) = fixture_reasons("playwright", ws, parse_junit(_write(tmp_path / "m.xml", template.replace("1717", marker)), ws))
+    start = head.index(marker)
+    pad = "y" * (checks.FAILURE_MESSAGE_MAX_CHARS - 5 - start - 1)
+    xml = _write(tmp_path / "r.xml", template.replace("Received: 1717", f"Received: {pad} {token} and more"))
+    monkeypatch.setenv("FARM_CHECK_CMD", f'cp {xml} "$HORIZON_TEST_REPORT_DIR/r.xml"; exit 1')
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    raw = parse_junit(xml, ws)[0]["failure_message"]
+    assert raw.index(token) < checks.FAILURE_MESSAGE_MAX_CHARS < raw.index(token) + len(token)
+    (stored,) = [row["failure_message"] for row in stored_rows(test_runs) if row["status"] == "fail"]
+    assert "ghp_" not in stored and "A1b2C3d4E5" not in stored
+    assert stored.endswith(f"{pad} [redacted] and more"[: len(stored) - start])
+
+
+def _write(path: Path, text: str) -> Path:
+    path.write_text(text)
+    return path
+
+
+def node_report_command(ws: Path, body: str) -> str:
+    """A node --test check of one test file in `ws`, reporting through the
+    server's real JUnit reporter into the farm's report dir."""
+    (ws / "case.test.mjs").write_text(f"import {{ test }} from 'node:test'\nimport assert from 'node:assert/strict'\n{body}\n")
+    return (
+        f"node --test --test-reporter={shlex.quote(str(REPORTER))} "
+        '--test-reporter-destination="$HORIZON_TEST_REPORT_DIR/server.xml" case.test.mjs'
+    )
+
+
+def test_a_live_node_test_failure_stores_its_reason_through_the_real_reporter(ws, monkeypatch):
+    """Metric 1, stored half: reporter and farm parser, end to end."""
+    monkeypatch.delenv("NODE_TEST_CONTEXT", raising=False)
+    command = node_report_command(ws, "test('posts once', () => { assert.strictEqual(1717, 4242) })")
+    monkeypatch.setenv("FARM_CHECK_CMD", command)
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure):
+        run_checks(ws, log=lambda *_: None, test_runs=test_runs)
+
+    (row,) = stored_rows(test_runs)
+    assert row["status"] == "fail" and row["test"] == "posts once"
+    reason = row["failure_message"]
+    assert reason and reason.index("Expected: 4242") < reason.index("Received: 1717"), reason
+
+
+def test_the_farm_parser_reads_the_real_reporters_escaped_message_back_exactly(ws, monkeypatch):
+    """Metric 3: < > & " and a newline survive the reporter's XML and
+    ElementTree, and the stored reason is still one line."""
+    monkeypatch.delenv("NODE_TEST_CONTEXT", raising=False)
+    command = node_report_command(ws, "test('escapes', () => { throw new Error('a<b>&\"c\\nd') })")
+    report_dir = ws / "reports"
+    report_dir.mkdir()
+    env = {k: v for k, v in os.environ.items() if k not in ("FARM_HOME", "NODE_TEST_CONTEXT")}
+    proc = subprocess.run(
+        ["sh", "-c", command], cwd=ws, env={**env, "HORIZON_TEST_REPORT_DIR": str(report_dir)}, capture_output=True, timeout=60
+    )
+
+    assert proc.returncode == 1
+    case = next(ET.parse(report_dir / "server.xml").getroot().iter("testcase"))
+    assert case.find("failure").get("message") == 'a<b>&"c\nd'
+    reason = checks._failure_message(case)
+    assert "\n" not in reason and 'a<b>&"c' in reason
