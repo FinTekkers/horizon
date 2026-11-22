@@ -4,7 +4,7 @@
 // global-setup.js seeds DEP-2 (at implement) depending on DEP-1;
 // 13-dependencies.spec.js reads the same edge.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertDependency } from '../fixtures/seed.js'
 
 const DB_PATH = process.env.HORIZON_E2E_DB
@@ -40,6 +40,7 @@ test('a blocked card reads Blocked and keeps its blocker link inside the card in
     await expect(blocked.locator('.card__elapsed'), label).toHaveCount(0)
     const link = blocked.locator('.dep-pill--blocked').getByRole('link', { name: 'DEP-1' })
     await expect(link, label).toBeVisible()
+    await waitForFonts(page)
     const cardBox = await blocked.boundingBox()
     const linkBox = await link.boundingBox()
     expect(linkBox.x, `${label}: link starts outside the card`).toBeGreaterThanOrEqual(cardBox.x)

@@ -11,8 +11,9 @@
 # environment says. On exit that server is stopped through its own socket
 # path (`-S`) — never the default one — and the dir is removed.
 #
-# Fail-fast, like the `&&` chain it replaces: the first failing file stops
-# the run and its exit status is the runner's.
+# HZ-952: every file runs, even after one fails. Failed files are listed
+# under `Failed shell tests:` at the end and the run exits 1. A file that
+# exits 130 or 143 (Ctrl-C / SIGTERM) still stops the run at once.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -43,7 +44,20 @@ else
   )
 fi
 
+failed=()
 for f in "${files[@]}"; do
   case "$f" in /*) path="$f" ;; *) path="$ROOT/$f" ;; esac
-  bash "$path" || exit $?
+  bash "$path"
+  status=$?
+  case "$status" in
+    0) ;;
+    130|143) exit "$status" ;;
+    *) failed+=("$f") ;;
+  esac
 done
+
+if [ "${#failed[@]}" -gt 0 ]; then
+  echo "Failed shell tests:"
+  printf '  - %s\n' "${failed[@]}"
+  exit 1
+fi
