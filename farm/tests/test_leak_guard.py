@@ -200,6 +200,8 @@ def _run_guarded_suite(tmp_path, after_sessions, write_state_file):
     body = '(Path(__file__).parent / "state" / "concierge-session-e2e.txt").write_text("x")' if write_state_file else "pass"
     (tmp_path / "test_inner.py").write_text(f"from pathlib import Path\n\n\ndef test_inner():\n    {body}\n")
     env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
+    # HZ-951: the child conftest sets its own FARM_HOME; it never inherits one.
+    env.pop("FARM_HOME", None)
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(tmp_path)],
         cwd=tmp_path,

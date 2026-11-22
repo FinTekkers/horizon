@@ -53,6 +53,8 @@ def _run_guarded_suite(tmp_path, body, seed=()):
         "import tempfile\nfrom pathlib import Path\n\n\ndef test_inner():\n" + textwrap.indent(textwrap.dedent(body), "    ")
     )
     env = dict(os.environ, PYTHONPATH=str(REPO_ROOT))
+    # HZ-951: the child conftest sets its own FARM_HOME; it never inherits one.
+    env.pop("FARM_HOME", None)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(tmp_path / "test_inner.py")],
         cwd=tmp_path,

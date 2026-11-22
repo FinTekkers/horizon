@@ -357,7 +357,9 @@ def test_r2_a_nested_run_checks_never_writes_over_the_outer_report(tmp_path):
     report holds only the outer run's test."""
     outer = tmp_path / "outer.xml"
     node = f"{Path(__file__).relative_to(REPO_ROOT)}::test_r1_a_plain_pytest_stores_a_row_per_test_and_lists_the_failure"
-    env = {**os.environ, "PYTEST_ADDOPTS": f"--junitxml={shlex.quote(str(outer))}"}
+    # HZ-951: the child conftest sets its own FARM_HOME; it never inherits one.
+    env = {k: v for k, v in os.environ.items() if k != "FARM_HOME"}
+    env["PYTEST_ADDOPTS"] = f"--junitxml={shlex.quote(str(outer))}"
 
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],

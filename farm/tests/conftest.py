@@ -141,10 +141,15 @@ os.environ.pop("HORIZON_RUN_ID", None)
 # would write over the outer report, or pass it through and lose its own rows.
 os.environ.pop("PYTEST_ADDOPTS", None)
 os.environ.pop("FARM_CHECK_PYTEST_JUNIT", None)
+# HZ-951: this run streams its own lines to the outer report dir
+# (report_stream.py). A child pytest or a test run_checks() that kept the
+# variable would append its tests to the outer pytest.jsonl.
+_REPORT_DIR = os.environ.pop("HORIZON_TEST_REPORT_DIR", None)
 
 sys.path.insert(0, str(REPO_ROOT))
 
 from farm import tmux_mgr  # noqa: E402 — must follow the env block above
+from farm.tests import report_stream  # noqa: E402
 from farm.tests.leak_guard import LeakGuard, host_farm_sessions, session_attributed_to_tests  # noqa: E402
 from farm.tests.tmp_guard import TmpLeakGuard  # noqa: E402
 
@@ -236,6 +241,7 @@ def pytest_configure(config):
         "hz190-host-leak-guard",
     )
     config.pluginmanager.register(TmpLeakGuard(Path(_REAL_TMP), Path(RUN_TMP)), "hz238-tmp-leak-guard")
+    report_stream.register(config, _REPORT_DIR)
 
 
 @pytest.hookimpl(tryfirst=True)
