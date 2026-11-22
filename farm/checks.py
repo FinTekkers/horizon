@@ -34,6 +34,12 @@ check's result.
 
 HZ-589 narrows the rerun: when every failing test in the JUnit failed on an
 assertion, the failure would repeat, so it is not rerun (see _rerun_verdict()).
+
+HZ-948 keeps a timed-out command's results: its group gets SIGTERM a short
+grace before the limit (_term_grace()), then SIGKILL, and the XML and
+streamed `*.jsonl` rows written by then are stored, plus one failing
+`running when stopped: <test>` row for the test it cut off. The check still
+fails as timed out.
 """
 
 import contextlib
@@ -137,6 +143,24 @@ def output_tail(text: str) -> str:
 # Bound at import: tests swap `checks.subprocess` for stubs without DEVNULL.
 _DEVNULL = subprocess.DEVNULL
 
+# HZ-948: how long a timed-out check's group has between SIGTERM and SIGKILL.
+# Taken out of the limit, never added to it; 0 restores the immediate kill.
+TERM_GRACE_ENV = "FARM_CHECK_TERM_GRACE_S"
+TERM_GRACE_S = 5.0
+TERM_GRACE_SHARE = 0.1
+
+
+def _term_grace(timeout_s: float) -> float:
+    """The SIGTERM grace for a `timeout_s` limit: FARM_CHECK_TERM_GRACE_S (a
+    bad value is TERM_GRACE_S), at most TERM_GRACE_SHARE of the limit."""
+    try:
+        grace = float(os.environ.get(TERM_GRACE_ENV, TERM_GRACE_S))
+    except ValueError:
+        grace = TERM_GRACE_S
+    if grace != grace:  # NaN
+        grace = TERM_GRACE_S
+    return max(0.0, min(grace, timeout_s * TERM_GRACE_SHARE))
+
 
 def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]) -> subprocess.CompletedProcess:
     """subprocess.run(timeout=...) kills only the direct child: `npm test`'s
@@ -158,7 +182,10 @@ def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]
     a run's commands execute one at a time, so nothing else of it is
     running. Only a run this process leased is reaped here; a nested run's
     inherited tag belongs to the outer run. The reap never changes what is
-    raised."""
+    raised.
+
+    HZ-948: the group gets SIGTERM _term_grace() seconds before the limit,
+    then SIGKILL at it — the total wait is still timeout_s."""
     proc = subprocess.Popen(
         cmd,
         cwd=str(ws),
@@ -169,9 +196,17 @@ def _run_bounded(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str]
         start_new_session=True,
         env=env,
     )
+    grace = _term_grace(timeout_s)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
+        stdout, stderr = proc.communicate(timeout=timeout_s - grace)
     except subprocess.TimeoutExpired:
+        if grace > 0:
+            # HZ-948: a short SIGTERM first, so a runner can write its last
+            # report lines. Still draining the pipes, still bounded.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=grace)
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         run_id = (env or {}).get(run_reaper.RUN_ENV)
@@ -1093,15 +1128,22 @@ def _jsonl_line(raw: bytes) -> dict | None:
     return entry
 
 
-def parse_jsonl(path: Path, ws: Path) -> tuple[list[dict], int]:
+def parse_jsonl(path: Path, ws: Path) -> tuple[list[dict], int, tuple[str, str] | None]:
     """HZ-955: (one row per finished test in a JSON-lines report, how many
-    lines were bad). Rows have parse_junit()'s keys. A `started` line adds
-    nothing, so a test that never finished has no row; the last `finished`
-    line per (file, name) wins. Blank lines are not bad. Raises OSError for a
-    file that is too big or unreadable, ValueError when every line is bad."""
+    lines were bad, HZ-948's cut-off test). Rows have parse_junit()'s keys. A
+    `started` line adds no row, so a test that never finished has none; the
+    last `finished` line per (file, name) wins. Blank lines are not bad — nor
+    is a cut last line, only skipped like any bad one. Raises OSError for a
+    file that is too big or unreadable, ValueError when every line is bad.
+
+    The cut-off test is the (file, name), cut like a row's, of the last test
+    `started` with no `finished` line after it, or None. With parallel
+    workers several can be open; only the last one started is named."""
     if path.stat().st_size > REPORT_FILE_MAX_BYTES:
         raise OSError(f"report is over {REPORT_FILE_MAX_BYTES} bytes")
     found: dict[tuple, dict] = {}
+    # Insertion order is start order: a re-started test moves to the end.
+    open_tests: dict[tuple, None] = {}
     bad = good = 0
     for raw in path.read_bytes().splitlines():
         if not raw.strip():
@@ -1111,10 +1153,12 @@ def parse_jsonl(path: Path, ws: Path) -> tuple[list[dict], int]:
             bad += 1
             continue
         good += 1
-        if entry["event"] != "finished":
-            continue
         file = _relative_file(entry["file"], ws)[:TEST_NAME_MAX_CHARS]
         test = entry["name"][:TEST_NAME_MAX_CHARS]
+        open_tests.pop((file, test), None)
+        if entry["event"] != "finished":
+            open_tests[(file, test)] = None
+            continue
         failed = entry["status"] == "fail"
         failure = entry.get("failure")
         text = failure[:FAILURE_TEXT_MAX_CHARS] if failed and isinstance(failure, str) else ""
@@ -1132,19 +1176,24 @@ def parse_jsonl(path: Path, ws: Path) -> tuple[list[dict], int]:
         }
     if bad and not good:
         raise ValueError(f"no readable line in {bad} line(s)")
-    return list(found.values()), bad
+    return list(found.values()), bad, next(reversed(open_tests), None)
 
 
-def _jsonl_rows(report_dir: Path, ws: Path, log) -> list[dict]:
+def _jsonl_rows(report_dir: Path, ws: Path, log, *, stopped: bool = False) -> list[dict]:
     """HZ-955: every test row from the JSON-lines reports under report_dir —
     only the attempt's own dir, never the workspace. When two files report
     the same (file, test), the first file's row is kept. Bad lines are
     logged and skipped; a file with no readable line is logged like
-    _report_rows()' bad report. Neither changes the check's result."""
+    _report_rows()' bad report. Neither changes the check's result.
+
+    HZ-948: `stopped` (the command hit its time limit) adds one failing
+    `running when stopped: <test>` row for the last file's cut-off test
+    (parse_jsonl()), unless some file has that test finished."""
     rows: dict[tuple, dict] = {}
+    cut_off = None
     for path in sorted(report_dir.rglob("*.jsonl")):
         try:
-            found, bad = parse_jsonl(path, ws)
+            found, bad, open_test = parse_jsonl(path, ws)
         except (OSError, ValueError) as exc:
             log(
                 f"checks: could not read test report {path.name} ({exc}) — "
@@ -1158,7 +1207,30 @@ def _jsonl_rows(report_dir: Path, ws: Path, log) -> list[dict]:
             )
         for row in found:
             rows.setdefault((row["file"], row["test"]), row)
+        cut_off = open_test or cut_off
+    if stopped and cut_off is not None and cut_off not in rows:
+        row = _stopped_row(*cut_off)
+        rows.setdefault((row["file"], row["test"]), row)
     return list(rows.values())
+
+
+# HZ-948: the row naming the test a timed-out command was running.
+STOPPED_TEST_PREFIX = "running when stopped: "
+STOPPED_MESSAGE = "the check command hit its time limit during this test"
+
+
+def _stopped_row(file: str, test: str) -> dict:
+    return {
+        "suite": None,
+        "file": file,
+        "test": f"{STOPPED_TEST_PREFIX}{test}"[:TEST_NAME_MAX_CHARS],
+        "classname": None,
+        "line": None,
+        "status": "fail",
+        "duration_ms": None,
+        "failure_kind": FAILURE_SLOW,
+        "failure_message": STOPPED_MESSAGE,
+    }
 
 
 def _py_module(file: str) -> str | None:
@@ -1298,19 +1370,42 @@ def _attempt(cmd: list[str], ws: Path, timeout_s: float, env: dict[str, str], lo
     HO-898: a plain pytest writes its report there too (_attempt_env).
 
     HZ-955: then the report dir's JSON-lines rows (_jsonl_rows), minus any
-    test an XML row above already has (_xml_duplicate)."""
+    test an XML row above already has (_xml_duplicate). A JSON-lines line
+    must name a test with the same file and name as the XML, or it is stored
+    twice.
+
+    HZ-948: on a timeout the same rows, plus the `running when stopped:` row,
+    are read before the report dir is removed and ride on the re-raised
+    TimeoutExpired as `exc.partial_rows`. A reader crash there is logged and
+    leaves them empty; the TimeoutExpired is raised either way."""
     report_dir = Path(tempfile.mkdtemp(prefix="horizon-test-report-"))
+    since = time.time()
     try:
-        since = time.time()
         proc = _run_bounded(cmd, ws, timeout_s, _attempt_env(env, report_dir))
-        rows = _report_rows(report_dir, ws, log)
-        reported = {_identity(row) for row in rows}
-        rows.extend(row for row in _workspace_junit(ws, since, log) if _identity(row) not in reported)
-        index = _xml_index(rows)
-        rows.extend(row for row in _jsonl_rows(report_dir, ws, log) if not _xml_duplicate(row, index))
-        return proc, rows
+        return proc, _attempt_rows(report_dir, ws, since, log)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            exc.partial_rows = _attempt_rows(report_dir, ws, since, log, stopped=True)
+        except Exception as read_exc:  # noqa: BLE001 — a report never changes the outcome
+            exc.partial_rows = []
+            log(
+                f"checks: could not read the timed-out command's test reports ({type(read_exc).__name__}: "
+                f"{read_exc}) — recorded without them; the check's result is unchanged"
+            )
+        raise
     finally:
         shutil.rmtree(report_dir, ignore_errors=True)
+
+
+def _attempt_rows(report_dir: Path, ws: Path, since: float, log, *, stopped: bool = False) -> list[dict]:
+    """_attempt()'s rows: report-dir XML, then the workspace's, then JSON
+    lines; `stopped` as in _jsonl_rows()."""
+    rows = _report_rows(report_dir, ws, log)
+    reported = {_identity(row) for row in rows}
+    rows.extend(row for row in _workspace_junit(ws, since, log) if _identity(row) not in reported)
+    index = _xml_index(rows)
+    rows.extend(row for row in _jsonl_rows(report_dir, ws, log, stopped=stopped) if not _xml_duplicate(row, index))
+    return rows
 
 
 # parse_junit() keys that are farm-side evidence only, never stored.
@@ -1329,12 +1424,16 @@ def _test_rows(
 
     HZ-946: the command's own row carries no_report: True, so a reader can
     tell it from a test without guessing from its name. Its name and status
-    are unchanged; JUnit rows never carry the key."""
+    are unchanged; JUnit rows never carry the key.
+
+    HZ-948: a test's name is redacted too, then cut to TEST_NAME_MAX_CHARS."""
     command = shown[:FLAKE_COMMAND_MAX_CHARS]
     if junit:
         return [
             {
                 **{k: v for k, v in row.items() if k not in _UNSTORED_KEYS},
+                # HZ-948: a streamed name is runner output too.
+                "test": redact(row["test"], secrets)[:TEST_NAME_MAX_CHARS],
                 "failure_message": (
                     redact(row["failure_message"], secrets)[:FAILURE_MESSAGE_MAX_CHARS] if row.get("failure_message") else None
                 ),
@@ -1725,14 +1824,18 @@ def _run_branch_command(
         room = TEST_ROWS_MAX - len(branch_run["tests"])
         branch_run["tests"].extend(rows[: max(room, 0)])
 
-    def did_not_finish(outcome: str, reason: str, duration: float, output: str = "") -> tuple[str, CheckFailure]:
+    def did_not_finish(
+        outcome: str, reason: str, duration: float, output: str = "", partial: list[dict] = ()
+    ) -> tuple[str, CheckFailure]:
         # Fail closed: a command that did not finish is one failed row and a
-        # failure — never a pass, never skipped.
-        keep(_test_rows([], shown, 1, duration, attempt=1, secrets=secrets))
+        # failure — never a pass, never skipped. HZ-948: a timed-out one's
+        # finished and cut-off tests (`partial`) replace that row.
+        rows = _test_rows(list(partial), shown, 1, duration, attempt=1, secrets=secrets)
+        keep(rows)
         branch_run["commands"].append(_command_entry(shown, 1, None))
         failure = _branch_failure(
-            label, slot, shown, rows=[], output=output, exit_code=None, secrets=secrets, reason=reason,
-            headline=f"{label} {outcome}",
+            label, slot, shown, rows=rows if partial else [], output=output, exit_code=None, secrets=secrets,
+            reason=reason, headline=f"{label} {outcome}",
         )
         return outcome, failure
 
@@ -1744,8 +1847,11 @@ def _run_branch_command(
     started = time.monotonic()
     try:
         proc, junit = _attempt(argv, ws, budget, env, log)
-    except subprocess.TimeoutExpired:
-        return did_not_finish(f"failed (timed out after {int(budget)}s)", "timed_out", time.monotonic() - started)
+    except subprocess.TimeoutExpired as exc:
+        return did_not_finish(
+            f"failed (timed out after {int(budget)}s)", "timed_out", time.monotonic() - started,
+            partial=getattr(exc, "partial_rows", []),
+        )
     except Exception as exc:  # noqa: BLE001 — could not run is a failure, never a pass
         detail = f"{type(exc).__name__}: {redact(str(exc), secrets)[:200]}"
         return did_not_finish(f"failed (could not run: {detail})", "failed", time.monotonic() - started, detail)
@@ -2333,15 +2439,25 @@ def _run_checks_unguarded(
                     log(f"checks: {cmd[0]} is not installed on the farm host — skipped")
                     continue
                 except subprocess.TimeoutExpired as exc:
+                    duration = time.monotonic() - started
                     record["commands"].append(
-                        {"cmd": shown, **entry, "duration_s": round(time.monotonic() - started, 1), "timed_out": True}
+                        {"cmd": shown, **entry, "duration_s": round(duration, 1), "timed_out": True}
                     )
-                    check_run["commands"].append(_command_entry(redact(shown, secrets), 1, None))
+                    safe_shown = redact(shown, secrets)
+                    check_run["commands"].append(_command_entry(safe_shown, 1, None))
                     record["outcome"] = "timeout"
+                    # HZ-948: the tests that finished before the kill, and the
+                    # one it cut off. Signal-killed, so no report stores nothing.
+                    partial = getattr(exc, "partial_rows", [])
+                    timed_out_rows = _test_rows(partial, safe_shown, -signal.SIGKILL, duration, attempt=1, secrets=secrets)
+                    keep_rows(timed_out_rows)
+                    block = failing_tests_block(timed_out_rows, secrets=secrets)
                     raise CheckFailure(
-                        f"repo checks timed out after {int(budget)}s: {line_label}{shown}",
+                        f"repo checks timed out after {int(budget)}s: {line_label}{shown}" + (f"\n{block}" if block else ""),
                         command=shown,
+                        tail=block,
                         reason="timed_out",
+                        failed_tests=[row for row in partial if row.get("status") == "fail"],
                     ) from exc
                 finally:
                     mem_samples.append(check_metrics.mem_available_kb())
