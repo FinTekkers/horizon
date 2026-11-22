@@ -15,7 +15,7 @@
 // afterAll PIN-verifies the shared session again for the specs after it.
 
 import { readFileSync } from 'node:fs'
-import { test, expect, verifySharedSession } from '../fixtures/test-base.js'
+import { test, expect, verifySharedSession, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertStepRun, setGatePinDirect } from '../fixtures/seed.js'
 import { STEPS, EXECUTE_STEP_INDEX, TASK_REVIEW_CLOSE_GATE_INDEX } from '../../domain/js/lifecycle.js'
 
@@ -106,8 +106,6 @@ async function expectMedia(scope) {
 
 async function expectPlayable({ video, img }) {
   await expect.poll(() => video.evaluate((v) => v.readyState), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-  // The image is loading="lazy": below the fold (the phone check) it only loads once scrolled to.
-  await img.scrollIntoViewIfNeeded()
   await expect.poll(() => img.evaluate((i) => i.complete && i.naturalWidth), { timeout: 15_000 }).toBeGreaterThan(0)
 }
 
@@ -158,6 +156,7 @@ test("item page: a task run's media on Execute, Verify & report and Review & clo
     const review = cardFor(page, 'Review & close')
     const media = await expectMedia(review)
     await expectPlayable(media)
+    await waitForFonts(page)
     const sizes = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }))
     expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
     const box = await media.video.boundingBox()
