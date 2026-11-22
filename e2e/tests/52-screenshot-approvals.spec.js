@@ -12,7 +12,7 @@
 // dialog; answering it verifies the session, and from then on (reloads and
 // the later tests) the panel shows its images at once.
 
-import { test, expect, answerPinDialog } from '../fixtures/test-base.js'
+import { test, expect, answerPinDialog, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
 import { blobsOf, clearScreenshotSnapshot, publication, seedScreenshotSnapshot } from '../fixtures/screenshot-snapshot.js'
 import { ACCEPT_GATE_INDEX } from '../../domain/js/lifecycle.js'
@@ -125,6 +125,7 @@ test('item page: the Screenshots panel, reviewed, at 375px, and absent', async (
     await page.goto(`/${ITEMS.phone.toLowerCase()}`)
     const board = rowOf(page, 'board')
     await expectImagesRendered(board, ['Baseline', 'Current', 'Diff'])
+    await waitForFonts(page)
     const { scroll, client } = await page.evaluate(() => ({
       scroll: document.documentElement.scrollWidth,
       client: document.documentElement.clientWidth,

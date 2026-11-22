@@ -4,7 +4,7 @@
 // five columns. Rows are seeded directly (fixtures/seed.js) at paused agent
 // steps and a gate, so the orchestrator never moves them.
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, insertProject } from '../fixtures/seed.js'
 import { STEPS, PHASES, firstStepIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
@@ -46,6 +46,7 @@ const tablist = (page) => page.getByRole('tablist', { name: 'Board columns' })
 const tab = (page, name) => tablist(page).getByRole('tab', { name: new RegExp(`^${name}, `) })
 
 async function expectNoPageOverflow(page, label) {
+  await waitForFonts(page)
   const { scroll, inner } = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth }))
   expect(scroll, `${label}: page is wider than the screen`).toBeLessThanOrEqual(inner)
 }
@@ -58,6 +59,7 @@ async function expectHeaderInsideCard(page, id) {
   }
   await expect(c.locator('.card__issue')).toHaveCount(2)
   await expect(c.locator('.card__priority')).toHaveText('Medium')
+  await waitForFonts(page)
   const { cardBox, parts } = await c.evaluate((el) => {
     const box = (n) => {
       const r = n.getBoundingClientRect()
@@ -80,6 +82,7 @@ async function expectHeaderInsideCard(page, id) {
 async function expectOneFullWidthColumn(page, name) {
   await expect(page.locator('.board .col')).toHaveCount(1)
   await expect(page.locator('.board .col .col__name')).toHaveText(name)
+  await waitForFonts(page)
   const [col, strip] = await Promise.all([page.locator('.board .col').boundingBox(), page.locator('.board__cols').boundingBox()])
   expect(Math.abs(col.width - strip.width)).toBeLessThanOrEqual(1)
 }

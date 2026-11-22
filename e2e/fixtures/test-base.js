@@ -94,6 +94,26 @@ export async function answerPinDialog(page, pin) {
   await expect(dialog).toBeHidden()
 }
 
+// HZ-942: waits until no web font (DM Sans, DM Mono) is still loading. Call it
+// before a spec's first layout measurement: on a busy box the fonts can land
+// after the screen shows, and a fit check then measures the wider fallback.
+// Reading offsetWidth forces layout, so every face the page's text uses has
+// started loading before document.fonts.status is read. One expect.poll keeps
+// the wait inside the default expect timeout; a font that fails to load
+// (no network) counts as done, so the spec measures the fallback as before.
+export async function waitForFonts(page) {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          void document.body?.offsetWidth
+          return document.fonts.status
+        }),
+      { message: 'web fonts still loading' },
+    )
+    .toBe('loaded')
+}
+
 // HZ-704: PIN-verifies the shared session (playwright.config.js's
 // storageState) with one protected request, for a spec that locked it — by
 // setGatePinDirect or Lock — and opened no dialog to verify it again. A GET of

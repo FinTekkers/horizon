@@ -4,7 +4,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { PAGES, copySite, npmTest } from './helpers.mjs'
 import { checkSite } from '../parvati-site/check-links.mjs'
@@ -66,4 +66,31 @@ test('checkSite skips external and same-page targets and fails ones outside the 
     { file: 'about.html', target: '../outside.html' },
     { file: 'about.html', target: '/buy.html' },
   ])
+})
+
+// HZ-953: with HORIZON_TEST_REPORT_DIR set the check also writes
+// parvati-links.xml, one case per local link and image. Its output and exit
+// are the same set, unset, or with a dir it cannot write.
+test('the report dir adds a per-link report and changes no output or exit', (t) => {
+  const site = copySite(t)
+  const buy = path.join(site, 'buy.html')
+  writeFileSync(buy, readFileSync(buy, 'utf8').replace('</body>', '<a href="nowhere.html">Nowhere</a>\n</body>'))
+  const reports = path.join(path.dirname(site), 'reports')
+  const blocked = path.join(path.dirname(site), 'blocked')
+  mkdirSync(reports)
+  mkdirSync(blocked)
+  chmodSync(blocked, 0o555)
+
+  const unset = npmTest(site)
+  const withDir = npmTest(site, { reportDir: reports })
+  const readOnly = npmTest(site, { reportDir: blocked })
+
+  assert.equal(unset.status, 1, unset.out)
+  assert.deepEqual([withDir.status, withDir.out], [unset.status, unset.out])
+  assert.deepEqual([readOnly.status, readOnly.out], [unset.status, unset.out])
+  if (process.getuid?.() !== 0) assert.deepEqual(readdirSync(blocked), [])
+  const xml = readFileSync(path.join(reports, 'parvati-links.xml'), 'utf8')
+  assert.ok(xml.match(/<testcase /g).length > 1, xml)
+  assert.match(xml, /<testcase name="buy.html -&gt; nowhere.html" file="buy.html" time="0"><failure message="broken link"\/><\/testcase>/)
+  assert.match(xml, /<testcase name="data\/sales.csv" file="data\/sales.csv" time="0"><\/testcase>/)
 })

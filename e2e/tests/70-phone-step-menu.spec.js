@@ -8,7 +8,7 @@
 // orchestrator never moves them; every dialog opened here is cancelled.
 // Light only (HZ-924): dark is the screenshot capture's (.horizon/screenshots.json).
 
-import { test, expect } from '../fixtures/test-base.js'
+import { test, expect, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem } from '../fixtures/seed.js'
 import { STEPS, requiredStepIndex } from '../../domain/js/lifecycle.js'
 import { PRIORITY } from '../../domain/js/priorities.js'
@@ -44,6 +44,7 @@ const activeTab = (page) => page.locator('.bottomnav__tab[aria-current="page"]')
 // Scrolls the window so the toggle's bottom sits 8px above the tab bar's top,
 // and fails loudly when the page can't be scrolled that far.
 async function placeAboveNav(page, toggle) {
+  await waitForFonts(page)
   const delta = await toggle.evaluate((el) => el.getBoundingClientRect().bottom - (document.querySelector('.bottomnav').getBoundingClientRect().top - 8))
   await page.evaluate((d) => window.scrollBy({ top: d, behavior: 'instant' }), delta)
   const gap = await toggle.evaluate((el) => document.querySelector('.bottomnav').getBoundingClientRect().top - el.getBoundingClientRect().bottom)
@@ -101,6 +102,7 @@ async function openPhoneBoard(page) {
   await page.goto('/')
   await page.getByRole('tablist', { name: 'Board columns' }).getByRole('tab', { name: /^Technical Plan, / }).tap()
   await expect(toggleFor(page, GATE_IDS[0])).toBeVisible({ timeout: 10_000 })
+  await waitForFonts(page)
 }
 
 test.describe('on a 390px touch phone', () => {
@@ -165,6 +167,7 @@ test.describe('on a 1280px desktop', () => {
     await expect(card).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, -2)')
 
     // Room below: opens downward.
+    await waitForFonts(page)
     await toggle.click()
     const menu = page.getByRole('menu')
     await expect(menu).toBeVisible()
@@ -193,6 +196,7 @@ test.describe('on a 1280px desktop', () => {
     await toggle.scrollIntoViewIfNeeded()
     await toggle.click()
     await expect(page.getByRole('menu')).toBeVisible()
+    await waitForFonts(page)
     const hit = await abandonIn(page).evaluate((el) => {
       const r = el.getBoundingClientRect()
       return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('[role="menuitem"]') === el

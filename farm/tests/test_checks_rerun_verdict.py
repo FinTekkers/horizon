@@ -339,3 +339,36 @@ def test_stored_rows_never_carry_the_failure_kind(ws, tmp_path):
     rows = test_runs[0]["tests"]
     assert len(rows) == 6
     assert all("failure_kind" not in row for row in rows)
+
+
+# ---- HZ-950: node --test reports now say why, so they classify too ----
+
+NODE_FIXTURE = Path(__file__).parent / "fixtures" / "junit" / "node-test-failure.xml"
+
+
+def test_a_node_test_assertion_report_is_not_rerun(tmp_path):
+    """HZ-950's review flag 1, pinned: server/scripts/junit-reporter.mjs used to
+    write a bare <failure/>, so every node --test failure was unknown and
+    reran. Its report now carries the assertion, like pytest's, vitest's and
+    Playwright's, so an all-assertion failure runs once."""
+    junit = checks.parse_junit(NODE_FIXTURE, tmp_path)
+
+    assert [row["failure_kind"] for row in junit] == [checks.FAILURE_ASSERTION]
+    assert checks._rerun_verdict(junit, "test") == (
+        False,
+        "checks: test failed on assertions in 1 test; not re-running",
+    )
+
+
+def test_a_node_test_report_with_a_connection_error_in_its_stack_still_reruns(tmp_path):
+    report = tmp_path / "server.xml"
+    report.write_text(
+        NODE_FIXTURE.read_text().replace(
+            "    at TestContext.", "    [cause]: Error: connect ECONNREFUSED 127.0.0.1:3001\n    at TestContext.", 1
+        )
+    )
+    junit = checks.parse_junit(report, tmp_path)
+
+    assert [row["failure_kind"] for row in junit] == [checks.FAILURE_NETWORK]
+    rerun, why = checks._rerun_verdict(junit, "test")
+    assert rerun and "a connection or network error in 1 of 1 test" in why

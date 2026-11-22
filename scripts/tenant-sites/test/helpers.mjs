@@ -17,8 +17,13 @@ export function copySite(t) {
 
 // The site's own `npm test`, run in `cwd`. npm_* variables from an outer npm
 // run (npm --prefix ... test) are dropped so the inner npm uses `cwd` only.
-export function npmTest(cwd) {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.toLowerCase().startsWith('npm_')))
+// HORIZON_TEST_REPORT_DIR too (HZ-953): a seeded copy's check must not write
+// the real parvati-links.xml; reportDir sets one for this run only.
+export function npmTest(cwd, { reportDir } = {}) {
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !k.toLowerCase().startsWith('npm_') && k !== 'HORIZON_TEST_REPORT_DIR'),
+  )
+  if (reportDir) env.HORIZON_TEST_REPORT_DIR = reportDir
   const r = spawnSync('npm', ['test'], { cwd, env, encoding: 'utf8' })
   return { status: r.status, out: `${r.stdout}\n${r.stderr}` }
 }

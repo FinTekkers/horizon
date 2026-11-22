@@ -5,7 +5,7 @@
 
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,6 +27,7 @@ const { RESULT_ROWS_SQL, UNLABELLED_RESULT_ROWS_SQL, summarizeTestHistory } = aw
 const { default: Database } = await import('better-sqlite3')
 const { STEPS, IMPLEMENT_STEP_INDEX } = await import('../../domain/js/lifecycle.js')
 const { loginFixtureUser } = await import('./helpers/session.mjs')
+const { REPO_ROOT } = await import('./helpers/repoFiles.mjs')
 
 store.purgeDemoItems()
 globalThis.fetch = async () => ({ ok: true, json: async () => ({}), text: async () => '' })
@@ -129,6 +130,44 @@ test('a failing row stores its failure_message; a row without one, or a non-fail
   ])
   const column = db.prepare('PRAGMA table_info(test_result)').all().find((c) => c.name === 'failure_message')
   assert.deepEqual({ type: column.type, notnull: column.notnull, dflt_value: column.dflt_value }, { type: 'TEXT', notnull: 0, dflt_value: null })
+})
+
+// HZ-950 metric 5: a token whose received value straddles the 300 cut, POSTed
+// raw as an older farm would, is redacted before the cut — never half-stored.
+test('a failure_message token across the 300 cut is redacted before the cut, on a direct POST', async () => {
+  item('TR-FM-SECRET', 'acme/messages')
+  const runId = Number(
+    db
+      .prepare("INSERT INTO step_run (item_id, step_index, attempt, agent, status) VALUES (?, ?, 1, ?, 'active')")
+      .run('TR-FM-SECRET', IMPLEMENT_STEP_INDEX, STEPS[IMPLEMENT_STEP_INDEX].agent).lastInsertRowid,
+  )
+  const token = `ghp_${'A1b2C3d4E5'.repeat(4)}`
+  const head = 'expect(received).toBe(expected) // Object.is equality · Expected: 4242 · Received: '
+  const reason = head + 'y'.repeat(289 - head.length) + ' ' + token + ' and more'.repeat(80)
+  assert.ok(reason.indexOf(token) < 300 && reason.indexOf(token) + token.length > 300)
+
+  const res = await app.inject({
+    method: 'POST',
+    url: `/api/farm/steps/${runId}/test-runs`,
+    headers: { 'x-farm-secret': config.FARM_SHARED_SECRET },
+    payload: { test_runs: [run('cr-fm-secret', [row('leaks', 'fail', { failure_message: reason })])] },
+  })
+
+  assert.equal(res.statusCode, 200, res.body)
+  const { failure_message: stored } = db.prepare('SELECT failure_message FROM test_result WHERE item_id = ?').get('TR-FM-SECRET')
+  assert.equal(stored.length, 300)
+  assert.ok(!stored.includes('ghp_') && !stored.includes('A1b2C3d4E5'), stored)
+  assert.ok(stored.startsWith(head) && stored.includes('[redacted]'), stored)
+})
+
+// HZ-950 guardrail: the farm's cap and the server's stay equal. Read as text,
+// as the two live in different languages.
+test('the farm and server failure-message caps are the same number', () => {
+  const read = (file, re) => Number(re.exec(readFileSync(join(REPO_ROOT, file), 'utf8'))?.[1])
+  const farm = read('farm/checks.py', /^FAILURE_MESSAGE_MAX_CHARS = (\d+)$/m)
+  const server = read('server/src/testResults.js', /^const FAILURE_MESSAGE_MAX = (\d+)$/m)
+  assert.equal(farm, 300)
+  assert.equal(server, farm)
 })
 
 test('the test-runs route refuses a bad farm secret', async () => {
