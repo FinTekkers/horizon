@@ -106,6 +106,9 @@ async function expectMedia(scope) {
 
 async function expectPlayable({ video, img }) {
   await expect.poll(() => video.evaluate((v) => v.readyState), { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
+  // The image is loading="lazy": below the fold on a phone it never loads
+  // until it is scrolled into view.
+  await img.scrollIntoViewIfNeeded()
   await expect.poll(() => img.evaluate((i) => i.complete && i.naturalWidth), { timeout: 15_000 }).toBeGreaterThan(0)
 }
 
