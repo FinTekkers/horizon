@@ -62,6 +62,7 @@ sessions; queued work survives on disk.
 | `FARM_STEP_TIMEOUT_S` | 900 | per-claude-invocation timeout |
 | `FARM_CHECK_CMD` | (auto-detect) | guardrail check command run before push (via `sh -c`) |
 | `FARM_CHECK_TIMEOUT_S` | 600 | how long the checks may **run**. Never includes time spent queueing for a capacity slot — see below |
+| `FARM_CHECK_TERM_GRACE_S` | 5 | seconds a timed-out check's process group gets between `SIGTERM` and `SIGKILL`, so runners can flush their reports. Taken out of the time limit (at most 10% of it), never added; `0` kills at once |
 | `FARM_MAX_EPHEMERAL` | 4 | how many ephemeral agent steps run at once. The code default is deliberately conservative; the value this host runs is set in `/etc/horizon/farm.env` (`infra/host/DEPLOY.md`). Never forwarded into an agent session |
 | `FARM_MAX_CONCURRENT_CHECKS` | 2 | how many check suites may run at once, independently of the agent cap. `<=0` disables the limiter entirely (the rollback lever) |
 | `FARM_CHECK_SLOT_WAIT_MAX_S` | 1200 | how long a run waits for a capacity slot before proceeding **without** one, loudly. `<=0` waits forever |

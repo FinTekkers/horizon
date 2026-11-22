@@ -379,7 +379,7 @@ def test_r3_a_commands_own_junitxml_wins_and_each_test_is_stored_once(ws, monkey
     pytest_ws(ws, FAIL_AND_PASS)
     monkeypatch.setenv("FARM_CHECK_CMD", f"{PY} -m pytest -q --junitxml=junit.xml")
     report_dir_files: list = []
-    spy(monkeypatch, "_report_rows", lambda report_dir, *_: report_dir_files.append(sorted(report_dir.iterdir())))
+    spy(monkeypatch, "_report_rows", lambda report_dir, *_, **__: report_dir_files.append(sorted(report_dir.iterdir())))
     test_runs: list = []
 
     with pytest.raises(CheckFailure):
@@ -406,7 +406,7 @@ def test_r4_an_inherited_junitxml_passes_through_unchanged(ws, tmp_path, monkeyp
     child_envs: list = []
     spy(monkeypatch, "_run_bounded", lambda cmd, ws, timeout_s, env: child_envs.append(env))
     report_dir_files: list = []
-    spy(monkeypatch, "_report_rows", lambda report_dir, *_: report_dir_files.append(sorted(report_dir.iterdir())))
+    spy(monkeypatch, "_report_rows", lambda report_dir, *_, **__: report_dir_files.append(sorted(report_dir.iterdir())))
     test_runs: list = []
 
     with pytest.raises(CheckFailure):
@@ -417,6 +417,24 @@ def test_r4_an_inherited_junitxml_passes_through_unchanged(ws, tmp_path, monkeyp
     assert report_dir_files == [[]]
     stored = stored_rows(test_runs)
     assert len(stored) == 1 and stored[0]["test"] == stored[0]["command"] and stored[0]["status"] == "fail"
+
+
+def test_a_timed_out_command_reads_its_reports_as_stopped_before_cleanup(ws, monkeypatch):
+    """HZ-948: on a timeout the report dir is still there when it is read,
+    and the JSON-lines pass is asked for the cut-off row."""
+    monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "1")
+    monkeypatch.setenv("FARM_CHECK_CMD", 'touch "$HORIZON_TEST_REPORT_DIR/r.jsonl"; sleep 30')
+    report_dir_files: list = []
+    spy(monkeypatch, "_report_rows", lambda report_dir, *_, **__: report_dir_files.append(sorted(report_dir.iterdir())))
+    stopped: list = []
+    spy(monkeypatch, "_jsonl_rows", lambda *_, **kwargs: stopped.append(kwargs.get("stopped")))
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None)
+
+    assert err.value.reason == "timed_out"
+    assert [[path.name for path in files] for files in report_dir_files] == [["r.jsonl"]]
+    assert stopped == [True]
 
 
 def test_r5_inherited_options_still_apply_and_the_supplied_report_is_stored(ws, monkeypatch):

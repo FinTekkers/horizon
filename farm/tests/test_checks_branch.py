@@ -10,6 +10,7 @@ is collected straight after it, before the next run can clean it.
 The fixture is a real git clone with origin/main, so the change detection
 and the `git show origin/main:` commands run for real."""
 
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -364,6 +365,43 @@ def test_a_branch_run_past_the_slot_budget_fails_the_check(tmp_path, monkeypatch
     assert [row["status"] for row in by_label(test_runs)["branch"]["tests"]] == ["fail"]
     assert by_label(test_runs)["branch"]["commands"][0]["exit_code"] is None
     assert branch_notes == ["branch: test.sh failed (timed out after 1s)"]
+
+
+def test_a_timed_out_branch_run_stores_its_streamed_rows_and_the_cut_off_test(tmp_path, monkeypatch):
+    """HZ-948: the finished tests and one `running when stopped:` row
+    replace the single failed command row."""
+    monkeypatch.setenv("FARM_CHECK_TIMEOUT_S", "2")
+    report = tmp_path / "r.jsonl"
+    report.write_text(
+        "\n".join(
+            json.dumps(line)
+            for line in (
+                {"event": "finished", "name": "adds", "file": "t.js", "status": "pass"},
+                {"event": "finished", "name": "posts", "file": "t.js", "status": "fail", "failure": "boom"},
+                {"event": "started", "name": "hangs", "file": "t.js"},
+            )
+        )
+        + "\n"
+    )
+    ws = make_ws(
+        tmp_path,
+        {"scripts/checks/test.sh": "exit 0\n"},
+        {"scripts/checks/test.sh": f'cp {report} "$HORIZON_TEST_REPORT_DIR/r.jsonl"\nsleep 30\n'},
+    )
+    test_runs: list = []
+
+    with pytest.raises(CheckFailure) as err:
+        run_checks(ws, log=lambda *_: None, configured={"test": main_cmd("test")}, test_runs=test_runs)
+
+    assert err.value.reason == "timed_out"
+    rows = by_label(test_runs)["branch"]["tests"]
+    assert sorted((r["test"], r["status"]) for r in rows) == [
+        ("adds", "pass"),
+        ("posts", "fail"),
+        (f"{checks.STOPPED_TEST_PREFIX}hangs", "fail"),
+    ]
+    assert by_label(test_runs)["branch"]["commands"][0]["exit_code"] is None
+    assert f"t.js › {checks.STOPPED_TEST_PREFIX}hangs" in err.value.tail
 
 
 def test_a_branch_command_that_crashes_fails_the_check(tmp_path, monkeypatch):
