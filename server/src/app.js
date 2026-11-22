@@ -177,7 +177,7 @@ function soleItemIdHref(text, ctx) {
 // Anything that does not resolve falls back to marked's own renderer (return
 // false, or Renderer.prototype), so its escaping is marked's exactly. Inside a
 // link's label nothing is linked again.
-function renderLinkedMarkdown(md, ctx) {
+function renderLinkedMarkdown(md, ctx, routePath = null) {
   let inLink = 0
   // Raw inline HTML still passes through as before; marked's lexer marks the
   // tokens that follow a raw <a …> until its </a>.
@@ -186,7 +186,8 @@ function renderLinkedMarkdown(md, ctx) {
     link(token) {
       inLink += 1
       try {
-        return Renderer.prototype.link.call(this, token)
+        const href = routePath ? apiHrefFor(routePath, token.href) : token.href
+        return Renderer.prototype.link.call(this, href === token.href ? token : { ...token, href })
       } finally {
         inLink -= 1
       }
@@ -236,6 +237,16 @@ function cssHrefFor(routePath) {
   return `${'../'.repeat(depth)}agent-pages.css`
 }
 
+// The same rule for any /api/… link on such a page: an agent's artifact line
+// (e.g. the design page's `/api/items/<id>/design-page`) or the page's own
+// attempt links, written relative so they resolve under the production
+// subpath instead of 404ing at the host root. Anything else is unchanged.
+function apiHrefFor(routePath, href) {
+  if (typeof href !== 'string' || !href.startsWith('/api/')) return href
+  const depth = routePath.replace(/^\/api\//, '').split('/').length - 1
+  return `${'../'.repeat(depth)}${href.slice('/api/'.length)}`
+}
+
 // HZ-803: " · started … · finished …" for a page's meta line, '' with neither.
 function runTimesSuffix(run) {
   const times = runTimeView.runTimesHtml(run)
@@ -268,7 +279,7 @@ function renderArtifactPage(id, stepIndex, run, routePath, substep = null) {
   const otherLinks = attempts
     .filter((a) => a.attempt !== run.attempt)
     .map((a) => {
-      const url = `/api/items/${encodeURIComponent(id)}/artifacts/${stepIndex}/${a.attempt}${substep ? `?substep=${encodeURIComponent(substep.id)}` : ''}`
+      const url = apiHrefFor(routePath, `/api/items/${encodeURIComponent(id)}/artifacts/${stepIndex}/${a.attempt}${substep ? `?substep=${encodeURIComponent(substep.id)}` : ''}`)
       const feedbackLabel = a.feedback ? ` — “${esc(a.feedback)}”` : ''
       return `<a href="${url}">attempt ${a.attempt}</a>${feedbackLabel}`
     })
@@ -279,7 +290,7 @@ function renderArtifactPage(id, stepIndex, run, routePath, substep = null) {
 <link rel="stylesheet" href="${cssHrefFor(routePath)}"></head><body><div class="page">
 <div class="meta"><a href="${UI_URL}/${esc(id.toLowerCase())}">← ${esc(id)} in Horizon</a> · ${title}${runTimesSuffix(run)}</div>
 ${nav}
-<article>${renderLinkedMarkdown(run.artifact, pageLinkContext(id, run))}</article>
+<article>${renderLinkedMarkdown(run.artifact, pageLinkContext(id, run), routePath)}</article>
 </div>
 <script>${runTimeView.clientScript()}</script>
 </body></html>`

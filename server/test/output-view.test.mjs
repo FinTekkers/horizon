@@ -153,7 +153,7 @@ test('the page shows "attempt X of Y" labelled with the feedback that drove this
   const res = await inject({ method: 'GET', url: '/api/items/T-VER/artifacts/11/2' })
   assert.match(res.body, /attempt 2 of 2/)
   assert.match(res.body, /please add tests/)
-  assert.match(res.body, /href="\/api\/items\/T-VER\/artifacts\/11\/1"/)
+  assert.match(res.body, /href="\.\.\/\.\.\/\.\.\/\.\.\/items\/T-VER\/artifacts\/11\/1"/)
 })
 
 test('the artifact page prints exactly one "attempt N" mention for its own attempt number, not a duplicate', async () => {
