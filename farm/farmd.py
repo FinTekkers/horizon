@@ -975,11 +975,22 @@ def _sweep_runs() -> None:
     owner is gone — a step killed by Stop or a crash, a pre-merge run past its
     cap, a check this farmd ran before it restarted. A run whose owner is
     still alive, in tmux or anywhere else, is never touched (run_reaper.sweep).
-    Each kill is logged with its run, item and worktree."""
+    Each kill is logged with its run, item and worktree.
+
+    HZ-963: then the same kinds left untagged, or whose lease is gone, in an
+    item or pre-merge workspace no run holds (workspace_sweep.sweep_check_orphans).
+    Either pass failing never stops the other."""
+    def log(line: str) -> None:
+        print(f"farmd: {line}", flush=True)
+
     try:
-        run_reaper.sweep(log=lambda line: print(f"farmd: {line}", flush=True))
+        run_reaper.sweep(log=log)
     except Exception as exc:
         print(f"farmd: run sweep error: {type(exc).__name__}: {exc}", flush=True)
+    try:
+        workspace_sweep.sweep_check_orphans(log=log)
+    except Exception as exc:
+        print(f"farmd: orphan sweep error: {type(exc).__name__}: {exc}", flush=True)
 
 
 def _run_sweep_loop(stop: threading.Event | None = None) -> None:

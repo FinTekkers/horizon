@@ -20,10 +20,16 @@ process; this module makes ownership explicit instead.
   process carrying its tag. A timed-out check command is reaped at once
   (checks._run_bounded), and server/src/premerge.js reaps after its cap.
 - **Sweep.** farmd sweeps at boot and every RUN_SWEEP_INTERVAL_S: a capture
-  worker, browser or e2e server whose tag names a lease in RUNS_DIR whose
-  owner is dead is killed, and each kill is logged with the run's item and
-  worktree. That covers an owner that was SIGKILLed — a farmd restart, a
-  stopped step, the OOM killer.
+  worker, browser, Playwright runner or e2e server whose tag names a lease in
+  RUNS_DIR whose owner is dead is killed, and each kill is logged with the
+  run's item and worktree. That covers an owner that was SIGKILLed — a farmd
+  restart, a stopped step, the OOM killer. Each pid's start time is read
+  again right before every signal, so a reused pid is never signalled.
+- **Sweep, orphans (HZ-963).** An untagged process, or one whose lease is
+  gone, is invisible to the sweep above. farm/workspace_sweep.py's
+  sweep_check_orphans() runs next to it on the same tick and stops those by
+  where they run instead: the same kinds, in an item or pre-merge workspace
+  whose item no task file, active lease or item lock holds.
 
 Ownership is the tag plus a lease in *this* farm's RUNS_DIR, never a name or
 a port. A tag with no lease here (another farm home's run, a test's) is never
@@ -55,11 +61,14 @@ RUN_ENV = "HORIZON_RUN_ID"
 # Run ids become file names: nothing that could leave RUNS_DIR.
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 CAPTURE_WORKER_SCRIPT = "farm/capture/worker.mjs"
+# `node …/node_modules/playwright/cli.js test` (or @playwright/test's cli.js):
+# the runner a capture or e2e check starts, and it starts the webServer.
+PLAYWRIGHT_CLI_SCRIPTS = ("/playwright/cli.js", "/@playwright/test/cli.js")
 # comm is cut at 15 characters: chrome_crashpad_handler shows as chrome_crashpad.
 # Playwright's headless shell reports as chrome-headless on current
 # builds, not headless_shell.
 BROWSER_COMMS = ("headless_shell", "chrome-headless", "chrome", "chromium", "chromium-browse", "chrome_crashpad")
-KINDS = ("capture_worker", "browser", "e2e_server")
+KINDS = ("capture_worker", "browser", "e2e_server", "playwright_runner")
 KILL_WAIT_S = 2.0
 
 # Run ids whose lease this process wrote and has not reaped yet.
@@ -176,8 +185,9 @@ def lease_active(lease: dict) -> bool:
 
 
 def kind_of(pid: int) -> str | None:
-    """capture_worker, browser or e2e_server — the only kinds the sweep kills
-    — or None for anything else (npm, sh, python, a service's own process)."""
+    """capture_worker, browser, e2e_server or playwright_runner — the only
+    kinds the sweep kills — or None for anything else (npm, sh, python, a
+    service's own process)."""
     st = procfs.stat(pid)
     if st is None:
         return None
@@ -192,6 +202,8 @@ def kind_of(pid: int) -> str | None:
     script = args[0].replace(os.sep, "/")
     if script.endswith(CAPTURE_WORKER_SCRIPT):
         return "capture_worker"
+    if script.endswith(PLAYWRIGHT_CLI_SCRIPTS):
+        return "playwright_runner" if "test" in args[1:] else None
     if script == "src/server.js" or script.endswith("/src/server.js"):
         return "e2e_server"
     if "vite" in Path(script).parts or Path(script).name in ("vite", "vite.js"):
@@ -199,9 +211,9 @@ def kind_of(pid: int) -> str | None:
     return None
 
 
-def _tagged(run_ids, spared: set[int]) -> list[tuple[int, str]]:
-    """(pid, run id) for every live process of this uid that belongs to one
-    of `run_ids`, never one in `spared`.
+def _tagged(run_ids, spared: set[int]) -> list[tuple[int, str, int]]:
+    """(pid, run id, start ticks) for every live process of this uid that
+    belongs to one of `run_ids`, never one in `spared`.
 
     A process belongs to a run when it carries the run's tag, or when it
     carries no readable tag and descends from one that does. The second case
@@ -210,11 +222,13 @@ def _tagged(run_ids, spared: set[int]) -> list[tuple[int, str]]:
     forked them is tagged. A descendant with a tag of its own (a nested run)
     is judged by that tag instead."""
     tags: dict[int, str | None] = {}
+    starts: dict[int, int] = {}
     children: dict[int, list[int]] = {}
     for pid in procfs.own_pids():
         st = procfs.stat(pid)
         if st is None or st.state in procfs.DEAD_STATES:
             continue
+        starts[pid] = st.start
         tags[pid] = procfs.environ_value(pid, RUN_ENV)
         children.setdefault(st.ppid, []).append(pid)
     out, seen = [], set()
@@ -226,32 +240,44 @@ def _tagged(run_ids, spared: set[int]) -> list[tuple[int, str]]:
         seen.add(pid)
         if pid in spared:
             continue
-        out.append((pid, run_id))
+        out.append((pid, run_id, starts[pid]))
         todo.extend((child, run_id) for child in children.get(pid, []) if tags.get(child) is None)
     return out
 
 
-def _signal_all(pids: list[int], grace_s: float) -> int:
-    """SIGTERM each, SIGKILL whatever outlives `grace_s`. Returns how many
-    are still alive after that."""
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+def _same(pid: int, start: int) -> bool:
+    """The pid still names the process that was found: alive, same start time."""
+    st = procfs.stat(pid)
+    return st is not None and st.state not in procfs.DEAD_STATES and st.start == start
+
+
+def _signal_checked(targets: list[tuple[int, int]], grace_s: float) -> tuple[list[int], int]:
+    """SIGTERM each (pid, start), SIGKILL whatever outlives `grace_s`. Right
+    before each signal the pid's start time is read again: a pid that is gone
+    or now names another process is never signalled. Returns the pids sent
+    SIGTERM and how many targets are still alive after that."""
+    termed = []
+    for pid, start in targets:
+        if _same(pid, start):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                continue
+            termed.append(pid)
+    targets = [target for target in targets if target[0] in termed]
     deadline = time.monotonic() + grace_s
-    while time.monotonic() < deadline and any(procfs.alive(pid) for pid in pids):
+    while time.monotonic() < deadline and any(_same(*target) for target in targets):
         time.sleep(0.05)
-    for pid in pids:
-        if procfs.alive(pid):
+    for pid, start in targets:
+        if _same(pid, start):
             try:
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
     deadline = time.monotonic() + KILL_WAIT_S
-    while time.monotonic() < deadline and any(procfs.alive(pid) for pid in pids):
+    while time.monotonic() < deadline and any(_same(*target) for target in targets):
         time.sleep(0.05)
-    return sum(1 for pid in pids if procfs.alive(pid))
+    return termed, sum(1 for target in targets if _same(*target))
 
 
 def _reap(run_id: str, grace_s: float) -> tuple[int, int]:
@@ -260,10 +286,11 @@ def _reap(run_id: str, grace_s: float) -> tuple[int, int]:
     ancestors — a nested run inherits the tag from the very process reaping."""
     if not valid_run_id(run_id):
         return 0, 0
-    pids = [pid for pid, _tag in _tagged({run_id}, procfs.ancestors(os.getpid()))]
-    if not pids:
+    targets = [(pid, start) for pid, _tag, start in _tagged({run_id}, procfs.ancestors(os.getpid()))]
+    if not targets:
         return 0, 0
-    return len(pids), _signal_all(pids, grace_s)
+    termed, survivors = _signal_checked(targets, grace_s)
+    return len(termed), survivors
 
 
 def reap_run(run_id: str, *, grace_s: float = 1.0, log: Callable[[str], None] = _stderr) -> int:
@@ -389,9 +416,9 @@ def _leases(runs_dir: Path) -> dict[str, dict]:
 
 
 def sweep(*, runs_dir: Path | None = None, grace_s: float = 1.0, log: Callable[[str], None] = _stderr) -> list[dict]:
-    """Kills every capture worker, browser and e2e server whose tag names a
-    lease in RUNS_DIR whose owner is gone. Returns one dict per kill:
-    {pid, kind, run_id, item_id, worktree}.
+    """Kills every capture worker, browser, Playwright runner and e2e server
+    whose tag names a lease in RUNS_DIR whose owner is gone. Returns one dict
+    per kill: {pid, kind, run_id, item_id, worktree}.
 
     Spared, always: a process whose run is active; one whose tag has no lease
     here; an untagged one; any other kind. A dead lease with nothing tagged
@@ -401,23 +428,26 @@ def sweep(*, runs_dir: Path | None = None, grace_s: float = 1.0, log: Callable[[
     if not dead:
         return []
     tagged = _tagged(dead.keys(), procfs.ancestors(os.getpid()))
-    kills = []
-    for pid, run_id in tagged:
+    kills, starts = [], {}
+    for pid, run_id, start in tagged:
         kind = kind_of(pid)
         if kind is None:
             continue
         lease = dead[run_id]
+        starts[pid] = start
         kills.append(
             {"pid": pid, "kind": kind, "run_id": run_id, "item_id": lease.get("item_id"), "worktree": lease.get("worktree")}
         )
     if kills:
-        _signal_all([kill["pid"] for kill in kills], grace_s)
+        termed, _survivors = _signal_checked([(kill["pid"], starts[kill["pid"]]) for kill in kills], grace_s)
+        # A pid gone or reused before its SIGTERM was never signalled.
+        kills = [kill for kill in kills if kill["pid"] in termed]
     for kill in kills:
         log(
             f"run_reaper: killed {kill['kind']} pid={kill['pid']} run={kill['run_id']} "
             f"item={kill['item_id']} worktree={kill['worktree']}"
         )
-    left = {run_id for pid, run_id in tagged if procfs.alive(pid)}
+    left = {run_id for pid, run_id, _start in tagged if procfs.alive(pid)}
     for run_id in dead:
         if run_id not in left:
             remove_lease(run_id, runs_dir)
@@ -434,12 +464,28 @@ def _age_s(start_ticks: int) -> float:
     return age
 
 
+def _workspace_item(pid: int) -> str | None:
+    """The lowercased item id when the process's cwd is inside an item or
+    pre-merge workspace (WORKSPACES_DIR/<hub>__items/<item>/…), else None."""
+    cwd = procfs.link(pid, "cwd")
+    if cwd is None:
+        return None
+    for root in {Path(os.path.abspath(config.WORKSPACES_DIR)), Path(os.path.realpath(config.WORKSPACES_DIR))}:
+        try:
+            parts = Path(cwd).relative_to(root).parts
+        except ValueError:
+            continue
+        if len(parts) >= 2 and parts[0].endswith(("__items", "__premerge")):
+            return parts[1].lower()
+    return None
+
+
 def report(*, runs_dir: Path | None = None) -> dict:
-    """Every capture worker, browser and e2e server of this uid with its age,
-    and the oldest active run's age. `ok` is false when a capture worker or
-    browser — or a tagged e2e server — is older than that run (or exists at
-    all with no run active). An untagged
-    e2e server is listed but never counted: horizon-server is one."""
+    """Every capture worker, browser, Playwright runner and e2e server of this
+    uid with its age and workspace item, and the oldest active run's age. `ok`
+    is false when a counted one is older than that run (or exists at all with
+    no run active). An untagged e2e server outside every workspace is listed
+    but never counted: horizon-server is one."""
     longest = 0.0
     for lease in _leases(_runs_dir(runs_dir)).values():
         st = procfs.stat(lease["owner_pid"]) if lease_active(lease) else None
@@ -452,12 +498,15 @@ def report(*, runs_dir: Path | None = None) -> dict:
         if kind is None or st is None or st.state in procfs.DEAD_STATES:
             continue
         tag = procfs.environ_value(pid, RUN_ENV)
+        item_id = _workspace_item(pid)
         age = round(_age_s(st.start), 1)
-        counted = kind != "e2e_server" or tag is not None
+        counted = kind != "e2e_server" or tag is not None or item_id is not None
         # With no run active, no capture worker or browser should exist at all.
         old = counted and (age > longest or longest == 0)
         too_old += old
-        processes.append({"pid": pid, "kind": kind, "age_s": age, "run_id": tag, "older_than_runs": old})
+        processes.append(
+            {"pid": pid, "kind": kind, "age_s": age, "run_id": tag, "item_id": item_id, "older_than_runs": old}
+        )
     return {"ok": too_old == 0, "longest_active_run_s": round(longest, 1), "too_old": too_old, "processes": processes}
 
 

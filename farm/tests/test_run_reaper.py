@@ -11,15 +11,35 @@ the one an active run owns, and logs the stray with its worktree. Metric line
 zombie) counts as dead. Guardrails 1–3: a process is only ever killed for a
 tag plus a dead lease in this RUNS_DIR, of a target kind; a service's own
 untagged `node src/server.js` is never touched; cleanup never changes a
-check's result."""
+check's result.
 
+HZ-963: orphaned check processes — untagged, or with no lease — in an idle
+item or pre-merge workspace are stopped by workspace_sweep's orphan pass, and
+the tests only ever see and signal what they started themselves:
+`process_list` narrows procfs.own_pids/all_pids to Procs.mine() plus a
+StaleBox of simulated leftovers (the 22 Nov 2026 box), and `kill_guard` fails
+any test that signals a process it did not start."""
+
+import dataclasses
+import json
 import os
 import subprocess
 
 import pytest
 
-from farm import checks, procfs, run_reaper
-from farm.tests.run_reaper_fakes import Procs, free_port, gone, make_app, tag_env, wait_until, write_lease
+from farm import checks, procfs, run_reaper, workspace_sweep, workspaces
+from farm.tests.run_reaper_fakes import (
+    Procs,
+    StaleBox,
+    free_port,
+    gone,
+    make_app,
+    make_workspace,
+    pgrp,
+    tag_env,
+    wait_until,
+    write_lease,
+)
 
 
 @pytest.fixture
@@ -29,11 +49,82 @@ def procs(tmp_path):
         yield p
     finally:
         p.kill_all()
+        # Guardrail 4's other half: nothing the test started outlives it.
+        wait_until("every process the test started to be gone", lambda: not p.leaked(), 5)
 
 
 @pytest.fixture
 def runs(tmp_path):
     return tmp_path / "runs"
+
+
+@pytest.fixture
+def stale():
+    return StaleBox()
+
+
+@pytest.fixture(autouse=True)
+def process_list(procs, stale, monkeypatch):
+    """The only processes any test here sees: its own and the StaleBox's."""
+    stale.add_box_of_22_nov()
+    stale.install(monkeypatch)
+    monkeypatch.setattr(procfs, "own_pids", lambda: procs.mine() + stale.own())
+    monkeypatch.setattr(procfs, "all_pids", lambda: procs.mine() + list(stale.entries))
+    return stale
+
+
+class KillGuard:
+    def __init__(self, procs, stale):
+        self.procs = procs
+        self.stale = stale
+        self.sent: list[tuple[int, int]] = []
+        self.violations: list[str] = []
+
+    def allowed(self, pid: int) -> bool:
+        return pid > 1 and pid not in self.stale.entries and pid in self.procs.mine()
+
+    def refuse(self, what: str):
+        self.violations.append(what)
+        raise AssertionError(f"a test signalled a process it did not start: {what}")
+
+
+@pytest.fixture(autouse=True)
+def kill_guard(procs, stale, monkeypatch):
+    """Guardrail 4: every os.kill/os.killpg goes to a process this test
+    started, or the test fails — also when the code under test swallowed the
+    AssertionError."""
+    guard = KillGuard(procs, stale)
+    real_kill, real_killpg = os.kill, os.killpg
+
+    def kill(pid, sig):
+        if not guard.allowed(pid):
+            guard.refuse(f"kill({pid}, {sig})")
+        guard.sent.append((pid, sig))
+        return real_kill(pid, sig)
+
+    def killpg(pgid, sig):
+        members = [pid for pid in procfs.all_pids() if pgrp(pid) == pgid]
+        if pgid <= 1 or pgid in stale.entries or not all(guard.allowed(pid) for pid in members):
+            guard.refuse(f"killpg({pgid}, {sig})")
+        guard.sent.append((pgid, sig))
+        return real_killpg(pgid, sig)
+
+    monkeypatch.setattr(os, "kill", kill)
+    monkeypatch.setattr(os, "killpg", killpg)
+    yield guard
+    assert guard.violations == []
+
+
+@pytest.fixture
+def ws(tmp_path, runs, monkeypatch):
+    """A workspaces dir, task queue and RUNS_DIR of the test's own."""
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", root)
+    monkeypatch.setattr(workspaces, "QUEUE_DIR", tmp_path / "queue")
+    monkeypatch.setattr(run_reaper.config, "WORKSPACES_DIR", root)
+    monkeypatch.setattr(run_reaper.config, "RUNS_DIR", runs)
+    return root
 
 
 def wait_started(proc, kind):
@@ -161,6 +252,16 @@ def test_an_untagged_server_and_vite_preview_survive_every_sweep_and_reap(procs,
     assert procfs.alive(server.pid) and procfs.alive(vite.pid)
 
 
+def test_the_orphan_pass_spares_an_untagged_server_outside_every_workspace(procs, runs, ws):
+    # The procs app dir is next to the workspaces dir, not in it: horizon-server.
+    server = procs.server(free_port(), None, orphan=True)
+    wait_started(server, "e2e_server")
+    lines = []
+    assert workspace_sweep.sweep_check_orphans(runs_dir=runs, min_age_s=0, log=lines.append) == []
+    assert procfs.alive(server.pid)
+    assert lines == []
+
+
 # ---- guardrail 2: cleanup never changes a check's result ----
 
 
@@ -205,15 +306,242 @@ def test_a_lease_whose_pid_was_reused_is_dead(procs):
     assert run_reaper.lease_active(lease) is False
 
 
+def _row(out, pid):
+    rows = [p for p in out["processes"] if p["pid"] == pid]
+    assert len(rows) == 1, f"pid {pid} is listed once"
+    return rows[0]
+
+
 def test_the_report_counts_a_worker_older_than_every_active_run(procs, runs, monkeypatch, capsys):
+    """Metric line 3: only the test's own worker is asserted on, though the
+    StaleBox's 26-day servers and 46-hour browsers are in the list too."""
     dead_pid, dead_start = procs.dead_owner()
     write_lease(runs, "chk-dead", dead_pid, start=dead_start)
     worker = procs.worker("chk-dead")
     wait_started(worker, "capture_worker")
     monkeypatch.setattr(run_reaper.config, "RUNS_DIR", runs)
-    out = run_reaper.report()
-    mine = [p for p in out["processes"] if p["pid"] == worker.pid]
-    assert mine and mine[0]["older_than_runs"] is True
-    assert out["ok"] is False
-    assert run_reaper.main(["--report"]) == 1
+    assert _row(run_reaper.report(), worker.pid)["older_than_runs"] is True
+    run_reaper.main(["--report"])
     assert f'"pid": {worker.pid}' in capsys.readouterr().out
+
+
+def test_the_report_does_not_count_a_worker_an_active_run_owns(procs, runs, monkeypatch):
+    owner = procs.owner()
+    write_lease(runs, "chk-live", owner.pid)
+    # Ages are reported to 0.1 s: the run must be measurably older than its worker.
+    wait_until("the owner to be 0.5 s old", lambda: procfs.age_s(procfs.stat(owner.pid).start) > 0.5, 5)
+    worker = procs.worker("chk-live")
+    wait_started(worker, "capture_worker")
+    monkeypatch.setattr(run_reaper.config, "RUNS_DIR", runs)
+    assert _row(run_reaper.report(), worker.pid)["older_than_runs"] is False
+
+
+def test_the_report_counts_an_untagged_server_only_inside_a_workspace(procs, runs, ws):
+    app = make_workspace(ws, "hz-963")
+    inside = procs.server(free_port(), None, app=app)
+    outside = procs.server(free_port(), None)
+    wait_started(inside, "e2e_server")
+    wait_started(outside, "e2e_server")
+    out = run_reaper.report(runs_dir=runs)
+    assert {k: _row(out, inside.pid)[k] for k in ("item_id", "older_than_runs")} == {"item_id": "hz-963", "older_than_runs": True}
+    assert {k: _row(out, outside.pid)[k] for k in ("item_id", "older_than_runs")} == {"item_id": None, "older_than_runs": False}
+
+
+# ---- HZ-963 metric line 3: the tests see only what they started ----
+
+
+def test_the_process_list_holds_only_the_tests_own_pids_and_the_stale_box(procs, stale):
+    worker = procs.worker(None)
+    wait_started(worker, "capture_worker")
+    expected = set(procs.mine()) | set(stale.entries)
+    assert worker.pid in procs.mine()
+    assert set(procfs.own_pids()) <= expected and set(procfs.all_pids()) <= expected
+    assert set(stale.own()) <= set(procfs.own_pids())
+    assert os.getpid() not in procfs.own_pids()
+    # A real pid passes through every patched read.
+    raw = (procfs.PROC / str(worker.pid) / "stat").read_text()
+    assert procfs.stat(worker.pid).start == int(raw[raw.rfind(")") + 2 :].split()[19])
+    assert procfs.cmdline(worker.pid) == (procfs.PROC / str(worker.pid) / "cmdline").read_bytes().decode().split("\0")[:-1]
+    assert procfs.link(worker.pid, "cwd") == os.readlink(procfs.PROC / str(worker.pid) / "cwd")
+
+
+def test_a_stale_reap_target_gets_no_signal(procs, runs, stale, kill_guard):
+    """Guardrail 4: a leftover shaped like a sweep target — a tagged worker
+    whose lease in this RUNS_DIR is dead — but another user's, is never
+    signalled; nor is any other StaleBox entry, by either pass."""
+    dead_pid, dead_start = procs.dead_owner()
+    write_lease(runs, "chk-stale-dead", dead_pid, start=dead_start)
+    target = stale.add(["node", "/srv/x/farm/capture/worker.mjs"], age_s=3600, cwd="/srv/x", tag="chk-stale-dead", own=False)
+    assert run_reaper.kind_of(target) == "capture_worker"
+
+    run_reaper.sweep(runs_dir=runs, log=lambda _: None)
+    workspace_sweep.sweep_check_orphans(workspaces_dir=runs.parent, runs_dir=runs, min_age_s=0, log=lambda _: None)
+
+    assert not [pid for pid, _sig in kill_guard.sent if pid in stale.entries]
+
+
+# ---- HZ-963 metric line 1: one sweep stops every orphan kind ----
+
+KINDS = ("e2e_server", "capture_worker", "playwright_runner", "browser")
+
+
+def start_orphans(procs, app) -> dict[str, int]:
+    """One double-forked stand-in of each kind, from `app`, with no tag."""
+    port = free_port()
+    started = {
+        "e2e_server": procs.server(port, None, app=app, orphan=True),
+        "capture_worker": procs.worker(None, app=app, orphan=True),
+        "playwright_runner": procs.playwright(None, app=app, orphan=True),
+        "browser": procs.browser(None, app=app, orphan=True),
+    }
+    for kind, proc in started.items():
+        wait_started(proc, kind)
+        procs.wait_ready(proc.pid)
+    return {kind: proc.pid for kind, proc in started.items()}
+
+
+@pytest.mark.parametrize("where", ["items", "premerge", "deleted"])
+def test_one_sweep_stops_every_orphan_kind_in_an_idle_workspace(procs, runs, ws, where):
+    app = make_workspace(ws, "hz-923", "__premerge" if where == "premerge" else "__items")
+    pids = start_orphans(procs, app)
+    if where == "deleted":
+        # The 26-day servers' item worktrees were long reaped.
+        subprocess.run(["rm", "-rf", str(app)], check=True, timeout=10)
+        assert os.readlink(procfs.PROC / str(pids["e2e_server"]) / "cwd").endswith(" (deleted)")
+
+    lines = []
+    kills = workspace_sweep.sweep_check_orphans(runs_dir=runs, min_age_s=0, log=lines.append)
+
+    for kind in KINDS:
+        pid = pids[kind]
+        wait_until(f"the {kind} to be gone", lambda: gone(pid), 5)
+        assert f"workspace sweep: killed {kind} pid={pid} item=hz-923 reason=orphan" in lines
+    assert sorted(kill["pid"] for kill in kills) == sorted(pids.values())
+
+
+def test_a_workers_browser_goes_with_it(procs, runs, ws):
+    app = make_workspace(ws, "hz-923")
+    worker = procs.worker(None, app=app, orphan=True, child=True)
+    browser = procs.worker_child()
+    procs.wait_ready(worker.pid)
+    procs.wait_ready(browser)
+    assert run_reaper.kind_of(browser) == "browser"
+    assert procfs.link(browser, "cwd") == "/", "only its parent is in the workspace"
+
+    lines = []
+    workspace_sweep.sweep_check_orphans(runs_dir=runs, min_age_s=0, log=lines.append)
+
+    for kind, pid in (("capture_worker", worker.pid), ("browser", browser)):
+        wait_until(f"the {kind} to be gone", lambda: gone(pid), 5)
+        assert f"workspace sweep: killed {kind} pid={pid} item=hz-923 reason=orphan" in lines
+
+
+# ---- HZ-963 metric line 2: an active run's look-alikes survive ----
+
+
+@pytest.mark.parametrize("owner", ["lease", "task_file", "item_lock"])
+def test_an_orphan_shaped_process_an_active_run_owns_survives(procs, runs, ws, owner):
+    app = make_workspace(ws, "hz-923")
+    pids = start_orphans(procs, app)
+    lines = []
+
+    def sweep():
+        workspace_sweep.sweep_check_orphans(runs_dir=runs, min_age_s=0, log=lines.append)
+
+    if owner == "lease":
+        write_lease(runs, "chk-hz-923-live", procs.owner().pid, item_id="HZ-923", worktree=str(app))
+        sweep()
+    elif owner == "task_file":
+        active = workspaces.QUEUE_DIR / "runs" / "active"
+        active.mkdir(parents=True)
+        (active / "hz-923.json").write_text(json.dumps({"item": {"id": "HZ-923"}}))
+        sweep()
+    else:
+        with workspaces.item_lock("FinTekkers/horizon", "hz-923", wait_s=0):
+            sweep()
+
+    assert all(procfs.alive(pid) for pid in pids.values())
+    assert lines == []
+
+
+# ---- HZ-963 guardrail 2: a reused pid is never signalled ----
+
+
+def test_the_orphan_pass_skips_a_pid_whose_start_changed(procs, runs, ws, monkeypatch):
+    app = make_workspace(ws, "hz-923")
+    server = procs.server(free_port(), None, app=app, orphan=True)
+    wait_started(server, "e2e_server")
+    real_scan = workspace_sweep.scan
+    # As if the server had exited and its pid been reused between the scan and the signal.
+    monkeypatch.setattr(workspace_sweep, "scan", lambda **kw: [dataclasses.replace(o, start=o.start - 1) for o in real_scan(**kw)])
+    sent, lines = [], []
+
+    workspace_sweep.sweep_check_orphans(runs_dir=runs, min_age_s=0, signal_fn=lambda *a: sent.append(a), log=lines.append)
+
+    assert sent == [] and lines == []
+    assert procfs.alive(server.pid)
+
+
+def test_the_tag_pass_skips_a_pid_whose_start_changed(procs, runs, monkeypatch, kill_guard):
+    dead_pid, dead_start = procs.dead_owner()
+    write_lease(runs, "chk-dead", dead_pid, start=dead_start)
+    worker = procs.worker("chk-dead")
+    wait_started(worker, "capture_worker")
+    real_tagged = run_reaper._tagged
+    monkeypatch.setattr(run_reaper, "_tagged", lambda *a: [(pid, run, start - 1) for pid, run, start in real_tagged(*a)])
+
+    assert run_reaper.sweep(runs_dir=runs, log=lambda _: None) == []
+    assert procfs.alive(worker.pid)
+    assert worker.pid not in [pid for pid, _sig in kill_guard.sent]
+
+
+# ---- HZ-963 guardrail 3: unclear ownership kills nothing ----
+
+
+def test_an_unreadable_task_file_skips_the_orphan_pass(procs, runs, ws):
+    app = make_workspace(ws, "hz-923")
+    pids = start_orphans(procs, app)
+    active = workspaces.QUEUE_DIR / "runs" / "active"
+    active.mkdir(parents=True)
+    (active / "hz-9.json").write_text("{not json")
+    lines = []
+
+    assert workspace_sweep.sweep_check_orphans(runs_dir=runs, min_age_s=0, log=lines.append) == []
+
+    assert all(procfs.alive(pid) for pid in pids.values())
+    assert lines == ["workspace sweep: orphan pass skipped, run state unreadable"]
+
+
+def test_a_young_orphan_is_spared(procs, runs, ws):
+    app = make_workspace(ws, "hz-923")
+    server = procs.server(free_port(), None, app=app, orphan=True)
+    wait_started(server, "e2e_server")
+    lines = []
+    assert workspace_sweep.sweep_check_orphans(runs_dir=runs, log=lines.append) == []
+    assert procfs.alive(server.pid) and lines == []
+
+
+# ---- HZ-963 metric line 4's proxy: farmd runs both passes ----
+
+
+@pytest.mark.parametrize("broken", [None, "sweep", "orphans"])
+def test_farmds_run_sweep_runs_both_passes(monkeypatch, capsys, broken):
+    from farm import farmd
+
+    calls = []
+
+    def fake(name):
+        def run(**kwargs):
+            calls.append(name)
+            if name == broken:
+                raise RuntimeError("boom")
+            return []
+
+        return run
+
+    monkeypatch.setattr(run_reaper, "sweep", fake("sweep"))
+    monkeypatch.setattr(workspace_sweep, "sweep_check_orphans", fake("orphans"))
+    farmd._sweep_runs()
+    assert calls == ["sweep", "orphans"]
+    if broken:
+        assert "error: RuntimeError: boom" in capsys.readouterr().out
