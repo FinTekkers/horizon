@@ -6469,6 +6469,15 @@ export function buildApp({
       return { ok: true }
     })
 
+    // Screenshots only (HZ-969), same reasoning: with no farm, Farm health's
+    // Design steps section has no /farm/design reading. This sets the one the
+    // collector uses while FARM_URL is unset (`reading: null` clears it); it
+    // still goes through the collector's allowlist.
+    fastify.post('/api/test/farm-design', { config: { scope: 'test' } }, async (request) => {
+      farmHealth.setDesignReadingForTest(request.body?.reading ?? null)
+      return { ok: true }
+    })
+
     // e2e only (HO-842), same reasoning: with no farm, Re-check and run's
     // host re-check could never answer. This sets farmd's /preflight answer
     // for one item (`answer: null` clears it); the session, origin, plan and

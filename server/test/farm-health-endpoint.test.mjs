@@ -5,7 +5,8 @@
 //   - an admin's body holds only allowlisted keys, at every depth, and a fake
 //     secret planted in every host, service, farmd and deploy input is absent;
 //   - the collector only runs `systemctl is-active …` (no sudo) and GETs
-//     farmd's /farm/status with no body, and the route has no other method;
+//     farmd's /farm/status and (HZ-969) /farm/design with no body, and the
+//     route has no other method;
 //   - requests read the cache: they never collect.
 
 import { test } from 'node:test'
@@ -48,6 +49,19 @@ const TARGETS = [
 ]
 const UNITS = farmHealth.buildServiceRows(TARGETS)
 
+// HZ-969: farmd's /farm/design reading, with keys that must never reach the body.
+const DESIGN_READING = {
+  chosen: 'studio',
+  tool: 'html',
+  fallbackFrom: 'studio',
+  reason: 'Meta Studio (`meta`) is not installed on this box',
+  htmlReady: true,
+  htmlReason: null,
+  probe: { state: 'failed', checkedAt: '2026-10-23T09:00:00Z', label: 'needs `/design-login`', fresh: true, reason: SECRET, org: SECRET },
+  maxAgeS: 604800,
+  env: { FARM_DESIGN_BACKEND: SECRET },
+}
+
 const calls = { exec: [], farm: [] }
 const deps = {
   readFile: async (path) => {
@@ -65,6 +79,7 @@ const deps = {
   },
   farmFetch: async (path, body, opts) => {
     calls.farm.push({ path, body, opts })
+    if (path === '/farm/design') return DESIGN_READING
     return {
       status: 'running',
       since: new Date(NOW - 60 * 60 * 1000).toISOString(),
@@ -112,6 +127,12 @@ const deps = {
   // HZ-802: only the named fields reach the body.
   notDispatchedItems: () => [
     { itemId: 'HZ-4', title: 'Held task', step: 'Execute', kind: 'blocked_by', message: 'Blocked by HZ-5 (Rates)', output: SECRET },
+  ],
+  designProjects: () => [
+    { name: 'Horizon', file: 'farm/projects/horizon/steps.json', definitions: 'on', design: 'on', label: 'Design the screens', repos: ['FinTekkers/horizon'], labels: [], paths: [], token: SECRET },
+  ],
+  designRounds: () => [
+    { itemId: 'HZ-9', round: 1, kind: 'run', tool: 'html', fallbackFrom: 'studio', why: 'Design needed', at: '2026-10-23T09:30:00Z', brief: SECRET, createdBy: SECRET },
   ],
 }
 
@@ -175,6 +196,21 @@ const SHAPE = {
   services: [['detail', 'name', 'state', 'unit', 'up']],
   recent: [['at', 'kind', 'tag', 'target']],
   notDispatched: [['itemId', 'kind', 'message', 'step', 'title']],
+  design: {
+    status: null,
+    chosen: null,
+    tool: null,
+    fallbackFrom: null,
+    reason: null,
+    htmlReady: null,
+    htmlReason: null,
+    probe: ['checkedAt', 'fresh', 'label', 'state'],
+    maxAgeS: null,
+    projectsStatus: null,
+    projects: [['definitions', 'design', 'file', 'label', 'labels', 'name', 'paths', 'repos']],
+    roundsStatus: null,
+    rounds: [['at', 'fallbackFrom', 'itemId', 'kind', 'round', 'tool', 'why']],
+  },
 }
 
 // Walks the body against SHAPE: an object's keys must equal the allowlist
@@ -188,6 +224,7 @@ function assertShape(value, shape, where) {
     assert.deepEqual(Object.keys(value).sort(), [...shape].sort(), `keys at ${where}`)
     for (const k of shape) {
       if (k === 'load') assert.ok(value.load.every((n) => typeof n === 'number'), `${where}.load`)
+      else if (['repos', 'labels', 'paths'].includes(k)) assert.ok(value[k].every((v) => typeof v === 'string'), `${where}.${k}`)
       else assert.ok(value[k] === null || typeof value[k] !== 'object', `${where}.${k} is a leaf`)
     }
     return
@@ -258,6 +295,12 @@ test("an admin's response holds only allowlisted keys, at every depth, and no pl
     { itemId: 'HZ-4', title: 'Held task', step: 'Execute', kind: 'blocked_by', message: 'Blocked by HZ-5 (Rates)' },
   ])
   assert.equal(body.state, 'amber')
+  // HZ-969: the design block, its named keys only, and no effect on the state.
+  assert.equal(body.design.status, 'ok')
+  assert.deepEqual([body.design.chosen, body.design.tool, body.design.fallbackFrom], ['studio', 'html', 'studio'])
+  assert.deepEqual(body.design.probe, { state: 'failed', checkedAt: '2026-10-23T09:00:00Z', label: 'needs `/design-login`', fresh: true })
+  assert.deepEqual(body.design.projects[0].repos, ['FinTekkers/horizon'])
+  assert.deepEqual(body.design.rounds[0], { itemId: 'HZ-9', round: 1, kind: 'run', tool: 'html', fallbackFrom: 'studio', why: 'Design needed', at: '2026-10-23T09:30:00Z' })
 })
 
 test('Running now plus agent-lane check-slot waiters equals the agents-busy count (HZ-574)', async () => {
@@ -349,7 +392,7 @@ test('a pre-merge run waiting for a capacity slot is listed once, as Pre-merge c
   assert.equal(body.waitingCount, 2)
 })
 
-test('the collector only runs systemctl is-active and only GETs /farm/status', async () => {
+test('the collector only runs systemctl is-active and only GETs /farm/status and /farm/design', async () => {
   await farmHealth.refreshFarmHealth(deps)
   assert.ok(calls.exec.length > 0)
   for (const c of calls.exec) {
@@ -360,8 +403,8 @@ test('the collector only runs systemctl is-active and only GETs /farm/status', a
     assert.ok(c.timeoutMs > 0, 'systemctl runs under a timeout')
   }
   assert.ok(calls.farm.length > 0)
+  assert.deepEqual([...new Set(calls.farm.map((c) => c.path))].sort(), ['/farm/design', '/farm/status'])
   for (const c of calls.farm) {
-    assert.equal(c.path, '/farm/status')
     // farmFetch sends a GET exactly when body is undefined.
     assert.equal(c.body, undefined)
   }
@@ -447,4 +490,37 @@ test('a deploy_target read that fails still checks the box units (HZ-595)', asyn
     snapshot.services.map((s) => s.unit),
     farmHealth.BOX_UNITS.map((u) => u.unit),
   )
+})
+
+test('HZ-969: farmd down for /farm/design and a failed projects read leave only those parts unknown', async () => {
+  const snapshot = await farmHealth.collectOnce({
+    ...deps,
+    farmFetch: async (path, body, opts) => {
+      if (path === '/farm/design') throw new Error('connect ECONNREFUSED')
+      return deps.farmFetch(path, body, opts)
+    },
+    designProjects: () => {
+      throw new Error('disk gone')
+    },
+  })
+  const body = farmHealth.toPublic(snapshot)
+  assert.equal(body.design.status, 'unknown')
+  assert.equal(body.design.tool, null)
+  assert.equal(body.design.projectsStatus, 'unknown')
+  assert.deepEqual(body.design.projects, [])
+  assert.equal(body.design.roundsStatus, 'ok')
+  assert.equal(body.design.rounds.length, 1)
+  // The rest of the snapshot still filled, and the state is not the design's.
+  assert.equal(body.farm.status, 'running')
+  assert.ok(body.services.length > 0)
+  assert.equal(body.box.vcpus, 4)
+  assert.equal(body.state, 'amber')
+})
+
+test("HZ-969: farmd's error answer for /farm/design reads unknown", async () => {
+  const snapshot = await farmHealth.collectOnce({
+    ...deps,
+    farmFetch: async (path, body, opts) => (path === '/farm/design' ? { error: 'design status unavailable' } : deps.farmFetch(path, body, opts)),
+  })
+  assert.equal(farmHealth.toPublic(snapshot).design.status, 'unknown')
 })

@@ -14,8 +14,9 @@
 // e2e/fixtures/effort-cost-seed.js (HZ-921) seeds the `effort-cost-*` screens'
 // items — paused or closed, so they go in before boot.
 //   node seed.mjs after <db> <server url> — also marks the queued-work run
-//     queued in the server's run-state cache, through the test hook, logged in
-//     with the SCREENSHOT_LOGIN_KEY the runner gives serve.sh.
+//     queued in the server's run-state cache, and (HZ-969) sets Farm health's
+//     /farm/design reading, through the test hooks, logged in with the
+//     SCREENSHOT_LOGIN_KEY the runner gives serve.sh.
 
 import { openDb } from '../fixtures/seed.js'
 import { seedBeforeBoot, seedAfterBoot } from '../fixtures/layout-screens-seed.js'
@@ -59,6 +60,30 @@ try {
 
 // Without a key no shot logs in, so no shot can show the queued run either.
 const key = process.env.SCREENSHOT_LOGIN_KEY
+
+// HZ-969: the `farm-health-design` screens' farmd /farm/design reading — this
+// server has no farm. Studio chosen with no `meta`, and a failed probe.
+const FARM_DESIGN_READING = {
+  chosen: 'studio',
+  tool: 'html',
+  fallbackFrom: 'studio',
+  reason: 'Meta Studio (`meta`) is not installed on this box',
+  htmlReady: true,
+  htmlReason: null,
+  probe: { state: 'failed', checkedAt: '2026-11-22T10:42:00Z', label: "needs an org-visibility confirmation a headless run can't give", fresh: true },
+  maxAgeS: 604800,
+}
+if (phase === 'after' && serverUrl && key) {
+  const res = await fetch(new URL('/api/test/farm-design', serverUrl), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Horizon-Test-Env-SCREENSHOT-LOGIN-KEY': key },
+    body: JSON.stringify({ reading: FARM_DESIGN_READING }),
+  })
+  if (!res.ok) {
+    console.error(`seed: the farm-design hook answered ${res.status}`)
+    process.exit(1)
+  }
+}
 if (queuedRun && serverUrl && key) {
   const res = await fetch(new URL('/api/test/run-state', serverUrl), {
     method: 'POST',

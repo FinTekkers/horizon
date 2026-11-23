@@ -8,7 +8,9 @@
 // collection does are file reads under /proc and /sys, a statfs of '/', one
 // `systemctl is-active <units>` (deployDryRun's execProbe: no shell, no sudo,
 // a timeout, and a minimal env) over the units buildServiceRows takes from
-// the deploy_target table and BOX_UNITS, and one GET of farmd's /farm/status.
+// the deploy_target table and BOX_UNITS, one GET of farmd's /farm/status, and
+// (HZ-969) one GET of farmd's /farm/design plus reads of each project's
+// steps.json and the last substep_round rows.
 //
 // What reaches the browser is decided by toPublic, an allowlist: it copies
 // named keys only and never spreads an input object, so farmd's `sessions`,
@@ -20,11 +22,17 @@
 // so the page and its menu dot always agree with each other.
 
 import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { FARM_HEALTH_POLL_MS, FARM_URL } from './config.js'
 import { execProbe } from './deployDryRun.js'
 import { listTargets } from './deployTargets.js'
 import { farmFetch } from './orchestrator.js'
+import { redact } from './caretakerRules.js'
+import { PROJECTS_DIR, slugify } from './definitions.js'
+import { DESIGN_OUTPUT, ROUND_KINDS, recentDesignRounds } from './designRounds.js'
+import { loadSubsteps } from './substeps.js'
 import * as store from './store.js'
 import { msOf, sqlTime } from './sqlTime.js'
 import { STEPS } from '../../domain/js/lifecycle.js'
@@ -263,6 +271,130 @@ export const defaultDeps = {
   deployTargets: () => listTargets(),
   // HZ-802: open items at an agent step with nothing running, and why.
   notDispatchedItems: () => store.notDispatchedItems(),
+  // HZ-969: each project's design sub-step, and the last design rounds.
+  designProjects: () => designProjectsOf(store.listProjects({ checks: false })),
+  designRounds: () => recentDesignRounds(DESIGN_ROUNDS_LIMIT),
+}
+
+// ---- HZ-969: design steps ----
+
+const DESIGN_ROUNDS_LIMIT = 10
+const MAX_APPLIES = 20
+const DESIGN_CHOSEN = new Set(['studio', 'claude', 'html', 'invalid'])
+const DESIGN_TOOLS = new Set(['studio', 'claude', 'html'])
+const PROBE_STATES = new Set(['none', 'passed', 'failed', 'unreadable'])
+const PROJECT_DESIGN = new Set(['on', 'off', 'unknown'])
+
+// A test hook's farmd /farm/design reading, used only with no FARM_URL (the
+// screenshot server has no farm). Null otherwise.
+let designReadingForTest = null
+export function setDesignReadingForTest(raw) {
+  designReadingForTest = raw && typeof raw === 'object' ? raw : null
+}
+
+// Each project's design sub-step from its steps.json, through the same loader
+// intake snapshots with. Read-only. A project with its definitions switch off
+// never snapshots one, so it reads off; a file that can't load reads unknown.
+export function designProjectsOf(projects, load = loadSubsteps) {
+  return (Array.isArray(projects) ? projects : [])
+    .filter((p) => p && typeof p.name === 'string' && !p.unlinked)
+    .map((p) => {
+      const slug = slugify(p.name)
+      const file = slug && existsSync(path.join(PROJECTS_DIR, slug, 'steps.json')) ? `farm/projects/${slug}/steps.json` : null
+      const row = { name: p.name, file, definitions: p.definitionsEnabled ? 'on' : 'off', design: 'off', label: null, repos: [], labels: [], paths: [] }
+      let loaded
+      try {
+        loaded = load(p.name)
+      } catch {
+        return { ...row, design: 'unknown' }
+      }
+      if (!loaded || !Array.isArray(loaded.substeps) || loaded.errors?.length) return { ...row, design: 'unknown' }
+      const entry = loaded.substeps.find((s) => s.output === DESIGN_OUTPUT)
+      if (!entry || !p.definitionsEnabled) return row
+      const { repos = [], labels = [], paths = [] } = entry.applies || {}
+      return { ...row, design: 'on', label: entry.label, repos, labels, paths }
+    })
+}
+
+// farm/design_backend.py's LABEL_* — a probe's own reason may name an org or
+// an account, so a round's text that carries one is replaced by its label.
+const PROBE_LABELS = [
+  [/authoriz/i, 'needs `/design-login`'],
+  [/visible to your whole org|create_project/i, "needs an org-visibility confirmation a headless run can't give"],
+  [/ANTHROPIC_API_KEY/, "`ANTHROPIC_API_KEY` is set; Claude Design runs only on the farm's Claude login"],
+]
+const PROBE_LABEL_OTHER = 'failed for another reason; see the probe file on the box'
+const probeWhy = (label) => `The Claude Design probe failed: ${label}`
+const PROBE_WHYS = new Set([...PROBE_LABELS.map(([, label]) => label), PROBE_LABEL_OTHER].map(probeWhy))
+const EMAIL_RE = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g
+const TOKEN_RE = /\b(?:sk-[\w-]{8,}|[\w-]{32,})/g
+
+// A round's why, safe to show: probe text becomes its fixed label; anything
+// else has secrets, tokens and emails stripped, on one capped line.
+export function designWhy(text) {
+  if (typeof text !== 'string' || !text.trim()) return null
+  if (PROBE_WHYS.has(text)) return text
+  if (/claude design probe failed|visible to your whole org/i.test(text)) {
+    return probeWhy(PROBE_LABELS.find(([re]) => re.test(text))?.[1] ?? PROBE_LABEL_OTHER)
+  }
+  return redact(text.replace(EMAIL_RE, '[email]').replace(TOKEN_RE, '[redacted]'))
+}
+
+const pick = (set, v) => (typeof v === 'string' && set.has(v) ? v : null)
+const strList = (list) => (Array.isArray(list) ? list.filter((v) => typeof v === 'string').slice(0, MAX_APPLIES).map((v) => v.slice(0, 200)) : [])
+
+// The snapshot's `design`: farmd's /farm/design reading (null when farmd is
+// down or answered an error), the projects and the rounds (null when their
+// read failed). Each part goes unknown on its own; none feeds deriveHealth.
+export function designOf(raw, projects, rounds) {
+  const ok = raw && typeof raw === 'object' && !Array.isArray(raw) && raw.error == null && typeof raw.chosen === 'string'
+  const probe = ok && raw.probe && typeof raw.probe === 'object' ? raw.probe : {}
+  return {
+    status: ok ? 'ok' : 'unknown',
+    chosen: ok ? pick(DESIGN_CHOSEN, raw.chosen) : null,
+    tool: ok ? pick(DESIGN_TOOLS, raw.tool) : null,
+    fallbackFrom: ok ? pick(DESIGN_TOOLS, raw.fallbackFrom) : null,
+    reason: ok ? str(raw.reason) : null,
+    htmlReady: ok && typeof raw.htmlReady === 'boolean' ? raw.htmlReady : null,
+    htmlReason: ok ? str(raw.htmlReason) : null,
+    probe: {
+      state: pick(PROBE_STATES, probe.state),
+      checkedAt: str(probe.checkedAt, 40),
+      label: str(probe.label),
+      fresh: typeof probe.fresh === 'boolean' ? probe.fresh : null,
+    },
+    maxAgeS: ok ? finite(raw.maxAgeS) : null,
+    projectsStatus: Array.isArray(projects) ? 'ok' : 'unknown',
+    projects: (Array.isArray(projects) ? projects : []).map((p) => ({
+      name: str(p?.name, 100),
+      file: str(p?.file, 200),
+      definitions: p?.definitions === 'on' ? 'on' : 'off',
+      design: pick(PROJECT_DESIGN, p?.design) ?? 'unknown',
+      label: str(p?.label, 100),
+      repos: strList(p?.repos),
+      labels: strList(p?.labels),
+      paths: strList(p?.paths),
+    })),
+    roundsStatus: Array.isArray(rounds) ? 'ok' : 'unknown',
+    rounds: (Array.isArray(rounds) ? rounds : []).map((r) => ({
+      itemId: str(r?.itemId, 40),
+      round: Number.isInteger(r?.round) ? r.round : null,
+      kind: typeof r?.kind === 'string' && ROUND_KINDS.includes(r.kind) ? r.kind : null,
+      tool: pick(DESIGN_TOOLS, r?.tool),
+      fallbackFrom: pick(DESIGN_TOOLS, r?.fallbackFrom),
+      why: designWhy(r?.why),
+      at: str(r?.at, 40),
+    })),
+  }
+}
+
+// A dep that may be missing (older test deps) or throw: null, never a throw.
+function readDep(fn) {
+  try {
+    return typeof fn === 'function' ? (fn() ?? null) : null
+  } catch {
+    return null
+  }
 }
 
 const settle = (promise) => Promise.resolve().then(() => promise).then((v) => v, () => null)
@@ -276,13 +408,14 @@ export async function collectOnce(deps = defaultDeps) {
     // A deploy_target read that fails still leaves the box units to check.
   }
   const units = buildServiceRows(targets)
-  const [loadText, memText, machineText, disk, probe, farmRaw] = await Promise.all([
+  const [loadText, memText, machineText, disk, probe, farmRaw, designRaw] = await Promise.all([
     settle(deps.readFile('/proc/loadavg')),
     settle(deps.readFile('/proc/meminfo')),
     settle(deps.readFile('/sys/class/dmi/id/product_name')),
     settle(deps.statfs('/')),
     settle(deps.execProbe('systemctl', ['is-active', ...units.map((u) => u.unit)], SYSTEMCTL_TIMEOUT_MS)),
     deps.farmConfigured() ? settle(deps.farmFetch('/farm/status', undefined, { timeoutMs: FARM_STATUS_TIMEOUT_MS })) : null,
+    deps.farmConfigured() ? settle(deps.farmFetch('/farm/design', undefined, { timeoutMs: FARM_STATUS_TIMEOUT_MS })) : designReadingForTest,
   ])
 
   const load = parseLoadavg(loadText)
@@ -428,6 +561,7 @@ export async function collectOnce(deps = defaultDeps) {
     services,
     recent,
     notDispatched,
+    design: designOf(designRaw, readDep(deps.designProjects), readDep(deps.designRounds)),
   }
 }
 
@@ -452,6 +586,10 @@ const pubHolder = (h) => ({
   label: str(h?.label, 60),
   startedAt: str(h?.startedAt, 40),
 })
+
+// The snapshot's design block, through designOf again: named keys only.
+const pubDesign = (d) =>
+  designOf(d?.status === 'ok' ? d : null, d?.projectsStatus === 'ok' ? d.projects : null, d?.roundsStatus === 'ok' ? d.rounds : null)
 
 export function toPublic(snapshot) {
   const s = snapshot || {}
@@ -508,6 +646,7 @@ export function toPublic(snapshot) {
       kind: str(n?.kind, 40),
       message: str(n?.message, 300),
     })),
+    design: pubDesign(s.design),
   }
 }
 

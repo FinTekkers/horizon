@@ -29,6 +29,11 @@ async function expectRedPage(page) {
   const services = page.getByRole('region', { name: 'Services' })
   for (const name of SERVICES) await expect(services.getByText(name, { exact: true })).toBeVisible()
   await expect(services.getByRole('listitem')).toHaveCount(SERVICES.length)
+  // HZ-969: with no farmd to ask, only the Design steps section says it can't
+  // read the design state; Overall and Services above still rendered.
+  const design = page.getByRole('region', { name: 'Design steps' })
+  await expect(design.getByText('Design status unknown.')).toBeVisible()
+  await expect(design.getByRole('heading', { name: 'Projects with the design sub-step' })).toBeVisible()
 }
 
 test('an admin opens Farm health from the account menu; it reads red, and a reload keeps the page', async ({ page }) => {
@@ -55,7 +60,7 @@ test('on a phone the page keeps every section, one card a row', async ({ page })
   await page.setViewportSize({ width: 390, height: 1700 })
   await page.goto('/farm-health')
   await expectRedPage(page)
-  for (const name of ['Capacity', 'Running now', 'Box', 'Capacity slots', 'Services', 'Recent']) {
+  for (const name of ['Capacity', 'Running now', 'Box', 'Capacity slots', 'Services', 'Recent', 'Design steps']) {
     await expect(page.getByRole('heading', { level: 2, name, exact: true })).toBeVisible()
   }
   // HZ-574: with no farm to ask, the Capacity slots card says so rather than

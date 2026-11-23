@@ -200,3 +200,23 @@ export function listRounds(itemId, substepId) {
 export function latestRound(itemId, substepId) {
   return listRounds(itemId, substepId).at(-1) ?? null
 }
+
+// HZ-969: the last `limit` design rounds on this box, newest first, for Farm
+// health. recordRound is the only writer of substep_round, so every row is a
+// design round. `why` is the override reason for a forced round, else the
+// brief; Farm health redacts it (farmHealth.js designOf) before it is shown.
+const selectRecentRounds = db.prepare(
+  'SELECT item_id, round, kind, brief, override_reason, design_tool, fallback_from, created_at FROM substep_round ORDER BY created_at DESC, id DESC LIMIT ?',
+)
+
+export function recentDesignRounds(limit = 10) {
+  return selectRecentRounds.all(limit).map((row) => ({
+    itemId: row.item_id,
+    round: row.round,
+    kind: row.kind,
+    tool: row.design_tool ?? null,
+    fallbackFrom: row.fallback_from ?? null,
+    why: (row.kind === 'forced' ? row.override_reason : row.brief) ?? null,
+    at: isoUtc(row.created_at),
+  }))
+}

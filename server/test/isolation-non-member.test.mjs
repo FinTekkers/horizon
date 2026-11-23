@@ -278,6 +278,8 @@ const WRITE_CASES = {
   'POST /api/test/github-pr': { expect: '404', url: '/api/test/github-pr', body: {}, owner: 200 },
   'POST /api/test/screenshot-snapshot': { expect: '404', url: '/api/test/screenshot-snapshot', body: SCREENSHOTS, owner: 200 },
   'POST /api/test/farm-reachable': { expect: '404', url: '/api/test/farm-reachable', body: { reachable: true }, owner: 200 },
+  // HZ-969: clears the Design steps reading; nothing was set.
+  'POST /api/test/farm-design': { expect: '404', url: '/api/test/farm-design', body: { reading: null }, owner: 200 },
   // HO-842: clears a canned /preflight answer; nothing was set for ISOA-1.
   'POST /api/test/recheck-result': { expect: '404', url: '/api/test/recheck-result', body: { itemId: 'ISOA-1', answer: null }, owner: 200 },
   // HZ-924: held on an id no item has, so no pre-merge run here can wait on it.
