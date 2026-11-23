@@ -829,6 +829,37 @@ export async function getFarmHealth() {
     },
     services: ['horizon-server', 'horizon-farm', 'nginx'].map((n) => service(n)),
     recent: [{ kind: 'deploy', target: 'horizon', tag: 'b220', at: ago(3600) }],
+    // HZ-969: Studio chosen with no `meta`, so rounds draw Horizon pages.
+    design: {
+      status: 'ok',
+      chosen: 'studio',
+      tool: 'html',
+      fallbackFrom: 'studio',
+      reason: 'Meta Studio (`meta`) is not installed on this box',
+      htmlReady: true,
+      htmlReason: null,
+      probe: { state: 'failed', checkedAt: ago(7200).slice(0, 19) + 'Z', label: "needs an org-visibility confirmation a headless run can't give", fresh: true },
+      maxAgeS: 7 * 86400,
+      projectsStatus: 'ok',
+      projects: [
+        {
+          name: 'Horizon',
+          file: 'farm/projects/horizon/steps.json',
+          definitions: 'on',
+          design: 'on',
+          label: 'Design the screens',
+          repos: ['FinTekkers/horizon'],
+          labels: [],
+          paths: [],
+        },
+        { name: 'UI Service', file: null, definitions: 'on', design: 'off', label: null, repos: [], labels: [], paths: [] },
+      ],
+      roundsStatus: 'ok',
+      rounds: [
+        { itemId: 'HZ-969', round: 1, kind: 'run', tool: 'html', fallbackFrom: 'studio', why: 'Design needed: adds a new section', at: ago(1800) },
+        { itemId: 'US-327', round: 1, kind: 'skip', tool: null, fallbackFrom: null, why: 'No UI change', at: ago(5400) },
+      ],
+    },
   }
 }
 

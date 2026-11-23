@@ -57,6 +57,7 @@
     {"name": "design-gate-skipped", "path": "/ds-skip", "viewports": ["desktop", "phone"], "waitFor": "[data-testid=substep-row]:has-text(\"Skipped: backend only\")"},
     {"name": "effort-cost-final", "path": "/ec-final", "viewports": ["desktop", "phone"], "waitFor": ".effort-card:has-text(\"65 turns\")", "mask": [".effort-card__time"]},
     {"name": "effort-cost-closed", "path": "/ec-closed", "viewports": ["desktop", "phone"], "waitFor": ".effort-card:has-text(\"No clarification needed\")"},
-    {"name": "journey-farm-health", "path": "/farm-health", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": "[aria-label=\"Overall\"][data-state=\"red\"]", "mask": [".farm-health__refresh", ".farm-health__overall-meta", ".farm-health__card--box", ".farm-health__svc-count", ".farm-health__services", ".farm-health__event-at"]}
+    {"name": "journey-farm-health", "path": "/farm-health", "viewports": ["desktop", "phone"], "themes": ["light"], "waitFor": "[aria-label=\"Overall\"][data-state=\"red\"]", "mask": [".farm-health__refresh", ".farm-health__overall-meta", ".farm-health__card--box", ".farm-health__svc-count", ".farm-health__services", ".farm-health__event-at"]},
+    {"name": "farm-health-design", "path": "/farm-health", "viewports": ["desktop", "phone"], "themes": ["light", "dark"], "waitFor": "[data-testid=farm-health-design-tool]:has-text(\"Studio chosen\")", "mask": [".farm-health__refresh", ".farm-health__overall-meta", ".farm-health__card--box", ".farm-health__svc-count", ".farm-health__services", ".farm-health__event-at"]}
   ]
 }

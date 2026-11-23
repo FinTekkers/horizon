@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 # tags this daemon relays are the ones the server classifies, by construction.
 from domain.py import reasons, run_plan, steps
 from . import ask_review, caretaker_ruling, check_slots, command_checks, conflict_cancel, conflict_resolver, container_runner, credentials, db_changes, job_env, job_media, job_reports, job_start, knowledge, login_env, pause, preflight, premerge, rehearsal, rehearsal_proxy, rules, run_plan_requires, run_reaper, task_job, tmp_sweep, tmux_mgr, vcs, visual_page, workspace_sweep, workspaces
-from . import task_driver
+from . import design_backend, task_driver
 from . import config as farm_config
 from .checks import CHECK_SLOTS, default_check_slots, redact, scrub
 from .task_files import read_launchable_task
@@ -1969,6 +1969,17 @@ def farm_status():
         # HZ-670: {count, parents: [{ppid, count}], at} from the cleanup tick.
         "zombies": _zombies,
     }
+
+
+@app.get("/farm/design")
+def farm_design():
+    # HZ-969: Farm health's Design steps section, read in farmd's own env —
+    # the one design rounds are spawned from. Read-only, and never a 500: a
+    # failure here must only blank that section.
+    try:
+        return design_backend.status()
+    except Exception:
+        return {"error": "design status unavailable"}
 
 
 @app.post("/farm/start")

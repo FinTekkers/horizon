@@ -199,6 +199,320 @@ function CheckSlots({ data, now, onOpenItem }) {
   )
 }
 
+// ---- HZ-969: Design steps ----
+// Read-only, from the snapshot's `design` block: the tool farmd's resolve()
+// picks, the Claude Design probe record, each project's design sub-step and
+// the last design rounds. A part that could not be read says so here only.
+
+const CHOSEN_NAMES = { studio: 'Studio', claude: 'Claude', html: 'Horizon pages' }
+const TOOL_NAMES = { studio: 'Studio', claude: 'Claude Design', html: 'Horizon pages' }
+const ROUND_TOOL_NAMES = { studio: 'Studio', claude: 'Claude Design', html: 'Horizon page' }
+const ROUND_RESULTS = { run: 'Ran', forced: 'Ran (forced)', skip: 'Skipped' }
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// "22 Nov, 10:42 UTC", or null for a missing or bad time.
+function dayTime(iso, comma = ',') {
+  const ms = Date.parse(iso)
+  if (!Number.isFinite(ms)) return null
+  const d = new Date(ms)
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}${comma} ${d.toISOString().slice(11, 16)} UTC`
+}
+
+const maxAgeDays = (design) => Math.round((design.maxAgeS || 7 * 86400) / 86400)
+
+// Why a chosen tool fell back, in a few words.
+function fallbackShort(design) {
+  if (design.fallbackFrom === 'studio') return '`meta` not installed'
+  const { state, fresh } = design.probe
+  if (state === 'failed') return 'probe failed'
+  if (state === 'none') return 'probe never run'
+  if (state === 'unreadable') return 'probe record unreadable'
+  if (fresh === false) return `probe older than ${maxAgeDays(design)} days`
+  return 'cannot run here'
+}
+
+// The section's header badge: [tone, text].
+function designBadge(design) {
+  if (design.status !== 'ok') return ['muted', 'Unknown']
+  if (design.chosen === 'invalid') return ['red', 'Design rounds fail']
+  if (design.tool === 'html' && design.htmlReady === false) return ['red', "Horizon pages can't be drawn"]
+  if (design.fallbackFrom) return ['amber', `On, drawing Horizon pages instead of ${TOOL_NAMES[design.fallbackFrom]}`]
+  return ['green', `On, drawing with ${TOOL_NAMES[design.tool] || design.tool}`]
+}
+
+// Backticked words as <code>, the rest as text.
+function Ticked({ text }) {
+  return String(text ?? '')
+    .split(/(`[^`]+`)/)
+    .map((part, i) => (part.startsWith('`') && part.endsWith('`') && part.length > 2 ? <code key={i}>{part.slice(1, -1)}</code> : part))
+}
+
+function ToolCard({ design }) {
+  const invalid = design.chosen === 'invalid'
+  const htmlMissing = design.tool === 'html' && design.htmlReady === false
+  let line
+  if (invalid) line = 'Design rounds fail: the setting names no tool'
+  else if (design.fallbackFrom) line = `${CHOSEN_NAMES[design.chosen]} chosen, ${fallbackShort(design)} → drawing Horizon pages`
+  else line = `${CHOSEN_NAMES[design.chosen]} chosen → drawing with ${TOOL_NAMES[design.tool] || design.tool}`
+  if (htmlMissing) line += ', but the capture worker is missing'
+  return (
+    <section aria-labelledby="farm-health-design-tool" className="farm-health__card">
+      <h3 id="farm-health-design-tool" className="farm-health__h3 farm-health__design-title">
+        Tool in use
+      </h3>
+      <p className={`farm-health__design-tool farm-health__design-tool--${invalid || htmlMissing ? 'red' : design.fallbackFrom ? 'amber' : 'green'}`} data-testid="farm-health-design-tool">
+        <Ticked text={line} />
+      </p>
+      <dl className="farm-health__design-facts">
+        <dt>Setting</dt>
+        <dd>
+          <code>FARM_DESIGN_BACKEND</code> {invalid ? 'names no tool' : <>reads <code>{design.chosen}</code></>} (unset means <code>studio</code>)
+        </dd>
+        {!invalid && (
+          <>
+            <dt>Rounds use</dt>
+            <dd>
+              {TOOL_NAMES[design.tool] || '—'}
+              {design.tool && (
+                <>
+                  {' '}
+                  (<code>{design.tool}</code>)
+                </>
+              )}
+            </dd>
+          </>
+        )}
+        {design.reason && (
+          <>
+            <dt>Why</dt>
+            <dd>
+              <Ticked text={design.reason} />
+            </dd>
+          </>
+        )}
+        {htmlMissing && design.htmlReason && (
+          <>
+            <dt>Capture worker</dt>
+            <dd>
+              <Ticked text={design.htmlReason} />
+            </dd>
+          </>
+        )}
+      </dl>
+      <p className="farm-health__foot">
+        To change the tool, set <code>FARM_DESIGN_BACKEND</code> in the farm&apos;s env. This page only reads it.
+      </p>
+    </section>
+  )
+}
+
+const PROBE_TAGS = { passed: ['green', 'Passed'], failed: ['red', 'Failed'], none: ['muted', 'Never run'], unreadable: ['red', 'Unreadable'] }
+
+function ProbeCard({ design }) {
+  const { probe } = design
+  const days = maxAgeDays(design)
+  const stale = probe.state === 'passed' && probe.fresh === false
+  const [tone, tag] = stale ? ['amber', 'Passed, stale'] : PROBE_TAGS[probe.state] || ['muted', 'Unknown']
+  const checked = dayTime(probe.checkedAt)
+  const until = Number.isFinite(Date.parse(probe.checkedAt)) ? dayTime(new Date(Date.parse(probe.checkedAt) + days * 86400000).toISOString()) : null
+  let turnsOn = 'Yes'
+  if (design.tool !== 'claude') {
+    if (design.chosen !== 'claude') turnsOn = 'Not chosen on this box'
+    else if (probe.state === 'failed') turnsOn = 'No, because the last probe failed'
+    else if (stale) turnsOn = `No, because it is older than ${days} days`
+    else turnsOn = 'No, no probe has passed'
+  }
+  return (
+    <section aria-labelledby="farm-health-design-probe" className="farm-health__card">
+      <div className="farm-health__card-head">
+        <h3 id="farm-health-design-probe" className="farm-health__h3 farm-health__design-title">
+          Claude Design probe
+        </h3>
+        <span className={`farm-health__tag farm-health__tag--${tone}`}>{tag}</span>
+      </div>
+      {probe.state === 'none' ? (
+        <p className="farm-health__empty">
+          There is no probe record on this box (<code>state/design-claude-probe.json</code>).
+        </p>
+      ) : probe.state === 'unreadable' ? (
+        <p className="farm-health__empty">
+          The probe record (<code>state/design-claude-probe.json</code>) can&apos;t be read.
+        </p>
+      ) : (
+        <dl className="farm-health__design-facts">
+          <dt>Checked</dt>
+          <dd>{checked || 'Unknown'}</dd>
+          <dt>Fresh</dt>
+          <dd>
+            {probe.fresh === true
+              ? `Yes. It counts for ${days} days, until ${until}`
+              : probe.fresh === false
+                ? `No, older than ${days} days`
+                : 'Unknown'}
+          </dd>
+          <dt>Turns on Claude Design</dt>
+          <dd>{turnsOn}</dd>
+        </dl>
+      )}
+      {probe.state === 'failed' && probe.label && (
+        <p className="farm-health__design-why">
+          <Ticked text={probe.label} />
+        </p>
+      )}
+      <p className="farm-health__foot">
+        To re-check, run <code>python -m farm.design_backend probe-claude</code> on the box.
+      </p>
+    </section>
+  )
+}
+
+const DESIGN_TAGS = { on: ['green', 'On'], off: ['muted', 'Off'], unknown: ['red', 'Unreadable'] }
+
+function appliesText(p) {
+  return [...p.repos, ...p.labels.map((l) => `label ${l}`), ...p.paths].join(', ')
+}
+
+function ProjectsCard({ design }) {
+  const projects = design.projects || []
+  const on = projects.filter((p) => p.design === 'on').length
+  return (
+    <section aria-labelledby="farm-health-design-projects" className="farm-health__card">
+      <div className="farm-health__card-head">
+        <h3 id="farm-health-design-projects" className="farm-health__h3 farm-health__design-title">
+          Projects with the design sub-step
+        </h3>
+        {design.projectsStatus === 'ok' && (
+          <span className="farm-health__count">
+            {on} of {projects.length} on
+          </span>
+        )}
+      </div>
+      {design.projectsStatus !== 'ok' ? (
+        <p className="farm-health__empty">Projects unknown: their steps.json files could not be read.</p>
+      ) : projects.length === 0 ? (
+        <p className="farm-health__empty">No projects.</p>
+      ) : (
+        <table className="farm-health__table farm-health__design-table">
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Design sub-step</th>
+              <th>Applies to</th>
+              <th>Definitions switch</th>
+            </tr>
+          </thead>
+          <tbody>
+            {projects.map((p) => {
+              const [tone, tag] = DESIGN_TAGS[p.design] || DESIGN_TAGS.unknown
+              return (
+                <tr key={p.name} data-design={p.design}>
+                  <td>
+                    <strong>{p.name}</strong>
+                    <span className="farm-health__design-file">{p.file ? <code>{p.file}</code> : <>no <code>steps.json</code></>}</span>
+                  </td>
+                  <td>
+                    <span className={`farm-health__tag farm-health__tag--${tone}`}>{tag}</span>{' '}
+                    {p.design === 'on'
+                      ? p.label
+                      : p.design === 'unknown'
+                        ? "steps.json can't be read"
+                        : p.definitions === 'off'
+                          ? 'definitions switched off'
+                          : p.file
+                            ? 'no design sub-step'
+                            : null}
+                  </td>
+                  <td>{p.design === 'on' ? appliesText(p) || 'None' : 'None'}</td>
+                  <td className="farm-health__design-defs">Definitions {p.definitions === 'on' ? 'on' : 'off'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </section>
+  )
+}
+
+function RoundsCard({ design, onOpenItem }) {
+  const rounds = design.rounds || []
+  return (
+    <section aria-labelledby="farm-health-design-rounds" className="farm-health__card">
+      <div className="farm-health__card-head">
+        <h3 id="farm-health-design-rounds" className="farm-health__h3 farm-health__design-title">
+          Last design rounds
+        </h3>
+        {rounds.length > 0 && <span className="farm-health__count">Last {rounds.length}</span>}
+      </div>
+      {design.roundsStatus !== 'ok' ? (
+        <p className="farm-health__empty">Design rounds unknown: they could not be read.</p>
+      ) : rounds.length === 0 ? (
+        <p className="farm-health__empty">No design rounds yet.</p>
+      ) : (
+        <table className="farm-health__table farm-health__design-table">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>When</th>
+              <th>Tool</th>
+              <th>Result</th>
+              <th>Why</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rounds.map((r, i) => (
+              <tr key={`${r.itemId}-${r.round}-${i}`} data-kind={r.kind}>
+                <td>{r.itemId ? <ItemLink id={r.itemId} onOpenItem={onOpenItem} /> : '—'}</td>
+                <td className="farm-health__muted">{dayTime(r.at, '') || '—'}</td>
+                <td>
+                  {ROUND_TOOL_NAMES[r.tool] || (r.kind === 'skip' ? 'None' : 'Not recorded')}
+                  {r.fallbackFrom && <span className="farm-health__design-file">fell back from {TOOL_NAMES[r.fallbackFrom]}</span>}
+                </td>
+                <td>
+                  <span className={`farm-health__tag farm-health__tag--${r.kind === 'skip' ? 'amber' : 'green'}`}>{ROUND_RESULTS[r.kind] || '—'}</span>
+                </td>
+                <td>
+                  <Ticked text={r.why || '—'} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  )
+}
+
+export function DesignSteps({ design, onOpenItem }) {
+  const d = design || { status: 'unknown', probe: {}, projectsStatus: 'unknown', roundsStatus: 'unknown' }
+  const [tone, badge] = designBadge(d)
+  return (
+    <section aria-labelledby="farm-health-design" className="farm-health__design">
+      <div className="farm-health__card-head">
+        <h2 id="farm-health-design" className="farm-health__h2">
+          Design steps
+        </h2>
+        <span className={`farm-health__design-badge farm-health__design-badge--${tone}`}>{badge}</span>
+      </div>
+      {d.status === 'ok' ? (
+        <div className="farm-health__design-pair">
+          <ToolCard design={d} />
+          <ProbeCard design={d} />
+        </div>
+      ) : (
+        <div className="farm-health__card">
+          <p className="farm-health__empty">
+            <strong>Design status unknown.</strong> Couldn&apos;t load the design-step state from the farm. The rest of
+            Farm health is unaffected.
+          </p>
+        </div>
+      )}
+      <ProjectsCard design={d} />
+      <RoundsCard design={d} onOpenItem={onOpenItem} />
+    </section>
+  )
+}
+
 function Sections({ data, now, onOpenItem }) {
   const { capacity, box } = data
   const load = box.load || []
@@ -418,6 +732,8 @@ function Sections({ data, now, onOpenItem }) {
           )}
         </section>
       </div>
+
+      <DesignSteps design={data.design} onOpenItem={onOpenItem} />
     </>
   )
 }

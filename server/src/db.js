@@ -2008,6 +2008,8 @@ db.exec(`
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     UNIQUE (item_id, substep_id, round)
   );
+  -- HZ-969: Farm health's last design rounds, newest first.
+  CREATE INDEX IF NOT EXISTS substep_round_created ON substep_round (created_at);
   CREATE TRIGGER IF NOT EXISTS substep_round_no_update BEFORE UPDATE ON substep_round
     BEGIN SELECT RAISE(ABORT, 'substep_round is append-only'); END;
   CREATE TRIGGER IF NOT EXISTS substep_round_no_delete BEFORE DELETE ON substep_round

@@ -178,6 +178,84 @@ def resolve() -> Resolved:
     return fallback(tool, reason or "it cannot run on this box")
 
 
+# ---- HZ-969: what Farm health shows (read-only) ----
+
+# The probe record's states, as GET /farm/design reports them.
+PROBE_NONE, PROBE_PASSED, PROBE_FAILED, PROBE_UNREADABLE = "none", "passed", "failed", "unreadable"
+CHOSEN_INVALID = "invalid"
+INVALID_REASON = f"{ENV} is not one of {', '.join(TOOLS)}"
+
+# A probe's reason can hold an org or account name, and scrub() only catches
+# tokens, so the page only ever sees one of these fixed labels.
+LABEL_LOGIN = "needs `/design-login`"
+LABEL_ORG_CONFIRM = "needs an org-visibility confirmation a headless run can't give"
+LABEL_API_KEY = "`ANTHROPIC_API_KEY` is set; Claude Design runs only on the farm's Claude login"
+LABEL_OTHER = "failed for another reason; see the probe file on the box"
+_LABELS = (
+    (("authoriz",), LABEL_LOGIN),
+    (("visible to your whole org", "create_project"), LABEL_ORG_CONFIRM),
+    (("ANTHROPIC_API_KEY",), LABEL_API_KEY),
+)
+
+
+def probe_label(reason) -> str:
+    """The fixed label for a probe failure's reason. Never the reason itself."""
+    text = reason if isinstance(reason, str) else ""
+    lowered = text.lower()
+    for needles, label in _LABELS:
+        if any(needle.lower() in lowered for needle in needles):
+            return label
+    return LABEL_OTHER
+
+
+def _probe_status(now: datetime) -> dict:
+    if not probe_path().exists():
+        return {"state": PROBE_NONE, "checkedAt": None, "label": None, "fresh": None}
+    record = read_probe()
+    if record is None:
+        return {"state": PROBE_UNREADABLE, "checkedAt": None, "label": None, "fresh": None}
+    age = _age_s(record.get("checkedAt"), now)
+    passed = record.get("ok") is True
+    return {
+        "state": PROBE_PASSED if passed else PROBE_FAILED,
+        # Only a timestamp in the probe's own format is echoed.
+        "checkedAt": record["checkedAt"] if age is not None else None,
+        "label": None if passed else probe_label(record.get("reason")),
+        "fresh": None if age is None else 0 <= age <= PROBE_MAX_AGE_S,
+    }
+
+
+def _claude_reason(probe: dict) -> str:
+    """Why `claude` fell back, from the probe's state, never its raw text."""
+    if probe["state"] == PROBE_NONE:
+        return "no Claude Design probe has run on this box"
+    if probe["state"] == PROBE_UNREADABLE:
+        return "the Claude Design probe record on this box can't be read"
+    if probe["state"] == PROBE_FAILED:
+        return f"the Claude Design probe failed: {probe['label']}"
+    return "the Claude Design probe on this box is out of date; run it again"
+
+
+def status(now: datetime | None = None) -> dict:
+    """GET /farm/design: the chosen tool, the tool rounds use (resolve()
+    itself, so the page can't disagree with a round), the probe record and
+    whether a Horizon page could be drawn. Reads only: never runs the probe,
+    starts `meta` or writes a file."""
+    probe = _probe_status(now or datetime.now(timezone.utc))
+    html_ready, html_reason = html_availability()
+    body = {"probe": probe, "maxAgeS": PROBE_MAX_AGE_S, "htmlReady": html_ready, "htmlReason": html_reason}
+    try:
+        picked = chosen()
+        resolved = resolve()
+    except ConfigError:
+        # The raw value is never echoed.
+        return {"chosen": CHOSEN_INVALID, "tool": None, "fallbackFrom": None, "reason": INVALID_REASON, **body}
+    reason = resolved.reason
+    if resolved.fallback_from == CLAUDE:
+        reason = _claude_reason(probe)
+    return {"chosen": picked, "tool": resolved.tool, "fallbackFrom": resolved.fallback_from, "reason": reason, **body}
+
+
 # ---- the Claude Design probe (run by hand on a box) ----
 
 PROBE_PROMPT = """You are checking whether this headless session can make and update a Claude Design project.
