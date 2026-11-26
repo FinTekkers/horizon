@@ -34,11 +34,13 @@ export const PERSONA_DISPLAY = {
     python: { label: 'Python backend', initials: 'PY', color: '#2E6CB2' },
     ui: { label: 'Frontend UI', initials: 'UI', color: '#DFA200' },
     performance: { label: 'Performance', initials: 'PF', color: '#9C333E' },
+    rust_quant: { label: 'Rust quant', initials: 'RQ', color: '#38294F' },
   },
   qa: {
     api_contract: { label: 'API contract', initials: 'AC', color: '#2E6CB2' },
     e2e_journey: { label: 'End-to-end journey', initials: 'EJ', color: '#0E6E74' },
     data_integrity: { label: 'Data integrity', initials: 'DI', color: '#5E4380' },
+    quant: { label: 'Quant', initials: 'QT', color: '#9C333E' },
   },
   architect: {
     data_modelling: { label: 'Data modelling', initials: 'DM', color: '#38294F' },

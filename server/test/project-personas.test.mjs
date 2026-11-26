@@ -21,7 +21,7 @@ process.env.HORIZON_DB = join(mkdtempSync(join(tmpdir(), 'horizon-project-person
 delete process.env.GITHUB_WEBHOOK_SECRET
 delete process.env.FARM_URL
 
-const QUANT = { id: 'quant', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: 'MODEL', provider: 'claude', file: 'quant.md' }
+const QUANT = { id: 'pricer', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: 'MODEL', provider: 'claude', file: 'quant.md' }
 const catalogue = (await import('../../domain/js/providers.js')).PROVIDERS
 const CLAUDE_MODEL = catalogue.find((p) => p.name === 'claude').models[0].id
 
@@ -87,25 +87,25 @@ test('the definitions_enabled column defaults to 1 on rows that existed before i
 })
 
 test('an item keeps a persona from its own project; another project’s item and an unknown id get bad_persona', async () => {
-  const ok = await setPersona('AC-1', 'eng', 'acme-capital:quant')
+  const ok = await setPersona('AC-1', 'eng', 'acme-capital:pricer')
   assert.equal(ok.statusCode, 200, ok.body)
-  assert.equal((await itemFromApi('AC-1')).personas.eng, 'acme-capital:quant')
-  assert.equal(store.getItem('AC-1').personas.eng, 'acme-capital:quant')
+  assert.equal((await itemFromApi('AC-1')).personas.eng, 'acme-capital:pricer')
+  assert.equal(store.getItem('AC-1').personas.eng, 'acme-capital:pricer')
 
-  const foreign = await setPersona('OT-1', 'eng', 'acme-capital:quant')
+  const foreign = await setPersona('OT-1', 'eng', 'acme-capital:pricer')
   assert.equal(foreign.statusCode, 409)
   assert.equal(foreign.json().error, 'bad_persona')
 
   const unknown = await setPersona('AC-1', 'eng', 'acme-capital:nope')
   assert.equal(unknown.json().error, 'bad_persona')
   // The id it already had is untouched.
-  assert.equal((await itemFromApi('AC-1')).personas.eng, 'acme-capital:quant')
+  assert.equal((await itemFromApi('AC-1')).personas.eng, 'acme-capital:pricer')
 })
 
 test('a resolved project persona takes its badge from the project file; items with none get {}', async () => {
   const item = await itemFromApi('AC-1')
   assert.deepEqual(item.personaBadges, { eng: { label: 'Quant', initials: 'QT', color: '#2E6CB2' } })
-  assert.equal(Object.hasOwn(PERSONA_DISPLAY.eng, 'acme-capital:quant'), false)
+  assert.equal(Object.hasOwn(PERSONA_DISPLAY.eng, 'acme-capital:pricer'), false)
   assert.deepEqual((await itemFromApi('AC-2')).personaBadges, {})
   assert.deepEqual((await itemFromApi('OT-1')).personaBadges, {})
   // The audit text names the project persona, not the agent's default.
@@ -113,12 +113,12 @@ test('a resolved project persona takes its badge from the project file; items wi
   assert.ok(events.includes('set the eng specialist persona to Quant'), JSON.stringify(events))
   // models.personas carries the file's model and provider, keyed <agent>.<slug>:<id>.
   const overlay = store.projectOverlayFor(ACME)
-  assert.deepEqual(overlay.models, { 'eng.acme-capital:quant': CLAUDE_MODEL })
-  assert.deepEqual(overlay.providers, { 'eng.acme-capital:quant': 'claude' })
+  assert.deepEqual(overlay.models, { 'eng.acme-capital:pricer': CLAUDE_MODEL })
+  assert.deepEqual(overlay.providers, { 'eng.acme-capital:pricer': 'claude' })
 })
 
 test('with the switch off, a real personas.json is ignored: null overlay, bad_persona, saved id dropped, {} badges, global compose', async () => {
-  db.prepare("UPDATE work_item SET personas_json = ? WHERE id = 'SO-1'").run(JSON.stringify({ eng: 'switched-off:quant' }))
+  db.prepare("UPDATE work_item SET personas_json = ? WHERE id = 'SO-1'").run(JSON.stringify({ eng: 'switched-off:pricer' }))
   const saved = await app.inject({
     method: 'POST',
     url: `/api/projects/${OFF}/definitions-enabled`,
@@ -134,17 +134,17 @@ test('with the switch off, a real personas.json is ignored: null overlay, bad_pe
 
   assert.equal(definitions.projectPersonaOverlay({ name: 'Switched Off', definitions_enabled: 0 }), null)
   assert.equal(store.projectOverlayFor(OFF), null)
-  assert.equal((await setPersona('SO-1', 'eng', 'switched-off:quant')).json().error, 'bad_persona')
+  assert.equal((await setPersona('SO-1', 'eng', 'switched-off:pricer')).json().error, 'bad_persona')
   const item = await itemFromApi('SO-1')
   assert.deepEqual(item.personas, {})
   assert.deepEqual(item.personaBadges, {})
 
   // Composed text is byte-identical to a project with no file at all.
   const role = 'ROLE TEXT\n'
-  const off = definitions.composeRole(role, 'eng', 'switched-off:quant', store.projectOverlayFor(OFF))
-  const noFile = definitions.composeRole(role, 'eng', 'switched-off:quant', definitions.projectPersonaOverlay({ name: 'No File Co', definitions_enabled: 1 }))
+  const off = definitions.composeRole(role, 'eng', 'switched-off:pricer', store.projectOverlayFor(OFF))
+  const noFile = definitions.composeRole(role, 'eng', 'switched-off:pricer', definitions.projectPersonaOverlay({ name: 'No File Co', definitions_enabled: 1 }))
   assert.equal(off, noFile)
-  assert.equal(off, definitions.composeRole(role, 'eng', 'switched-off:quant'))
+  assert.equal(off, definitions.composeRole(role, 'eng', 'switched-off:pricer'))
 })
 
 test('loading a personas.json whose id equals a global persona id fails, and the error names that id', () => {

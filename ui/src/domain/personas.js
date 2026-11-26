@@ -44,11 +44,13 @@ export const PERSONAS = {
     python: { label: 'Python backend', initials: 'PY', color: 'var(--primary-ink)' },
     ui: { label: 'Frontend UI', initials: 'UI', color: 'var(--warning-ink)' },
     performance: { label: 'Performance', initials: 'PF', color: 'var(--danger-ink)' },
+    rust_quant: { label: 'Rust quant', initials: 'RQ', color: 'var(--architect-ink)' },
   },
   qa: {
     api_contract: { label: 'API contract', initials: 'AC', color: 'var(--primary-ink)' },
     e2e_journey: { label: 'End-to-end journey', initials: 'EJ', color: 'var(--success-ink)' },
     data_integrity: { label: 'Data integrity', initials: 'DI', color: 'var(--agent-human-ink)' },
+    quant: { label: 'Quant', initials: 'QT', color: 'var(--danger-ink)' },
   },
   architect: {
     data_modelling: { label: 'Data modelling', initials: 'DM', color: 'var(--architect-ink)' },
@@ -95,6 +97,24 @@ export function isPersona(agent, id) {
 export function personaId(item, agent) {
   const id = item?.personas?.[agent]
   return isPersona(agent, id) ? id : DEFAULT_PERSONAS[agent]
+}
+
+// HZ-972: the quant personas are FinTekkers-only — the repos
+// farm/projects/fintekkers/steps.json scopes its golden-cases sub-step to.
+// Keyed by persona id; a persona absent here is offered on every item.
+const QUANT_REPOS = ['FinTekkers/valuation-service', 'FinTekkers/ledger-models']
+export const PERSONA_REPOS = { rust_quant: QUANT_REPOS, quant: QUANT_REPOS }
+
+// The [id, display] pairs the gate's picker offers for one agent, in table
+// order: never a testOnly one, and a repo-scoped one only on an item in its
+// repos or already carrying it — so every other project's picker is unchanged.
+export function offeredPersonas(item, agent) {
+  const current = personaId(item, agent)
+  return Object.entries(PERSONAS[agent]).filter(([id, p]) => {
+    if (p.testOnly) return false
+    if (!Object.prototype.hasOwnProperty.call(PERSONA_REPOS, id)) return true
+    return id === current || PERSONA_REPOS[id].includes(item?.repo)
+  })
 }
 
 export function personaFor(item, agent) {

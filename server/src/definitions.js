@@ -18,9 +18,10 @@ import { execFileSync } from 'node:child_process'
 import { assertProjectPersonasShape } from '../../domain/js/personas.js'
 import { DEFAULT_PERSONAS, PERSONAS, isPersona, isPersonaAgent, legacyPersona } from './personas.js'
 
-// Server and farm live in one repo/checkout, so a UI edit is immediately what
-// farmd stamps into the next task. Overridable for tests only.
-export const FARM_DIR = process.env.HORIZON_FARM_DIR || path.resolve(import.meta.dirname, '../../farm')
+// FARM_DIR, slugify and PROJECTS_DIR live in farmPaths.js (HZ-972), so a
+// guarded import path can reach them without this file.
+import { FARM_DIR, PROJECTS_DIR, slugify } from './farmPaths.js'
+export { FARM_DIR, PROJECTS_DIR, slugify }
 
 export const MAX_DEFINITION_BYTES = 8192
 
@@ -188,16 +189,9 @@ export function readFarmFile(relpath) {
   }
 }
 
-// Mirror of farm/config.py slugify (ASCII names — parity holds for those).
-// HZ-538: substeps.js reads farm/projects/<slug>/ through it too.
-export function slugify(name) {
-  return [...name.toLowerCase()].map((c) => (/[a-z0-9]/.test(c) ? c : '-')).join('').replace(/^-+|-+$/g, '')
-}
-
 // ---- HZ-535: project personas (farm/projects/<slug>/personas.json) ----
-// Mirror of farm/personas.py load_project_personas. Server and farm read the
-// same directory (one checkout); the parity test asserts it.
-export const PROJECTS_DIR = path.join(FARM_DIR, 'projects')
+// Mirror of farm/personas.py load_project_personas (PROJECTS_DIR and slugify:
+// farmPaths.js).
 
 // The project's overlay, or null when it declares no personas. Throws when the
 // file is not valid JSON, fails assertProjectPersonasShape (a bare id equal to
@@ -245,7 +239,7 @@ export function loadProjectPersonas(slug, root = PROJECTS_DIR) {
     overlay.ids[entry.agent].push(nsId)
     overlay.roleText[nsId] = roleText
     overlay.display[nsId] = { label: entry.label, initials: entry.initials, color: entry.color }
-    overlay.models[`${entry.agent}.${nsId}`] = entry.model
+    if (Object.hasOwn(entry, 'model')) overlay.models[`${entry.agent}.${nsId}`] = entry.model
     overlay.providers[`${entry.agent}.${nsId}`] = entry.provider
     overlay.files.push(entry.file)
     if (Array.isArray(entry.knowledge) && entry.knowledge.length > 0) overlay.knowledge[nsId] = entry.knowledge.map((ref) => ({ ...ref }))

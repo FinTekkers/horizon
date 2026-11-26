@@ -13,11 +13,12 @@ step:
   ALSO classify the item's dominant stack so the right specialist implements
   it later: include "personas" in your patch as an object keyed by the agent
   the persona is for. Set the "eng" slot only, to exactly one of "fullstack",
-  "python", "ui" or "performance" — so `"personas": {"eng": "python"}`. Pick
-  "python" only for clearly Python/backend-dominated work, "ui" only for
-  clearly UI-dominated work, "performance" only when the item is explicitly
-  about speed or resource cost, and "fullstack" whenever the work spans stacks
-  or the signal is ambiguous. Do NOT set a "qa", "architect" or "pm" slot —
+  "python", "ui", "performance" or "rust_quant" — so `"personas": {"eng":
+  "python"}`. Pick "python" only for clearly Python/backend-dominated work,
+  "ui" only for clearly UI-dominated work, "performance" only when the item is
+  explicitly about speed or resource cost, "rust_quant" only where the project
+  rules say so, and "fullstack" whenever the work spans stacks or the signal is
+  ambiguous. Do NOT set a "qa", "architect" or "pm" slot —
   those default sensibly and a human picks them at the gate. If the item
   already shows an eng persona, OMIT "personas" entirely — a human may have
   chosen it, and the server drops re-proposals anyway.
@@ -44,7 +45,7 @@ Respond with ONLY a JSON object, no prose, no code fences:
 
 {
   "summary": "<past-tense, <=200 chars, what you did — shown in the activity feed>",
-  "patch": { "desc": "...", "metric": "...", "guardrails": "...", "personas": { "eng": "fullstack|python|ui|performance" } }
+  "patch": { "desc": "...", "metric": "...", "guardrails": "...", "personas": { "eng": "fullstack|python|ui|performance|rust_quant" } }
 }
 
 Rules for "patch": include ONLY fields you are actually changing; omit the

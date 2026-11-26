@@ -148,8 +148,9 @@ test('the display table covers exactly the domain personas, in both directions',
 
 test('the display table order is todays order', () => {
   expect(Object.keys(PERSONAS)).toEqual(['eng', 'qa', 'architect', 'pm'])
-  expect(Object.keys(PERSONAS.eng)).toEqual(['fullstack', 'python', 'ui', 'performance'])
-  expect(Object.keys(PERSONAS.qa)).toEqual(['api_contract', 'e2e_journey', 'data_integrity'])
+  // HZ-972 appended rust_quant and quant.
+  expect(Object.keys(PERSONAS.eng)).toEqual(['fullstack', 'python', 'ui', 'performance', 'rust_quant'])
+  expect(Object.keys(PERSONAS.qa)).toEqual(['api_contract', 'e2e_journey', 'data_integrity', 'quant'])
   expect(Object.keys(PERSONAS.architect)).toEqual(['data_modelling', 'distributed_systems'])
   expect(Object.keys(PERSONAS.pm)).toEqual(['roadmap', 'feature_development'])
 })

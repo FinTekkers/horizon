@@ -4,22 +4,24 @@
     {
       "agent": "eng",
       "default": "fullstack",
-      "personas": ["fullstack", "python", "ui", "performance"],
+      "personas": ["fullstack", "python", "ui", "performance", "rust_quant"],
       "roleFiles": {
         "fullstack": "eng_fullstack.md",
         "python": "eng_python.md",
         "ui": "eng_ui.md",
-        "performance": "eng_performance.md"
+        "performance": "eng_performance.md",
+        "rust_quant": "eng_rust_quant.md"
       }
     },
     {
       "agent": "qa",
       "default": "e2e_journey",
-      "personas": ["api_contract", "e2e_journey", "data_integrity"],
+      "personas": ["api_contract", "e2e_journey", "data_integrity", "quant"],
       "roleFiles": {
         "api_contract": "qa_api_contract.md",
         "e2e_journey": "qa_e2e_journey.md",
-        "data_integrity": "qa_data_integrity.md"
+        "data_integrity": "qa_data_integrity.md",
+        "quant": "qa_quant.md"
       }
     },
     {

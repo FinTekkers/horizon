@@ -12,7 +12,7 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "agent", "label", "initials", "color", "model", "provider", "file"],
+        "required": ["id", "agent", "label", "initials", "color", "provider", "file"],
         "additionalProperties": false,
         "properties": {
           "id": {
@@ -29,7 +29,7 @@
           "initials": { "$comment": "The badge's initials.", "type": "string", "minLength": 1 },
           "color": { "$comment": "The badge's colour, #RRGGBB.", "type": "string", "minLength": 7 },
           "model": {
-            "$comment": "The model this persona's calls run on — its models.personas entry, keyed <agent>.<slug>:<id>.",
+            "$comment": "HZ-972, optional: the model this persona's calls run on — its models.personas entry, keyed <agent>.<slug>:<id>. With none, its agent's default model.",
             "type": "string",
             "minLength": 1
           },

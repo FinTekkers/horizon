@@ -151,7 +151,9 @@ test('the intake gate shows one persona select per agent, defaulting to the prop
 })
 
 test('each agent’s select offers only that agent’s own personas', () => {
-  const { getByLabelText } = renderTracker({ ...baseItem, personas: { eng: 'python' } })
+  // A quant-repo item, so the HZ-972 repo-scoped personas are offered too and
+  // every bucket is offered whole.
+  const { getByLabelText } = renderTracker({ ...baseItem, repo: 'FinTekkers/valuation-service', personas: { eng: 'python' } })
   for (const agent of Object.keys(PERSONAS)) {
     const offered = Array.from(getByLabelText(pickerLabel(agent)).options).map((o) => o.value)
     expect(offered.sort()).toEqual(Object.keys(PERSONAS[agent]).sort())
@@ -225,7 +227,7 @@ test('the header badge falls back to the Eng default when the item carries no En
 })
 
 // HZ-121: no shipped persona is testOnly anymore, so this test proves the
-// filter itself (Tracker.jsx's `.filter(([, p]) => !p.testOnly)`) against a
+// filter itself (personas.js offeredPersonas, used by Tracker.jsx) against a
 // synthetic entry rather than relying on a real one to exist. HZ-125 applies it
 // per agent bucket, so the fixture is registered inside one.
 test('the persona picker never offers a testOnly persona', () => {
@@ -239,6 +241,22 @@ test('the persona picker never offers a testOnly persona', () => {
   } finally {
     delete PERSONAS.eng.__fixture_test_only__
   }
+})
+
+// HZ-972: the quant personas are FinTekkers-scoped — other projects' pickers
+// are unchanged, a valuation-service item is offered them, and an item that
+// already carries one keeps it selectable.
+test('the persona picker offers rust_quant and quant only on a quant repo item, or one already carrying them', () => {
+  const offered = (item, agent) => Array.from(renderTracker(item).getByLabelText(pickerLabel(agent)).options).map((o) => o.value)
+  expect(offered({ ...baseItem, repo: 'FinTekkers/horizon' }, 'eng')).not.toContain('rust_quant')
+  cleanup()
+  expect(offered({ ...baseItem, repo: 'FinTekkers/horizon' }, 'qa')).toEqual(['api_contract', 'e2e_journey', 'data_integrity'])
+  cleanup()
+  expect(offered({ ...baseItem, repo: 'FinTekkers/valuation-service' }, 'eng')).toContain('rust_quant')
+  cleanup()
+  expect(offered({ ...baseItem, repo: 'FinTekkers/ledger-models' }, 'qa')).toContain('quant')
+  cleanup()
+  expect(offered({ ...baseItem, repo: 'FinTekkers/ui-service', personas: { eng: 'rust_quant' } }, 'eng')).toContain('rust_quant')
 })
 
 // ---- HZ-14: "See agent output" links (replaces inline output + HZ-5's Live activity panel) ----

@@ -23,7 +23,7 @@ process.env.FARM_RECOVERY_POLL_MS = String(60 * 60 * 1000)
 delete process.env.GITHUB_WEBHOOK_SECRET
 
 const CLAUDE_MODEL = (await import('../../domain/js/providers.js')).PROVIDERS.find((p) => p.name === 'claude').models[0].id
-const QUANT = { id: 'quant', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: CLAUDE_MODEL, provider: 'claude', file: 'quant.md' }
+const QUANT = { id: 'pricer', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: CLAUDE_MODEL, provider: 'claude', file: 'quant.md' }
 for (const slug of ['unlinked-items', 'acme']) {
   mkdirSync(join(farmDir, 'projects', slug, 'personas'), { recursive: true })
   writeFileSync(join(farmDir, 'projects', slug, 'personas.json'), JSON.stringify({ personas: [QUANT] }))

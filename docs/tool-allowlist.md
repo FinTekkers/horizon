@@ -20,7 +20,7 @@ never write it, and no Admin page edits it. The farm reads it
 - A project persona names tool ids in an optional `tools` array:
 
   ```json
-  { "id": "quant", "agent": "eng", "label": "Quant", "initials": "QT", "color": "#2E6CB2",
+  { "id": "pricer", "agent": "eng", "label": "Pricer", "initials": "QT", "color": "#2E6CB2",
     "model": "<model id>", "provider": "claude", "file": "quant.md", "tools": ["ruff"] }
   ```
 

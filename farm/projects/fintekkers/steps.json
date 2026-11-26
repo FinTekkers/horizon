@@ -1,0 +1,16 @@
+{
+  "substeps": [
+    {
+      "id": "quant-golden-cases",
+      "label": "Quant golden cases",
+      "kind": "opening",
+      "anchor": 1,
+      "persona": "quant",
+      "output": "golden_cases",
+      "applies": {
+        "repos": ["FinTekkers/valuation-service", "FinTekkers/ledger-models"],
+        "labels": ["quant"]
+      }
+    }
+  ]
+}

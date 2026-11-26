@@ -67,3 +67,26 @@ def test_a_golden_cases_substep_gets_the_producer_contract():
 def test_another_substep_output_gets_nothing():
     task = _task(step_agent.IMPLEMENT_LABEL, substep={"id": "audit", "output": "findings"})
     assert step_agent.golden_cases_section(task) is None
+
+
+QUANT = (step_agent.ROLES / "personas" / "qa_quant.md").read_text().rstrip("\n")
+QA_DEFAULT = (step_agent.ROLES / "personas" / "qa_e2e_journey.md").read_text().rstrip("\n")
+
+
+def test_a_substep_naming_a_persona_gets_that_persona_once_under_the_contract():
+    # HZ-972: the key the server's substepTaskField sends (server/test/substeps-fintekkers.test.mjs).
+    task = _task(
+        "Define how we measure success",
+        substep={"id": "quant-golden-cases", "label": "Quant golden cases", "output": "golden_cases", "persona": "quant"},
+    )
+    section = step_agent.golden_cases_section(task)
+    assert section == f"{CONTRACT}\n\n## Your specialization\n{QUANT}"
+    assert section.count(QUANT) == 1
+    assert QA_DEFAULT not in section, "the qa default persona is not stacked on top"
+    assert step_agent.build_prompt(task).endswith(section)
+
+
+def test_a_substep_with_no_persona_gets_the_contract_byte_for_byte():
+    for substep in ({"id": "golden-cases", "output": "golden_cases"}, {"id": "golden-cases", "output": "golden_cases", "persona": None}):
+        task = _task("Define how we measure success", substep=substep)
+        assert step_agent.golden_cases_section(task) == CONTRACT

@@ -17,7 +17,7 @@ delete process.env.FARM_URL
 
 const { PROVIDERS } = await import('../../domain/js/providers.js')
 const CLAUDE_MODEL = PROVIDERS.find((p) => p.name === 'claude').models[0].id
-const QUANT = { id: 'quant', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: CLAUDE_MODEL, provider: 'claude', file: 'quant.md' }
+const QUANT = { id: 'pricer', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: CLAUDE_MODEL, provider: 'claude', file: 'quant.md' }
 const KNOWLEDGE = [{ path: 'docs/specs/Bond-Spec.pdf' }, { repo: 'Acme/handbooks', path: 'pricing.pdf' }]
 
 function writeProject(slug, personas) {

@@ -103,6 +103,14 @@ needs a ledger-models change shipped first, use a Horizon dependency on the
 ledger-models item, which releases when it closes, not a version
 requirement. Never write "pin" in plans, metrics or test names.
 
+## Quant personas
+
+On the outcome step, set `"personas": {"eng": "rust_quant"}` for
+valuation-service calculator or engine work (`src/calculators/**`,
+`src/engine/**`), ledger-models measures (`catalog/measures.json`) and any
+item labelled `quant`. New items in those repos also get the "Quant golden
+cases" sub-step (`farm/projects/fintekkers/steps.json`).
+
 ## Deploy topology
 
 Unlike Horizon's direct-to-one-EC2-instance deploy, FinTekkers deploys

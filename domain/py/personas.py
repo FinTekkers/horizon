@@ -440,6 +440,9 @@ _PROJECT_PERSONA_KEYS = ("id", "agent", "label", "initials", "color", "model", "
 # own repo) or {repo, path} (a PDF in a docs repo). A path segment never
 # starts with a dot, so `..` and hidden files cannot be named.
 _PROJECT_PERSONA_OPTIONAL_KEYS = ("tools", "knowledge")
+# HZ-972: in _PROJECT_PERSONA_KEYS but optional — with none, the persona's
+# calls run on its agent's default model (model ids live in domain/ only).
+_PROJECT_PERSONA_DEFAULTED_KEYS = ("model",)
 _TOOL_ID_SHAPE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _KNOWLEDGE_REF_KEYS = ("repo", "path")
 _KNOWLEDGE_REPO_SHAPE = re.compile(r"^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$")
@@ -496,7 +499,7 @@ def validate_project_personas(
                     f"{_json(list(_PROJECT_PERSONA_KEYS + _PROJECT_PERSONA_OPTIONAL_KEYS))}"
                 )
         for key in _PROJECT_PERSONA_KEYS:
-            if key not in entry:
+            if key not in entry and key not in _PROJECT_PERSONA_DEFAULTED_KEYS:
                 raise RuntimeError(f"{at} is missing {_json(key)}")
         persona_id = entry["id"]
         if not _is_id(persona_id):
@@ -533,8 +536,8 @@ def validate_project_personas(
                 f"{at}.provider {_json(provider)} is not a provider domain/providers.json declares "
                 f"{_json(list(provider_models))}"
             )
-        model = entry["model"]
-        if not isinstance(model, str) or model not in provider_models[provider]:
+        model = entry.get("model")
+        if "model" in entry and (not isinstance(model, str) or model not in provider_models[provider]):
             raise RuntimeError(
                 f"{at}.model {_json(model)} is not a model domain/providers.json declares for provider {_json(provider)}"
             )

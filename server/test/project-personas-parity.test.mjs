@@ -30,7 +30,7 @@ writeFileSync(
   path.join(root, 'fixture', 'personas.json'),
   JSON.stringify({
     personas: [
-      { id: 'quant', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: PROVIDERS.find((p) => p.name === DEFAULT_PROVIDER).models[0].id, provider: DEFAULT_PROVIDER, file: 'quant.md' },
+      { id: 'pricer', agent: 'eng', label: 'Quant', initials: 'QT', color: '#2E6CB2', model: PROVIDERS.find((p) => p.name === DEFAULT_PROVIDER).models[0].id, provider: DEFAULT_PROVIDER, file: 'quant.md' },
     ],
   }),
 )
@@ -38,12 +38,12 @@ writeFileSync(path.join(root, 'fixture', 'personas', 'quant.md'), '# Quant\n\nPr
 
 // { agent, persona, enabled }: `enabled` is the project's switch.
 const FIXTURES = [
-  { agent: 'eng', persona: 'fixture:quant', enabled: true }, // the project's own persona
+  { agent: 'eng', persona: 'fixture:pricer', enabled: true }, // the project's own persona
   { agent: 'eng', persona: '  Fixture:Quant ', enabled: true }, // trimmed and lower-cased, like a global id
-  { agent: 'eng', persona: 'other:quant', enabled: true }, // another project's id -> the default
-  { agent: 'eng', persona: 'fixture:quant', enabled: false }, // switch off -> the default
+  { agent: 'eng', persona: 'other:pricer', enabled: true }, // another project's id -> the default
+  { agent: 'eng', persona: 'fixture:pricer', enabled: false }, // switch off -> the default
   { agent: 'eng', persona: PERSONA_IDS.eng[1], enabled: true }, // a global id with an overlay present
-  { agent: 'qa', persona: 'fixture:quant', enabled: true }, // an eng project id under qa -> qa's default
+  { agent: 'qa', persona: 'fixture:pricer', enabled: true }, // an eng project id under qa -> qa's default
   { agent: 'qa', persona: DEFAULT_PERSONAS.qa, enabled: true },
 ]
 

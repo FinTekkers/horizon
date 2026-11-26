@@ -185,7 +185,8 @@ def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
         overlay["ids"].setdefault(entry["agent"], []).append(ns_id)
         overlay["role_text"][ns_id] = role_text
         overlay["display"][ns_id] = {"label": entry["label"], "initials": entry["initials"], "color": entry["color"]}
-        overlay["models"][f"{entry['agent']}.{ns_id}"] = entry["model"]
+        if "model" in entry:
+            overlay["models"][f"{entry['agent']}.{ns_id}"] = entry["model"]
         overlay["providers"][f"{entry['agent']}.{ns_id}"] = entry["provider"]
         if entry.get("tools"):
             try:
@@ -290,6 +291,18 @@ def provider_for(personas, overlay=None) -> str | None:
         provider = PERSONA_PROVIDERS.get(key) or providers.get(key)
         if provider:
             return provider
+    return None
+
+
+def persona_agent(persona_id) -> str | None:
+    """HZ-972: the agent whose bucket holds a global persona id, in registry
+    order, or None. A project sub-step names its persona bare ("quant"), so the
+    farm finds the bucket here before composing it."""
+    if not isinstance(persona_id, str):
+        return None
+    for agent, bucket in PERSONAS.items():
+        if persona_id in bucket:
+            return agent
     return None
 
 

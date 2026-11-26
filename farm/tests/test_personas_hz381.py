@@ -19,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 HZ381_ROLE_TEXT = "HZ-381 composed-prompt snapshot sentinel"
+# Appended after the snapshot (HZ-972); each composes its own declared file.
+ADDED_SINCE = {"eng.rust_quant": "eng_rust_quant.md", "qa.quant": "qa_quant.md"}
 
 
 def _domain_persona_ids() -> set[str]:
@@ -57,7 +59,7 @@ def _flagged_id_literals(source: str, ids: set[str]) -> list[tuple[int, str]]:
 
 def test_farm_personas_declares_no_persona_id_as_a_string_literal():
     ids = _domain_persona_ids()
-    assert len(ids) == 11, "positive control: the scan compares against a real id set"
+    assert len(ids) == 13, "positive control: the scan compares against a real id set"
     source = (REPO_ROOT / "farm" / "personas.py").read_text()
     assert _flagged_id_literals(source, ids) == []
 
@@ -80,11 +82,15 @@ def test_composed_prompts_match_the_pre_change_snapshot_byte_for_byte():
     no newline normalisation."""
     snapshot = json.loads((FIXTURES / "personas-prompts-hz381.json").read_text())
     assert snapshot["role_text"] == HZ381_ROLE_TEXT
-    assert set(snapshot["prompts"]) == set(domain_personas.NAMESPACED_PERSONA_IDS)
+    assert set(snapshot["prompts"]) | set(ADDED_SINCE) == set(domain_personas.NAMESPACED_PERSONA_IDS)
     assert len(snapshot["prompts"]) == 11
-    for pair in domain_personas.NAMESPACED_PERSONA_IDS:
+    for pair in snapshot["prompts"]:
         agent, persona_id = pair.split(".")
         assert compose_role(snapshot["role_text"], agent, persona_id) == snapshot["prompts"][pair]
+    for pair, filename in ADDED_SINCE.items():
+        agent, persona_id = pair.split(".")
+        persona_md = (REPO_ROOT / "farm" / "roles" / "personas" / filename).read_text()
+        assert compose_role(HZ381_ROLE_TEXT, agent, persona_id) == f"{HZ381_ROLE_TEXT}\n\n## Your specialization\n{persona_md}"
 
 
 def test_domain_personas_json_is_the_pre_change_document_plus_rolefiles():
@@ -97,4 +103,8 @@ def test_domain_personas_json_is_the_pre_change_document_plus_rolefiles():
     for entry in live["agents"]:
         assert set(entry["roleFiles"]) == set(entry["personas"])
         del entry["roleFiles"]
+        # HZ-972 appended personas at the end of their buckets; nothing else moved.
+        added = [pid for pid in entry["personas"] if f"{entry['agent']}.{pid}" in ADDED_SINCE]
+        assert entry["personas"][len(entry["personas"]) - len(added):] == added
+        entry["personas"] = [pid for pid in entry["personas"] if pid not in added]
     assert live == step0

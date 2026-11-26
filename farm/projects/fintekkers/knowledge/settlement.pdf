@@ -1,0 +1,43 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3207 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL (Settlement and calendars) Tj T* () Tj T* (FinTekkers knowledge library. Written in our own words; the primary sources) Tj T* (are listed at the end. Settlement is the date cash and securities change) Tj T* (hands. It is the date accrued interest, yield and duration are computed at,) Tj T* (so a wrong settlement date is a wrong price.) Tj T* () Tj T* (1 Scope {#scope}) Tj T* () Tj T* (US fixed income and US equities traded through FinTekkers: Treasuries, TIPS,) Tj T* (agencies, corporates and listed equities. Other markets need their own) Tj T* (calendar and cycle.) Tj T* () Tj T* (2 T+1 {#t-plus-1}) Tj T* () Tj T* (The standard settlement cycle in the US is one business day after the trade) Tj T* (date \(T+1\). SEC Rule 15c6-1 under the Exchange Act, as amended in 2023,) Tj T* (moved broker-dealer transactions in most securities from T+2 to T+1 with a) Tj T* (compliance date of 28 May 2024. US Treasury securities already settled T+1 by) Tj T* (market practice. A trade may settle on another date only when both sides) Tj T* (agree to it expressly at the time of the trade.) Tj T* () Tj T* (T+1 counts business days, not calendar days: a Friday trade settles on the) Tj T* (following Monday, or later if Monday is a holiday.) Tj T* () Tj T* (3 The SIFMA calendar {#sifma-calendar}) Tj T* () Tj T* (Business days for US bond settlement come from the SIFMA recommended holiday) Tj T* (schedule for the US bond market. SIFMA publishes it each year for the) Tj T* (following years. A day is a business day for settlement when it is a weekday) Tj T* (and SIFMA recommends a full close of the bond market on none of it. An early) Tj T* (close \(for example 2 pm the day after Thanksgiving\) is still a business day.) Tj T* () Tj T* (Equities follow the exchange calendar \(NYSE\), which differs from SIFMA on) Tj T* (some days: Columbus Day and Veterans Day are bond-market holidays only.) Tj T* () Tj T* (4 Holidays {#holidays}) Tj T* () Tj T* (Read holidays from the published calendar for the year, never from a weekday) Tj T* (rule or a list of fixed dates. The usual SIFMA full closes are New Year's) Tj T* (Day, Martin Luther King Jr. Day, Presidents Day, Good Friday \(some years an) Tj T* (early close instead\), Memorial Day, Juneteenth, Independence Day, Labor Day,) Tj T* (Columbus Day, Veterans Day, Thanksgiving and Christmas. A holiday on a Sunday) Tj T* (is usually observed the next Monday; a Saturday holiday is often not observed) Tj T* (on the Friday. Those are exactly the cases to take from the calendar.) Tj T* () Tj T* (5 Business-day adjustment {#business-day-adjustment}) Tj T* () Tj T* (When a scheduled date is not a business day it is moved:) Tj T* () Tj T* (- Following: to the next business day.) Tj T* (- Modified following: to the next business day, unless that is in the next) Tj T* (  month, then to the previous one.) Tj T* (- Preceding: to the previous business day.) Tj T* () Tj T* (For US Treasury and corporate coupons, a payment due on a non-business day is) Tj T* (paid on the next business day with no extra interest. The coupon schedule) Tj T* (used for accrued interest and the period fraction stays on the unadjusted) Tj T* ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 964 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL (dates.) Tj T* () Tj T* (6 Worked examples {#settlement-examples}) Tj T* () Tj T* (Using the SIFMA 2026 calendar \(Thanksgiving is Thursday 26 November 2026\):) Tj T* () Tj T* (- Trade Monday 23 Nov 2026: settles Tuesday 24 Nov.) Tj T* (- Trade Wednesday 25 Nov 2026: Thursday is a full close, so it settles) Tj T* (  Friday 27 Nov \(an early-close day, still a business day\).) Tj T* (- Trade Friday 27 Nov 2026: settles Monday 30 Nov.) Tj T* () Tj T* (Sources) Tj T* () Tj T* (- SEC, Rule 15c6-1, 17 CFR 240.15c6-1 \(standard settlement cycle\):) Tj T* (  https://www.ecfr.gov/current/title-17/chapter-II/part-240/section-240.15c6-1) Tj T* (- SEC, Shortening the Securities Transaction Settlement Cycle, final rule,) Tj T* (  release 34-96930 \(2023\): https://www.sec.gov/rules/final/2023/34-96930.pdf) Tj T* (- SIFMA, US holiday schedule recommendations:) Tj T* (  https://www.sifma.org/resources/general/holiday-schedule/) Tj T* ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000003506 00000 n 
+0000003632 00000 n 
+0000004647 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+4742
+%%EOF

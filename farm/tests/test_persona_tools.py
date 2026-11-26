@@ -22,7 +22,7 @@ from farm.tests.test_step_agent import NO_CHECKS, capture_run_agent, git, make_g
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_MODEL = next(m["id"] for m in domain_providers.PROVIDERS["claude"]["models"] if m["selectable"])
-PERSONA = "acme:quant"
+PERSONA = "acme:pricer"
 ROLE_MD = "# Quant\n\nPrice it before you build it.\n"
 ON = {"id": 1, "name": "Acme", "definitionsEnabled": True}
 OFF = {"id": 1, "name": "Acme", "definitionsEnabled": False}
@@ -30,7 +30,7 @@ OFF = {"id": 1, "name": "Acme", "definitionsEnabled": False}
 
 def _entry(**overrides):
     entry = {
-        "id": "quant",
+        "id": "pricer",
         "agent": "eng",
         "label": "Quant",
         "initials": "QT",

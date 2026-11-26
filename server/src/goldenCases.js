@@ -21,6 +21,7 @@ import { hasNoProject } from './membership.js'
 import { substepsOf } from '../../domain/js/substeps.js'
 import { extractGoldenCases, metricLineFor, parseSource } from '../../domain/js/goldenCases.js'
 import { IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX, kindStepIndex, requiredStepIndex } from '../../domain/js/lifecycle.js'
+import { REGISTRY_FILE, registryDocSlugs } from './quantResources.js'
 
 export const GOLDEN_CASES_OUTPUT = 'golden_cases'
 // The first gate of each item kind that has an opening sub-step.
@@ -48,6 +49,7 @@ export const APPROVE_IN_HORIZON_TEXT = 'golden cases need a human to approve in 
 export const CHANGED_TEXT = 'the golden cases changed since this page loaded — reload and check them again'
 
 const selectProjectSwitch = db.prepare('SELECT definitions_enabled FROM project WHERE id = ?')
+const selectProjectName = db.prepare('SELECT name FROM project WHERE id = ?')
 // By sub-step id, like store.js's substepDoneRuns: the anchor is checked in JS.
 const selectSubstepRuns = db.prepare(
   "SELECT id, step_index, artifact, output FROM step_run WHERE item_id = ? AND substep_id = ? AND status = 'done' ORDER BY id DESC",
@@ -118,8 +120,17 @@ function resolveSources(projectId, cases) {
   })
 }
 
-const unindexedErrors = (cases, sources) =>
-  cases.filter((_, i) => !sources[i].indexed).map((c) => `case ${JSON.stringify(c.id)}: source ${c.source} is not in the knowledge index`)
+// One error per case whose source is not indexed, in case order. HZ-972: in a
+// project with a quant resource registry, a case whose doc is not a registry
+// entry's knowledge source is refused for that instead. One project lookup
+// per call; a project with no registry is unchanged.
+function sourceErrors(projectId, cases, sources) {
+  const registered = registryDocSlugs(selectProjectName.get(projectId)?.name)
+  return cases.flatMap((c, i) => {
+    if (registered && !registered.has(parseSource(c.source)?.doc)) return [`case ${JSON.stringify(c.id)}: source ${c.source} is not in ${REGISTRY_FILE}`]
+    return sources[i].indexed ? [] : [`case ${JSON.stringify(c.id)}: source ${c.source} is not in the knowledge index`]
+  })
+}
 
 // The approval check at a first gate, before anything is written. With an
 // approved set already (a send-back that kept it brought the item back here),
@@ -132,7 +143,7 @@ export function checkGoldenApproval(item, goldenHash) {
   if (!pending || (!pending.cases.length && !pending.errors.length)) {
     return { error: 'golden_cases_missing', message: 'the golden-cases sub-step has written no golden cases yet' }
   }
-  const errors = pending.errors.length ? pending.errors : unindexedErrors(pending.cases, resolveSources(item.project_id, pending.cases))
+  const errors = pending.errors.length ? pending.errors : sourceErrors(item.project_id, pending.cases, resolveSources(item.project_id, pending.cases))
   if (errors.length) return { error: 'golden_cases_invalid', message: errors[0], errors }
   if (goldenHash == null) return { error: 'golden_cases_changed', message: APPROVE_IN_HORIZON_TEXT }
   if (goldenHash !== pending.hash) return { error: 'golden_cases_changed', message: CHANGED_TEXT }
@@ -169,7 +180,7 @@ export function goldenCasesFields(row) {
   const pending = approved ? null : pendingGoldenCases(row)
   const cases = approved ? approved.cases : (pending?.cases ?? [])
   const sources = resolveSources(row.project_id, cases)
-  const errors = approved ? [] : pending ? (pending.errors.length ? pending.errors : unindexedErrors(cases, sources)) : []
+  const errors = approved ? [] : pending ? (pending.errors.length ? pending.errors : sourceErrors(row.project_id, cases, sources)) : []
   return {
     goldenCases: {
       substepId: sub.id,

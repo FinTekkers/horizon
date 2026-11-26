@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "HZ-972: the contract for a project's quant resource registry, farm/projects/<slug>/quant_resources.json — the only list of sources a quant persona may cite. Metadata only: no third-party code or paper is ever committed to Horizon; code and papers live in the private store repo named by `store`, checked out on the box at store.path. Validated by domain/validate.mjs's Draft-07 subset, so there is no `pattern`. Rules the subset cannot express — store.sha and pinned.sha are 40 lowercase hex, sha256 is 64 lowercase hex, ids are unique and match ^[a-z0-9][a-z0-9-]*$, library.repo and library.path follow the knowledge-source shape of domain/projectPersonas.schema.json — are asserted at LOAD time by validateQuantResources() in server/src/quantResources.js. A golden case cites an entry through its knowledge-library slug, knowledgeSlug(library.repo, library.path) in server/src/knowledgeDocs.js, which is derived and never stored.",
+  "title": "Horizon quant resource registry: every source a quant persona may cite",
+  "type": "object",
+  "required": ["version", "store", "readers", "resources"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "store": {
+      "$comment": "The private repo holding the pinned libraries (git submodules) and the papers, and the commit infra/host/install-quant-resources.sh checks out at `path`. Bumping `sha` is a reviewed registry change.",
+      "type": "object",
+      "required": ["repo", "path", "sha"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string", "minLength": 3 },
+        "path": { "type": "string", "minLength": 2 },
+        "sha": { "type": "string", "minLength": 40 }
+      }
+    },
+    "readers": {
+      "$comment": "The persona ids whose runs may read the store and this registry (farm/quant_resources.py): read-only add_dirs for a step agent. Any other persona's run is unchanged.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "resources": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/resource" }
+    }
+  },
+  "definitions": {
+    "resource": {
+      "type": "object",
+      "required": ["id", "name", "kind", "location", "licence", "use", "status", "authoritative_for"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": {
+          "$comment": "library: a pinned source checkout in the store; venv and python_package: the store's Python venv and a package pinned in it; repo_file: a file in a FinTekkers repo; standard: a rule or standard; data: an official data source; paper: a paper in the store's papers/; knowledge_doc: a Horizon-written knowledge document.",
+          "enum": ["library", "venv", "python_package", "repo_file", "standard", "data", "paper", "knowledge_doc"]
+        },
+        "location": { "$comment": "A path in the store, a repo path or a URL.", "type": "string", "minLength": 1 },
+        "pinned": {
+          "$comment": "The release tag (or pip spec) and, for a checkout, its commit.",
+          "type": "object",
+          "required": ["tag"],
+          "additionalProperties": false,
+          "properties": {
+            "tag": { "type": "string", "minLength": 1 },
+            "sha": { "type": "string", "minLength": 40 }
+          }
+        },
+        "licence": { "type": "string", "minLength": 1 },
+        "use": {
+          "$comment": "read_and_copy: permissive, follow the licence. read_and_run_only: GPL, AGPL, non-commercial, unlicensed or publisher material — read and run to derive or check values, never copy into a FinTekkers repo.",
+          "enum": ["read_and_copy", "read_and_run_only"]
+        },
+        "status": { "enum": ["available", "downloaded", "browser_only", "paywalled", "unavailable"] },
+        "authoritative_for": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "sha256": { "type": "string", "minLength": 64 },
+        "library": {
+          "$comment": "The knowledge-library source this entry is indexed as: a PDF in a repo.",
+          "type": "object",
+          "required": ["repo", "path"],
+          "additionalProperties": false,
+          "properties": {
+            "repo": { "type": "string", "minLength": 3 },
+            "path": { "type": "string", "minLength": 5 }
+          }
+        },
+        "upstream": { "type": "string", "minLength": 1 },
+        "notes": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "paper" }, "status": { "const": "downloaded" } }, "required": ["kind", "status"] },
+          "then": { "required": ["sha256", "library"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "knowledge_doc" } }, "required": ["kind"] },
+          "then": { "required": ["library"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "library" } }, "required": ["kind"] },
+          "then": { "required": ["pinned"] }
+        }
+      ]
+    }
+  }
+}

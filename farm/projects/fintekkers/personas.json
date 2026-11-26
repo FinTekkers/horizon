@@ -1,0 +1,51 @@
+{
+  "personas": [
+    {
+      "id": "quant_library",
+      "agent": "qa",
+      "label": "Quant library",
+      "initials": "QL",
+      "color": "#38294F",
+      "provider": "claude",
+      "file": "quant_library.md",
+      "knowledge": [
+        { "repo": "FinTekkers/horizon", "path": "farm/projects/fintekkers/knowledge/bond-maths.pdf" },
+        { "repo": "FinTekkers/horizon", "path": "farm/projects/fintekkers/knowledge/day-counts.pdf" },
+        { "repo": "FinTekkers/horizon", "path": "farm/projects/fintekkers/knowledge/settlement.pdf" },
+        { "repo": "FinTekkers/horizon", "path": "farm/projects/fintekkers/knowledge/tips.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/nelson_1987_parsimonious_yield_curves.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/svensson_1994_estimating_forward_rates.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/hagan_2006_interpolation_curve_construction.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/bianchetti_2010_two_curves_one_price.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/henrard_2007_irony_derivatives_discounting.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/hagan_2002_managing_smile_risk.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/obloj_2008_fine_tune_your_smile.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/longstaff_2001_valuing_american_options_lsm.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/black_1973_pricing_of_options_corporate_liabilities.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/merton_1973_theory_rational_option_pricing.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/cox_1979_option_pricing_simplified_approach.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/heston_1993_closed_form_stochastic_volatility.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/bates_1996_jumps_stochastic_volatility.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/madan_1998_variance_gamma_option_pricing.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/carr_1999_option_valuation_fft.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/fang_2008_cos_method_fourier_cosine.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/andersen_2008_efficient_simulation_heston.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/inthout_2010_adi_heston_correlation.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/jaeckel_2015_lets_be_rational.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/hull_2000_valuing_cds_i.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/isda_2009_standard_cds_contract_converter_spec.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/isda_2012_standard_cds_examples.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/isda_2012_cds_standard_model_numerical_fix.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/li_2000_default_correlation_copula.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/fries_2014_collateralization_fva_total_return_swaps.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/gabrielli_2019_funding_adjustments_equity_linear_products.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/cuchet_2013_currency_total_return_swaps.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/andersen_2017_funding_value_adjustments.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/isda_2026_simm_v2.9_methodology.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/ore_2026_product_catalogue.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/ore_2026_user_guide.pdf" },
+        { "repo": "FinTekkers/quant-library", "path": "papers/ore_2026_methods.pdf" }
+      ]
+    }
+  ]
+}

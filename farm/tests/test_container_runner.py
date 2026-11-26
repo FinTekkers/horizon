@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from domain.py import reasons, run_plan
-from farm import container_runner, farmd, job_reports, task_job
+from farm import container_runner, farmd, job_reports, quant_resources, task_job
 from farm.config import LOGS_DIR, QUEUE_DIR, STATE_DIR
 from farm.tests.podman_env import RUNTIME_DIR as _RUNTIME_DIR
 
@@ -55,7 +55,7 @@ def server_runner(artifact):
     return run_plan.extract(artifact).get("runner") or "container"
 
 
-def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=None, memory=None, item_id="HZ-416", notify=None):
+def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=None, memory=None, item_id="HZ-416", notify=None, read_only_dirs=None):
     state_path = tmp_path / "state" / f"{item_id}.json"
     log_path = tmp_path / "logs" / f"farm-job-{item_id.lower()}.log"
     state_path.parent.mkdir(exist_ok=True)
@@ -74,6 +74,7 @@ def _run(tmp_path, artifact, *, repo, image=FAKE_IMAGE, env_values=None, cpu=Non
         cpu_limit=cpu,
         memory_limit=memory,
         notify=notify,
+        read_only_dirs=read_only_dirs,
     )
     return summary, json.loads(state_path.read_text()), log_path.read_text()
 
@@ -954,3 +955,144 @@ def _read(path):
         return path.read_bytes()
     except OSError:
         return b""
+
+
+# ---- HZ-972: FinTekkers' private quant store ----
+# Only a project with farm/projects/<slug>/quant_resources.json gets the store,
+# read-only; every rehearsal masks it, though it mounts /opt whole.
+
+QUANT_STORE = os.environ.get(quant_resources.STORE_ENV) or quant_resources.DEFAULT_STORE
+FINTEKKERS = {"id": 2, "name": "FinTekkers", "isolation": "internal"}
+HORIZON = {"id": 1, "name": "Horizon", "isolation": "internal"}
+
+
+@pytest.fixture
+def quant_store(tmp_path, monkeypatch):
+    store = tmp_path / "opt" / "quant-resources"
+    (store / "papers").mkdir(parents=True)
+    monkeypatch.setenv(quant_resources.STORE_ENV, str(store))
+    return store
+
+
+def test_only_a_registry_projects_job_gets_the_store_and_only_when_it_exists(quant_store):
+    assert quant_resources.container_dirs(FINTEKKERS) == [str(quant_store)]
+    assert quant_resources.container_dirs(HORIZON) == []
+    assert quant_resources.container_dirs(None) == []
+    assert quant_resources.container_dirs({"name": "Unknown tenant"}) == []
+    shutil.rmtree(quant_store)
+    assert quant_resources.container_dirs(FINTEKKERS) == [], "no store here: no mount and no error"
+
+
+def test_the_store_is_mounted_read_only_at_its_own_path_after_the_jobs_own_mounts(quant_store):
+    argv = _argv(read_only_dirs=[str(quant_store)])
+    mounts = [argv[i + 1] for i, a in enumerate(argv) if a == "-v"]
+    assert mounts[-1] == f"{quant_store}:{quant_store}:ro"
+    assert not any(str(quant_store) in m for m in mounts[:-1])
+    assert [argv[i + 1] for i, a in enumerate(_argv()) if a == "-v"] == mounts[:-1], "no read_only_dirs: the argv is unchanged"
+
+
+def test_task_job_main_hands_the_projects_store_to_the_run(tmp_path, quant_store, monkeypatch):
+    seen = []
+    monkeypatch.setattr(task_job, "run_job", lambda **kw: seen.append(kw) or {"run": 0, "passed": 0, "failed": 0, "failing": []})
+    for project in (FINTEKKERS, HORIZON):
+        path = tmp_path / f"{project['name']}.json"
+        path.write_text(json.dumps({"run_id": 9, "item": {"id": "VS-9"}, "plan_artifact": "", "approved_hash": "", "repo_dir": str(tmp_path), "project": project}))
+        assert task_job.main(["--task", str(path)]) == 0
+    assert [kw["read_only_dirs"] for kw in seen] == [[str(quant_store)], []]
+
+
+def test_a_fintekkers_run_starts_its_container_with_the_store_and_a_horizon_run_without(tmp_path, repo, quant_store, monkeypatch):
+    """Through run_job and fake_podman: the argv each container started with."""
+    started = []
+    start = container_runner.start_container
+    monkeypatch.setattr(container_runner, "start_container", lambda argv, env: started.append(argv) or start(argv, env))
+    for project, item in ((FINTEKKERS, "VS-1"), (HORIZON, "HO-1")):
+        summary, _state, out = _run(tmp_path, _artifact(["true"]), repo=repo, item_id=item, read_only_dirs=quant_resources.container_dirs(project))
+        assert summary["passed"] == 1, out
+    fintekkers, horizon = started
+    assert f"{quant_store}:{quant_store}:ro" in fintekkers
+    assert not any(str(quant_store) in a for a in horizon)
+
+
+def test_a_rehearsal_masks_the_store_under_a_mounted_host_dir(tmp_path, quant_store, monkeypatch):
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    opt = str(quant_store.parent)
+    monkeypatch.setattr(container_runner, "HOST_TOOL_DIRS", (opt,))
+    tools = container_runner.host_tool_mounts()
+    mask = container_runner.store_mask_dir()
+    assert tools == ["-v", f"{opt}:{opt}:ro", "-v", f"{mask}:{quant_store}:ro"]
+    assert os.listdir(mask) == [] and not os.access(mask, os.W_OK), "an empty, read-only mask"
+    argv = container_runner.rehearsal_argv(
+        image="img", name="farm-rehearsal-x", repo_dir=None, workdir="/", mask_file=None, ro_env_names=[], host_tools=tools, pg_socket_dir=None, timeout_s=60
+    )
+    assert f"{mask}:{quant_store}:ro" in argv
+    assert f"{quant_store}:{quant_store}:ro" not in argv, "never the store itself"
+    assert [a for a in argv if a.startswith("--tmpfs")] == [f"--tmpfs={container_runner.REHEARSAL_TMPFS}"], "/tmp stays the only tmpfs"
+
+
+def test_a_mask_dir_that_is_not_empty_refuses_the_rehearsal(tmp_path, quant_store, monkeypatch):
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    monkeypatch.setattr(container_runner, "HOST_TOOL_DIRS", (str(quant_store.parent),))
+    mask = Path(container_runner.store_mask_dir())
+    mask.chmod(0o755)
+    (mask / "leak.pdf").write_text("x")
+    with pytest.raises(container_runner.Unavailable, match="must be empty"):
+        container_runner.host_tool_mounts()
+
+
+def test_a_store_outside_every_mounted_dir_needs_no_mask(tmp_path, quant_store, monkeypatch):
+    other = tmp_path / "usr"
+    other.mkdir()
+    monkeypatch.setattr(container_runner, "HOST_TOOL_DIRS", (str(other),))
+    assert container_runner.host_tool_mounts() == ["-v", f"{other}:{other}:ro"]
+
+
+def _store_skip():
+    if os.path.isdir(os.path.join(QUANT_STORE, "venv")) and os.path.isdir(os.path.join(QUANT_STORE, "libs", "lballabio_QuantLib")):
+        return None
+    if os.environ.get("HORIZON_REQUIRE_QUANT_STORE") == "1":
+        return None  # the test runs and fails on the missing store
+    return f"no quant store at {QUANT_STORE} (set HORIZON_REQUIRE_QUANT_STORE=1 to fail instead)"
+
+
+quant_store_real = pytest.mark.skipif(_store_skip() is not None, reason=_store_skip() or "")
+ACTUALACTUAL = "libs/lballabio_QuantLib/ql/time/daycounters/actualactual.hpp"
+
+
+@real_podman
+@quant_store_real
+def test_real_a_fintekkers_container_reads_quantlib_runs_the_venv_and_cannot_write(tmp_path, repo, real):
+    """Metric 5: the store mounted read-only in a real FinTekkers job. The
+    venv's own bin/python links to the host interpreter, so in a container
+    its packages run on the image's Python 3.12 (qa_quant.md says how)."""
+    dirs = quant_resources.container_dirs(FINTEKKERS)
+    assert dirs == [QUANT_STORE]
+    site = f"{QUANT_STORE}/venv/lib/python3.12/site-packages"
+    command = (
+        f'PYTHONPATH={site} python3 -c "import QuantLib; print(\'QL=\' + QuantLib.__version__)"; '
+        f"test -r {QUANT_STORE}/{ACTUALACTUAL} && grep -q ActualActual {QUANT_STORE}/{ACTUALACTUAL} && echo SRC=readable; "
+        f"(touch {QUANT_STORE}/x || touch {QUANT_STORE}/papers/x) 2>/dev/null && echo STORE=WROTE || echo STORE=DENIED"
+    )
+    summary, _state, log = _run(tmp_path, _artifact([command]), repo=repo, image=REAL_IMAGE, read_only_dirs=dirs)
+    assert summary["passed"] == 1, log
+    assert "QL=1.44" in log, log
+    assert "SRC=readable" in log, log
+    assert "STORE=DENIED" in log, log
+    assert not os.path.exists(f"{QUANT_STORE}/x")
+    assert _containers(real) == []
+
+
+@real_podman
+@quant_store_real
+def test_real_a_horizon_container_and_any_rehearsal_cannot_see_the_store(tmp_path, repo, real):
+    """Guardrail 1: no mount for Horizon, and the rehearsal's /opt mount shows
+    the store as an empty directory."""
+    summary, _state, log = _run(tmp_path, _artifact([f"test -e {QUANT_STORE} && echo SEEN || echo ABSENT"]), repo=repo, image=REAL_IMAGE, read_only_dirs=quant_resources.container_dirs(HORIZON))
+    assert summary["passed"] == 1 and "ABSENT" in log, log
+    probe = subprocess.run(
+        [real, "run", "--rm", "--network=none", *container_runner._sandbox_flags(), *container_runner.host_tool_mounts(), REAL_IMAGE,
+         "sh", "-c", f"ls /opt >/dev/null && echo OPT=mounted; ls -A {QUANT_STORE} | wc -l"],
+        capture_output=True, text=True, timeout=120, env=_REAL_ENV,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.split() == ["OPT=mounted", "0"], probe.stdout

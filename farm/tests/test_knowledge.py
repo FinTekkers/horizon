@@ -1,14 +1,17 @@
 """HZ-537: the knowledge extract job (farm/knowledge.py).
 
 Every PDF here is built from bytes inside the test, under tmp_path, and pushed
-to a bare temp "origin" that a temp hub clones — no PDF or document text is
-committed. The extractor is the real allow-listed one, /opt/horizon-tools/
+to a bare temp "origin" that a temp hub clones — no PDF or extracted text is
+committed for these tests. HZ-972: the only committed documents are a
+project's own library, the sources its personas.json names, and their cache
+is never committed. The extractor is the real allow-listed one, /opt/horizon-tools/
 pdfminer (docs/tool-allowlist.md): its tests fail, never skip, when it is
 missing from the host.
 """
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -168,11 +171,27 @@ def test_unreadable_pdf_records_failed(origin, monkeypatch):
     assert [argv for argv in spawned if "cat-file" in argv or str(argv[0]).endswith(knowledge.EXTRACTOR_COMMAND)] == []
 
 
+def _library_sources() -> set:
+    """HZ-972: the PDFs a committed project persona file names in this repo as
+    knowledge sources, each with the Markdown it is rendered from
+    (scripts/knowledge-pdfs.mjs). The only document files git may hold."""
+    allowed = set()
+    for personas in sorted((REPO_ROOT / "farm" / "projects").glob("*/personas.json")):
+        for entry in json.loads(personas.read_text())["personas"]:
+            for ref in entry.get("knowledge", []):
+                if ref.get("repo") == "FinTekkers/horizon":
+                    allowed |= {ref["path"], ref["path"][: -len(".pdf")] + ".md"}
+    return allowed
+
+
 def test_no_document_text_is_tracked_in_git(origin, tmp_path):
     tracked = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT, check=True, capture_output=True, text=True).stdout
     paths = tracked.splitlines()
-    assert [p for p in paths if p.lower().endswith(".pdf")] == []
-    assert [p for p in paths if "/knowledge/" in f"/{p}"] == []
+    library = _library_sources()
+    # A committed library lives only in a project's own knowledge/ directory.
+    assert [p for p in library if not re.fullmatch(r"farm/projects/[a-z0-9-]+/knowledge/[a-z0-9-]+\.(pdf|md)", p)] == []
+    assert [p for p in paths if p.lower().endswith(".pdf") and p not in library] == []
+    assert [p for p in paths if "/knowledge/" in f"/{p}" and p not in library] == []
     # This test's own PDF and cache live only under tmp_path.
     knowledge.sync_once(StubServer().fetch, lambda *a: None)
     cache = knowledge.cache_dir(SLUG).resolve()
@@ -227,3 +246,89 @@ def test_switch_off_does_no_work(origin):
     assert knowledge.sync_once(server.fetch, server.report) == []
     assert server.puts == []
     assert not Path(os.environ["FARM_KNOWLEDGE_DIR"]).exists()
+
+
+def test_a_heading_tag_names_its_section_and_untagged_ids_do_not_move():
+    pages = [
+        "1 Introduction\nBonds pay coupons.\n2 Modified duration {#modified-duration}\nD_mod = D_mac / (1 + y/f).",
+        "2.1 Pricing\nClean price.\n3 Again {#modified-duration}\n4 Bad tag {#Not_An_Id}",
+    ]
+    sections = knowledge.build_sections(pages)
+    assert [(s["id"], s["title"]) for s in sections] == [
+        ("1-introduction", "1 Introduction"),
+        ("modified-duration", "2 Modified duration"),
+        ("2-1-pricing", "2.1 Pricing"),
+        ("3-again", "3 Again"),  # a tag already taken falls back to the slug
+        ("4-bad-tag-not-an-id", "4 Bad tag {#Not_An_Id}"),  # not a tag: the heading is left as it is
+    ]
+    assert sections[1]["text"].startswith("2 Modified duration {#modified-duration}\n")
+    # Untagged, the ids are exactly what they were before tags existed.
+    assert [s["id"] for s in knowledge.build_sections(["1 Introduction", "2 Scope\n2.1 Pricing"])] == [
+        "1-introduction",
+        "2-scope",
+        "2-1-pricing",
+    ]
+
+
+FINTEKKERS_LIBRARY = REPO_ROOT / "farm" / "projects" / "fintekkers" / "knowledge"
+
+
+@pytest.mark.parametrize("name", ["bond-maths", "day-counts", "settlement", "tips"])
+def test_each_committed_fintekkers_pdf_indexes_to_the_ids_its_markdown_declares(name):
+    tags = re.findall(r"^## \d{1,3}(?:\.\d{1,3}){0,2} .*\{#([a-z0-9-]+)\}\s*$", (FINTEKKERS_LIBRARY / f"{name}.md").read_text(), re.M)
+    pages = knowledge.pdf_pages(knowledge.extractor_path(), FINTEKKERS_LIBRARY / f"{name}.pdf")
+    assert [s["id"] for s in knowledge.build_sections(pages)] == tags
+    assert {"bond-maths": "modified-duration", "day-counts": "act-act-icma", "settlement": "t-plus-1", "tips": "index-ratio"}[name] in tags
+
+
+# ---- HZ-972: the private FinTekkers/quant-library papers ----
+# On the box (where the store is) this clones the private repo from GitHub
+# with the farm user's own git credentials, as farmd's hub does, and runs one
+# real sync tick for one paper. Off the box it skips — unless
+# HORIZON_REQUIRE_QUANT_STORE=1, when it runs and fails.
+
+QUANT_REGISTRY = json.loads((REPO_ROOT / "farm" / "projects" / "fintekkers" / "quant_resources.json").read_text())
+QUANT_REPO = QUANT_REGISTRY["store"]["repo"]
+QUANT_URL = os.environ.get("QUANT_LIBRARY_URL") or f"https://github.com/{QUANT_REPO}.git"
+QUANT_STORE = os.environ.get("HORIZON_QUANT_RESOURCES_DIR") or QUANT_REGISTRY["store"]["path"]
+# The smallest downloaded paper: three pages, so the extract stays quick.
+QUANT_PAPER = "papers/isda_2012_standard_cds_examples.pdf"
+_ON_BOX = os.path.isdir(QUANT_STORE) or os.environ.get("HORIZON_REQUIRE_QUANT_STORE") == "1"
+
+
+def knowledge_slug(repo: str, path: str) -> str:
+    """server/src/knowledgeDocs.js knowledgeSlug(), for this test only."""
+    import hashlib
+
+    part = lambda text: re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    readable = f"{part(repo)}__{part(re.sub(r'(?i)[.]pdf$', '', path))}"[:160]
+    return f"{readable}-{hashlib.sha256(f'{repo}\n{path}'.encode()).hexdigest()[:10]}"
+
+
+def test_knowledge_slug_matches_the_servers():
+    assert knowledge_slug(REPO, PATH) == SLUG
+
+
+@pytest.mark.skipif(not _ON_BOX, reason=f"no quant store at {QUANT_STORE} (set HORIZON_REQUIRE_QUANT_STORE=1 to fail instead)")
+def test_a_quant_library_paper_is_fetched_with_its_checksum_and_extracted(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_KNOWLEDGE_DIR", str(tmp_path / "knowledge"))
+    hub = workspaces.hub_path(QUANT_REPO)
+    hub.parent.mkdir(parents=True)
+    git(tmp_path, "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--depth", "1", QUANT_URL, str(hub))
+    [entry] = [r for r in QUANT_REGISTRY["resources"] if r.get("library") == {"repo": QUANT_REPO, "path": QUANT_PAPER}]
+    slug = knowledge_slug(QUANT_REPO, QUANT_PAPER)
+    server = StubServer(sources=[{"projectId": 2, "slug": slug, "repo": QUANT_REPO, "path": QUANT_PAPER, "lastSha": None, "status": None}])
+    [body] = knowledge.sync_once(server.fetch, server.report)
+
+    fetched = subprocess.run(["git", "-C", str(hub), "cat-file", "blob", body["sourceSha"]], check=True, capture_output=True).stdout
+    sums = git(hub, "show", "origin/HEAD:papers/SHA256SUMS.txt")
+    listed = {name.lstrip("*"): digest for digest, name in (line.split(None, 1) for line in sums.splitlines() if line.strip())}
+    import hashlib
+
+    digest = hashlib.sha256(fetched).hexdigest()
+    assert digest == listed[QUANT_PAPER.removeprefix("papers/")], "the fetched bytes match SHA256SUMS.txt"
+    assert digest == entry["sha256"], "and the registry's sha256"
+    assert body["status"] == "extracted", body
+    assert body["sectionCount"] >= 1 and body["pageCount"] >= 1
+    assert (Path(os.environ["FARM_KNOWLEDGE_DIR"]) / slug / "index.json").is_file()

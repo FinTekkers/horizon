@@ -27,7 +27,7 @@ import {
 } from '../../../domain/js/lifecycle.js'
 import { AGENTS, stepAgentToken } from '../domain/agentTokens'
 import { PHASE_ACCENT, PHASE_ACCENT_BG, priorityColor } from '../domain/lifecycle'
-import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, personaFor, personaId } from '../domain/personas'
+import { PERSONAS, PERSONA_AGENT_ROLES, PRIMARY_PERSONA_AGENT, offeredPersonas, personaFor, personaId } from '../domain/personas'
 import { itemStatus, isDependencyBlocked, ruleBlockSummary, queuedToMerge } from '../domain/status'
 import { pauseReason } from '../domain/pauseReason'
 import { holdFor } from '../domain/hold'
@@ -853,13 +853,11 @@ function Step({ item, stepOutputs, outputsSettled, index, deployBlock, viewerNam
                   value={personaId(item, agent)}
                   onChange={(e) => onSetPersona(item.id, agent, e.target.value)}
                 >
-                  {Object.entries(PERSONAS[agent])
-                    .filter(([, p]) => !p.testOnly)
-                    .map(([id, p]) => (
-                      <option key={id} value={id}>
-                        {p.label}
-                      </option>
-                    ))}
+                  {offeredPersonas(item, agent).map(([id, p]) => (
+                    <option key={id} value={id}>
+                      {p.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             ))}

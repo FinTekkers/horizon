@@ -55,6 +55,10 @@ SLUG_SHAPE = re.compile(r"^[a-z0-9_-]+$")
 # levels of up to three digits, and the title starts with a letter, so a line
 # such as "2024 revenue" or "3 4 5" is body text.
 HEADING = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){0,2})\.?\s+([A-Za-z].*)$")
+# HZ-972: an optional trailing "{#id}" on a numbered heading names its section
+# id ("3 Modified duration {#modified-duration}"), so citations need not carry
+# the number. A heading without one keeps its slug id.
+TAG = re.compile(r"\s*\{#([a-z0-9][a-z0-9-]{0,99})\}\s*$")
 MAX_SECTIONS = 500
 MAX_TITLE = 200
 MAX_ERROR = 300
@@ -129,12 +133,15 @@ def _pages(binary: Path, repo: str, sha: str) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="horizon-knowledge-") as tmp:
         pdf = Path(tmp) / "source.pdf"
         pdf.write_bytes(blob.stdout)
-        try:
-            result = subprocess.run(
-                [str(binary), str(pdf)], capture_output=True, timeout=EXTRACT_LIMIT_S, shell=False
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ExtractError(f"{EXTRACTOR_COMMAND} ran past {EXTRACT_LIMIT_S}s") from exc
+        return pdf_pages(binary, pdf)
+
+
+def pdf_pages(binary: Path, pdf: Path) -> list[str]:
+    """A PDF file's text, one string per page."""
+    try:
+        result = subprocess.run([str(binary), str(pdf)], capture_output=True, timeout=EXTRACT_LIMIT_S, shell=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ExtractError(f"{EXTRACTOR_COMMAND} ran past {EXTRACT_LIMIT_S}s") from exc
     if result.returncode != 0:
         raise ExtractError(f"{EXTRACTOR_COMMAND} failed: {_last_line(result.stderr.decode('utf-8', 'replace'))}")
     # pdf2txt.py ends every page with a form feed.
@@ -159,15 +166,26 @@ def _section_id(title: str, seen: set) -> str:
 def build_sections(pages: list[str]) -> list[dict]:
     """[{"id", "title", "page", "text"}]: one section per numbered heading, its
     text running to the next heading. Ids are slugs of the heading, made unique
-    with a -2, -3 suffix. With no headings, one section per page: p1, p2, ..."""
+    with a -2, -3 suffix; a heading's own {#id} tag wins unless that id is
+    already taken, and is left out of the title. With no headings, one section
+    per page: p1, p2, ..."""
     sections: list[dict] = []
     seen: set = set()
     for page_no, page in enumerate(pages, 1):
         for line in page.splitlines():
             match = HEADING.match(line.strip())
             if match and len(sections) < MAX_SECTIONS:
-                title = f"{match.group(1)} {match.group(2).strip()}"[:MAX_TITLE]
-                sections.append({"id": _section_id(title, seen), "title": title, "page": page_no, "text": ""})
+                rest = match.group(2).strip()
+                tag = TAG.search(rest)
+                if tag:
+                    rest = rest[: tag.start()].strip() or rest
+                title = f"{match.group(1)} {rest}"[:MAX_TITLE]
+                if tag and tag.group(1) not in seen:
+                    seen.add(tag.group(1))
+                    section_id = tag.group(1)
+                else:
+                    section_id = _section_id(title, seen)
+                sections.append({"id": section_id, "title": title, "page": page_no, "text": ""})
             if sections:
                 sections[-1]["text"] += line + "\n"
     if sections:

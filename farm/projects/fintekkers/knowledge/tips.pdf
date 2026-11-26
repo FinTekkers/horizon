@@ -1,0 +1,43 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3087 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL (TIPS: Treasury Inflation-Protected Securities) Tj T* () Tj T* (FinTekkers knowledge library. Written in our own words from the Treasury's) Tj T* (published rules; the primary sources are listed at the end. A TIPS pays a) Tj T* (fixed real coupon on a principal that is adjusted for inflation by the CPI.) Tj T* () Tj T* (1 Scope {#scope}) Tj T* () Tj T* (How the index ratio, the inflation-adjusted principal, coupons, price and) Tj T* (accrued interest of a TIPS are formed, what happens when the CPI is late or) Tj T* (changes, and the deflation floor at maturity.) Tj T* () Tj T* (2 Reference CPI {#reference-cpi}) Tj T* () Tj T* (The index is the non-seasonally adjusted CPI-U published by the Bureau of) Tj T* (Labor Statistics. The reference CPI \(Ref CPI\) for the first day of a month M) Tj T* (is the CPI-U for the month three months earlier: for 1 July it is the April) Tj T* (CPI-U. For any other day of month M it is interpolated in a straight line) Tj T* (between the Ref CPI of the first of M and the first of the next month:) Tj T* () Tj T* (    Ref CPI\(date\) = Ref CPI\(M\) + \(t - 1\) / D * \(Ref CPI\(M+1\) - Ref CPI\(M\)\)) Tj T* () Tj T* (where t is the day of the month of the date and D is the number of days in) Tj T* (month M. The regulation fixes the rounding: the result is truncated to six) Tj T* (decimal places and rounded to five.) Tj T* () Tj T* (3 Index ratio {#index-ratio}) Tj T* () Tj T* (The index ratio on a date is the Ref CPI on that date divided by the Ref CPI) Tj T* (on the security's dated date \(its base CPI, published with the auction\):) Tj T* () Tj T* (    Index ratio\(date\) = Ref CPI\(date\) / Ref CPI\(dated date\)) Tj T* () Tj T* (It is also truncated to six decimals and rounded to five. On settlement the) Tj T* (ratio is taken at the settlement date.) Tj T* () Tj T* (4 Adjusted principal, coupon, price and accrued {#adjusted-principal}) Tj T* () Tj T* (- Inflation-adjusted principal = par * index ratio.) Tj T* (- Each coupon = \(real coupon rate / 2\) * inflation-adjusted principal on the) Tj T* (  coupon date.) Tj T* (- Prices and yields are quoted in real terms. The settlement amount per 100) Tj T* (  is \(real clean price + real accrued interest\) * index ratio at settlement.) Tj T* (- Real accrued interest is computed as for any Treasury note, on ACT/ACT) Tj T* (  ICMA \(see the day-count document\), then scaled by the index ratio.) Tj T* () Tj T* (5 Deflation floor {#deflation-floor}) Tj T* () Tj T* (At maturity the holder receives the greater of the inflation-adjusted) Tj T* (principal and the original par. Coupons are not floored: in a deflationary) Tj T* (period they are paid on the lower adjusted principal. The floor applies only) Tj T* (once, at maturity, so it is an option on cumulative inflation since issue.) Tj T* () Tj T* (6 Fallback index {#fallback-index}) Tj T* () Tj T* (If the CPI-U for a month is not reported when it is needed, Treasury uses a) Tj T* (substitute built from the last reported CPI-U and the change over the last) Tj T* (twelve months:) Tj T* ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 2029 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL () Tj T* (    CPI\(missing\) = CPI\(last\) * \(CPI\(last\) / CPI\(last, 12 months earlier\)\)^\(m / 12\)) Tj T* () Tj T* (where m is the number of months between the last reported month and the) Tj T* (missing month. Payments made on a substitute index are not revised when the) Tj T* (real index is published. If the CPI is rebased, Treasury converts it back to) Tj T* (the original base; if it is discontinued or fundamentally changed, Treasury,) Tj T* (after consulting the Bureau of Labor Statistics, chooses an appropriate) Tj T* (replacement index.) Tj T* () Tj T* (7 Real yield {#real-yield}) Tj T* () Tj T* (The real yield is solved from the real clean price plus real accrued, with) Tj T* (the fixed-coupon formula in the bond maths document. The index ratio scales) Tj T* (both sides of the price equation, so it does not change the real yield.) Tj T* () Tj T* (8 Worked example {#tips-example}) Tj T* () Tj T* (An illustrative calculation with made-up CPI values. Ref CPI for 1 July is) Tj T* (300.00000 and for 1 August is 301.24000; July has 31 days; the base CPI is) Tj T* (295.00000. Settlement on 15 July:) Tj T* () Tj T* (- Ref CPI = 300.00000 + 14/31 * 1.24000 = 300.56000.) Tj T* (- Index ratio = 300.56000 / 295.00000 = 1.01885 \(five decimals\).) Tj T* (- A real clean price of 99.50 with real accrued 0.40 settles at) Tj T* (  \(99.50 + 0.40\) * 1.01885 = 101.7831 per 100 face.) Tj T* () Tj T* (Sources) Tj T* () Tj T* (- US Treasury, 31 CFR Part 356, Appendix B, section I \(inflation-protected) Tj T* (  securities: Ref CPI, index ratio, substitute index and the minimum) Tj T* (  principal at maturity\):) Tj T* (  https://www.ecfr.gov/current/title-31/subtitle-B/chapter-II/subchapter-A/part-356) Tj T* (- TreasuryDirect, Treasury Inflation-Protected Securities:) Tj T* (  https://www.treasurydirect.gov/marketable-securities/tips/) Tj T* (- US Bureau of Labor Statistics, Consumer Price Index \(CPI-U, not) Tj T* (  seasonally adjusted\): https://www.bls.gov/cpi/) Tj T* ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000003386 00000 n 
+0000003512 00000 n 
+0000005593 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+5688
+%%EOF
