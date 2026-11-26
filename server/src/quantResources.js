@@ -12,8 +12,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { validate } from '../../domain/validate.mjs'
-import { PROJECTS_DIR, slugify } from './definitions.js'
-import { knowledgeSlug } from './knowledgeDocs.js'
+// Pure modules only: goldenCases.js imports this, and the WhatsApp vote path
+// reaches goldenCases.js, so definitions.js must stay off this graph
+// (wa-poll-no-model.test.mjs).
+import { PROJECTS_DIR, slugify } from './farmPaths.js'
+import { knowledgeSlug } from './knowledgeSlug.js'
 
 export const REGISTRY_FILE = 'quant_resources.json'
 
