@@ -1,7 +1,8 @@
 // HZ-972 metric 3: FinTekkers' knowledge sources. With the project's
 // definitions switch on, listSources() returns the four committed documents
 // (bond maths, day counts, settlement, TIPS) named by
-// farm/projects/fintekkers/personas.json. Each declares its section ids,
+// farm/projects/fintekkers/personas.json, then the papers in the private
+// FinTekkers/quant-library repo that quant_resources.json lists. Each declares its section ids,
 // including the four the metric names, and cites a primary source; each PDF
 // is exactly what scripts/knowledge-pdfs.mjs renders from its Markdown, and
 // the extract job indexes it to exactly those ids.
@@ -29,12 +30,24 @@ db.prepare("INSERT INTO project_repo (project_id, repo, prefix) VALUES (?, 'FinT
 
 const REQUIRED = { 'bond-maths': 'modified-duration', 'day-counts': 'act-act-icma', settlement: 't-plus-1', tips: 'index-ratio' }
 
-test('listSources() returns the four documents for FinTekkers, each under its derived slug', () => {
+test('listSources() returns the four documents for FinTekkers first, each under its derived slug', () => {
   const sources = listSources().filter((s) => s.projectId === projectId)
   assert.deepEqual(
-    sources.map(({ slug, repo, path, isolation }) => ({ slug, repo, path, isolation })),
+    sources.slice(0, DOC_NAMES.length).map(({ slug, repo, path, isolation }) => ({ slug, repo, path, isolation })),
     DOC_NAMES.map((name) => ({ slug: knowledgeSlug(LIBRARY_REPO, pdfPath(name)), repo: LIBRARY_REPO, path: pdfPath(name), isolation: 'internal' })),
   )
+})
+
+test('then the downloaded quant-library papers, exactly the ones quant_resources.json lists', () => {
+  const registry = JSON.parse(readFileSync(join(REPO_ROOT, 'farm/projects/fintekkers/quant_resources.json'), 'utf8'))
+  const papers = registry.resources.filter((r) => r.kind === 'paper' && r.status === 'downloaded').map((r) => r.library)
+  assert.ok(papers.length >= 30, `only ${papers.length} downloaded papers`)
+  const sources = listSources().filter((s) => s.projectId === projectId).slice(DOC_NAMES.length)
+  assert.deepEqual(
+    sources.map(({ slug, repo, path }) => ({ slug, repo, path })),
+    papers.map(({ repo, path }) => ({ slug: knowledgeSlug(repo, path), repo, path })),
+  )
+  assert.ok(sources.every((s) => s.repo === 'FinTekkers/quant-library' && /^papers\/[a-z0-9_.]+\.pdf$/.test(s.path)))
 })
 
 test('with the switch off, FinTekkers lists no sources', () => {

@@ -36,6 +36,7 @@ import re
 import shutil
 import subprocess
 
+from . import quant_resources
 from .config import farm_home
 
 SCRATCH_MOUNT = "/scratch"
@@ -209,11 +210,14 @@ def build_run_argv(
     env_names: list,
     cpus: str | None = None,
     memory: str | None = None,
+    read_only_dirs: list | None = None,
 ) -> list:
     """The `podman run -d` argv that starts the job's container. `env_names`
     are passed as `--env NAME`: Podman inherits each value from its own
     environment, so no value ever appears in argv. HOME is the throwaway
-    /tmp, so a `$HOME` write lands there and vanishes with the run."""
+    /tmp, so a `$HOME` write lands there and vanishes with the run.
+    HZ-972: each `read_only_dirs` entry (quant_resources.container_dirs) is
+    mounted read-only at its own path."""
     argv = [
         podman_bin(),
         "run",
@@ -246,6 +250,8 @@ def build_run_argv(
         "-w",
         workdir,
     ]
+    for directory in read_only_dirs or []:
+        argv += ["-v", f"{directory}:{directory}:ro"]
     # farmd reads job secrets from <cwd>/.env, and the checkout is mounted
     # whole: hide each .env behind an unreadable empty file, so a command can
     # only see the env the plan declared.
@@ -394,13 +400,26 @@ def rehearsal_proxy_env(flags: list | tuple | None, values: dict | None) -> dict
     return checked
 
 
+# HZ-972: what a rehearsal sees where the quant store would be: an empty,
+# read-only tmpfs. `notmpcopyup` matters — podman's default copies the
+# masked directory's files into the tmpfs.
+STORE_MASK_OPTIONS = "ro,notmpcopyup,size=64k,mode=0555"
+
+
 def host_tool_mounts(venv_dir: str | None = None) -> list:
     """`-v <dir>:<dir>:ro` for each HOST_TOOL_DIRS dir that is a real
-    directory here, plus the repo's venv when it is one."""
+    directory here, plus the repo's venv when it is one. HZ-972: the private
+    quant store, when it sits under a mounted dir, is masked by an empty
+    tmpfs, so no project's rehearsal can read it."""
     argv = []
+    mounted = []
     for directory in [*HOST_TOOL_DIRS, *([venv_dir] if venv_dir else [])]:
         if os.path.isdir(directory) and not os.path.islink(directory):
             argv += ["-v", f"{directory}:{directory}:ro"]
+            mounted.append(os.path.realpath(directory))
+    store = os.path.realpath(quant_resources.store_dir())
+    if os.path.isdir(store) and any(store == d or store.startswith(d.rstrip("/") + "/") for d in mounted):
+        argv.append(f"--tmpfs={store}:{STORE_MASK_OPTIONS}")
     return argv
 
 

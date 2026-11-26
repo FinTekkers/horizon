@@ -279,3 +279,56 @@ def test_each_committed_fintekkers_pdf_indexes_to_the_ids_its_markdown_declares(
     pages = knowledge.pdf_pages(knowledge.extractor_path(), FINTEKKERS_LIBRARY / f"{name}.pdf")
     assert [s["id"] for s in knowledge.build_sections(pages)] == tags
     assert {"bond-maths": "modified-duration", "day-counts": "act-act-icma", "settlement": "t-plus-1", "tips": "index-ratio"}[name] in tags
+
+
+# ---- HZ-972: the private FinTekkers/quant-library papers ----
+# On the box (where the store is) this clones the private repo from GitHub
+# with the farm user's own git credentials, as farmd's hub does, and runs one
+# real sync tick for one paper. Off the box it skips — unless
+# HORIZON_REQUIRE_QUANT_STORE=1, when it runs and fails.
+
+QUANT_REGISTRY = json.loads((REPO_ROOT / "farm" / "projects" / "fintekkers" / "quant_resources.json").read_text())
+QUANT_REPO = QUANT_REGISTRY["store"]["repo"]
+QUANT_URL = os.environ.get("QUANT_LIBRARY_URL") or f"https://github.com/{QUANT_REPO}.git"
+QUANT_STORE = os.environ.get("HORIZON_QUANT_RESOURCES_DIR") or QUANT_REGISTRY["store"]["path"]
+# The smallest downloaded paper: three pages, so the extract stays quick.
+QUANT_PAPER = "papers/isda_2012_standard_cds_examples.pdf"
+_ON_BOX = os.path.isdir(QUANT_STORE) or os.environ.get("HORIZON_REQUIRE_QUANT_STORE") == "1"
+
+
+def knowledge_slug(repo: str, path: str) -> str:
+    """server/src/knowledgeDocs.js knowledgeSlug(), for this test only."""
+    import hashlib
+
+    part = lambda text: re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    readable = f"{part(repo)}__{part(re.sub(r'(?i)[.]pdf$', '', path))}"[:160]
+    return f"{readable}-{hashlib.sha256(f'{repo}\n{path}'.encode()).hexdigest()[:10]}"
+
+
+def test_knowledge_slug_matches_the_servers():
+    assert knowledge_slug(REPO, PATH) == SLUG
+
+
+@pytest.mark.skipif(not _ON_BOX, reason=f"no quant store at {QUANT_STORE} (set HORIZON_REQUIRE_QUANT_STORE=1 to fail instead)")
+def test_a_quant_library_paper_is_fetched_with_its_checksum_and_extracted(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspaces, "WORKSPACES_DIR", tmp_path / "workspaces")
+    monkeypatch.setenv("FARM_KNOWLEDGE_DIR", str(tmp_path / "knowledge"))
+    hub = workspaces.hub_path(QUANT_REPO)
+    hub.parent.mkdir(parents=True)
+    git(tmp_path, "clone", "--quiet", "--filter=blob:none", "--no-checkout", "--depth", "1", QUANT_URL, str(hub))
+    [entry] = [r for r in QUANT_REGISTRY["resources"] if r.get("library") == {"repo": QUANT_REPO, "path": QUANT_PAPER}]
+    slug = knowledge_slug(QUANT_REPO, QUANT_PAPER)
+    server = StubServer(sources=[{"projectId": 2, "slug": slug, "repo": QUANT_REPO, "path": QUANT_PAPER, "lastSha": None, "status": None}])
+    [body] = knowledge.sync_once(server.fetch, server.report)
+
+    fetched = subprocess.run(["git", "-C", str(hub), "cat-file", "blob", body["sourceSha"]], check=True, capture_output=True).stdout
+    sums = git(hub, "show", "origin/HEAD:papers/SHA256SUMS.txt")
+    listed = {name.lstrip("*"): digest for digest, name in (line.split(None, 1) for line in sums.splitlines() if line.strip())}
+    import hashlib
+
+    digest = hashlib.sha256(fetched).hexdigest()
+    assert digest == listed[QUANT_PAPER.removeprefix("papers/")], "the fetched bytes match SHA256SUMS.txt"
+    assert digest == entry["sha256"], "and the registry's sha256"
+    assert body["status"] == "extracted", body
+    assert body["sectionCount"] >= 1 and body["pageCount"] >= 1
+    assert (Path(os.environ["FARM_KNOWLEDGE_DIR"]) / slug / "index.json").is_file()

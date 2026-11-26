@@ -66,6 +66,7 @@ from . import (
     pause,
     plan_bundle,
     preflight,
+    quant_resources,
     read_only_guard,
     rehearsal,
     review_diff,
@@ -686,6 +687,16 @@ def golden_cases_section(task: dict) -> str | None:
     if task.get("golden_cases") is True and task["step"].get("label") in GOLDEN_ADDENDUM_LABELS:
         return (ROLES / GOLDEN_CASES_ADDENDUM).read_text().rstrip("\n")
     return None
+
+
+def quant_dirs(task: dict, persona_ids, provider_override: str | None) -> list[str]:
+    """HZ-972: the read-only add_dirs a step run as `persona_ids` (plus the
+    task's sub-step persona) gets for its project's quant store — [] unless
+    the project's registry lists one of them as a reader and the provider can
+    read add_dirs. See farm/quant_resources.py."""
+    if not reads_add_dirs(provider_override):
+        return []
+    return quant_resources.step_dirs(task.get("project"), [*persona_ids, (task.get("substep") or {}).get("persona")])
 
 
 # ---- design verdict (HO-851) ----
@@ -3079,6 +3090,10 @@ def _execute_pm(task: dict) -> dict:
         else None
     )
     provider, model_choice = choice or (None, None)
+    # HZ-972: a quant golden-cases sub-step reads its project's registry and
+    # store; every other PM prompt is unchanged.
+    read_dirs = quant_dirs(task, [], provider)
+    prompt += quant_resources.prompt_section(read_dirs)
     # The reply that parsed, so a retry records its own provenance (HZ-102).
     produced: dict = {}
 
@@ -3094,6 +3109,7 @@ def _execute_pm(task: dict) -> dict:
             provider=provider,
             model_choice=model_choice,
             overlay=overlay,
+            add_dirs=read_dirs or None,
         )
         return produced
 
@@ -4040,6 +4056,8 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
     tools, persona_deny = apply_persona_tools(
         tools, resolve(persona_agent, personas.get(persona_agent), overlay) if persona_agent else None, overlay
     )
+    # HZ-972: a quant persona's run reads its project's registry and store.
+    read_dirs = quant_dirs(task, [resolve(persona_agent, personas.get(persona_agent), overlay)] if persona_agent else [], provider_override)
 
     # HZ-447: a bundle step reads no worktree, so none is set up for it.
     bundle_step = _reads_bundle(kind, label)
@@ -4108,6 +4126,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
             conflicted = merge_default_branch(ws)
             log(f"merged origin/main into {branch}" + (f" — {len(conflicted)} conflicted file(s) left for the agent" if conflicted else " cleanly"))
             extra += _merge_main_note(conflicted)
+        extra += quant_resources.prompt_section(read_dirs)
         deadline = time.monotonic() + timeout_s
 
         # HZ-458: a fix turn after a red check is the same call, resumed.
@@ -4129,6 +4148,7 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 disallowed_tools=implement_deny,
                 overlay=overlay,
                 plugin_dirs=plugin_dirs,
+                add_dirs=read_dirs or None,
             )
 
         try:
@@ -4584,6 +4604,9 @@ def _execute(task: dict, guard: HandoffGuard) -> dict:
                 stack.callback(verify_evidence.remove, evidence_root)
                 prompt_extra = verify_evidence.prompt_section(evidence_root, task["evidence"], reports)
                 add_dirs = [str(evidence_root)]
+            if read_dirs and not bundle_step:
+                prompt_extra += quant_resources.prompt_section(read_dirs)
+                add_dirs = [*(add_dirs or []), *read_dirs]
             parsed, reply_provenance, notes = _run_and_parse(
                 build_prompt(task) + prompt_extra + "\n\nRespond with ONLY the JSON object described in your role instructions.",
                 agent=model_agent,

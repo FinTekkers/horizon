@@ -1408,6 +1408,39 @@ is refused. `venvDir` is relative to the task dir when one is set.
 - **Roll back** by clearing Task dir on the target: Task jobs go back to
   `repoDir`.
 
+## Quant resource store (HZ-972)
+
+FinTekkers' quant personas read a private store at `/opt/quant-resources`: a
+checkout of the private repo `FinTekkers/quant-library` (pinned libraries as
+git submodules, papers with `SHA256SUMS.txt`, a venv lock and its own
+`sync.sh`). Horizon holds only the metadata,
+`farm/projects/fintekkers/quant_resources.json`, whose `store.sha` pins the
+commit. No third-party code or paper is committed to Horizon.
+
+- **Set up, or re-sync after a pin bump**, as the farm user:
+  ```bash
+  sudo install -d -o ubuntu -m 0750 /opt/quant-resources   # once, if missing
+  infra/host/install-quant-resources.sh
+  ```
+  It clones the repo if needed, checks out `store.sha`, runs `./sync.sh` and
+  makes `libs/` and `venv/` read-only and the store unreadable to other
+  users. Re-running it changes nothing.
+- **Bump a pin** in quant-library first, then change `store.sha` (and the
+  entry) in `quant_resources.json` in a reviewed PR, deploy, and re-run the
+  script. The drift test in `server/test/quant-resources.test.mjs` compares
+  the registry with the store's `RESOURCES.json`, `papers/MANIFEST.md` and
+  `papers/SHA256SUMS.txt`; set `HORIZON_REQUIRE_QUANT_STORE=1` in the box's
+  check environment so a missing store fails it instead of skipping.
+- **Who sees it:** a step agent whose persona the registry lists in `readers`
+  (`quant`, `rust_quant`) gets the registry folder and the store as read-only
+  folders; a FinTekkers task container mounts the store read-only. Every
+  rehearsal sandbox masks it with an empty tmpfs, though it mounts `/opt`.
+- **Papers are indexed** by the knowledge library (HZ-537) as
+  `{repo: "FinTekkers/quant-library", path: "papers/<file>.pdf"}` sources, so
+  farmd's git credentials must be able to read the private repo.
+- **Roll back** by reverting the PR; the store can stay or be removed with
+  `rm -rf /opt/quant-resources`.
+
 ## Modern Web Guidance skills (HZ-930)
 
 A repo marked **Web guidance** (Admin → the repo's marks, or

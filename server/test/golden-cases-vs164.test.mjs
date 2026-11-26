@@ -3,7 +3,8 @@
 // as fixtures/hz-972-vs164-dry-run.md (how it was produced: fixtures/README.md).
 // Its golden-cases block passes the domain/goldenCases.schema.json checks;
 // every citation resolves to a section the extract job indexes from one of the
-// four FinTekkers library PDFs; and each expected value is within its stated
+// four FinTekkers library PDFs and is an entry of quant_resources.json; and
+// each expected value is within its stated
 // tolerance of the hand-computed reference value copied below.
 
 import { test } from 'node:test'
@@ -11,6 +12,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { extractGoldenCases, parseSource, validateGoldenCases } from '../../domain/js/goldenCases.js'
 import { knowledgeSlug } from '../src/knowledgeDocs.js'
+import { registryDocSlugs } from '../src/quantResources.js'
 import { DOC_NAMES, LIBRARY_REPO, extractedSectionIds, pdfPath } from './helpers/fintekkersKnowledge.mjs'
 
 const ARTIFACT = readFileSync(new URL('./fixtures/hz-972-vs164-dry-run.md', import.meta.url), 'utf8')
@@ -73,6 +75,12 @@ test('every citation resolves to an indexed section of one of the four library d
     assert.ok(indexed[slugs[source.doc]].includes(source.section), `${entry.id}: ${source.section} is not indexed in ${slugs[source.doc]}`)
     assert.doesNotMatch(entry.source, /valuation-service|src-/, entry.id)
   }
+})
+
+test('every citation is a quant_resources.json entry, so the gate would accept it', () => {
+  const registered = registryDocSlugs('FinTekkers')
+  assert.ok(registered, 'FinTekkers has a registry')
+  for (const entry of cases) assert.ok(registered.has(parseSource(entry.source).doc), `${entry.id}: ${entry.source} is not in quant_resources.json`)
 })
 
 test('each tolerance is no looser than VS-164 allows, and each expected value is within it of the reference', () => {

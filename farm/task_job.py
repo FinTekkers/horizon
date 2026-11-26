@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from domain.py import run_plan
-from farm import container_runner, db_changes, job_media, job_reports, run_reaper
+from farm import container_runner, db_changes, job_media, job_reports, quant_resources, run_reaper
 from farm import job_start as job_start_checks
 from farm import task_clone as task_clone_mod
 from farm.checks import redact
@@ -364,6 +364,7 @@ def _run_job(
     prereq_task: dict | None = None,
     approved_command_hashes: list | None = None,
     carry_through: int | None = None,
+    read_only_dirs: list | None = None,
 ) -> dict:
     """Runs the approved plan's commands in order. Returns the summary dict
     {run, passed, failed, failing}. Writes the state file and appends to the
@@ -620,6 +621,8 @@ def _run_job(
                     env_names=sorted(env_values or {}),
                     cpus=cpu_limit,
                     memory=memory_limit,
+                    # HZ-972: the project's quant store, when it has one.
+                    read_only_dirs=read_only_dirs,
                 ),
                 # The podman client gets the plan's values, the container
                 # only their names.
@@ -1151,6 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
             # HO-843: absent from a server before per-command approval.
             approved_command_hashes=task.get("approved_command_hashes"),
             carry_through=task.get("carry_through"),
+            read_only_dirs=quant_resources.container_dirs(task.get("project")),
         )
     except ValueError as exc:
         print(f"task_job: invalid run plan: {exc}", flush=True)
