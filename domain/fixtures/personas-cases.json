@@ -124,6 +124,7 @@
       "projectValidation": [
         "a valid project document is accepted",
         "a hyphenated slug is accepted",
+        "a persona with no model is accepted — its agent's default model applies",
         "a bare id equal to a global persona id of the same agent is rejected, naming the id",
         "a bare id equal to another agent's global persona id is rejected, naming the id",
         "a slug with a slash is rejected",
@@ -1104,6 +1105,12 @@
         "case": "a valid project document is accepted",
         "slug": "acme",
         "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "quant.md" }, { "id": "risk", "agent": "beta", "label": "Risk", "initials": "QT", "color": "#2E6CB2", "model": "prov-model-1", "provider": "prov", "file": "risk.md" }] },
+        "expect": { "throws": false }
+      },
+      {
+        "case": "a persona with no model is accepted — its agent's default model applies",
+        "slug": "acme",
+        "input": { "personas": [{ "id": "quant", "agent": "alpha", "label": "Quant", "initials": "QT", "color": "#2E6CB2", "provider": "prov", "file": "quant.md" }] },
         "expect": { "throws": false }
       },
       {

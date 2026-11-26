@@ -1015,17 +1015,29 @@ def test_a_fintekkers_run_starts_its_container_with_the_store_and_a_horizon_run_
 
 
 def test_a_rehearsal_masks_the_store_under_a_mounted_host_dir(tmp_path, quant_store, monkeypatch):
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
     opt = str(quant_store.parent)
     monkeypatch.setattr(container_runner, "HOST_TOOL_DIRS", (opt,))
     tools = container_runner.host_tool_mounts()
-    assert tools == ["-v", f"{opt}:{opt}:ro", f"--tmpfs={quant_store}:ro,notmpcopyup,size=64k,mode=0555"]
+    mask = container_runner.store_mask_dir()
+    assert tools == ["-v", f"{opt}:{opt}:ro", "-v", f"{mask}:{quant_store}:ro"]
+    assert os.listdir(mask) == [] and not os.access(mask, os.W_OK), "an empty, read-only mask"
     argv = container_runner.rehearsal_argv(
         image="img", name="farm-rehearsal-x", repo_dir=None, workdir="/", mask_file=None, ro_env_names=[], host_tools=tools, pg_socket_dir=None, timeout_s=60
     )
-    assert f"--tmpfs={quant_store}:ro,notmpcopyup,size=64k,mode=0555" in argv
+    assert f"{mask}:{quant_store}:ro" in argv
     assert f"{quant_store}:{quant_store}:ro" not in argv, "never the store itself"
-    # notmpcopyup: podman's default would copy the store's files into the mask.
-    assert "notmpcopyup" in container_runner.STORE_MASK_OPTIONS
+    assert [a for a in argv if a.startswith("--tmpfs")] == [f"--tmpfs={container_runner.REHEARSAL_TMPFS}"], "/tmp stays the only tmpfs"
+
+
+def test_a_mask_dir_that_is_not_empty_refuses_the_rehearsal(tmp_path, quant_store, monkeypatch):
+    monkeypatch.setenv("FARM_HOME", str(tmp_path / "farm-home"))
+    monkeypatch.setattr(container_runner, "HOST_TOOL_DIRS", (str(quant_store.parent),))
+    mask = Path(container_runner.store_mask_dir())
+    mask.chmod(0o755)
+    (mask / "leak.pdf").write_text("x")
+    with pytest.raises(container_runner.Unavailable, match="must be empty"):
+        container_runner.host_tool_mounts()
 
 
 def test_a_store_outside_every_mounted_dir_needs_no_mask(tmp_path, quant_store, monkeypatch):

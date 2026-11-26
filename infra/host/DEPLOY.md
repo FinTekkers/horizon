@@ -1434,7 +1434,8 @@ commit. No third-party code or paper is committed to Horizon.
 - **Who sees it:** a step agent whose persona the registry lists in `readers`
   (`quant`, `rust_quant`) gets the registry folder and the store as read-only
   folders; a FinTekkers task container mounts the store read-only. Every
-  rehearsal sandbox masks it with an empty tmpfs, though it mounts `/opt`.
+  rehearsal sandbox masks it with an empty read-only directory
+  (`$FARM_HOME/rehearsal-store-mask`), though it mounts `/opt`.
 - **Papers are indexed** by the knowledge library (HZ-537) as
   `{repo: "FinTekkers/quant-library", path: "papers/<file>.pdf"}` sources, so
   farmd's git credentials must be able to read the private repo.

@@ -6,7 +6,6 @@
       "label": "Quant library",
       "initials": "QL",
       "color": "#38294F",
-      "model": "claude-opus-5-5",
       "provider": "claude",
       "file": "quant_library.md",
       "knowledge": [

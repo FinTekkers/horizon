@@ -400,17 +400,27 @@ def rehearsal_proxy_env(flags: list | tuple | None, values: dict | None) -> dict
     return checked
 
 
-# HZ-972: what a rehearsal sees where the quant store would be: an empty,
-# read-only tmpfs. `notmpcopyup` matters — podman's default copies the
-# masked directory's files into the tmpfs.
-STORE_MASK_OPTIONS = "ro,notmpcopyup,size=64k,mode=0555"
+# HZ-972: what a rehearsal sees where the quant store would be: this empty,
+# read-only directory, bound over it. A bind, not a tmpfs: /tmp stays the
+# sandbox's only tmpfs, and podman's tmpfs copy-up can never fill it.
+STORE_MASK_DIR = "rehearsal-store-mask"
+
+
+def store_mask_dir() -> str:
+    """An empty, read-only directory under FARM_HOME, made on first use.
+    Raises Unavailable when it is not empty, so a mask can never show files."""
+    path = farm_home() / STORE_MASK_DIR
+    path.mkdir(mode=0o555, parents=True, exist_ok=True)
+    if any(path.iterdir()):
+        raise Unavailable(f"{path} must be empty: it masks the quant store in rehearsals")
+    return str(path)
 
 
 def host_tool_mounts(venv_dir: str | None = None) -> list:
     """`-v <dir>:<dir>:ro` for each HOST_TOOL_DIRS dir that is a real
     directory here, plus the repo's venv when it is one. HZ-972: the private
     quant store, when it sits under a mounted dir, is masked by an empty
-    tmpfs, so no project's rehearsal can read it."""
+    read-only dir, so no project's rehearsal can read it."""
     argv = []
     mounted = []
     for directory in [*HOST_TOOL_DIRS, *([venv_dir] if venv_dir else [])]:
@@ -419,7 +429,7 @@ def host_tool_mounts(venv_dir: str | None = None) -> list:
             mounted.append(os.path.realpath(directory))
     store = os.path.realpath(quant_resources.store_dir())
     if os.path.isdir(store) and any(store == d or store.startswith(d.rstrip("/") + "/") for d in mounted):
-        argv.append(f"--tmpfs={store}:{STORE_MASK_OPTIONS}")
+        argv += ["-v", f"{store_mask_dir()}:{store}:ro"]
     return argv
 
 

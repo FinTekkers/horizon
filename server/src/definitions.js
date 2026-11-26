@@ -239,7 +239,7 @@ export function loadProjectPersonas(slug, root = PROJECTS_DIR) {
     overlay.ids[entry.agent].push(nsId)
     overlay.roleText[nsId] = roleText
     overlay.display[nsId] = { label: entry.label, initials: entry.initials, color: entry.color }
-    overlay.models[`${entry.agent}.${nsId}`] = entry.model
+    if (Object.hasOwn(entry, 'model')) overlay.models[`${entry.agent}.${nsId}`] = entry.model
     overlay.providers[`${entry.agent}.${nsId}`] = entry.provider
     overlay.files.push(entry.file)
     if (Array.isArray(entry.knowledge) && entry.knowledge.length > 0) overlay.knowledge[nsId] = entry.knowledge.map((ref) => ({ ...ref }))

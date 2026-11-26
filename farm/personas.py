@@ -185,7 +185,8 @@ def load_project_personas(slug: str, root: Path | None = None) -> dict | None:
         overlay["ids"].setdefault(entry["agent"], []).append(ns_id)
         overlay["role_text"][ns_id] = role_text
         overlay["display"][ns_id] = {"label": entry["label"], "initials": entry["initials"], "color": entry["color"]}
-        overlay["models"][f"{entry['agent']}.{ns_id}"] = entry["model"]
+        if "model" in entry:
+            overlay["models"][f"{entry['agent']}.{ns_id}"] = entry["model"]
         overlay["providers"][f"{entry['agent']}.{ns_id}"] = entry["provider"]
         if entry.get("tools"):
             try:

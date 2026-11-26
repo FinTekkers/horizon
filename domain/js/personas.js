@@ -381,6 +381,10 @@ const PROJECT_PERSONA_KEYS = ['id', 'agent', 'label', 'initials', 'color', 'mode
 // own repo) or { repo, path } (a PDF in a docs repo). A path segment never
 // starts with a dot, so `..` and hidden files cannot be named.
 const PROJECT_PERSONA_OPTIONAL_KEYS = ['tools', 'knowledge']
+// HZ-972: listed in PROJECT_PERSONA_KEYS but optional — with none, the
+// persona's calls run on its agent's default model, so a project file need
+// name no model id (model ids are declared in domain/ only).
+const PROJECT_PERSONA_DEFAULTED_KEYS = ['model']
 const TOOL_ID_SHAPE = /^[a-z0-9][a-z0-9_-]{0,31}$/
 const KNOWLEDGE_REF_KEYS = ['repo', 'path']
 const KNOWLEDGE_REPO_SHAPE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
@@ -422,7 +426,7 @@ export function assertProjectPersonasShape(
       }
     }
     for (const key of PROJECT_PERSONA_KEYS) {
-      if (!own(entry, key)) throw new Error(`${at} is missing ${JSON.stringify(key)}`)
+      if (!own(entry, key) && !PROJECT_PERSONA_DEFAULTED_KEYS.includes(key)) throw new Error(`${at} is missing ${JSON.stringify(key)}`)
     }
     const { id, agent, label, initials, color, model, provider, file } = entry
     if (!isId(id)) {
@@ -452,7 +456,7 @@ export function assertProjectPersonasShape(
         `${at}.provider ${JSON.stringify(provider ?? null)} is not a provider domain/providers.json declares ${JSON.stringify(Object.keys(providerModels))}`,
       )
     }
-    if (typeof model !== 'string' || !providerModels[provider].includes(model)) {
+    if (own(entry, 'model') && (typeof model !== 'string' || !providerModels[provider].includes(model))) {
       throw new Error(
         `${at}.model ${JSON.stringify(model ?? null)} is not a model domain/providers.json declares for provider ${JSON.stringify(provider)}`,
       )
