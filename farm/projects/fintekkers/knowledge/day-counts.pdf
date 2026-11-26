@@ -1,0 +1,43 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 2791 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL (Day-count conventions) Tj T* () Tj T* (FinTekkers knowledge library. Written in our own words; the primary sources) Tj T* (are listed at the end. A day count turns two dates into a number of days and) Tj T* (a year fraction. It decides accrued interest and, for ACT/ACT ICMA, the period) Tj T* (fraction w used in the bond maths document.) Tj T* () Tj T* (1 Terms {#terms}) Tj T* () Tj T* (- D1, M1, Y1 are the day, month and year of the start date; D2, M2, Y2 of the) Tj T* (  end date. The start date is included and the end date is not.) Tj T* (- ACT means actual calendar days between the two dates.) Tj T* (- f is the number of coupon periods per year.) Tj T* (- A day count is a property of the bond. The ledger-models field) Tj T* (  BondDetailsProto.day_count \(LM-498\) carries it; when unset, the product) Tj T* (  default in section 8 applies.) Tj T* () Tj T* (2 ACT/ACT ICMA {#act-act-icma}) Tj T* () Tj T* (Used for US Treasury notes and bonds, and for most government bonds. Within) Tj T* (one regular coupon period from PCD to NCD:) Tj T* () Tj T* (    accrual fraction = ACT\(PCD, S\) / ACT\(PCD, NCD\)) Tj T* (    year fraction    = ACT\(PCD, S\) / \(f * ACT\(PCD, NCD\)\)) Tj T* () Tj T* (So the denominator is the actual length of the period the date falls in, never) Tj T* (a fixed 365 or 366. A semiannual period can be 181 to 184 days long. For an) Tj T* (irregular period, split it into the notional regular periods it overlaps and) Tj T* (add the fractions of each.) Tj T* () Tj T* (Example: 1 Dec 2026 to 1 Mar 2027 inside the period ending 1 Jun 2027 is) Tj T* (90 / 182 of a period, a year fraction of 90 / 364.) Tj T* () Tj T* (3 Thirty/360 US \(30/360, bond basis\) {#thirty-360-us}) Tj T* () Tj T* (Written 30/360 US. Used for US corporate and agency bonds. Every month) Tj T* (counts as 30 days:) Tj T* () Tj T* (    days = 360 * \(Y2 - Y1\) + 30 * \(M2 - M1\) + \(D2 - D1\)) Tj T* () Tj T* (after these adjustments, in order:) Tj T* () Tj T* (- if D1 is 31, set D1 to 30;) Tj T* (- if D2 is 31 and D1 \(after the first rule\) is 30 or 31, set D2 to 30.) Tj T* () Tj T* (The year fraction is days / 360. There is no February end-of-month rule in) Tj T* (the FinTekkers definition \(LM-498\). Some systems, including the spreadsheet) Tj T* (basis 0, add one; results differ when a date is the last day of February.) Tj T* () Tj T* (4 ACT/360 {#act-360}) Tj T* () Tj T* (Actual days over 360. Used for Treasury bills and money-market instruments.) Tj T* (A full year is therefore slightly more than 1.0 \(365/360\).) Tj T* () Tj T* (5 ACT/365 Fixed {#act-365f}) Tj T* () Tj T* (Actual days over 365, in every year, leap years included. Used for some) Tj T* (money-market and sterling instruments and for many curve-building) Tj T* ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 2459 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL (conventions.) Tj T* () Tj T* (6 Month ends {#month-end}) Tj T* () Tj T* (Month ends are where the conventions disagree most. Worked values, start date) Tj T* (included, end date excluded:) Tj T* () Tj T* (    from         to           ACT   30/360 US   ACT/360        ACT/365F) Tj T* (    2027-02-28   2027-03-31   31    33          0.0861111111   0.0849315068) Tj T* (    2028-02-29   2028-03-31   31    32          0.0861111111   0.0849315068) Tj T* (    2026-01-31   2026-03-31   59    60          0.1638888889   0.1616438356) Tj T* (    2026-01-30   2026-03-31   60    60          0.1666666667   0.1643835616) Tj T* (    2026-03-31   2026-04-01   1     1           0.0027777778   0.0027397260) Tj T* (    2026-12-01   2027-03-01   90    90          0.2500000000   0.2465753425) Tj T* () Tj T* (The first two rows show the missing February rule: 28 Feb and 29 Feb are not) Tj T* (moved to 30, so 30/360 US counts 33 and 32 days.) Tj T* () Tj T* (7 Leap years and negative rates {#edge-cases}) Tj T* () Tj T* (ACT/ACT ICMA needs no leap-year rule, because the period length already) Tj T* (contains 29 February when it falls inside. ACT/365F does not adjust, so a) Tj T* (leap year accrues 366/365 of the annual amount. A day count never changes) Tj T* (sign: with a negative rate, accrued interest is negative and the day count is) Tj T* (unchanged.) Tj T* () Tj T* (8 Product defaults {#product-defaults}) Tj T* () Tj T* (When a bond carries no explicit day count, the ledger-models hierarchy gives) Tj T* (the default \(LM-498\): Treasury notes, Treasury bonds, TIPS and STRIPS use) Tj T* (ACT/ACT ICMA; Treasury bills use ACT/360; corporate and agency bonds use) Tj T* (30/360 US. An explicit value on the bond always wins.) Tj T* () Tj T* (Sources) Tj T* () Tj T* (- MSRB Rule G-33, Calculations \(defines the 30/360 day count used for US) Tj T* (  municipal and corporate bonds\):) Tj T* (  https://www.msrb.org/Rules-and-Interpretations/MSRB-Rules/General/Rule-G-33) Tj T* (- US Treasury, 31 CFR Part 356, Appendix B \(actual/actual accrued interest) Tj T* (  for Treasury notes and bonds\):) Tj T* (  https://www.ecfr.gov/current/title-31/subtitle-B/chapter-II/subchapter-A/part-356) Tj T* (- ICMA Rule 251 and the ISDA 2006 Definitions, section 4.16: cited by name) Tj T* (  only; no text is reproduced here.) Tj T* (- FinTekkers item LM-498: the DayCountConventionProto values and product) Tj T* (  defaults.) Tj T* ET
+endstream
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000247 00000 n 
+0000003090 00000 n 
+0000003216 00000 n 
+0000005727 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+5822
+%%EOF

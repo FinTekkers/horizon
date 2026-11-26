@@ -49,3 +49,18 @@ keys are pinned to `"<pinned>"` (`pinVolatile`), and each step label and step
 `kind` is a `<step-label:N>` / `<step-kind:…>` reference (`encodeSteps`), so the
 files hold no copy of `domain/steps.json`. Regenerate with
 `UPDATE_FIXTURE=1` only on a commit already known to be right.
+
+## hz-972-vs164-dry-run.md
+
+HZ-972: the artifact of a dry run of FinTekkers' "Quant golden cases"
+sub-step (farm/projects/fintekkers/steps.json, persona `quant`) on VS-164's
+three reference cases, kept verbatim. Run on 26 Nov 2026 with
+`claude-opus-5-5`, from an empty directory with python as its only tool. The
+prompt was the farm's own: `farm/pm_steps.py` `build_prompt` for "Define how we
+measure success" on VS-164's live text, plus `golden_cases_section` (the
+golden-cases contract with `qa_quant.md` composed under it). Two additions:
+the four FinTekkers knowledge documents with their slugs and indexed section
+ids as an artifact, and the three cases' inputs (instrument, settlement,
+price) with no expected values. `golden-cases-vs164.test.mjs` checks the block
+against the schema, the indexed sections and the hand-computed reference
+values.

@@ -1,14 +1,17 @@
 """HZ-537: the knowledge extract job (farm/knowledge.py).
 
 Every PDF here is built from bytes inside the test, under tmp_path, and pushed
-to a bare temp "origin" that a temp hub clones — no PDF or document text is
-committed. The extractor is the real allow-listed one, /opt/horizon-tools/
+to a bare temp "origin" that a temp hub clones — no PDF or extracted text is
+committed for these tests. HZ-972: the only committed documents are a
+project's own library, the sources its personas.json names, and their cache
+is never committed. The extractor is the real allow-listed one, /opt/horizon-tools/
 pdfminer (docs/tool-allowlist.md): its tests fail, never skip, when it is
 missing from the host.
 """
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -168,11 +171,27 @@ def test_unreadable_pdf_records_failed(origin, monkeypatch):
     assert [argv for argv in spawned if "cat-file" in argv or str(argv[0]).endswith(knowledge.EXTRACTOR_COMMAND)] == []
 
 
+def _library_sources() -> set:
+    """HZ-972: the PDFs a committed project persona file names in this repo as
+    knowledge sources, each with the Markdown it is rendered from
+    (scripts/knowledge-pdfs.mjs). The only document files git may hold."""
+    allowed = set()
+    for personas in sorted((REPO_ROOT / "farm" / "projects").glob("*/personas.json")):
+        for entry in json.loads(personas.read_text())["personas"]:
+            for ref in entry.get("knowledge", []):
+                if ref.get("repo") == "FinTekkers/horizon":
+                    allowed |= {ref["path"], ref["path"][: -len(".pdf")] + ".md"}
+    return allowed
+
+
 def test_no_document_text_is_tracked_in_git(origin, tmp_path):
     tracked = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT, check=True, capture_output=True, text=True).stdout
     paths = tracked.splitlines()
-    assert [p for p in paths if p.lower().endswith(".pdf")] == []
-    assert [p for p in paths if "/knowledge/" in f"/{p}"] == []
+    library = _library_sources()
+    # A committed library lives only in a project's own knowledge/ directory.
+    assert [p for p in library if not re.fullmatch(r"farm/projects/[a-z0-9-]+/knowledge/[a-z0-9-]+\.(pdf|md)", p)] == []
+    assert [p for p in paths if p.lower().endswith(".pdf") and p not in library] == []
+    assert [p for p in paths if "/knowledge/" in f"/{p}" and p not in library] == []
     # This test's own PDF and cache live only under tmp_path.
     knowledge.sync_once(StubServer().fetch, lambda *a: None)
     cache = knowledge.cache_dir(SLUG).resolve()
@@ -227,3 +246,36 @@ def test_switch_off_does_no_work(origin):
     assert knowledge.sync_once(server.fetch, server.report) == []
     assert server.puts == []
     assert not Path(os.environ["FARM_KNOWLEDGE_DIR"]).exists()
+
+
+def test_a_heading_tag_names_its_section_and_untagged_ids_do_not_move():
+    pages = [
+        "1 Introduction\nBonds pay coupons.\n2 Modified duration {#modified-duration}\nD_mod = D_mac / (1 + y/f).",
+        "2.1 Pricing\nClean price.\n3 Again {#modified-duration}\n4 Bad tag {#Not_An_Id}",
+    ]
+    sections = knowledge.build_sections(pages)
+    assert [(s["id"], s["title"]) for s in sections] == [
+        ("1-introduction", "1 Introduction"),
+        ("modified-duration", "2 Modified duration"),
+        ("2-1-pricing", "2.1 Pricing"),
+        ("3-again", "3 Again"),  # a tag already taken falls back to the slug
+        ("4-bad-tag-not-an-id", "4 Bad tag {#Not_An_Id}"),  # not a tag: the heading is left as it is
+    ]
+    assert sections[1]["text"].startswith("2 Modified duration {#modified-duration}\n")
+    # Untagged, the ids are exactly what they were before tags existed.
+    assert [s["id"] for s in knowledge.build_sections(["1 Introduction", "2 Scope\n2.1 Pricing"])] == [
+        "1-introduction",
+        "2-scope",
+        "2-1-pricing",
+    ]
+
+
+FINTEKKERS_LIBRARY = REPO_ROOT / "farm" / "projects" / "fintekkers" / "knowledge"
+
+
+@pytest.mark.parametrize("name", ["bond-maths", "day-counts", "settlement", "tips"])
+def test_each_committed_fintekkers_pdf_indexes_to_the_ids_its_markdown_declares(name):
+    tags = re.findall(r"^## \d{1,3}(?:\.\d{1,3}){0,2} .*\{#([a-z0-9-]+)\}\s*$", (FINTEKKERS_LIBRARY / f"{name}.md").read_text(), re.M)
+    pages = knowledge.pdf_pages(knowledge.extractor_path(), FINTEKKERS_LIBRARY / f"{name}.pdf")
+    assert [s["id"] for s in knowledge.build_sections(pages)] == tags
+    assert {"bond-maths": "modified-duration", "day-counts": "act-act-icma", "settlement": "t-plus-1", "tips": "index-ratio"}[name] in tags

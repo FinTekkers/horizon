@@ -1,0 +1,54 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 9 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3213 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL (Bond maths: the fixed-coupon street convention) Tj T* () Tj T* (FinTekkers knowledge library. Written in our own words for golden cases and) Tj T* (reviews; the primary sources are listed at the end. Notation: C is the annual) Tj T* (coupon per 100 face, f the coupons per year, y the annual yield quoted at) Tj T* (frequency f, R the redemption amount per 100 \(normally 100\).) Tj T* () Tj T* (1 Scope {#scope}) Tj T* () Tj T* (This document fixes how FinTekkers prices a plain fixed-coupon bond between) Tj T* (coupon dates: the period fraction, accrued interest, dirty and clean price,) Tj T* (yield, Macaulay and modified duration, convexity and DV01. It is the) Tj T* (convention US Treasuries and US corporates are quoted on, and the one) Tj T* (spreadsheet functions such as PRICE, YIELD and MDURATION implement. Floating,) Tj T* (zero-coupon and callable bonds are out of scope.) Tj T* () Tj T* (2 Coupon schedule and the period fraction {#coupon-schedule}) Tj T* () Tj T* (Coupon dates step back from maturity in whole periods of 12/f months, on the) Tj T* (maturity day of the month \(end-of-month bonds stay on month ends\). For a) Tj T* (settlement date S:) Tj T* () Tj T* (- PCD is the last coupon date on or before S, NCD the first one after S.) Tj T* (- E is the number of days in the period PCD to NCD \(actual days for) Tj T* (  ACT/ACT ICMA, see the day-count document\).) Tj T* (- A is the accrued days, PCD to S, under the bond's day count.) Tj T* (- DSC is the days from S to NCD, so DSC = E - A.) Tj T* (- w = DSC / E is the period fraction: the part of the current period still) Tj T* (  to run, with 0 < w <= 1.) Tj T* (- n is the number of coupons still to be paid, NCD included.) Tj T* () Tj T* (On a coupon date w = 1 and nothing has accrued. One day before a coupon date) Tj T* (w is close to 0.) Tj T* () Tj T* (3 Accrued interest {#accrued}) Tj T* () Tj T* (Accrued interest per 100 face is the coupon earned since PCD:) Tj T* () Tj T* (    AI = \(C / f\) * A / E) Tj T* () Tj T* (For a bond on 30/360 US, A is the 30/360 day count from PCD to S and E is) Tj T* (360 / f, so a full period is always 180 days for a semiannual bond. The) Tj T* (buyer pays the clean price plus AI. Ex-dividend periods are not modelled.) Tj T* () Tj T* (4 The fractional first period {#first-period-stub}) Tj T* () Tj T* (Between coupon dates the first cash flow is only w periods away, not a full) Tj T* (period. Every flow is therefore discounted over k + w periods, where k counts) Tj T* (whole periods from NCD \(k = 0 for NCD itself\). Treating the first period as a) Tj T* (whole one \(discounting over k + 1\) mis-states every time to cash flow by) Tj T* (1 - w periods. That error moves yield, duration and convexity together, and it) Tj T* (vanishes only when settlement falls on a coupon date \(w = 1\), which is why a) Tj T* (test that settles on a coupon date cannot catch it.) Tj T* () Tj T* (An irregular first coupon from issue \(short or long first coupon\) changes the) Tj T* (amount of the first coupon and how AI is counted inside that period. The) Tj T* (fraction w is still measured inside the notional regular period that contains) Tj T* (S.) Tj T* ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 9 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 2884 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL () Tj T* (5 Dirty and clean price {#price}) Tj T* () Tj T* (The dirty \(full\) price per 100 at yield y is the present value of the) Tj T* (remaining flows, discounted from S:) Tj T* () Tj T* (    P_dirty = sum over k = 0 .. n-1 of \(C/f\) / \(1 + y/f\)^\(k + w\)) Tj T* (              + R / \(1 + y/f\)^\(n - 1 + w\)) Tj T* () Tj T* (    P_clean = P_dirty - AI) Tj T* () Tj T* (Quotes are clean; the calculation is done on dirty. When only one coupon is) Tj T* (left \(n = 1\), US street practice and the spreadsheet functions use simple) Tj T* (interest instead: P_dirty = \(R + C/f\) / \(1 + w * y / f\). A golden case in the) Tj T* (final period must say which of the two forms it uses.) Tj T* () Tj T* (6 Yield to maturity {#yield}) Tj T* () Tj T* (The yield is the y that makes P_dirty in section 5 equal to the quoted clean) Tj T* (price plus AI. It is quoted annualised at the coupon frequency \(a) Tj T* (bond-equivalent yield for a semiannual bond\). There is no closed form: solve) Tj T* (numerically. A Newton-Raphson solve on y uses dP/dy from section 8, starts) Tj T* (from the current yield C / P_clean, stops when the price error is below a) Tj T* (stated tolerance \(1e-10 per 100 is ample\), and reports failure after a capped) Tj T* (number of iterations instead of returning the last iterate.) Tj T* () Tj T* (7 Macaulay duration {#macaulay-duration}) Tj T* () Tj T* (Macaulay duration is the present-value-weighted average time to the cash) Tj T* (flows, in years. With t_k = k + w periods and PV_k the discounted value of) Tj T* (flow k at the solved yield:) Tj T* () Tj T* (    D_mac = \(1 / f\) * \(sum of t_k * PV_k\) / P_dirty) Tj T* () Tj T* (The weights use the dirty price, the same one the yield was solved on.) Tj T* () Tj T* (8 Modified duration {#modified-duration}) Tj T* () Tj T* (Modified duration is the relative price change for a small change in yield:) Tj T* () Tj T* (    D_mod = -\(1 / P_dirty\) * dP_dirty/dy = D_mac / \(1 + y/f\)) Tj T* () Tj T* (It inherits the fractional first period from D_mac. A duration built from) Tj T* (whole periods overstates D_mac by \(1 - w\) / f years before the division, and a) Tj T* (yield solved on the clean price instead of the dirty price shifts it again.) Tj T* () Tj T* (9 Convexity and DV01 {#convexity}) Tj T* () Tj T* (Convexity is the second derivative of the dirty price, scaled by price, in) Tj T* (years squared:) Tj T* () Tj T* (    Convexity = \(1 / P_dirty\) * \(1 / f^2\)) Tj T* (                * sum of t_k * \(t_k + 1\) * CF_k / \(1 + y/f\)^\(t_k + 2\)) Tj T* () Tj T* (where CF_k is the flow paid at t_k. DV01 is the change in dirty price for a) Tj T* (one basis point fall in yield, per 100 face: DV01 = D_mod * P_dirty * 0.0001.) Tj T* (A central finite difference of P_dirty with a 1bp bump each way is a good) Tj T* (independent check of both.) Tj T* ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 9 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 1535 >>
+stream
+BT /F1 9 Tf 54 760 Td 12 TL () Tj T* (10 Worked example {#worked-example}) Tj T* () Tj T* (A 9.25% semiannual note maturing 1 June 2030 \(coupons 1 June and 1 December\),) Tj T* (ACT/ACT ICMA, clean price 85.00, settlement 1 March 2027:) Tj T* () Tj T* (- PCD = 1 Dec 2026, NCD = 1 Jun 2027; E = 182 actual days, A = 90.) Tj T* (- w = 92/182 = 0.505495, n = 7.) Tj T* (- AI = 4.625 * 90/182 = 2.287088; P_dirty = 87.287088.) Tj T* (- Solving section 5 gives y = 15.2529%; D_mac = 2.7757; D_mod = 2.5790.) Tj T* () Tj T* (On 30/360 US the same trade has A = 90, E = 180, w = 0.5 and AI = 2.3125,) Tj T* (giving y = 15.2573% and D_mod = 2.5764. These match the hand-computed) Tj T* (reference values recorded for the CoreWeave 9.25% 2030 note in FinTekkers) Tj T* (items LS-237 and LM-498 \(25 Nov 2026\), which VS-164 must reproduce.) Tj T* () Tj T* (Sources) Tj T* () Tj T* (- US Treasury, 31 CFR Part 356, Appendix B \(price and accrued interest) Tj T* (  formulas for marketable notes and bonds\):) Tj T* (  https://www.ecfr.gov/current/title-31/subtitle-B/chapter-II/subchapter-A/part-356) Tj T* (- ICMA Primary Market Handbook and Secondary Market Rules, Rule 251 \(accrued) Tj T* (  interest\): cited by name only; no text is reproduced here.) Tj T* (- QuantLib, FixedRateBond and BondFunctions documentation \(independent) Tj T* (  implementation used for cross-checks\): https://www.quantlib.org/) Tj T* (- FinTekkers items LS-237 and LM-498: hand-computed reference values for the) Tj T* (  CoreWeave 9.25% 2030 note.) Tj T* ET
+endstream
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000253 00000 n 
+0000003518 00000 n 
+0000003644 00000 n 
+0000006580 00000 n 
+0000006706 00000 n 
+0000008293 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+8388
+%%EOF

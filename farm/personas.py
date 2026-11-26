@@ -293,6 +293,18 @@ def provider_for(personas, overlay=None) -> str | None:
     return None
 
 
+def persona_agent(persona_id) -> str | None:
+    """HZ-972: the agent whose bucket holds a global persona id, in registry
+    order, or None. A project sub-step names its persona bare ("quant"), so the
+    farm finds the bucket here before composing it."""
+    if not isinstance(persona_id, str):
+        return None
+    for agent, bucket in PERSONAS.items():
+        if persona_id in bucket:
+            return agent
+    return None
+
+
 def compose_role(role_text: str, agent: str, persona_id, overlay=None) -> str:
     """Append the `agent` bucket's persona markdown to a role prompt.
 

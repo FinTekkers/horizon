@@ -44,11 +44,13 @@ export const PERSONAS = {
     python: { label: 'Python backend', initials: 'PY', color: 'var(--primary-ink)' },
     ui: { label: 'Frontend UI', initials: 'UI', color: 'var(--warning-ink)' },
     performance: { label: 'Performance', initials: 'PF', color: 'var(--danger-ink)' },
+    rust_quant: { label: 'Rust quant', initials: 'RQ', color: 'var(--architect-ink)' },
   },
   qa: {
     api_contract: { label: 'API contract', initials: 'AC', color: 'var(--primary-ink)' },
     e2e_journey: { label: 'End-to-end journey', initials: 'EJ', color: 'var(--success-ink)' },
     data_integrity: { label: 'Data integrity', initials: 'DI', color: 'var(--agent-human-ink)' },
+    quant: { label: 'Quant', initials: 'QT', color: 'var(--danger-ink)' },
   },
   architect: {
     data_modelling: { label: 'Data modelling', initials: 'DM', color: 'var(--architect-ink)' },

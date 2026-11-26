@@ -203,7 +203,23 @@ test('domain/ also holds the persona registry: source, schema, both bindings and
   }
 })
 
-test('exactly one personas.json exists, and it is domain/personas.json', () => {
-  const found = relPaths.filter((p) => path.basename(p) === 'personas.json')
+// HZ-535/HZ-972: a project's own personas, farm/projects/<slug>/personas.json
+// (domain/projectPersonas.schema.json), share the filename, as a project's
+// steps.json does above. Anywhere else, domain/personas.json is the only one.
+const PROJECT_PERSONAS_FILE = /^farm\/projects\/[a-z0-9]+(?:-[a-z0-9]+)*\/personas\.json$/
+
+test('exactly one personas.json exists outside farm/projects/<slug>/, and it is domain/personas.json', () => {
+  const found = relPaths.filter((p) => path.basename(p) === 'personas.json' && !PROJECT_PERSONAS_FILE.test(p))
   assert.deepEqual(found, ['domain/personas.json'])
+})
+
+test('a farm/projects/<slug>/personas.json is a project persona file, not a second registry', () => {
+  for (const elsewhere of ['personas.json', 'farm/personas.json', 'farm/projects/personas.json', 'farm/projects/a/b/personas.json', 'ui/farm/projects/a/personas.json']) {
+    assert.ok(!PROJECT_PERSONAS_FILE.test(elsewhere), elsewhere)
+  }
+  for (const rel of relPaths.filter((p) => PROJECT_PERSONAS_FILE.test(p))) {
+    const raw = JSON.parse(readFileSync(path.join(REPO_ROOT, rel), 'utf8'))
+    assert.deepEqual(Object.keys(raw), ['personas'], rel)
+    assert.ok(!Object.hasOwn(raw, 'agents'), `${rel} declares the registry's agents`)
+  }
 })

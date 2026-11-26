@@ -118,7 +118,9 @@ test('with Horizon and FinTekkers enabled, one dispatch pass posts both ready it
   const internal = { isolation: 'internal', githubTokenRef: null, runUser: null }
   assert.deepEqual(h.body.project, { id: horizon, name: 'Horizon', ...internal })
   assert.equal(h.body.item.repo, 'FinTekkers/horizon')
-  assert.deepEqual(f.body.project, { id: FINTEKKERS(), name: 'FinTekkers', ...internal })
+  // HZ-972: FinTekkers declares its own personas (farm/projects/fintekkers/personas.json),
+  // so its task tells the farm to read them (HZ-535).
+  assert.deepEqual(f.body.project, { id: FINTEKKERS(), name: 'FinTekkers', ...internal, definitionsEnabled: true })
   assert.equal(f.body.item.repo, 'FinTekkers/ui-service')
   assert.equal(settings.getSetting('farm_project_id'), String(horizon), 'the farm is pinned to the project it started for')
 })

@@ -24,8 +24,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # order. Hand-typed — comparing the farm to the domain would compare the
 # document to itself after the HZ-381 repoint.
 EXPECTED_ORDER = {
-    "eng": ["fullstack", "python", "ui", "performance"],
-    "qa": ["api_contract", "e2e_journey", "data_integrity"],
+    # HZ-972 appended rust_quant and quant.
+    "eng": ["fullstack", "python", "ui", "performance", "rust_quant"],
+    "qa": ["api_contract", "e2e_journey", "data_integrity", "quant"],
     "architect": ["data_modelling", "distributed_systems"],
     "pm": ["roadmap", "feature_development"],
 }
@@ -89,8 +90,8 @@ def test_every_declared_role_file_exists_on_disk():
     """Metric 1, first direction: every persona id resolves to a declared role
     file in farm/roles/personas/."""
     declared = _declared_role_files()
-    assert len(declared) == 11
-    assert len(set(declared.values())) == 11
+    assert len(declared) == 13
+    assert len(set(declared.values())) == 13
     for pair, filename in sorted(declared.items()):
         assert (farm_personas.PERSONA_DIR / filename).is_file(), f"missing role file for {pair}: {filename}"
 

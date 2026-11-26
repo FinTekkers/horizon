@@ -84,7 +84,7 @@ from .config import FARM_PORT, ITEM_LOCK_WAIT_S, MAX_TURNS, STEP_TIMEOUT_S, WEB_
 from .credentials import is_tenant_project
 from .handoff import HandoffContext, HandoffGuard
 from .persona_tools import apply as apply_persona_tools
-from .personas import compose_role, project_overlay, provider_for, resolve
+from .personas import compose_role, persona_agent, project_overlay, provider_for, resolve
 from .read_only_guard import ReadOnlyViolation
 from .rules import render_rules_section
 from .vcs.git import step_agent_git as git
@@ -675,9 +675,14 @@ GOLDEN_ADDENDUM_LABELS = frozenset({"Define how we measure success", "How we'll 
 def golden_cases_section(task: dict) -> str | None:
     """The golden-cases text a task's prompt ends with, or None. A golden_cases
     sub-step gets the producer contract; the metric steps and Eng plan of an
-    item with golden cases get the addendum."""
-    if (task.get("substep") or {}).get("output") == GOLDEN_CASES_OUTPUT:
-        return (ROLES / GOLDEN_CASES_ROLE).read_text().rstrip("\n")
+    item with golden cases get the addendum. HZ-972: a sub-step that names a
+    persona gets that persona's text under the contract, once; one that names
+    none gets the contract alone."""
+    substep = task.get("substep") or {}
+    if substep.get("output") == GOLDEN_CASES_OUTPUT:
+        contract = (ROLES / GOLDEN_CASES_ROLE).read_text().rstrip("\n")
+        agent = persona_agent(substep.get("persona"))
+        return compose_role(contract, agent, substep["persona"]).rstrip("\n") if agent else contract
     if task.get("golden_cases") is True and task["step"].get("label") in GOLDEN_ADDENDUM_LABELS:
         return (ROLES / GOLDEN_CASES_ADDENDUM).read_text().rstrip("\n")
     return None

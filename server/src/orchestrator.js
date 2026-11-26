@@ -549,6 +549,9 @@ export function substepTaskField(item, stepIndex, substepId) {
   const sub = substepsOf(item).find((s) => s.id === substepId && s.anchor === stepIndex)
   if (!sub) return null
   const field = { id: sub.id, label: sub.label, output: sub.output ?? null }
+  // HZ-972: the farm composes the sub-step's persona into its prompt. Only
+  // set when the snapshot names one, so every other body is unchanged.
+  if (sub.persona) field.persona = sub.persona
   if (sub.output === 'design') {
     const previous = latestDesign(substepDoneRuns(item.id, stepIndex, sub.id), LINKED_DESIGN_TOOLS)
     if (previous) field.previous_canvas_url = previous.url

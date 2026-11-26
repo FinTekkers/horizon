@@ -48,7 +48,7 @@ function flaggedIdLiterals(code, ids) {
 }
 
 test('server/src/personas.js declares no persona id as a string literal', () => {
-  assert.equal(IDS.size, 11, 'positive control: the scan compares against a real id set')
+  assert.equal(IDS.size, 13, 'positive control: the scan compares against a real id set')
   const source = readFileSync(path.join(REPO_ROOT, 'server/src/personas.js'), 'utf8')
   assert.deepEqual(flaggedIdLiterals(source, IDS), [])
 })
@@ -81,8 +81,9 @@ test('the server display table covers exactly the domain ids, in both directions
 
 test('the server registry order is todays order', () => {
   const expected = {
-    eng: ['fullstack', 'python', 'ui', 'performance'],
-    qa: ['api_contract', 'e2e_journey', 'data_integrity'],
+    // HZ-972 appended rust_quant and quant.
+    eng: ['fullstack', 'python', 'ui', 'performance', 'rust_quant'],
+    qa: ['api_contract', 'e2e_journey', 'data_integrity', 'quant'],
     architect: ['data_modelling', 'distributed_systems'],
     pm: ['roadmap', 'feature_development'],
   }
