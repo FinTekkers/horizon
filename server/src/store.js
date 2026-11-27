@@ -66,7 +66,19 @@ import { applyDeletes, planDeletes, references } from './accountPurge.js'
 import { askHolderIds, openAsks, parentClosedAsks, startCheckAsks } from './asks.js'
 import { findTargetByRepo } from './deployTargets.js'
 import { designPageShots, visualPageFields } from './visualPages.js'
-import { FIRST_GATE_INDEXES, approveGoldenCases, approvedGoldenCases, checkGoldenApproval, clearGoldenCases, goldenCasesFields, goldenCasesRequired, GOLDEN_CASES_OUTPUT } from './goldenCases.js'
+import {
+  FIRST_GATE_INDEXES,
+  WAIVER_PREFIX,
+  approveGoldenCases,
+  approvedGoldenCases,
+  checkGoldenApproval,
+  clearGoldenCases,
+  goldenCasesEnforced,
+  goldenCasesFields,
+  goldenCasesStranded,
+  goldenSubstep,
+  GOLDEN_CASES_OUTPUT,
+} from './goldenCases.js'
 import { approveCanvas, checkDesignApproval, clearDesignSpec, designApprovable, designRequired, designSpecFields, skipDesign } from './designSpec.js'
 import { moveItem, moveKeyOf, moveTargets, movesView, planMove } from './moveItem.js'
 import { commandCheckGate, commandChecksView, supersedeCommandChecks } from './commandChecks.js'
@@ -3053,7 +3065,7 @@ function gateExceptionFields(row) {
 function itemMoveTargets(row, activeRun = selectActiveRun.get(row.id) || null) {
   const approvable =
     !(row.cursor === APPROVE_RUN_GATE_INDEX && !currentRunPlan(row.id)) &&
-    !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesRequired(row) && !approvedGoldenCases(row.id)) &&
+    !(FIRST_GATE_INDEXES.includes(row.cursor) && goldenCasesEnforced(row) && !approvedGoldenCases(row.id)) &&
     !(FIRST_GATE_INDEXES.includes(row.cursor) && !designApprovable(row))
   return moveTargets(row, { running: activeRun != null, enabled: movable(row), approvable })
 }
@@ -3268,6 +3280,21 @@ export function addEvent(id, { who, text, color, initials, detail = null, verdic
   )
 }
 
+// HZ-976: the one event that says a stranded item (goldenCases.js
+// goldenCasesStranded) goes on without golden cases. Written once per item,
+// by whichever reaches it first: the first gate's approval or a guarded
+// step's dispatch (orchestrator.js refuseWithoutGoldenCases).
+export function noteGoldenWaiver(id) {
+  if (db.prepare('SELECT 1 FROM event WHERE item_id = ? AND text LIKE ? LIMIT 1').get(id, `${WAIVER_PREFIX}%`)) return
+  const label = goldenSubstep(getItem(id))?.label ?? 'the golden-cases sub-step'
+  addEvent(id, {
+    who: 'Horizon',
+    text: `${WAIVER_PREFIX} “${label}” never ran (it was added before HZ-976), so this item goes on without approved golden cases`,
+    color: '#DFA200',
+    initials: 'HZ',
+  })
+}
+
 // HZ-384: a humanOnly gate (domain/steps.json) passes only with `proof` —
 // the object app.js's humanAuthorized() mints after a session and a valid gate
 // PIN. Every approver reaches this one function, so a caller without it
@@ -3434,7 +3461,9 @@ export function approveGate(
   // only the set the approver was shown. A caller with no table to show
   // (WhatsApp, the caretaker) sends no hash, so it is refused.
   let golden = null
-  if (FIRST_GATE_INDEXES.includes(stepIndex) && goldenCasesRequired(it)) {
+  // HZ-976: a stranded item has no set to approve and never will.
+  const goldenWaived = FIRST_GATE_INDEXES.includes(stepIndex) && goldenCasesStranded(it)
+  if (FIRST_GATE_INDEXES.includes(stepIndex) && goldenCasesEnforced(it)) {
     golden = checkGoldenApproval(it, goldenHash)
     if (golden.error) {
       if (goldenHash == null) {
@@ -3510,6 +3539,7 @@ export function approveGate(
       .run(id, stepIndex, 'approved', trimmed, actor, approvedHash, filed, approvedCommand?.index ?? null, approvedCommand?.hash ?? null)
     if (excepted) insertExceptions(id, Number(decision.lastInsertRowid), excepted, actor)
     if (golden?.set) approveGoldenCases(id, golden.set, actor)
+    if (goldenWaived) noteGoldenWaiver(id)
     if (design?.canvas) approveCanvas(id, design.canvas, actor)
     if (design?.skip) skipDesign(id, design.skip.reason, actor)
     if (trimmed) {

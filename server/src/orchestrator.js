@@ -100,6 +100,7 @@ import {
   latestExecuteJobView,
   activeJobRun,
   nextStepAttempt,
+  noteGoldenWaiver,
   missingPlanSections,
   PLAN_SECTIONS,
   PAUSE_SET,
@@ -131,7 +132,17 @@ import {
   returnTarget,
 } from './designRounds.js'
 import { recordDesignPageRound, recordPageRound, visualPagesFor } from './visualPages.js'
-import { GOLDEN_PROMPT_STEP_INDEXES, GUARDED_STEP_INDEXES, NOT_APPROVED_TEXT, approvedGoldenCases, goldenCasesInput, goldenCasesRequired } from './goldenCases.js'
+import { nextOpeningSubstep } from './openingSubsteps.js'
+import {
+  GOLDEN_PROMPT_STEP_INDEXES,
+  GUARDED_STEP_INDEXES,
+  NOT_APPROVED_TEXT,
+  approvedGoldenCases,
+  goldenCasesInput,
+  goldenCasesRequired,
+  goldenCasesStranded,
+  goldenSubstep,
+} from './goldenCases.js'
 import { approvedDesign, canvasInput, designRequired } from './designSpec.js'
 import { reviewShotsInput } from './screenshots.js'
 import { backendOf, forItem, forRepo, submitDiff } from './backends/index.js'
@@ -583,18 +594,28 @@ export function designTaskFields(item, stepIndex, substepId) {
 //   - A design run: its round is stored, and the item goes straight back to
 //     the gate it was sent back from when "Set guardrails" need not re-run
 //     (designRounds.js returnTarget), else walks on.
+// HZ-976: where it walks on to is the next opening sub-step at the anchor
+// (openingSubsteps.js), when there is one, instead of the next step. With
+// none — every design-only item — every write is as it was; a gate's
+// returnTarget still wins over it, so a send-back round does not re-run the
+// sub-steps after it.
 export function completeDesignSubstep(id, run, artifactMd, artifacts = null) {
   const item = getItem(id)
   const sub = item && run ? designSubstepOf(item, run.step_index) : null
   if (!sub || item.cursor !== run.step_index) return false
+  const after = nextOpeningSubstep(item, sub.id)
+  const onward = after
+    ? { to: item.cursor, fields: { substep_cursor: after.id, substep_pending_json: null } }
+    : { to: nextCursor(item), fields: { substep_cursor: null, substep_pending_json: null } }
   if (run.substep_id == null) {
     if (item.substep_cursor != null) return false
     const entry = decideDesignEntry(artifactMd)
     if (entry.action === 'skip') {
-      const moved = writeStepCompletion(id, nextCursor(item), { substep_cursor: null, substep_pending_json: null })
+      const moved = after ? enterPastDesign(id, item.cursor, sub, after) : writeStepCompletion(id, onward.to, onward.fields)
       if (moved.error) return true
       recordRound(id, sub.id, { kind: 'skip', brief: entry.reason, who: 'Horizon' })
       addEvent(id, { who: 'Horizon', text: `Skipped “${sub.label}”: ${entry.reason}`, color: '#5E6A75', initials: 'HZ' })
+      if (after) noteSubstepEntered(id, after)
       return true
     }
     const moved = writeStepCompletion(id, run.step_index, {
@@ -616,18 +637,19 @@ export function completeDesignSubstep(id, run, artifactMd, artifacts = null) {
   const pending = readPending(item)
   const forced = pending?.kind === 'forced'
   const back = returnTarget(item)
-  const to = back ?? nextCursor(item)
+  const { to, fields } = back != null ? { to: back, fields: { substep_cursor: null, substep_pending_json: null } } : onward
   // No design tool on the box: the round is a skip, so the gate can approve
   // without a canvas instead of the item pausing.
   const noTool = parseNoToolLine(artifactMd)
   if (noTool) {
-    const moved = writeStepCompletion(id, to, { substep_cursor: null, substep_pending_json: null })
+    const moved = writeStepCompletion(id, to, fields)
     if (moved.error) return true
     recordRound(id, sub.id, { kind: 'skip', runId: run.id, brief: noTool, who: 'Horizon' })
     addEvent(id, { who: 'Horizon', text: `Skipped “${sub.label}”: ${noTool}`, color: '#5E6A75', initials: 'HZ' })
+    if (back == null && after) noteSubstepEntered(id, after)
     return true
   }
-  const moved = writeStepCompletion(id, to, { substep_cursor: null, substep_pending_json: null })
+  const moved = writeStepCompletion(id, to, fields)
   if (moved.error) return true
   const design = designProvenance(artifacts, artifactMd)
   if (design.problem) {
@@ -660,8 +682,57 @@ export function completeDesignSubstep(id, run, artifactMd, artifacts = null) {
       color: '#5E6A75',
       initials: 'HZ',
     })
+  } else if (after) {
+    noteSubstepEntered(id, after)
   }
   return true
+}
+
+// HZ-976: a skipped design at an anchor with more opening sub-steps. The item
+// enters the next one through the design sub-step — the only one an anchor
+// with a design may enter (moveItem.js completionAllowed) — in one
+// transaction, so it is never left at the design sub-step.
+function enterPastDesign(id, anchor, design, after) {
+  const fields = (sub) => ({ substep_cursor: sub.id, substep_pending_json: null })
+  let moved = null
+  try {
+    db.transaction(() => {
+      moved = writeStepCompletion(id, anchor, fields(design))
+      if (!moved.error) moved = writeStepCompletion(id, anchor, fields(after))
+      if (moved.error) throw new Error(moved.error)
+    })()
+  } catch (err) {
+    if (!moved?.error) throw err
+  }
+  return moved
+}
+
+// HZ-976: the other opening sub-steps (golden_cases, artifact), for a run
+// completeDesignSubstep left alone — both completion sites (completeFarmRun
+// and runMockStep) call it next. Each is always entered, in snapshot order
+// (openingSubsteps.js), and runs with its own persona (substepTaskField).
+// Returns true when it moved the item into the next one, false when the
+// caller walks on as before: after the last one, or for a run with no
+// opening sub-step after it. An anchor with a design is the design helper's
+// to leave: it hands on to the next sub-step itself.
+export function completeOpeningSubstep(id, run) {
+  const item = getItem(id)
+  if (!item || !run || item.cursor !== run.step_index) return false
+  const design = designSubstepOf(item, run.step_index)
+  if (design && (run.substep_id == null || run.substep_id === design.id)) return false
+  const next = nextOpeningSubstep(item, run.substep_id ?? null)
+  if (!next) return false
+  // The anchor's run while the item is already at a sub-step, or a run of a
+  // sub-step the item is no longer at: not this run's to decide.
+  if (run.substep_id == null ? item.substep_cursor != null : currentSubstep(item)?.id !== run.substep_id) return false
+  const moved = writeStepCompletion(id, item.cursor, { substep_cursor: next.id, substep_pending_json: null })
+  if (moved.error) return true
+  noteSubstepEntered(id, next)
+  return true
+}
+
+function noteSubstepEntered(id, sub) {
+  addEvent(id, { who: 'Horizon', text: `“${sub.label}” runs after “${STEPS[sub.anchor].label}”`, color: '#5E6A75', initials: 'HZ' })
 }
 
 // HZ-938: the tools whose link the next round is sent back to update.
@@ -1424,6 +1495,22 @@ function mockDesignRound(it) {
     summary: 'drew the screens (mock — no canvas in demo mode)',
     artifact_md: `Screens drawn (mock): no canvas in demo mode.\n\nwhat_changed: addressed “${brief.slice(0, 120)}” (mock)`,
   }
+}
+
+// HZ-976: the mock golden-cases round — one case, cited from MOCK_GOLDEN_SOURCE,
+// in the fenced block a real round writes (domain/js/goldenCases.js).
+export const MOCK_GOLDEN_SOURCE = 'mock-golden#case-1'
+function mockGoldenRound() {
+  const cases = [{ id: 'mock-case-1', inputs: { x: 1 }, measure: 'y', expected: 1, tolerance: { abs: 0 }, source: MOCK_GOLDEN_SOURCE }]
+  return {
+    summary: 'wrote one golden case (mock — demo mode)',
+    artifact_md: `## Golden cases (mock)\n\n\`\`\`json golden-cases\n${JSON.stringify({ cases }, null, 2)}\n\`\`\``,
+  }
+}
+
+// HZ-976: any other sub-step's mock — a summary only, never its anchor's patch.
+function mockSubstepRound(it) {
+  return { summary: `completed “${currentSubstep(it)?.label ?? 'the sub-step'}” (mock)` }
 }
 
 // Mock behavior per step label (HZ-117: keyed by label, not index — the
@@ -4415,8 +4502,10 @@ export async function completeFarmRun(runId, { summary, patch, artifacts, job_vi
   } else {
     // HZ-540: the item leaves the anchor, and with it any sub-step it was sent
     // back to (store.js requestChanges). HO-851: unless its design sub-step
-    // decides where it goes.
-    if (!completeDesignSubstep(id, run, artifactMd, artifacts)) writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
+    // decides where it goes. HZ-976: or any other opening sub-step.
+    if (!completeDesignSubstep(id, run, artifactMd, artifacts) && !completeOpeningSubstep(id, run)) {
+      writeStepCompletion(id, nextCursor(getItem(id)), { substep_cursor: null })
+    }
     if (impact) {
       addEvent(id, {
         who: 'Horizon',
@@ -4702,7 +4791,14 @@ export async function refuseUnapprovedRun(runId, id, stepIndex) {
 // it refused.
 export function refuseWithoutGoldenCases(runId, id, stepIndex) {
   if (!GUARDED_STEP_INDEXES.includes(stepIndex)) return false
-  if (!goldenCasesRequired(getItem(id)) || approvedGoldenCases(id)) return false
+  const item = getItem(id)
+  // HZ-976: an item whose golden-cases sub-step never ran before it passed
+  // the anchor can never get cases — it goes on without them.
+  if (goldenCasesStranded(item)) {
+    noteGoldenWaiver(id)
+    return false
+  }
+  if (!goldenCasesRequired(item) || approvedGoldenCases(id)) return false
   failFarmRun(runId, NOT_APPROVED_TEXT, REASON.GOLDEN_CASES_NOT_APPROVED)
   return true
 }
@@ -5107,11 +5203,17 @@ async function runMockStep(id, stepIndex, runId) {
   const step = STEPS[stepIndex]
   const agent = AGENTS[step.agent]
   // HO-851: a design sub-step run has its own mock, never its anchor's.
+  // HZ-976: so has every other sub-step run — a golden-cases one writes a set.
   const run = db.prepare('SELECT * FROM step_run WHERE id = ?').get(runId)
   const designRun = run?.substep_id != null && designSubstepOf(item, stepIndex)?.id === run.substep_id
+  const goldenRun = run?.substep_id != null && goldenSubstep(item)?.id === run.substep_id
   const behavior = designRun
     ? mockDesignRound
-    : MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
+    : goldenRun
+      ? mockGoldenRound
+      : run?.substep_id != null
+        ? mockSubstepRound
+        : MOCK_STEP_BEHAVIOR[step.label] || (() => ({ summary: `completed ${step.label.toLowerCase()}` }))
   let { summary, patch, verdict, failure, artifact_md: artifactMd, plan_draft: planDraft, plan_review: planReview, preflight, rehearsal } = await behavior(item)
   // HZ-304: a mock step that refused to run (an unready repo) fails the run
   // the way the farm path does — paused for a human, never auto-retried.
@@ -5184,8 +5286,9 @@ async function runMockStep(id, stepIndex, runId) {
       runId,
     )
   }
-  // HO-851: the same design decision the farm path makes.
-  if (!completeDesignSubstep(id, run, artifactMd)) writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
+  // HO-851: the same design decision the farm path makes. HZ-976: and the
+  // same opening sub-step entry.
+  if (!completeDesignSubstep(id, run, artifactMd) && !completeOpeningSubstep(id, run)) writeStepCompletion(id, nextCursor(after), { substep_cursor: null })
   addEvent(id, {
     who: agent.label,
     text: `completed “${step.label}” — ${summary}`,
