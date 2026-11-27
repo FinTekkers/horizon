@@ -8,9 +8,11 @@
 // stored approvals and the panel all run as in production.
 //
 // HZ-704: setting the spec's own PIN locks the shared session, so the first
-// test's panel waits for "Show images", whose image requests open the PIN
-// dialog; answering it verifies the session, and from then on (reloads and
-// the later tests) the panel shows its images at once.
+// image request opens the PIN dialog; answering it verifies the session for
+// the reloads and later tests.
+//
+// HZ-974: rows start collapsed and fetch no image; expanding a row fetches
+// only that shot's images.
 
 import { test, expect, answerPinDialog, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
@@ -69,6 +71,7 @@ test.afterAll(async ({ request }) => {
   await clearScreenshotSnapshot(request)
 })
 
+const IMAGE_ROUTE = /\/screenshots\/[^/]+\/(baseline|new|diff)$/
 const panelOf = (page) => page.getByRole('region', { name: 'Screenshots' })
 const rowOf = (page, screen) => panelOf(page).getByRole('listitem', { name: screen })
 
@@ -82,14 +85,25 @@ async function expectImagesRendered(row, names) {
 test('item page: the Screenshots panel, reviewed, at 375px, and absent', async ({ page, request }) => {
   await test.step('the owner reviews each shot, approves one and then all, and a republish resets only the changed shot', async () => {
     await seedGithub(request)
+    const imageRequests = []
+    page.on('request', (req) => {
+      const path = new URL(req.url()).pathname
+      if (IMAGE_ROUTE.test(path)) imageRequests.push(path.slice(path.indexOf('/screenshots/') + '/screenshots/'.length))
+    })
     await page.goto(`/${ITEMS.journey.toLowerCase()}`)
     const panel = panelOf(page)
     await expect(panel.getByRole('listitem')).toHaveCount(3)
-    // The session is locked: no image is fetched until asked, then the PIN.
+    // Every row starts collapsed: no image, and no image request.
     await expect(panel.getByRole('img')).toHaveCount(0)
-    await panel.getByRole('button', { name: 'Show images' }).click()
+    expect(imageRequests).toEqual([])
+    // Expanding a row fetches only its images; the first asks for the PIN.
+    await panel.getByRole('button', { name: 'Expand board' }).click()
     await answerPinDialog(page, GATE_PIN)
     await expectImagesRendered(rowOf(page, 'board'), ['Baseline', 'Current', 'Diff'])
+    expect([...new Set(imageRequests)].sort()).toEqual(['board/baseline', 'board/diff', 'board/new'])
+    await expect(rowOf(page, 'gates').getByRole('img')).toHaveCount(0)
+    await panel.getByRole('button', { name: 'Expand gates' }).click()
+    await panel.getByRole('button', { name: 'Expand old' }).click()
     await expectImagesRendered(rowOf(page, 'gates'), ['Current'])
     await expectImagesRendered(rowOf(page, 'old'), ['Baseline'])
     await expect(rowOf(page, 'old')).toContainText('will be deleted')
@@ -124,8 +138,13 @@ test('item page: the Screenshots panel, reviewed, at 375px, and absent', async (
     await page.setViewportSize({ width: 375, height: 667 })
     await page.goto(`/${ITEMS.phone.toLowerCase()}`)
     const board = rowOf(page, 'board')
-    await expectImagesRendered(board, ['Baseline', 'Current', 'Diff'])
+    // A collapsed row wraps: its Approve sits under the name and chips.
+    const toggle = board.getByRole('button', { name: 'Expand board' })
     await waitForFonts(page)
+    const toggleBox = await toggle.boundingBox()
+    expect((await board.getByRole('button', { name: 'Approve', exact: true }).boundingBox()).y).toBeGreaterThanOrEqual(toggleBox.y + toggleBox.height)
+    await toggle.click()
+    await expectImagesRendered(board, ['Baseline', 'Current', 'Diff'])
     const { scroll, client } = await page.evaluate(() => ({
       scroll: document.documentElement.scrollWidth,
       client: document.documentElement.clientWidth,
