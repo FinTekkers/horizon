@@ -325,6 +325,61 @@ test('a row collapsed while its requests run still keeps their images; re-openin
   expect(getScreenshotImage).toHaveBeenCalledTimes(3)
 })
 
+test('Collapse all drops the requests not yet started; re-expanding a row fetches its dropped images again', async () => {
+  getScreenshots.mockResolvedValue({ commit: COMMIT, shots: SHOTS20 })
+  const images = deferredImages()
+  render(<ScreenshotPanel item={item} />)
+  expect((await screen.findByRole('button', { name: 'Collapse all' })).disabled).toBe(true)
+  fireEvent.click(screen.getByRole('button', { name: 'Expand all' }))
+  await flush()
+  await images.resolveNext()
+  await flush()
+  expect(images.inFlight).toBe(4)
+  expect(getScreenshotImage).toHaveBeenCalledTimes(5)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse all' }))
+  expect(screen.getByRole('button', { name: 'Collapse all' }).disabled).toBe(true)
+  while (images.pending.length > 0) await images.resolveNext()
+  await flush()
+  expect(getScreenshotImage).toHaveBeenCalledTimes(5)
+  expect(screen.queryAllByRole('img')).toHaveLength(0)
+
+  await expand('screen-3--phone--dark')
+  await flush()
+  expect(calls().slice(5)).toEqual(['screen-3--phone--dark/baseline', 'screen-3--phone--dark/new', 'screen-3--phone--dark/diff'])
+  while (images.pending.length > 0) await images.resolveNext()
+  expect(within(screen.getByRole('listitem', { name: 'screen-3--phone--dark' })).getAllByRole('img')).toHaveLength(3)
+})
+
+test('a failed image shows "Image did not load"; the first failing does not hold back the rest, and Retry fetches only that kind', async () => {
+  const images = deferredImages()
+  const rejectNext = async () => {
+    const next = images.pending.shift()
+    await act(async () => next.reject(new Error('network')))
+    return next
+  }
+  render(<ScreenshotPanel item={item} />)
+  await expand('board')
+  await flush()
+  expect(calls()).toEqual(['board/baseline'])
+  await rejectNext()
+  await flush()
+  expect(calls()).toEqual(['board/baseline', 'board/new', 'board/diff'])
+  expect((await rejectNext()).key).toBe('board/new')
+  await images.resolveNext()
+  const board = screen.getByRole('listitem', { name: 'board' })
+  expect(within(board).getAllByText('Image did not load')).toHaveLength(2)
+  expect(within(board).getAllByRole('img').map((img) => img.getAttribute('alt'))).toEqual(['Diff'])
+
+  fireEvent.click(within(board).getByRole('button', { name: 'Retry Current' }))
+  await flush()
+  expect(calls().slice(3)).toEqual(['board/new'])
+  await images.resolveNext()
+  expect(within(board).getAllByRole('img').map((img) => img.getAttribute('alt'))).toEqual(['Current', 'Diff'])
+  expect(within(board).getAllByText('Image did not load')).toHaveLength(1)
+  expect(getScreenshotImage).toHaveBeenCalledTimes(4)
+})
+
 test('collapsed rows: approving the Removed shot and Approve all send the same requests and fetch no image', async () => {
   approveScreenshots
     .mockResolvedValueOnce({ commit: COMMIT, shots: [SHOTS[0], SHOTS[1], { ...SHOTS[2], approved: true }] })
