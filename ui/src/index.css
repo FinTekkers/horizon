@@ -1945,20 +1945,48 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
 .shots__btn:disabled { opacity: 0.55; cursor: default; }
 .shots__notice { margin: 8px 0 0; font: 500 12px var(--font-sans); color: var(--warning-ink); }
 .shots__error { margin: 8px 0; font: 600 12.5px var(--font-sans); color: var(--danger-ink); }
-.shots__list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
-.shots__row { border-top: 1px solid var(--border); padding-top: 10px; min-width: 0; }
-.shots__row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.shots__screen { margin: 0; font: 600 12.5px var(--font-mono); color: var(--ink); overflow-wrap: anywhere; }
-.shots__status { font: 600 11px var(--font-sans); padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted-strong); margin-right: auto; }
+.shots__list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; }
+.shots__row { border-top: 1px solid var(--border); min-width: 0; }
+.shots__row-head { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 0; }
+.shots__screen { font: 600 12.5px var(--font-mono); color: var(--ink); overflow-wrap: anywhere; min-width: 0; }
+.shots__status { font: 600 11px var(--font-sans); padding: 2px 8px; border-radius: 999px; background: var(--chip); color: var(--muted-strong); white-space: nowrap; }
 .shots__status--new { background: var(--primary-bg); color: var(--primary-ink); }
 .shots__status--removed { background: var(--danger-bg); color: var(--danger-ink); }
-.shots__approved { font: 600 12px var(--font-sans); color: var(--success-ink); }
-.shots__shot-error { margin: 6px 0 0; font: 500 12px var(--font-sans); color: var(--warning-ink); overflow-wrap: anywhere; }
-.shots__images { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.shots__approved { font: 600 12px var(--font-sans); color: var(--success-ink); white-space: nowrap; min-width: 84px; text-align: right; }
+.shots__shot-error { margin: 0 0 8px 30px; font: 500 12px var(--font-sans); color: var(--warning-ink); overflow-wrap: anywhere; }
+.shots__images { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 2px 0 12px 30px; }
+.shots__images[hidden] { display: none; }
 .shots__figure { margin: 0; min-width: 0; }
 .shots__caption { font: 600 11px var(--font-sans); color: var(--muted); margin-bottom: 4px; }
 .shots__img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
-.shots__placeholder { aspect-ratio: 16 / 10; border-radius: 6px; background: var(--subtle); }
+.shots__placeholder { aspect-ratio: 16 / 10; border-radius: 6px; background: var(--subtle); position: relative; overflow: hidden; }
+.shots__placeholder::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, var(--surface), transparent);
+  opacity: 0.45; transform: translateX(-100%); animation: shots-shimmer 1.4s infinite; }
+@keyframes shots-shimmer { to { transform: translateX(100%); } }
+.shots__img-failed { aspect-ratio: 16 / 10; border-radius: 6px; border: 1px dashed var(--border-strong); background: var(--surface);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 8px; text-align: center;
+  font: 500 11.5px var(--font-sans); color: var(--danger-ink); }
+/* HZ-974: collapsed rows — the chevron, name and chips open or close a row. */
+.shots__btn--quiet { border-color: transparent; background: transparent; color: var(--primary-ink); padding: 5px 8px; }
+.shots__heading { margin: 0; flex: 1 1 auto; min-width: 0; font: inherit; }
+.shots__toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 32px; padding: 2px 6px 2px 2px;
+  border: 0; background: none; border-radius: 6px; cursor: pointer; text-align: left; color: var(--ink); }
+.shots__toggle:hover { background: var(--subtle); }
+.shots__toggle:focus-visible, .shots__btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.shots__chev { flex: 0 0 auto; width: 22px; height: 22px; display: grid; place-items: center; color: var(--muted-strong); transition: transform .12s ease; }
+.shots__toggle[aria-expanded='true'] .shots__chev { transform: rotate(90deg); color: var(--primary-ink); }
+.shots__tags { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.shots__tag { font: 500 11px var(--font-sans); color: var(--text-secondary); padding: 1px 7px; border: 1px solid var(--border-strong);
+  border-radius: 999px; background: var(--surface); white-space: nowrap; }
+.shots__loaded-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success-ink); flex: 0 0 auto; }
+.shots__spacer { flex: 0 1 auto; }
+.shots__progress { font: 500 12px var(--font-sans); color: var(--muted-strong); display: inline-flex; align-items: center; gap: 6px; }
+.shots__spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--primary); animation: shots-spin .8s linear infinite; }
+@keyframes shots-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .shots__placeholder::after, .shots__spin { animation: none; }
+  .shots__chev { transition: none; }
+}
 /* HZ-548: Stacked gives each image a full row; each loaded image opens the viewer. */
 .shots__images--stacked { grid-template-columns: minmax(0, 1fr); }
 .shots__open { display: block; width: 100%; padding: 0; border: 0; background: none; border-radius: 6px; cursor: zoom-in; }
@@ -2117,7 +2145,14 @@ button.phase__head:focus-visible { outline: 2px solid var(--primary); outline-of
   .tracker__activity-expand-label { writing-mode: horizontal-tb; }
 
   /* HZ-509: a screenshot row's baseline, new and diff stack. */
-  .shots__images { grid-template-columns: minmax(0, 1fr); }
+  .shots__images { grid-template-columns: minmax(0, 1fr); margin-left: 0; }
+  /* HZ-974: the chevron, name and chips take the first line; the status and
+     Approve wrap under them. */
+  .shots__row-head { flex-wrap: wrap; row-gap: 4px; }
+  .shots__heading { flex-basis: 100%; }
+  .shots__status { margin-left: 30px; }
+  .shots__spacer { flex: 1 1 auto; }
+  .shots__head .shots__count { flex-basis: 100%; order: 1; margin: 0; }
 
   /* HZ-703: the phone artboard — the card alone, full width; no column heads. */
   .board__connect { padding-top: 0; }

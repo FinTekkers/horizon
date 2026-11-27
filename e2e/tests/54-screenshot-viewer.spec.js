@@ -8,9 +8,10 @@
 // canned as in 52-screenshot-approvals.
 //
 // HZ-704: setting the spec's own PIN locks the shared session, so the first
-// step's panel waits for "Show images", whose image requests open the PIN
-// dialog; answering it verifies the session, and the later steps' and the
-// phone test's panels show their images at once.
+// step's first image request opens the PIN dialog; answering it verifies the
+// session for the later steps and the phone test.
+//
+// HZ-974: rows start collapsed, so every step expands the board first.
 
 import { test, expect, answerPinDialog, waitForFonts } from '../fixtures/test-base.js'
 import { openDb, insertItem, setGatePinDirect } from '../fixtures/seed.js'
@@ -69,17 +70,15 @@ const rowOf = (page, screen) => page.getByRole('region', { name: 'Screenshots' }
 const viewerOf = (page) => page.getByRole('dialog', { name: 'board screenshot' })
 const naturalWidth = (img) => img.evaluate((el) => el.naturalWidth)
 
-// `pin`: the session is locked, so the images wait for "Show images" and the
-// PIN dialog.
+// Expands the board's row. `pin`: the session is locked, so its first image
+// request opens the PIN dialog.
 async function openBoard(page, item, { pin } = {}) {
   await page.goto(`/${item.toLowerCase()}`)
   const board = rowOf(page, 'board')
-  if (pin) {
-    await expect(board).toBeVisible()
-    await expect(board.getByRole('img')).toHaveCount(0)
-    await page.getByRole('region', { name: 'Screenshots' }).getByRole('button', { name: 'Show images' }).click()
-    await answerPinDialog(page, pin)
-  }
+  await expect(board).toBeVisible()
+  await expect(board.getByRole('img')).toHaveCount(0)
+  await board.getByRole('button', { name: 'Expand board' }).click()
+  if (pin) await answerPinDialog(page, pin)
   for (const name of KINDS) await expect.poll(() => naturalWidth(board.getByRole('img', { name, exact: true }))).toBe(WIDTH)
   await waitForFonts(page)
   return board
@@ -219,6 +218,7 @@ test('the screenshot viewer on desktop: tabs, swipe, and the stacked layout', as
     await expectStacked()
 
     await page.reload()
+    await board.getByRole('button', { name: 'Expand board' }).click()
     for (const name of KINDS) await expect.poll(() => naturalWidth(board.getByRole('img', { name, exact: true }))).toBe(WIDTH)
     await expectStacked()
   })
