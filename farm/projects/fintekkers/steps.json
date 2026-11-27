@@ -8,8 +8,14 @@
       "persona": "quant",
       "output": "golden_cases",
       "applies": {
-        "repos": ["FinTekkers/valuation-service", "FinTekkers/ledger-models"],
-        "labels": ["quant"]
+        "labels": [
+          "quant"
+        ],
+        "paths": [
+          "src/calculators/**",
+          "src/engine/**",
+          "**/measures.json"
+        ]
       }
     }
   ]
