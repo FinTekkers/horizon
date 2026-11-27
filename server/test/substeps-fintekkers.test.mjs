@@ -92,7 +92,7 @@ test('the committed file loads one opening golden_cases sub-step at anchor 1, pe
       anchor: 1,
       persona: 'quant',
       output: 'golden_cases',
-      applies: { labels: ['quant'], repos: ['FinTekkers/valuation-service', 'FinTekkers/ledger-models'], paths: [] },
+      applies: { labels: ['quant'], repos: [], paths: ['src/calculators/**', 'src/engine/**', '**/measures.json'] },
     },
   ])
   assert.equal(STEPS[1].label, 'Define how we measure success')
@@ -120,11 +120,16 @@ test('a quant-labelled item in another FinTekkers repo gets it', () => {
   assert.deepEqual(snapshotIds('LS-2'), [SUBSTEP_ID])
 })
 
-test('a ui-service UI item does not, even when it names a calculator-like path (no path rule)', () => {
+test('a ui-service UI item does not, when it names no calculator, engine or measures path', () => {
   sync('FinTekkers/ui-service', 3, 'Show duration on the positions page', 'Touches `src/components/Positions.tsx` only.', ['ui'])
   assert.equal(itemRow('UI-3').substeps_json, null)
-  sync('FinTekkers/ui-service', 4, 'Rename the engine folder', 'Moves `src/engine/format.ts`.')
-  assert.equal(itemRow('UI-4').substeps_json, null)
+})
+
+test('a valuation-service or ledger-models item with no maths path and no quant label does not (LM-508, VS-169)', () => {
+  sync('FinTekkers/ledger-models', 508, 'Rename price to mid in the quote message', 'Rename the `price` field to `mid` in `ledger-models-protos/fintekkers/models/price/price.proto`.')
+  assert.equal(itemRow('LM-508').substeps_json, null)
+  sync('FinTekkers/valuation-service', 169, 'Read mid instead of price', 'Follow the rename in `src/services/price_reader.rs`.')
+  assert.equal(itemRow('VS-169').substeps_json, null)
 })
 
 test('an item made before the file existed keeps its null snapshot on a later sync', () => {
