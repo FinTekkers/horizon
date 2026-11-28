@@ -51,6 +51,7 @@ import {
 } from '../../domain/js/lifecycle.js'
 import { currentSubstep, decodeMoveKey, encodeMoveKey, substepReworkTargets, substepsOf } from '../../domain/js/substeps.js'
 import { designSubstepOf, returnTarget } from './designRounds.js'
+import { nextOpeningSubstep } from './openingSubsteps.js'
 
 // The five a human (or the route) can ask for, plus 'close', which only a
 // GitHub issue close makes — the route never offers it — and (HZ-920)
@@ -502,7 +503,8 @@ export function moveItem(
 // or one of the automated outcomes above — so it is never a second,
 // unchecked mover. HO-851: and the design sub-step's two — its anchor staying
 // put to enter it, and a finished design round going straight back to the
-// gate it was sent back from (designRounds.js). Returns { ok } or { error:
+// gate it was sent back from (designRounds.js). HZ-976: and the other
+// opening sub-steps, each entered in turn (openingSubsteps.js). Returns { ok } or { error:
 // 'bad_completion' | 'bad_field' | 'not_found' } and writes nothing on a
 // refusal.
 export function writeStepCompletion(id, toIndex, fields = {}) {
@@ -529,8 +531,14 @@ function completionAllowed(item, toIndex, fields = {}) {
   if (toIndex === nextCursor(item)) return true
   // HO-851: the anchor's own run finished and the item enters its design
   // sub-step, staying on the anchor.
+  // HZ-976: or, at an anchor with no design, its first other opening
+  // sub-step; and from any sub-step, the next one in openingSubsteps.js order.
   if (toIndex === item.cursor && item.substep_cursor == null && fields.substep_cursor != null) {
-    return designSubstepOf(item, item.cursor)?.id === String(fields.substep_cursor)
+    const design = designSubstepOf(item, item.cursor)
+    return (design ?? nextOpeningSubstep(item))?.id === String(fields.substep_cursor)
+  }
+  if (toIndex === item.cursor && fields.substep_cursor != null && nextOpeningSubstep(item, item.substep_cursor)?.id === String(fields.substep_cursor)) {
+    return true
   }
   if (toIndex === returnTarget(item)) return true
   const checked = laneCheckIndexes(item)

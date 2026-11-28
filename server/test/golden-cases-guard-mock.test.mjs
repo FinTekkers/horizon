@@ -40,8 +40,10 @@ function seed(id, cursor) {
     projectId,
     SNAPSHOT,
   )
+  // HZ-976: the sub-step ran, so the item has pending cases — not stranded.
+  db.prepare("INSERT INTO step_run (item_id, step_index, substep_id, attempt, agent, status) VALUES (?, 1, 'golden-cases', 1, 'PM', 'done')").run(id)
 }
-const runs = (id) => db.prepare('SELECT status, output FROM step_run WHERE item_id = ? ORDER BY id').all(id)
+const runs = (id) => db.prepare('SELECT status, output FROM step_run WHERE item_id = ? AND substep_id IS NULL ORDER BY id').all(id)
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 for (const stepIndex of [PLAN_STEP, IMPLEMENT_STEP_INDEX, REVIEW_STEP_INDEX]) {

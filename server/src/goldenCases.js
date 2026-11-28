@@ -54,6 +54,8 @@ const selectProjectName = db.prepare('SELECT name FROM project WHERE id = ?')
 const selectSubstepRuns = db.prepare(
   "SELECT id, step_index, artifact, output FROM step_run WHERE item_id = ? AND substep_id = ? AND status = 'done' ORDER BY id DESC",
 )
+// HZ-976: a run of any status — a failed run still means the sub-step ran.
+const selectAnySubstepRun = db.prepare('SELECT 1 FROM step_run WHERE item_id = ? AND substep_id = ? LIMIT 1')
 const selectApproved = db.prepare('SELECT * FROM golden_case_set WHERE item_id = ?')
 const selectDocs = db.prepare("SELECT slug, repo, path, sections_json FROM knowledge_doc WHERE project_id = ? AND status = 'extracted'")
 const insertApproved = db.prepare(
@@ -74,6 +76,27 @@ export function goldenCasesRequired(item) {
   if (!item || hasNoProject(db, item.project_id) || !goldenSubstep(item)) return false
   return selectProjectSwitch.get(item.project_id)?.definitions_enabled === 1
 }
+
+// HZ-976: before HZ-976 no opening sub-step but design was ever entered, so
+// an item could pass its golden-cases sub-step's anchor without it running —
+// and can never get cases. True when the item uses golden cases, is past the
+// anchor, the sub-step has no run of any status, and no set was approved.
+export function goldenCasesStranded(item) {
+  if (!goldenCasesRequired(item)) return false
+  const sub = goldenSubstep(item)
+  if (!(item.cursor > sub.anchor)) return false
+  return !selectAnySubstepRun.get(item.id, sub.id) && !selectApproved.get(item.id)
+}
+
+// HZ-976: golden cases are asked for — at the first gate and by the guarded
+// steps — unless the item is stranded (goldenCasesStranded).
+export function goldenCasesEnforced(item) {
+  return goldenCasesRequired(item) && !goldenCasesStranded(item)
+}
+
+// HZ-976: how the one event that records a waiver begins (store.js
+// noteGoldenWaiver).
+export const WAIVER_PREFIX = 'Golden cases waived:'
 
 // The set the sub-step's newest done run wrote: { runId, cases, errors, hash },
 // or null when it has no done run.
@@ -174,7 +197,7 @@ export function goldenCasesInput(itemId, stepIndex) {
 // { goldenCases } for the item view, or {} so an item without the feature
 // serves exactly the keys it did before.
 export function goldenCasesFields(row) {
-  if (!goldenCasesRequired(row)) return {}
+  if (!goldenCasesEnforced(row)) return {}
   const sub = goldenSubstep(row)
   const approved = approvedGoldenCases(row.id)
   const pending = approved ? null : pendingGoldenCases(row)

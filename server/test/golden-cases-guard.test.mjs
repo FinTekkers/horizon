@@ -53,6 +53,8 @@ function seed(id, cursor, { approved = false } = {}) {
     projectId,
     SNAPSHOT,
   )
+  // HZ-976: the sub-step ran, so the item has pending cases — not stranded.
+  db.prepare("INSERT INTO step_run (item_id, step_index, substep_id, attempt, agent, status) VALUES (?, 1, 'golden-cases', 1, 'PM', 'done')").run(id)
   if (approved) {
     db.prepare("INSERT INTO golden_case_set (item_id, cases_json, hash, approved_by) VALUES (?, ?, ?, 'Ada')").run(id, JSON.stringify(CASES), golden.hashOf(CASES))
   }
